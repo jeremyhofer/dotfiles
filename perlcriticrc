@@ -1,0 +1,32 @@
+severity = 2
+
+[Modules::RequireVersionVar]
+severity = 1
+
+[RegularExpressions::RequireLineBoundaryMatching]
+severity = 1
+
+[RegularExpressions::RequireExtendedFormatting]
+severity = 1
+
+[RegularExpressions::RequireDotMatchAnything]
+severity = 1
+
+[ValuesAndExpressions::ProhibitMagicNumbers]
+allowed_values = all_integers
+allowed_types = Hex Octal
+
+[InputOutput::ProhibitBacktickOperators]
+only_in_void_context = 1
+
+[Subroutines::RequireArgUnpacking]
+allow_subscripts = 1
+
+[InputOutput::RequireBriefOpen]
+lines = 30
+
+[ValuesAndExpressions::ProhibitEmptyQuotes]
+severity = 1
+
+[ValuesAndExpressions::ProhibitNoisyQuotes]
+severity = 1
