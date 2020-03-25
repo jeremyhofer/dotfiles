@@ -8,6 +8,20 @@ endif
 " begin
 call plug#begin('~/.vim/plugged')
 
+" Orgmode!! plus needed dependencies
+Plug 'jceb/vim-orgmode'
+Plug 'vim-scripts/utl.vim'
+
+" tags are awesome!
+Plug 'fuego0607/taglist.vim'
+Plug 'majutsushi/tagbar'
+
+" properly handle inc/dec dates
+Plug 'tpope/vim-speeddating'
+
+" allow things to repeat!
+Plug 'tpope/vim-repeat'
+
 " GD script syntax for godot
 Plug 'calviken/vim-gdscript3'
 
@@ -19,9 +33,6 @@ Plug 'airblade/vim-gitgutter'
 
 " for editorconfig support
 Plug 'editorconfig/editorconfig-vim'
-
-" NERDTree - system tree view for large projects
-Plug 'scrooloose/nerdtree'
 
 " multiple cursors, like in Sublime
 Plug 'terryma/vim-multiple-cursors'
@@ -80,12 +91,13 @@ call plug#end()
 
 " ----- General Settings  -----------------------------------------------------
 filetype plugin on     " Required
-syntax on        " color is awesome
+syntax enable        " color is awesome
 colorscheme monokai
 
 " allow backspacing over everything in insert mode
 set backspace=indent,eol,start
 
+set nocompatible       " screw vi!
 set history=1000       " keep 1000 lines of command line history
 set number             " line numbers
 set ruler              " show the cursor position all the time
@@ -96,7 +108,24 @@ set splitright         " Vertical splits use right half of screen
 set timeoutlen=100     " Lower ^[ timeout
 set fillchars=fold:\ , " get rid of obnoxious '-' characters in folds
 set tildeop            " use ~ to toggle case as an operator, not a motion
-"set mouse=a            " always allow the mouse to do mouse things
+set mouse=a            " always allow the mouse to do mouse things
+set path+=**           " to help with fuzzy finding files
+set wildmenu           " for file searching
+
+" Don't litter swp files everywhere
+set backupdir=~/.cache
+set directory=~/.cache
+
+" Command to generate ctags for a codebase
+command! MakeTags !ctags -R .
+
+" Tweaks for browsing
+let g:netrw_banner=0        " disable annoying banner
+let g:netrw_browse_split=4  " open in prior window
+let g:netrw_altv=1          " open splits to the right
+let g:netrw_liststyle=3     " tree view
+let g:netrw_list_hide=netrw_gitignore#Hide()
+let g:netrw_list_hide.=',\(^\|\s\s\)\zs\.\S\+'
 
 " The following are handled by editorconfig
 "set expandtab          " Expand tabs into spaces
@@ -107,14 +136,8 @@ set tildeop            " use ~ to toggle case as an operator, not a motion
 
 set hidden             " allows switching buffers without saving files
 
-set clipboard=unnamed
-
 " Enable folding
-set foldmethod=indent
-set foldlevel=99
-
-" To toggle line numbers
-nnoremap <C-l> :set nonumber! number?<CR>
+set foldmethod=syntax
 
 " R syntax
 au BufNewFile,BufRead *.Rmd  set syntax=r
@@ -126,9 +149,6 @@ au BufNewFile,BufRead *.yaml,*.yml,*.cwl set filetype=yaml
 au BufRead, BufNewFile *.md setlocal textwidth=80
 
 " ----- Plugin Specific Settings ---------------------------------------------
-" NERDTree
-nnoremap <C-l> :NERDTreeToggle<CR>
-
 " ALE Fixers
 let g:ale_fixers = {
             \'python': ['autopep8'],
