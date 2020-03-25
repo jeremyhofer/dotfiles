@@ -22,6 +22,12 @@ Plug 'tpope/vim-speeddating'
 " allow things to repeat!
 Plug 'tpope/vim-repeat'
 
+" syntax and formatting for cucumber
+Plug 'tpope/vim-cucumber'
+
+" syntax for typsescript
+Plug 'leafgarland/typescript-vim'
+
 " GD script syntax for godot
 Plug 'calviken/vim-gdscript3'
 
@@ -76,7 +82,7 @@ Plug 'kien/ctrlp.vim'
 Plug 'crusoexia/vim-monokai'
 
 " git plugin
-"tpope/vim-fugitive
+Plug 'tpope/vim-fugitive'
 " database plugin
 "tpope/vim-db
 " awesome complete thing
