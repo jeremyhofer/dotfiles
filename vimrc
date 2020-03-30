@@ -111,7 +111,7 @@ set showcmd            " display incomplete commands
 set incsearch          " do incremental searching
 set scrolloff=3        " don't let the cursor touch the edge of the viewport
 set splitright         " Vertical splits use right half of screen
-set timeoutlen=100     " Lower ^[ timeout
+set timeout timeoutlen=3000 ttimeoutlen=100     " Lower ^[ timeout
 set fillchars=fold:\ , " get rid of obnoxious '-' characters in folds
 set tildeop            " use ~ to toggle case as an operator, not a motion
 set mouse=a            " always allow the mouse to do mouse things
@@ -144,6 +144,7 @@ set hidden             " allows switching buffers without saving files
 
 " Enable folding
 set foldmethod=syntax
+set foldlevel=99
 
 " R syntax
 au BufNewFile,BufRead *.Rmd  set syntax=r
