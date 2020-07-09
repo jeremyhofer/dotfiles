@@ -8,6 +8,12 @@ endif
 " begin
 call plug#begin('~/.vim/plugged')
 
+" javascript syntax highlighting
+Plug 'pangloss/vim-javascript'
+
+" linediff
+Plug 'AndrewRadev/linediff.vim'
+
 " Orgmode!! plus needed dependencies
 Plug 'jceb/vim-orgmode'
 Plug 'vim-scripts/utl.vim'
@@ -21,6 +27,12 @@ Plug 'tpope/vim-speeddating'
 
 " allow things to repeat!
 Plug 'tpope/vim-repeat'
+
+" jinja!!
+Plug 'lepture/vim-jinja'
+
+" toml syntax
+Plug 'cespare/vim-toml'
 
 " syntax and formatting for cucumber
 Plug 'tpope/vim-cucumber'
@@ -103,6 +115,7 @@ colorscheme monokai
 " allow backspacing over everything in insert mode
 set backspace=indent,eol,start
 
+set spell spelllang=en_us
 set nocompatible       " screw vi!
 set history=1000       " keep 1000 lines of command line history
 set number             " line numbers
@@ -118,6 +131,14 @@ set mouse=a            " always allow the mouse to do mouse things
 set path+=**           " to help with fuzzy finding files
 set wildmenu           " for file searching
 
+" stuff for completion
+set completeopt=longest,menuone
+inoremap <expr> <CR> pumvisible() ? "\<C-y>" : "\<C-g>u\<CR>"
+inoremap <expr> <C-n> pumvisible() ? '<C-n>' :
+  \ '<C-n><C-r>=pumvisible() ? "\<lt>Down>" : ""<CR>'
+
+inoremap <expr> <M-,> pumvisible() ? '<C-n>' :
+  \ '<C-x><C-o><C-n><C-p><C-r>=pumvisible() ? "\<lt>Down>" : ""<CR>'
 " Don't litter swp files everywhere
 set backupdir=~/.cache
 set directory=~/.cache
@@ -152,6 +173,12 @@ au BufNewFile,BufRead *.Rmd  set syntax=r
 " Yaml syntax
 au BufNewFile,BufRead *.yaml,*.yml,*.cwl set filetype=yaml
 
+" Vagrant -> Ruby syntax
+au BufNewFile,BufRead Vagrantfile set filetype=ruby
+
+" Snakefile
+au BufNewFile,BufRead Snakefile set filetype=python
+
 " wrap at 80 characters for markdown
 au BufRead, BufNewFile *.md setlocal textwidth=80
 
@@ -165,5 +192,8 @@ let g:ale_fixers = {
             \'rust': ['rustfmt']
             \}
 
+let g:ale_completion_enabled = 1
 let g:ale_perl_perlcritic_showrules = 1
 let g:ale_perl_perltidy_options = '-l=120'
+let g:javascript_plugin_jsdoc = 1
+let g:javascript_plugin_ngdoc = 1
