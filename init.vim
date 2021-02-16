@@ -62,8 +62,8 @@ Plug 'nvim-lua/completion-nvim'
 " Treesitter!
 Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
 Plug 'tjdevries/nlua.nvim'
-"Plug 'nvim-treesitter/nvim-treesitter-angular'
-"Plug 'nvim-treesitter/nvim-tree-docs'
+Plug 'nvim-treesitter/nvim-treesitter-angular'
+Plug 'nvim-treesitter/nvim-tree-docs'
 
 " Telescope!
 Plug 'nvim-lua/popup.nvim'
@@ -86,7 +86,7 @@ set exrc "allow per-project rc's!!
 set termguicolors
 set number " line numbers
 set relativenumber " for relative line numbers for jumping up/down
-set spell spelllang=en_us
+set spelllang=en_us
 set ruler " show cursor position
 set showcmd " show partial commands
 set splitright " new split to the right of current window
@@ -146,6 +146,9 @@ nnoremap <leader>p "+p
 
 " quick edit config with \v
 nnoremap <Leader>v :e $MYVIMRC<cr>
+
+" toggle spell
+nnoremap <leader>sp :setlocal spell! spell?<cr>
 
 " set width to 80 for markdown
 au BufRead,BufNewFile *.md setlocal textwidth=80
