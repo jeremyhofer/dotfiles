@@ -62,8 +62,8 @@ Plug 'nvim-lua/completion-nvim'
 " Treesitter!
 Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
 "Plug 'tjdevries/nlua.nvim'
-"Plug 'nvim-treesitter/nvim-treesitter-angular'
-Plug 'nvim-treesitter/nvim-tree-docs'
+Plug 'nvim-treesitter/nvim-treesitter-angular'
+"Plug 'nvim-treesitter/nvim-tree-docs'
 
 " Telescope!
 Plug 'nvim-lua/popup.nvim'
@@ -137,6 +137,9 @@ nnoremap <leader>sp :setlocal spell! spell?<cr>
 " all about that Sex(plore) ;)
 nnoremap <Leader>n :Sexplore<cr>
 
+" close a split
+nnoremap <leader>q <C-w>q
+
 " treesitter settings
 lua require'nvim-treesitter.configs'.setup { highlight = { enable = true } }
 
@@ -174,8 +177,8 @@ local lspconfig = require('lspconfig')
 lspconfig.tsserver.setup{ on_attach=require'completion'.on_attach }
 lspconfig.vuels.setup{ on_attach=require'completion'.on_attach }
 lspconfig.jdtls.setup{
-    on_attach=require'completion'.on_attach,
-    cmd={'jdt-language-server'}
+  on_attach=require'completion'.on_attach,
+  cmd={'jdt-language-server'}
 }
 EOF
 
