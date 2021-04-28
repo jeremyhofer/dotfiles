@@ -61,8 +61,8 @@ Plug 'nvim-lua/completion-nvim'
 
 " Treesitter!
 Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
-Plug 'tjdevries/nlua.nvim'
-Plug 'nvim-treesitter/nvim-treesitter-angular'
+"Plug 'tjdevries/nlua.nvim'
+"Plug 'nvim-treesitter/nvim-treesitter-angular'
 Plug 'nvim-treesitter/nvim-tree-docs'
 
 " Telescope!
@@ -108,16 +108,56 @@ set more " allow long command stuff to be scrolled back in
 set foldmethod=syntax " fold by syntax
 set foldlevelstart=99 " don't fold unless I want to
 
+" exit terminal buffer!
+tnoremap <ESC> <C-\><C-n>
+
+" life saving copy to system clipboard remaps
+nnoremap <leader>y "+y
+vnoremap <leader>y "+y
+nnoremap <leader>Y gg"+yG
+nnoremap <leader>p "+p
+
+" quick buffer navigation
+nnoremap <leader>a :bp<cr>
+nnoremap <leader>d :bn<cr>
+nnoremap <leader>x :bd<cr>
+
+" BEGONE FOUL BEAST
+nnoremap <leader>rm :call delete(@%)<cr>
+
+" yank it and slap it down!
+nnoremap <leader>rwy ciw<C-r>0
+
+" quick edit config with \v
+nnoremap <Leader>v :e $MYVIMRC<cr>
+
+" toggle spell
+nnoremap <leader>sp :setlocal spell! spell?<cr>
+
+" all about that Sex(plore) ;)
+nnoremap <Leader>n :Sexplore<cr>
+
 " treesitter settings
 lua require'nvim-treesitter.configs'.setup { highlight = { enable = true } }
 
 " telescope settings
 lua << EOF
+local actions = require('telescope.actions')
 require('telescope').setup{
   defaults = {
     file_previewer = require'telescope.previewers'.vim_buffer_cat.new,
     grep_previewer = require'telescope.previewers'.vim_buffer_vimgrep.new,
     qflist_previewer = require'telescope.previewers'.vim_buffer_qflist.new,
+    mappings = {
+      i = {
+        ["<C-w>"] = actions.send_selected_to_qflist,
+        ["<C-q>"] = actions.send_to_qflist,
+      },
+      n = {
+        ["<C-w>"] = actions.send_selected_to_qflist,
+        ["<C-q>"] = actions.send_to_qflist,
+      },
+    }
   }
 }
 EOF
@@ -129,35 +169,24 @@ nnoremap <leader>fh :lua require('telescope.builtin').help_tags()<cr>
 
 " LSP/completion settings
 let g:completion_matching_strategy_list = ['exact', 'substring', 'fuzzy']
-lua require'lspconfig'.tsserver.setup{ on_attach=require'completion'.on_attach }
+lua << EOF
+local lspconfig = require('lspconfig')
+lspconfig.tsserver.setup{ on_attach=require'completion'.on_attach }
+lspconfig.vuels.setup{ on_attach=require'completion'.on_attach }
+lspconfig.jdtls.setup{
+    on_attach=require'completion'.on_attach,
+    cmd={'jdt-language-server'}
+}
+EOF
 
 " config for netrw built in file browser - set up similar to Nerdtree
 let g:netrw_banner = 0
 let g:netrw_liststyle = 3
-let g:netrw_browse_split = 2
 let g:netrw_altv = 1
 let g:netrw_winsize = 25
 
-" life saving copy to system clipboard remaps
-nnoremap <leader>y "+y
-vnoremap <leader>y "+y
-nnoremap <leader>Y gg"+yG
-nnoremap <leader>p "+p
-
-" quick edit config with \v
-nnoremap <Leader>v :e $MYVIMRC<cr>
-
-" toggle spell
-nnoremap <leader>sp :setlocal spell! spell?<cr>
-
 " set width to 80 for markdown
 au BufRead,BufNewFile *.md setlocal textwidth=80
-
-"augroup ProjectDrawer
-"  autocmd!
-"  autocmd VimEnter * :Vexplore
-"augroup END
-nnoremap <Leader>n :Vexplore<cr>
 
 " toggle relative on insert mode enter/exit
 augroup numbertoggle
