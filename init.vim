@@ -177,8 +177,8 @@ local lspconfig = require('lspconfig')
 lspconfig.tsserver.setup{ on_attach=require'completion'.on_attach }
 lspconfig.vuels.setup{ on_attach=require'completion'.on_attach }
 lspconfig.jdtls.setup{
-  on_attach=require'completion'.on_attach,
-  cmd={'jdt-language-server'}
+  on_attach=require'completion'.on_attach;
+  cmd={'jdt-language-server'};
 }
 EOF
 
