@@ -20,28 +20,12 @@ call plug#begin('~/.config/nvim/plugged')
 " to allow registering for :help plug-options
 Plug 'junegunn/vim-plug'
 
-" syntax highlighting
-"Plug 'pangloss/vim-javascript'
-"Plug 'lepture/vim-jinja'
-"Plug 'cespare/vim-toml'
-"Plug 'tpope/vim-cucumber'
-"Plug 'leafgarland/typescript-vim'
-"Plug 'calviken/vim-gdscript3'
-"Plug 'snakemake/snakemake', {'rtp': 'misc/vim'}
-" Plug 'GEverding/vim-hocon'
-" Plug 'broadinstitute/vim-wdl'
-" Plug 'jbmorgado/vim-pine-script'
+Plug 'editorconfig/editorconfig-vim'
 
-" nice pep8 indenting
-"Plug 'Vimjas/vim-python-pep8-indent'
-
-" COLORS!!
+"" COLORS!!
 Plug 'morhetz/gruvbox'
 Plug 'phanviet/vim-monokai-pro'
 Plug 'crusoexia/vim-monokai'
-
-" for editorconfig support
-Plug 'editorconfig/editorconfig-vim'
 
 " multiple cursors, like in Sublime
 Plug 'terryma/vim-multiple-cursors'
@@ -54,16 +38,9 @@ Plug 'vim-airline/vim-airline'
 
 " LSP!!!
 Plug 'neovim/nvim-lspconfig'
-Plug 'nvim-lua/completion-nvim'
-
-" completion!
-Plug 'nvim-lua/completion-nvim'
 
 " Treesitter!
 Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
-"Plug 'tjdevries/nlua.nvim'
-Plug 'nvim-treesitter/nvim-treesitter-angular'
-"Plug 'nvim-treesitter/nvim-tree-docs'
 
 " Telescope!
 Plug 'nvim-lua/popup.nvim'
@@ -73,6 +50,28 @@ Plug 'nvim-telescope/telescope.nvim'
 " Fugitive!
 Plug 'tpope/vim-fugitive'
 Plug 'junegunn/gv.vim'
+
+" diagnostics, the nice way
+Plug 'kyazdani42/nvim-web-devicons'
+Plug 'folke/trouble.nvim'
+
+" COMPLETION!
+Plug 'hrsh7th/cmp-nvim-lsp'
+Plug 'hrsh7th/cmp-buffer'
+Plug 'hrsh7th/nvim-cmp'
+
+" For vsnip user.
+Plug 'hrsh7th/cmp-vsnip'
+Plug 'hrsh7th/vim-vsnip'
+
+" For luasnip user.
+" Plug 'L3MON4D3/LuaSnip'
+" Plug 'saadparwaiz1/cmp_luasnip'
+
+" For ultisnips user.
+" Plug 'SirVer/ultisnips'
+" Plug 'quangnguyen30192/cmp-nvim-ultisnips'
+
 
 " Initialize plugin system
 call plug#end()
@@ -107,6 +106,8 @@ set laststatus " always have status line
 set more " allow long command stuff to be scrolled back in
 set foldmethod=syntax " fold by syntax
 set foldlevelstart=99 " don't fold unless I want to
+set smarttab
+set smartindent
 
 " exit terminal buffer!
 tnoremap <ESC> <C-\><C-n>
@@ -170,16 +171,90 @@ nnoremap <leader>fg :lua require('telescope.builtin').live_grep()<cr>
 nnoremap <leader>fb :lua require('telescope.builtin').buffers()<cr>
 nnoremap <leader>fh :lua require('telescope.builtin').help_tags()<cr>
 
-" LSP/completion settings
-let g:completion_matching_strategy_list = ['exact', 'substring', 'fuzzy']
+" LSP clients
+" tsserver: typescript
+" vuels: Vue
+" jdtls: Java (eclipse)
+" jedi: python
+" yamlls: YAML
+" jsonls: JSON
+" stylelint: css, scss, etc. files
+
 lua << EOF
-local lspconfig = require('lspconfig')
-lspconfig.tsserver.setup{ on_attach=require'completion'.on_attach }
-lspconfig.vuels.setup{ on_attach=require'completion'.on_attach }
-lspconfig.jdtls.setup{
-  on_attach=require'completion'.on_attach;
-  cmd={'jdt-language-server'};
-}
+EOF
+
+" trouble settings
+lua << EOF
+require('trouble').setup{}
+EOF
+
+" completion and lsp settings
+lua <<EOF
+  -- Setup nvim-cmp.
+  local cmp = require'cmp'
+
+  cmp.setup({
+    snippet = {
+      expand = function(args)
+        -- For `vsnip` user.
+        vim.fn["vsnip#anonymous"](args.body)
+
+        -- For `luasnip` user.
+        -- require('luasnip').lsp_expand(args.body)
+
+        -- For `ultisnips` user.
+        -- vim.fn["UltiSnips#Anon"](args.body)
+      end,
+    },
+    mapping = {
+      ['<C-d>'] = cmp.mapping.scroll_docs(-4),
+      ['<C-f>'] = cmp.mapping.scroll_docs(4),
+      ['<C-Space>'] = cmp.mapping.complete(),
+      ['<C-e>'] = cmp.mapping.close(),
+      ['<CR>'] = cmp.mapping.confirm({ select = true }),
+    },
+    sources = {
+      { name = 'nvim_lsp' },
+
+      -- For vsnip user.
+      { name = 'vsnip' },
+
+      -- For luasnip user.
+      -- { name = 'luasnip' },
+
+      -- For ultisnips user.
+      -- { name = 'ultisnips' },
+
+      { name = 'buffer' },
+    }
+  })
+
+  --[[
+  -- Setup lspconfig.
+  require('lspconfig')[%YOUR_LSP_SERVER%].setup {
+      capabilities = require('cmp_nvim_lsp').update_capabilities(vim.lsp.protocol.make_client_capabilities())
+  }-- Setup nvim-cmp.
+      ]]
+  -- local cmp = require'cmp'
+  
+  local function config(_config)
+    return vim.tbl_deep_extend("force", {
+      capabilities = require('cmp_nvim_lsp').update_capabilities(vim.lsp.protocol.make_client_capabilities())
+    }, _config or {})
+  end
+  
+  local lspconfig = require('lspconfig')
+  lspconfig.stylelint_lsp.setup(config())
+  lspconfig.jsonls.setup(config())
+  lspconfig.yamlls.setup(config())
+  lspconfig.jedi_language_server.setup(config({
+    cmd={'/home/jhofer/.local/bin/jedi-language-server'}
+  }))
+  lspconfig.tsserver.setup(config())
+  -- lspconfig.vuels.setup(config())
+  lspconfig.jdtls.setup(config({
+    cmd={'jdt-language-server'};
+  }))
 EOF
 
 " config for netrw built in file browser - set up similar to Nerdtree
@@ -190,6 +265,8 @@ let g:netrw_winsize = 25
 
 " set width to 80 for markdown
 au BufRead,BufNewFile *.md setlocal textwidth=80
+
+au BufRead,BufNewFile Snakefile setlocal filetype=python
 
 " toggle relative on insert mode enter/exit
 augroup numbertoggle
