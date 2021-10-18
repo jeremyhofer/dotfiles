@@ -1,4 +1,0 @@
-{
-	"python.linting.pylintPath": "~/.pyenv/shims/pylint",
-  "python.jediEnabled": false
-}
