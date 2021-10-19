@@ -248,7 +248,7 @@ lua <<EOF
   lspconfig.jsonls.setup(config())
   lspconfig.yamlls.setup(config())
   lspconfig.jedi_language_server.setup(config({
-    cmd={'/home/jhofer/.local/bin/jedi-language-server'}
+    cmd={os.getenv("HOME")..'/.local/bin/jedi-language-server'}
   }))
   lspconfig.tsserver.setup(config())
   -- lspconfig.vuels.setup(config())
