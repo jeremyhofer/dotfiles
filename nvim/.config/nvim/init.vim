@@ -268,6 +268,8 @@ au BufRead,BufNewFile *.md setlocal textwidth=80
 
 au BufRead,BufNewFile Snakefile setlocal filetype=python
 
+au BufRead,BufNewFile *.envrc setlocal filetype=sh
+
 " toggle relative on insert mode enter/exit
 augroup numbertoggle
     autocmd!
