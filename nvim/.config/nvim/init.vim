@@ -257,6 +257,25 @@ lua <<EOF
   }))
 EOF
 
+" lsp bindings for various awesomeness
+" jump to definition of symbol
+nnoremap <leader>ld :lua vim.lsp.buf.definition()<CR>
+" jump to implementation of symbol
+nnoremap <leader>li :lua vim.lsp.buf.implementation()<CR>
+" display signature info (params, etc.) for symbol
+nnoremap <leader>ls :lua vim.lsp.buf.signature_help()<CR>
+" list all refs to symbol in QF window
+nnoremap <leader>lrr :lua vim.lsp.buf.references()<CR>
+" rename all refs under symbol
+nnoremap <leader>lrn :lua vim.lsp.buf.rename()<CR>
+" nnoremap <leader>lh :lua vim.lsp.buf.hover()<CR>
+" select code action at point (need to experiment)
+nnoremap <leader>lca :lua vim.lsp.buf.code_action()<CR>
+" open diagnostic (error) messages in floating window
+nnoremap <leader>le :lua vim.lsp.diagnostic.show_line_diagnostics(); vim.lsp.util.show_line_diagnostics()<CR>
+" move to next diagnostic
+nnoremap <leader>ln :lua vim.lsp.diagnostic.goto_next()<CR>
+
 " config for netrw built in file browser - set up similar to Nerdtree
 let g:netrw_banner = 0
 let g:netrw_liststyle = 3
