@@ -1,0 +1,10 @@
+Host <name>
+    Hostname <IP or dns>
+    User <user>
+
+Host *
+    IdentityFile <ssh-key-path>
+    ForwardAgent yes
+    ServerAliveInterval 60
+    ServerAliveCountMax 30
+    AddKeysToAgent yes
