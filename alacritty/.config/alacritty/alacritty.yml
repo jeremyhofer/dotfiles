@@ -479,8 +479,8 @@ colors:
 #   - (macOS) /bin/bash --login
 #   - (Linux/BSD) user login shell
 #   - (Windows) powershell
-shell:
-  program: /usr/bin/zsh
+#shell:
+#  program: /usr/bin/zsh
 #  args:
 #    - --login
 
