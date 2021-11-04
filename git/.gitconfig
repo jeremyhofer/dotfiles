@@ -1,0 +1,15 @@
+[user]
+    email = <email>
+    name = <name>
+[alias]
+    lg = log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --all
+[sendemail]
+    smtpserver = <server>
+    smtpuser = <email>
+    smtpencryption = tls
+    smtpserverport = 587
+	smtpPass = <pass>
+[pull]
+	ff = only
+[init]
+	defaultBranch = master
