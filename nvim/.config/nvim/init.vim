@@ -236,13 +236,13 @@ lua <<EOF
   }-- Setup nvim-cmp.
       ]]
   -- local cmp = require'cmp'
-  
+
   local function config(_config)
     return vim.tbl_deep_extend("force", {
       capabilities = require('cmp_nvim_lsp').update_capabilities(vim.lsp.protocol.make_client_capabilities())
     }, _config or {})
   end
-  
+
   local lspconfig = require('lspconfig')
   lspconfig.stylelint_lsp.setup(config())
   lspconfig.jsonls.setup(config())
@@ -251,6 +251,9 @@ lua <<EOF
     cmd={os.getenv("HOME")..'/.local/bin/jedi-language-server'}
   }))
   lspconfig.tsserver.setup(config())
+  lspconfig.bashls.setup(config({
+    filetypes = { "sh", "zsh" }
+  }))
   -- lspconfig.vuels.setup(config())
   lspconfig.jdtls.setup(config({
     cmd={'jdt-language-server'};

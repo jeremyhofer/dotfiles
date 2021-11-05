@@ -116,3 +116,11 @@ alias vim='nvim'
 alias ovim='/usr/bin/vim'
 eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
+
+if [ -f "$HOME/.personal/zshrc" ]; then
+    source "$HOME/.personal/zshrc"
+fi
+
+if [ -f "$HOME/.work/zshrc" ]; then
+    source "$HOME/.work/zshrc"
+fi
