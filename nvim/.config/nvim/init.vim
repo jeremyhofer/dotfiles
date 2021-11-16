@@ -47,6 +47,9 @@ Plug 'nvim-lua/popup.nvim'
 Plug 'nvim-lua/plenary.nvim'
 Plug 'nvim-telescope/telescope.nvim'
 
+" HARPOOOON
+Plug 'ThePrimeagen/harpoon'
+
 " Fugitive!
 Plug 'tpope/vim-fugitive'
 Plug 'junegunn/gv.vim'
@@ -251,6 +254,7 @@ lua <<EOF
     cmd={os.getenv("HOME")..'/.local/bin/jedi-language-server'}
   }))
   lspconfig.tsserver.setup(config())
+  lspconfig.gopls.setup(config())
   lspconfig.bashls.setup(config({
     filetypes = { "sh", "zsh" }
   }))
@@ -278,6 +282,14 @@ nnoremap <leader>lca :lua vim.lsp.buf.code_action()<CR>
 nnoremap <leader>le :lua vim.lsp.diagnostic.show_line_diagnostics(); vim.lsp.util.show_line_diagnostics()<CR>
 " move to next diagnostic
 nnoremap <leader>ln :lua vim.lsp.diagnostic.goto_next()<CR>
+
+" HARPOOOON
+nnoremap <leader>ha :lua require("harpoon.mark").add_file()<CR>
+nnoremap <leader>hh :lua require("harpoon.ui").toggle_quick_menu()<CR>
+nnoremap <leader>hj :lua require("harpoon.ui").nav_file(1)<CR>
+nnoremap <leader>hk :lua require("harpoon.ui").nav_file(2)<CR>
+nnoremap <leader>hl :lua require("harpoon.ui").nav_file(3)<CR>
+nnoremap <leader>h; :lua require("harpoon.ui").nav_file(4)<CR>
 
 " config for netrw built in file browser - set up similar to Nerdtree
 let g:netrw_banner = 0
