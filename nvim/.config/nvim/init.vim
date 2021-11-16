@@ -304,6 +304,9 @@ au BufRead,BufNewFile Snakefile setlocal filetype=python
 
 au BufRead,BufNewFile *.envrc setlocal filetype=sh
 
+au BufRead,BufNewFile zshrc setlocal filetype=zsh
+au BufRead,BufNewFile zprofile setlocal filetype=zsh
+
 " toggle relative on insert mode enter/exit
 augroup numbertoggle
     autocmd!
