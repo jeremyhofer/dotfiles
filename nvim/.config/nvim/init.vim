@@ -17,6 +17,9 @@ endif
 
 call plug#begin('~/.config/nvim/plugged')
 
+" godot!
+" Plug 'habamax/vim-godot'
+
 " to allow registering for :help plug-options
 Plug 'junegunn/vim-plug'
 
@@ -31,7 +34,7 @@ Plug 'crusoexia/vim-monokai'
 Plug 'terryma/vim-multiple-cursors'
 
 " icons!
-Plug 'ryanoasis/vim-devicons'
+"Plug 'ryanoasis/vim-devicons'
 
 " airline statusline
 Plug 'vim-airline/vim-airline'
@@ -144,11 +147,12 @@ nnoremap <Leader>n :Sexplore<cr>
 " close a split
 nnoremap <leader>q <C-w>q
 
-" treesitter settings
-lua require'nvim-treesitter.configs'.setup { highlight = { enable = true } }
-
-" telescope settings
+" nvim lua plugin configurations
 lua << EOF
+-- treesitter settings
+require'nvim-treesitter.configs'.setup { highlight = { enable = true } }
+
+-- telescope settings
 local actions = require('telescope.actions')
 require('telescope').setup{
   defaults = {
@@ -167,32 +171,20 @@ require('telescope').setup{
     }
   }
 }
-EOF
 
-nnoremap <leader>ff :lua require('telescope.builtin').find_files()<cr>
-nnoremap <leader>fg :lua require('telescope.builtin').live_grep()<cr>
-nnoremap <leader>fb :lua require('telescope.builtin').buffers()<cr>
-nnoremap <leader>fh :lua require('telescope.builtin').help_tags()<cr>
+-- LSP clients
+-- tsserver: typescript
+-- vuels: Vue
+-- jdtls: Java (eclipse)
+-- jedi: python
+-- yamlls: YAML
+-- jsonls: JSON
+-- stylelint: css, scss, etc. files
 
-" LSP clients
-" tsserver: typescript
-" vuels: Vue
-" jdtls: Java (eclipse)
-" jedi: python
-" yamlls: YAML
-" jsonls: JSON
-" stylelint: css, scss, etc. files
-
-lua << EOF
-EOF
-
-" trouble settings
-lua << EOF
+-- trouble settings
 require('trouble').setup{}
-EOF
 
-" completion and lsp settings
-lua <<EOF
+-- completion and lsp settings
   -- Setup nvim-cmp.
   local cmp = require'cmp'
 
@@ -262,7 +254,31 @@ lua <<EOF
   lspconfig.jdtls.setup(config({
     cmd={'jdt-language-server'};
   }))
+  lspconfig.gdscript.setup(config())
+
+require'nvim-web-devicons'.setup {
+ -- your personnal icons can go here (to override)
+ -- you can specify color or cterm_color instead of specifying both of them
+ -- DevIcon will be appended to `name`
+--  override = {
+--   zsh = {
+--     icon = "",
+--     color = "#428850",
+--     cterm_color = "65",
+--     name = "Zsh"
+--   }
+--  };
+ -- globally enable default icons (default to false)
+ -- will get overriden by `get_icons` option
+ default = true;
+}
 EOF
+
+" Telescope Bindings
+nnoremap <leader>ff :lua require('telescope.builtin').find_files()<cr>
+nnoremap <leader>fg :lua require('telescope.builtin').live_grep()<cr>
+nnoremap <leader>fb :lua require('telescope.builtin').buffers()<cr>
+nnoremap <leader>fh :lua require('telescope.builtin').help_tags()<cr>
 
 " lsp bindings for various awesomeness
 " jump to definition of symbol
@@ -279,7 +295,7 @@ nnoremap <leader>lrn :lua vim.lsp.buf.rename()<CR>
 " select code action at point (need to experiment)
 nnoremap <leader>lca :lua vim.lsp.buf.code_action()<CR>
 " open diagnostic (error) messages in floating window
-nnoremap <leader>le :lua vim.lsp.diagnostic.show_line_diagnostics(); vim.lsp.util.show_line_diagnostics()<CR>
+nnoremap <leader>le :lua vim.diagnostic.open_float();<CR>
 " move to next diagnostic
 nnoremap <leader>ln :lua vim.lsp.diagnostic.goto_next()<CR>
 
@@ -300,14 +316,17 @@ let g:netrw_winsize = 25
 " set width to 80 for markdown
 au BufRead,BufNewFile *.md setlocal textwidth=80
 
+" override filetype for specific files
 au BufRead,BufNewFile Snakefile setlocal filetype=python
 
 au BufRead,BufNewFile *.envrc setlocal filetype=sh
 
+au BufRead,BufNewFile *.mdx setlocal filetype=markdown
+
 au BufRead,BufNewFile zshrc setlocal filetype=zsh
 au BufRead,BufNewFile zprofile setlocal filetype=zsh
 
-" toggle relative on insert mode enter/exit
+" toggle relative numbers on insert mode enter/exit
 augroup numbertoggle
     autocmd!
     autocmd BufEnter,FocusGained,InsertLeave * set relativenumber
