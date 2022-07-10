@@ -14,12 +14,21 @@ general {
 #order += "ipv6"
 order += "wireless _first_"
 #order += "ethernet _first_"
+order += "volume master"
 order += "battery all"
 order += "disk /"
 order += "disk /home"
 order += "load"
 order += "memory"
 order += "tztime local"
+
+volume master {
+        format = "VOL: %volume"
+        format_muted = "VOL: %volume (muted)"
+        device = "default"
+        mixer = "Master"
+        mixer_idx = 0
+}
 
 wireless _first_ {
         format_up = "W: (%quality at %essid) %ip"
