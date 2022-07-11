@@ -8,8 +8,8 @@
     smtpuser = <email>
     smtpencryption = tls
     smtpserverport = 587
-	smtpPass = <pass>
+    smtpPass = <pass>
 [pull]
-	ff = only
+    ff = only
 [init]
-	defaultBranch = master
+    defaultBranch = master
