@@ -78,6 +78,11 @@ Plug 'saadparwaiz1/cmp_luasnip'
 " Plug 'SirVer/ultisnips'
 " Plug 'quangnguyen30192/cmp-nvim-ultisnips'
 
+" kotlin, because it's a special summer child
+Plug 'udalov/kotlin-vim'
+
+" mermaid syntax
+Plug 'mracos/mermaid.vim'
 
 " Initialize plugin system
 call plug#end()
@@ -240,19 +245,25 @@ require('trouble').setup{}
 
   local lspconfig = require('lspconfig')
   lspconfig.stylelint_lsp.setup(config())
+  lspconfig.angularls.setup(config())
   lspconfig.jsonls.setup(config())
   lspconfig.yamlls.setup(config())
   lspconfig.jedi_language_server.setup(config({
     cmd={os.getenv("HOME")..'/.local/bin/jedi-language-server'}
   }))
   lspconfig.tsserver.setup(config())
+  lspconfig.eslint.setup(config())
   lspconfig.gopls.setup(config())
+  lspconfig.kotlin_language_server.setup(config())
   lspconfig.bashls.setup(config({
     filetypes = { "sh", "zsh" }
   }))
   -- lspconfig.vuels.setup(config())
-  lspconfig.jdtls.setup(config({
-    cmd={'jdt-language-server'};
+  -- lspconfig.jdtls.setup(config({
+  --   cmd={'jdt-language-server'};
+  -- }))
+  lspconfig.java_language_server.setup(config({
+    cmd={''} -- replace w/ path to command
   }))
   lspconfig.gdscript.setup(config())
 
