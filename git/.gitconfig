@@ -13,3 +13,5 @@
     ff = only
 [init]
     defaultBranch = master
+[core]
+    excludesfile = ~/.gitignore_global
