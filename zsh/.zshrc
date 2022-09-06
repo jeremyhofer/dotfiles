@@ -114,8 +114,6 @@ export EDITOR='nvim'
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias vim='nvim'
 alias ovim='/usr/bin/vim'
-eval "$(pyenv init -)"
-eval "$(pyenv virtualenv-init -)"
 
 if [ -f "$HOME/.personal/zshrc" ]; then
     source "$HOME/.personal/zshrc"
