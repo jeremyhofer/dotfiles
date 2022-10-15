@@ -17,3 +17,5 @@
     excludesfile = ~/.gitignore_global
 [url "git@github.com:"]
     insteadOf = https://github.com/
+[url "ssh://aur@aur.archlinux.org"]
+    insteadOf = https://aur.archlinux.org
