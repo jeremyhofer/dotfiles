@@ -16,6 +16,3 @@ fi
 if [ -f "$HOME/.work/zprofile" ]; then
     source "$HOME/.work/zprofile"
 fi
-
-# Load Angular CLI autocompletion.
-source <(ng completion script)

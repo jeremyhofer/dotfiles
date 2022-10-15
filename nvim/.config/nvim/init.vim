@@ -287,6 +287,7 @@ EOF
 
 " Telescope Bindings
 nnoremap <leader>ff :lua require('telescope.builtin').find_files()<cr>
+nnoremap <leader>faf :lua require('telescope.builtin').find_files({hidden=true})<cr>
 nnoremap <leader>fg :lua require('telescope.builtin').live_grep()<cr>
 nnoremap <leader>fb :lua require('telescope.builtin').buffers()<cr>
 nnoremap <leader>fh :lua require('telescope.builtin').help_tags()<cr>
