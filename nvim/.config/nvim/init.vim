@@ -115,7 +115,7 @@ set smartcase " ignore ignorecase if we have capitals
 set nohlsearch " gets annoying having stuff highlighted
 set laststatus " always have status line
 set more " allow long command stuff to be scrolled back in
-set foldmethod=syntax " fold by syntax
+"set foldmethod=syntax fold by syntax
 set foldlevelstart=99 " don't fold unless I want to
 set smarttab
 set smartindent
@@ -232,14 +232,14 @@ require('trouble').setup{}
   --[[
   -- Setup lspconfig.
   require('lspconfig')[%YOUR_LSP_SERVER%].setup {
-      capabilities = require('cmp_nvim_lsp').update_capabilities(vim.lsp.protocol.make_client_capabilities())
+      capabilities = require('cmp_nvim_lsp').default_capabilities()
   }-- Setup nvim-cmp.
       ]]
   -- local cmp = require'cmp'
 
   local function config(_config)
     return vim.tbl_deep_extend("force", {
-      capabilities = require('cmp_nvim_lsp').update_capabilities(vim.lsp.protocol.make_client_capabilities())
+      capabilities = require('cmp_nvim_lsp').default_capabilities()
     }, _config or {})
   end
 
@@ -284,6 +284,10 @@ require'nvim-web-devicons'.setup {
  default = true;
 }
 EOF
+
+" use treesitter for folding
+set foldmethod=expr
+set foldexpr=nvim_treesitter#foldexpr()
 
 " Telescope Bindings
 nnoremap <leader>ff :lua require('telescope.builtin').find_files()<cr>
