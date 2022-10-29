@@ -371,34 +371,44 @@ vim.g.netrw_banner = 0
 vim.g.netrw_liststyle = 3
 vim.g.netrw_altv = 1
 vim.g.netrw_winsize = 25
+
+-- set width to 80 for markdown
+vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
+    pattern = '*.md',
+    callback = function () vim.opt_local.textwidth = 80 end
+})
+
+-- override filetype for specific files
+vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
+    pattern = 'Snakefile',
+    callback = function () vim.opt_local.filetype = 'python' end
+})
+
+vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
+    pattern = '.envrc',
+    callback = function () vim.opt_local.filetype = 'sh' end
+})
+
+vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
+    pattern = '.mdx',
+    callback = function () vim.opt_local.filetype = 'markdown' end
+})
+
+vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
+    pattern = { 'zshrc', 'zprofile' },
+    callback = function () vim.opt_local.filetype = 'zsh' end
+})
+
+-- toggle relative numbers on insert mode enter/exit
+local numbertoggle_id = vim.api.nvim_create_augroup('numbertoggle', {})
+vim.api.nvim_create_autocmd({'BufEnter', 'FocusGained', 'InsertLeave'}, {
+    group = numbertoggle_id,
+    pattern = "*",
+    callback = function() vim.opt.relativenumber = true end
+})
+vim.api.nvim_create_autocmd({'BufLeave', 'FocusLost', 'InsertEnter'}, {
+    group = numbertoggle_id,
+    pattern = "*",
+    callback = function() vim.opt.relativenumber = false end
+})
 EOF
-
-" set width to 80 for markdown
-au BufRead,BufNewFile *.md setlocal textwidth=80
-
-" override filetype for specific files
-au BufRead,BufNewFile Snakefile setlocal filetype=python
-
-au BufRead,BufNewFile *.envrc setlocal filetype=sh
-
-au BufRead,BufNewFile *.mdx setlocal filetype=markdown
-
-au BufRead,BufNewFile zshrc setlocal filetype=zsh
-au BufRead,BufNewFile zprofile setlocal filetype=zsh
-
-" toggle relative numbers on insert mode enter/exit
-augroup numbertoggle
-    autocmd!
-    autocmd BufEnter,FocusGained,InsertLeave * set relativenumber
-    autocmd BufLeave,FocusLost,InsertEnter   * set norelativenumber
-augroup END
-
-" Reloads vimrc after saving but keep cursor position
-if !exists('*ReloadVimrc')
-    fun! ReloadVimrc()
-        let save_cursor = getcurpos()
-        source $MYVIMRC
-        call setpos('.', save_cursor)
-    endfun
-endif
-autocmd! BufWritePost $MYVIMRC call ReloadVimrc()
