@@ -37,9 +37,12 @@ require('packer').startup(function(use)
   use { 'nvim-treesitter/nvim-treesitter', run = ':TSUpdate' }
 
   -- Telescope!
-  use 'nvim-lua/popup.nvim'
-  use 'nvim-lua/plenary.nvim'
-  use 'nvim-telescope/telescope.nvim'
+  --use 'nvim-lua/popup.nvim'
+  use {
+    'nvim-telescope/telescope.nvim',
+    branch = '0.1.x',
+    requires = { {'nvim-lua/plenary.nvim'} }
+  }
 
   -- HARPOOOON
   -- use 'ThePrimeagen/harpoon'
@@ -123,42 +126,54 @@ vim.opt.undofile = true
 --set more " allow long command stuff to be scrolled back in - default on
 --set smarttab - default on
 
-EOF
+-- helper function for key bindings
+local function bind(op, outer_opts)
+    outer_opts = outer_opts or {noremap = true}
+    return function(lhs, rhs, opts)
+        opts = vim.tbl_extend("force",
+            outer_opts,
+            opts or {}
+        )
+        vim.keymap.set(op, lhs, rhs, opts)
+    end
+end
 
-" exit terminal buffer!
-tnoremap <ESC> <C-\><C-n>
+local nnoremap = bind('n')
+local vnoremap = bind('v')
+local tnoremap = bind('t')
 
-" life saving copy to system clipboard remaps
-nnoremap <leader>y "+y
-vnoremap <leader>y "+y
-nnoremap <leader>Y gg"+yG
-nnoremap <leader>p "+p
+-- exit terminal buffer!
+tnoremap('<ESC>', '<C-\\><C-n>')
 
-" quick buffer navigation
-nnoremap <leader>a :bp<cr>
-nnoremap <leader>d :bn<cr>
-nnoremap <leader>x :bd<cr>
+-- life saving copy to system clipboard remaps
+nnoremap('<leader>y', '"+y')
+vnoremap('<leader>y', '"+y')
+nnoremap('<leader>Y', 'gg"+yG')
+nnoremap('<leader>p', '"+p')
 
-" BEGONE FOUL BEAST
-nnoremap <leader>rm :call delete(@%)<cr>
+-- quick buffer navigation
+nnoremap('<leader>a', ':bp<cr>')
+nnoremap('<leader>d', ':bn<cr>')
+nnoremap('<leader>x', ':bd<cr>')
 
-" yank it and slap it down!
-nnoremap <leader>rwy ciw<C-r>0
+-- BEGONE FOUL BEAST
+nnoremap('<leader>rm', ':call delete(@%)<cr>')
 
-" quick edit config with \v
-nnoremap <Leader>v :e $MYVIMRC<cr>
+-- yank it and slap it down!
+nnoremap('<leader>rwy', 'ciw<C-r>0')
 
-" toggle spell
-nnoremap <leader>sp :setlocal spell! spell?<cr>
+-- quick edit config with \v
+nnoremap('<Leader>v', ':e $MYVIMRC<cr>')
 
-" all about that Sex(plore) ;)
-nnoremap <Leader>n :Sexplore<cr>
+-- toggle spell
+nnoremap('<leader>sp', ':setlocal spell! spell?<cr>')
 
-" close a split
-nnoremap <leader>q <C-w>q
+-- all about that Sex(plore) ;)
+nnoremap('<Leader>n', ':Sexplore<cr>')
 
-" nvim lua plugin configurations
-lua << EOF
+-- close a split
+nnoremap('<leader>q', '<C-w>q')
+
 -- hardline status line
 require('hardline').setup {}
 -- treesitter settings
@@ -294,39 +309,69 @@ require'nvim-web-devicons'.setup {
 -- use treesitter for folding
 vim.opt.foldmethod = 'expr'
 vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
+
+-- Telescope Bindings
+local builtin = require('telescope.builtin')
+nnoremap('<leader>ff', function()
+  builtin.find_files()
+end)
+nnoremap('<leader>faf', function()
+  builtin.find_files({hidden=true})
+end)
+nnoremap('<leader>fg', function()
+  builtin.live_grep()
+end)
+nnoremap('<leader>fb', function()
+  builtin.buffers()
+end)
+nnoremap('<leader>fh', function()
+  builting.help_tags()
+end)
+
+-- lsp bindings for various awesomeness
+-- jump to definition of symbol
+nnoremap('<leader>ld', function()
+  vim.lsp.buf.definition()
+end)
+-- jump to implementation of symbol
+nnoremap('<leader>li', function()
+  vim.lsp.buf.implementation()
+end)
+-- display signature info (params, etc.) for symbol
+nnoremap('<leader>ls', function()
+  vim.lsp.buf.signature_help()
+end)
+-- list all refs to symbol in QF window
+nnoremap('<leader>lrr', function()
+  vim.lsp.buf.references()
+end)
+-- rename all refs under symbol
+nnoremap('<leader>lrn', function()
+  vim.lsp.buf.rename()
+end)
+
+-- below was commented out
+--nnoremap <leader>lh :lua vim.lsp.buf.hover()<CR>
+
+-- select code action at point (need to experiment)
+nnoremap('<leader>lca', function()
+  vim.lsp.buf.code_action()
+end)
+-- open diagnostic (error) messages in floating window
+nnoremap('<leader>le', function()
+  vim.diagnostic.open_float();
+end)
+-- move to next diagnostic
+nnoremap('<leader>ln', function()
+  vim.lsp.diagnostic.goto_next()
+end)
+
+-- config for netrw built in file browser - set up similar to Nerdtree
+vim.g.netrw_banner = 0
+vim.g.netrw_liststyle = 3
+vim.g.netrw_altv = 1
+vim.g.netrw_winsize = 25
 EOF
-
-" Telescope Bindings
-nnoremap <leader>ff :lua require('telescope.builtin').find_files()<cr>
-nnoremap <leader>faf :lua require('telescope.builtin').find_files({hidden=true})<cr>
-nnoremap <leader>fg :lua require('telescope.builtin').live_grep()<cr>
-nnoremap <leader>fb :lua require('telescope.builtin').buffers()<cr>
-nnoremap <leader>fh :lua require('telescope.builtin').help_tags()<cr>
-
-" lsp bindings for various awesomeness
-" jump to definition of symbol
-nnoremap <leader>ld :lua vim.lsp.buf.definition()<CR>
-" jump to implementation of symbol
-nnoremap <leader>li :lua vim.lsp.buf.implementation()<CR>
-" display signature info (params, etc.) for symbol
-nnoremap <leader>ls :lua vim.lsp.buf.signature_help()<CR>
-" list all refs to symbol in QF window
-nnoremap <leader>lrr :lua vim.lsp.buf.references()<CR>
-" rename all refs under symbol
-nnoremap <leader>lrn :lua vim.lsp.buf.rename()<CR>
-" nnoremap <leader>lh :lua vim.lsp.buf.hover()<CR>
-" select code action at point (need to experiment)
-nnoremap <leader>lca :lua vim.lsp.buf.code_action()<CR>
-" open diagnostic (error) messages in floating window
-nnoremap <leader>le :lua vim.diagnostic.open_float();<CR>
-" move to next diagnostic
-nnoremap <leader>ln :lua vim.lsp.diagnostic.goto_next()<CR>
-
-" config for netrw built in file browser - set up similar to Nerdtree
-let g:netrw_banner = 0
-let g:netrw_liststyle = 3
-let g:netrw_altv = 1
-let g:netrw_winsize = 25
 
 " set width to 80 for markdown
 au BufRead,BufNewFile *.md setlocal textwidth=80
