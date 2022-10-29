@@ -33,7 +33,10 @@ require('packer').startup(function(use)
   use 'neovim/nvim-lspconfig'
 
   -- Treesitter!
-  use { 'nvim-treesitter/nvim-treesitter', run = ':TSUpdate' }
+  use {
+    'nvim-treesitter/nvim-treesitter',
+    run = function() require('nvim-treesitter.install').update({ with_sync = true }) end,
+  }
 
   -- Telescope!
   --use 'nvim-lua/popup.nvim'
@@ -151,24 +154,25 @@ nnoremap('<leader>Y', 'gg"+yG')
 nnoremap('<leader>p', '"+p')
 
 -- quick buffer navigation
-nnoremap('<leader>a', ':bp<cr>')
-nnoremap('<leader>d', ':bn<cr>')
-nnoremap('<leader>x', ':bd<cr>')
+nnoremap('<leader>a', function() vim.cmd.bp() end)
+nnoremap('<leader>d', function() vim.cmd.bn() end)
+nnoremap('<leader>x', function() vim.cmd.bd() end)
 
 -- BEGONE FOUL BEAST
-nnoremap('<leader>rm', ':call delete(@%)<cr>')
+nnoremap('<leader>rm', function() vim.api.nvim_call_function('delete', {vim.api.nvim_eval('@%')}) end)
+--nnoremap('<leader>rm', ':call delete(@%)<cr>')
 
 -- yank it and slap it down!
 nnoremap('<leader>rwy', 'ciw<C-r>0')
 
 -- quick edit config with \v
-nnoremap('<Leader>v', ':e $MYVIMRC<cr>')
+nnoremap('<Leader>v', function() vim.cmd.e(vim.api.nvim_eval('$MYVIMRC')) end)
 
 -- toggle spell
-nnoremap('<leader>sp', ':setlocal spell! spell?<cr>')
+nnoremap('<leader>sp', function() vim.opt_local.spell = not vim.opt_local.spell:get() end)
 
 -- all about that Sex(plore) ;)
-nnoremap('<Leader>n', ':Sexplore<cr>')
+nnoremap('<Leader>n', function() vim.cmd.Sexplore() end)
 
 -- close a split
 nnoremap('<leader>q', '<C-w>q')
