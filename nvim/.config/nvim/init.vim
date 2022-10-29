@@ -23,21 +23,21 @@ call plug#begin('~/.config/nvim/plugged')
 " to allow registering for :help plug-options
 Plug 'junegunn/vim-plug'
 
-Plug 'editorconfig/editorconfig-vim'
+Plug 'gpanders/editorconfig.nvim'
 
 "" COLORS!!
-Plug 'morhetz/gruvbox'
-Plug 'phanviet/vim-monokai-pro'
-Plug 'crusoexia/vim-monokai'
+Plug 'sainnhe/gruvbox-material'
 
 " multiple cursors, like in Sublime
-Plug 'terryma/vim-multiple-cursors'
+"Plug 'terryma/vim-multiple-cursors'
+Plug 'mg979/vim-visual-multi'
 
 " icons!
 "Plug 'ryanoasis/vim-devicons'
 
 " airline statusline
-Plug 'vim-airline/vim-airline'
+"Plug 'vim-airline/vim-airline'
+Plug 'ojroques/nvim-hardline'
 
 " LSP!!!
 Plug 'neovim/nvim-lspconfig'
@@ -51,11 +51,11 @@ Plug 'nvim-lua/plenary.nvim'
 Plug 'nvim-telescope/telescope.nvim'
 
 " HARPOOOON
-Plug 'ThePrimeagen/harpoon'
+"Plug 'ThePrimeagen/harpoon'
 
 " Fugitive!
-Plug 'tpope/vim-fugitive'
-Plug 'junegunn/gv.vim'
+"Plug 'tpope/vim-fugitive'
+"Plug 'junegunn/gv.vim'
 
 " diagnostics, the nice way
 Plug 'kyazdani42/nvim-web-devicons'
@@ -88,24 +88,20 @@ Plug 'mracos/mermaid.vim'
 call plug#end()
 
 "------- General Settings ---------
-let g:gruvbox_contrast_dark='hard'
-colorscheme gruvbox
+"set background=dark
+let g:gruvbox_material_background='hard'
+let g:gruvbox_material_better_performance=1
+let g:gruvbox_material_foreground='original'
+colorscheme gruvbox-material
 
-set bg=dark
-set exrc "allow per-project rc's!!
 set termguicolors
 set number " line numbers
 set relativenumber " for relative line numbers for jumping up/down
-set spelllang=en_us
-set ruler " show cursor position
-set showcmd " show partial commands
-set splitright " new split to the right of current window
-set timeout timeoutlen=3000 ttimeoutlen=100 " local leader Lower ^[ timeout
-set backupdir=~/.cache " Don't litter swp files everywhere
-set directory=~/.cache " Don't litter swp files everywhere
-set completeopt=longest,menuone,noinsert,noselect
-set hidden " allow switching to another file in window without saving original file
-set updatetime=300 " 300ms after no typing to save swp file
+set ruler " show cursor position at bottom of screen
+set timeoutlen=3000 " override 1000 min
+set ttimeoutlen=100 " override 50 min
+set completeopt=longest,menuone,noinsert,noselect " consider trying default
+set updatetime=50 " 50ms after no typing to save swp file
 set signcolumn=yes " always show sign column
 set linebreak " break lines at nice characters
 set confirm " default to ask to save a file
@@ -114,11 +110,25 @@ set ignorecase " ignore for searching
 set smartcase " ignore ignorecase if we have capitals
 set nohlsearch " gets annoying having stuff highlighted
 set laststatus " always have status line
-set more " allow long command stuff to be scrolled back in
-"set foldmethod=syntax fold by syntax
-set foldlevelstart=99 " don't fold unless I want to
-set smarttab
 set smartindent
+set undofile
+
+" below are legacy things. may not need and don't readily use
+set bg=dark " - no need to set based on colorscheme?
+"set exrc "allow per-project rc's!! - check if I really need/want this
+"set splitright " new split to the right of current window - I don't really use splits anymore
+"set foldmethod=syntax fold by syntax
+"set foldlevelstart=99 " don't fold unless I want to
+
+" all below are defaults in nvim, so redundant
+"set spelllang=en_us - en by default
+"set showcmd " show partial commands - on by default
+"set timeout - on by default
+"set backupdir=~/.cache " Don't litter swp files everywhere - default in a nvim dir
+"set directory=~/.cache " Don't litter swp files everywhere - default in a nvim dir
+"set hidden " allow switching to another file in window without saving original file - on by default
+"set more " allow long command stuff to be scrolled back in - default on
+"set smarttab - default on
 
 " exit terminal buffer!
 tnoremap <ESC> <C-\><C-n>
@@ -154,6 +164,8 @@ nnoremap <leader>q <C-w>q
 
 " nvim lua plugin configurations
 lua << EOF
+-- hardline status line
+require('hardline').setup {}
 -- treesitter settings
 require'nvim-treesitter.configs'.setup { highlight = { enable = true } }
 
@@ -314,14 +326,6 @@ nnoremap <leader>lca :lua vim.lsp.buf.code_action()<CR>
 nnoremap <leader>le :lua vim.diagnostic.open_float();<CR>
 " move to next diagnostic
 nnoremap <leader>ln :lua vim.lsp.diagnostic.goto_next()<CR>
-
-" HARPOOOON
-nnoremap <leader>ha :lua require("harpoon.mark").add_file()<CR>
-nnoremap <leader>hh :lua require("harpoon.ui").toggle_quick_menu()<CR>
-nnoremap <leader>hj :lua require("harpoon.ui").nav_file(1)<CR>
-nnoremap <leader>hk :lua require("harpoon.ui").nav_file(2)<CR>
-nnoremap <leader>hl :lua require("harpoon.ui").nav_file(3)<CR>
-nnoremap <leader>h; :lua require("harpoon.ui").nav_file(4)<CR>
 
 " config for netrw built in file browser - set up similar to Nerdtree
 let g:netrw_banner = 0
