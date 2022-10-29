@@ -1,4 +1,3 @@
-lua << EOF
 local ensure_packer = function()
   local fn = vim.fn
   local install_path = fn.stdpath('data')..'/site/pack/packer/start/packer.nvim'
@@ -411,4 +410,3 @@ vim.api.nvim_create_autocmd({'BufLeave', 'FocusLost', 'InsertEnter'}, {
     pattern = "*",
     callback = function() vim.opt.relativenumber = false end
 })
-EOF
