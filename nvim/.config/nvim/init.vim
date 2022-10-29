@@ -12,7 +12,8 @@ end
 
 local packer_bootstrap = ensure_packer()
 
-return require('packer').startup(function(use)
+-- return this when moved to module
+require('packer').startup(function(use)
   use 'wbthomason/packer.nvim'
   -- My plugins here
   use 'gpanders/editorconfig.nvim'
@@ -80,50 +81,49 @@ return require('packer').startup(function(use)
     require('packer').sync()
   end
 end)
+
+-- General Settings
+vim.opt.background = 'dark'
+vim.g.gruvbox_material_background = 'hard'
+vim.g.gruvbox_material_better_performance = 1
+vim.g.gruvbox_material_foreground = 'original'
+vim.cmd.colorscheme('gruvbox-material')
+
+vim.opt.termguicolors = true
+vim.opt.number = true -- line numbers
+vim.opt.relativenumber = true -- for relative line numbers for jumping up/down
+vim.opt.ruler = true -- show cursor position at bottom of screen
+vim.opt.timeoutlen = 1000 -- override 1000 min
+vim.opt.ttimeoutlen = 100 -- override 50 min
+vim.opt.completeopt = {'longest','menuone','noinsert','noselect'} -- consider trying default
+vim.opt.updatetime = 50 -- 50ms after no typing to save swp file
+vim.opt.signcolumn = 'yes' -- always show sign column
+vim.opt.linebreak = true -- break lines at nice characters
+vim.opt.confirm = true -- default to ask to save a file
+vim.opt.errorbells = false -- bells can piss off!
+vim.opt.ignorecase = true -- ignore for searching
+vim.opt.smartcase = true -- ignore ignorecase if we have capitals
+vim.opt.hlsearch = false -- gets annoying having stuff highlighted
+--vim.opt.laststatus = true -- always have status line
+vim.opt.smartindent = true
+vim.opt.undofile = true
+-- below are legacy things. may not need and don't readily use
+--set exrc "allow per-project rc's!! - check if I really need/want this
+--set splitright " new split to the right of current window - I don't really use splits anymore
+--set foldmethod=syntax fold by syntax
+--set foldlevelstart=99 " don't fold unless I want to
+
+-- all below are defaults in nvim, so redundant
+--set spelllang=en_us - en by default
+--set showcmd " show partial commands - on by default
+--set timeout - on by default
+--set backupdir=~/.cache " Don't litter swp files everywhere - default in a nvim dir
+--set directory=~/.cache " Don't litter swp files everywhere - default in a nvim dir
+--set hidden " allow switching to another file in window without saving original file - on by default
+--set more " allow long command stuff to be scrolled back in - default on
+--set smarttab - default on
+
 EOF
-
-"------- General Settings ---------
-"set background=dark
-let g:gruvbox_material_background='hard'
-let g:gruvbox_material_better_performance=1
-let g:gruvbox_material_foreground='original'
-colorscheme gruvbox-material
-
-set termguicolors
-set number " line numbers
-set relativenumber " for relative line numbers for jumping up/down
-set ruler " show cursor position at bottom of screen
-set timeoutlen=3000 " override 1000 min
-set ttimeoutlen=100 " override 50 min
-set completeopt=longest,menuone,noinsert,noselect " consider trying default
-set updatetime=50 " 50ms after no typing to save swp file
-set signcolumn=yes " always show sign column
-set linebreak " break lines at nice characters
-set confirm " default to ask to save a file
-set noerrorbells " bells can piss off!
-set ignorecase " ignore for searching
-set smartcase " ignore ignorecase if we have capitals
-set nohlsearch " gets annoying having stuff highlighted
-set laststatus " always have status line
-set smartindent
-set undofile
-
-" below are legacy things. may not need and don't readily use
-set bg=dark " - no need to set based on colorscheme?
-"set exrc "allow per-project rc's!! - check if I really need/want this
-"set splitright " new split to the right of current window - I don't really use splits anymore
-"set foldmethod=syntax fold by syntax
-"set foldlevelstart=99 " don't fold unless I want to
-
-" all below are defaults in nvim, so redundant
-"set spelllang=en_us - en by default
-"set showcmd " show partial commands - on by default
-"set timeout - on by default
-"set backupdir=~/.cache " Don't litter swp files everywhere - default in a nvim dir
-"set directory=~/.cache " Don't litter swp files everywhere - default in a nvim dir
-"set hidden " allow switching to another file in window without saving original file - on by default
-"set more " allow long command stuff to be scrolled back in - default on
-"set smarttab - default on
 
 " exit terminal buffer!
 tnoremap <ESC> <C-\><C-n>
@@ -290,11 +290,11 @@ require'nvim-web-devicons'.setup {
  -- will get overriden by `get_icons` option
  default = true;
 }
-EOF
 
-" use treesitter for folding
-set foldmethod=expr
-set foldexpr=nvim_treesitter#foldexpr()
+-- use treesitter for folding
+vim.opt.foldmethod = 'expr'
+vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
+EOF
 
 " Telescope Bindings
 nnoremap <leader>ff :lua require('telescope.builtin').find_files()<cr>
