@@ -1,91 +1,86 @@
-" ----- vim-plug settings -----------------------------------------------------
-" check whether vim-plug is installed and install it if necessary
-let plugpath = expand('<sfile>:p:h'). '/autoload/plug.vim'
-if !filereadable(plugpath)
-    if executable('curl')
-        let plugurl = 'https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim'
-        call system('curl -fLo ' . shellescape(plugpath) . ' --create-dirs ' . plugurl)
-        if v:shell_error
-            echom "Error downloading vim-plug. Please install it manually.\n"
-            exit
-        endif
-    else
-        echom "vim-plug not installed. Please install it manually or install curl.\n"
-        exit
-    endif
-endif
+lua << EOF
+local ensure_packer = function()
+  local fn = vim.fn
+  local install_path = fn.stdpath('data')..'/site/pack/packer/start/packer.nvim'
+  if fn.empty(fn.glob(install_path)) > 0 then
+    fn.system({'git', 'clone', '--depth', '1', 'https://github.com/wbthomason/packer.nvim', install_path})
+    vim.cmd [[packadd packer.nvim]]
+    return true
+  end
+  return false
+end
 
-call plug#begin('~/.config/nvim/plugged')
+local packer_bootstrap = ensure_packer()
 
-" godot!
-" Plug 'habamax/vim-godot'
+return require('packer').startup(function(use)
+  use 'wbthomason/packer.nvim'
+  -- My plugins here
+  use 'gpanders/editorconfig.nvim'
 
-" to allow registering for :help plug-options
-Plug 'junegunn/vim-plug'
+  -- COLORS!!
+  use 'sainnhe/gruvbox-material'
 
-Plug 'gpanders/editorconfig.nvim'
+  -- multiple cursors, like in Sublime
+  use 'mg979/vim-visual-multi'
 
-"" COLORS!!
-Plug 'sainnhe/gruvbox-material'
+  -- icons!
+  -- use 'ryanoasis/vim-devicons'
 
-" multiple cursors, like in Sublime
-"Plug 'terryma/vim-multiple-cursors'
-Plug 'mg979/vim-visual-multi'
+  -- statusline
+  use 'ojroques/nvim-hardline'
 
-" icons!
-"Plug 'ryanoasis/vim-devicons'
+  -- LSP!!!
+  use 'neovim/nvim-lspconfig'
 
-" airline statusline
-"Plug 'vim-airline/vim-airline'
-Plug 'ojroques/nvim-hardline'
+  -- Treesitter!
+  use { 'nvim-treesitter/nvim-treesitter', run = ':TSUpdate' }
 
-" LSP!!!
-Plug 'neovim/nvim-lspconfig'
+  -- Telescope!
+  use 'nvim-lua/popup.nvim'
+  use 'nvim-lua/plenary.nvim'
+  use 'nvim-telescope/telescope.nvim'
 
-" Treesitter!
-Plug 'nvim-treesitter/nvim-treesitter', {'do': ':TSUpdate'}
+  -- HARPOOOON
+  -- use 'ThePrimeagen/harpoon'
 
-" Telescope!
-Plug 'nvim-lua/popup.nvim'
-Plug 'nvim-lua/plenary.nvim'
-Plug 'nvim-telescope/telescope.nvim'
+  -- Fugitive!
+  --use 'tpope/vim-fugitive'
+  --use 'junegunn/gv.vim'
 
-" HARPOOOON
-"Plug 'ThePrimeagen/harpoon'
+  -- diagnostics, the nice way
+  use 'kyazdani42/nvim-web-devicons'
+  use 'folke/trouble.nvim'
 
-" Fugitive!
-"Plug 'tpope/vim-fugitive'
-"Plug 'junegunn/gv.vim'
+  -- COMPLETION!
+  use 'hrsh7th/cmp-nvim-lsp'
+  use 'hrsh7th/cmp-buffer'
+  use 'hrsh7th/nvim-cmp'
 
-" diagnostics, the nice way
-Plug 'kyazdani42/nvim-web-devicons'
-Plug 'folke/trouble.nvim'
+  -- For vsnip user.
+  --use 'hrsh7th/cmp-vsnip'
+  --use 'hrsh7th/vim-vsnip'
 
-" COMPLETION!
-Plug 'hrsh7th/cmp-nvim-lsp'
-Plug 'hrsh7th/cmp-buffer'
-Plug 'hrsh7th/nvim-cmp'
+  -- For luasnip user.
+  use 'L3MON4D3/LuaSnip'
+  use 'saadparwaiz1/cmp_luasnip'
 
-" For vsnip user.
-"Plug 'hrsh7th/cmp-vsnip'
-"Plug 'hrsh7th/vim-vsnip'
+  -- For ultisnips user.
+  -- use 'SirVer/ultisnips'
+  -- use 'quangnguyen30192/cmp-nvim-ultisnips'
 
-" For luasnip user.
-Plug 'L3MON4D3/LuaSnip'
-Plug 'saadparwaiz1/cmp_luasnip'
+  -- kotlin, because it's a special summer child
+  use 'udalov/kotlin-vim'
 
-" For ultisnips user.
-" Plug 'SirVer/ultisnips'
-" Plug 'quangnguyen30192/cmp-nvim-ultisnips'
+  -- mermaid syntax
+  use 'mracos/mermaid.vim'
 
-" kotlin, because it's a special summer child
-Plug 'udalov/kotlin-vim'
-
-" mermaid syntax
-Plug 'mracos/mermaid.vim'
-
-" Initialize plugin system
-call plug#end()
+  -- Automatically set up your configuration after cloning packer.nvim
+  -- Put this at the end after all plugins
+  if packer_bootstrap then
+    require('packer').sync()
+  end
+end)
+EOF
 
 "------- General Settings ---------
 "set background=dark
