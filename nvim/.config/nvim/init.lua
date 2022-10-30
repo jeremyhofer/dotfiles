@@ -30,7 +30,23 @@ require('packer').startup(function(use)
   use 'ojroques/nvim-hardline'
 
   -- LSP!!!
-  use 'neovim/nvim-lspconfig'
+  use {
+    "williamboman/mason.nvim",
+    "williamboman/mason-lspconfig.nvim",
+    "neovim/nvim-lspconfig",
+  }
+
+  -- debug adapter protocol
+  -- https://github.com/mfussenegger/nvim-dap
+  use 'mfussenegger/nvim-dap'
+
+  -- linter lsp integration
+  -- https://github.com/mfussenegger/nvim-lint
+  use 'mfussenegger/nvim-lint'
+
+  -- formatter integration
+  -- https://github.com/mhartington/formatter.nvim
+  use { 'mhartington/formatter.nvim' }
 
   -- Treesitter!
   use {
@@ -112,11 +128,19 @@ vim.opt.hlsearch = false -- gets annoying having stuff highlighted
 --vim.opt.laststatus = true -- always have status line
 vim.opt.smartindent = true
 vim.opt.undofile = true
+-- use treesitter for folding
+vim.opt.foldmethod = 'expr'
+vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
+vim.opt.foldlevelstart = 99
+
+-- config for netrw built in file browser - set up similar to Nerdtree
+vim.g.netrw_banner = 0
+vim.g.netrw_liststyle = 3
+vim.g.netrw_altv = 1
+vim.g.netrw_winsize = 25
 -- below are legacy things. may not need and don't readily use
 --set exrc "allow per-project rc's!! - check if I really need/want this
 --set splitright " new split to the right of current window - I don't really use splits anymore
---set foldmethod=syntax fold by syntax
---set foldlevelstart=99 " don't fold unless I want to
 
 -- all below are defaults in nvim, so redundant
 --set spelllang=en_us - en by default
@@ -160,7 +184,6 @@ nnoremap('<leader>x', function() vim.cmd.bd() end)
 
 -- BEGONE FOUL BEAST
 nnoremap('<leader>rm', function() vim.api.nvim_call_function('delete', {vim.api.nvim_eval('@%')}) end)
---nnoremap('<leader>rm', ':call delete(@%)<cr>')
 
 -- yank it and slap it down!
 nnoremap('<leader>rwy', 'ciw<C-r>0')
@@ -178,17 +201,59 @@ nnoremap('<Leader>n', function() vim.cmd.Sexplore() end)
 nnoremap('<leader>q', '<C-w>q')
 
 -- hardline status line
-require('hardline').setup {}
--- treesitter settings
-require'nvim-treesitter.configs'.setup { highlight = { enable = true } }
+require('hardline').setup({})
+require('nvim-treesitter.configs').setup({
+    ensure_installed = 'all',
+    highlight = {
+        enable = true
+    }
+})
+-- LSP client manager, auto installer, and auto configuration
+require("mason").setup({
+    ui = {
+        icons = {
+            package_installed = "✓",
+            package_pending = "➜",
+            package_uninstalled = "✗"
+        }
+    }
+})
+-- for servers: https://github.com/williamboman/mason-lspconfig.nvim
+require("mason-lspconfig").setup({
+    ensure_installed = {
+        'tsserver', -- typescript
+        'stylelint_lsp', -- css, scss, etc.
+        'angularls', -- angular
+        'jsonls', -- JSON
+        'yamlls', -- YAML
+        'jdtls', -- java
+        'eslint', -- eslint
+        --'gopls', -- go
+        --'kotlin_language_server', -- kotlin
+        'bashls', -- bash / zsh
+        --'vuels', -- vue
+        --'gdscript', -- godot script (not available currently)
+        'jedi_language_server', -- python
+    }
+})
+-- trouble (diagnostics) settings
+require('trouble').setup({})
 
--- telescope settings
+-- Telescope Settings
+local builtin = require('telescope.builtin')
+nnoremap('<leader>ff', function() builtin.find_files() end)
+nnoremap('<leader>faf', function() builtin.find_files({hidden=true}) end)
+nnoremap('<leader>fg', function() builtin.live_grep() end)
+nnoremap('<leader>fb', function() builtin.buffers() end)
+nnoremap('<leader>fh', function() builtin.help_tags() end)
+
 local actions = require('telescope.actions')
+local previewers = require('telescope.previewers')
 require('telescope').setup{
   defaults = {
-    file_previewer = require'telescope.previewers'.vim_buffer_cat.new,
-    grep_previewer = require'telescope.previewers'.vim_buffer_vimgrep.new,
-    qflist_previewer = require'telescope.previewers'.vim_buffer_qflist.new,
+    file_previewer = previewers.vim_buffer_cat.new,
+    grep_previewer = previewers.vim_buffer_vimgrep.new,
+    qflist_previewer = previewers.vim_buffer_qflist.new,
     mappings = {
       i = {
         ["<C-w>"] = actions.send_selected_to_qflist,
@@ -202,23 +267,12 @@ require('telescope').setup{
   }
 }
 
--- LSP clients
--- tsserver: typescript
--- vuels: Vue
--- jdtls: Java (eclipse)
--- jedi: python
--- yamlls: YAML
--- jsonls: JSON
--- stylelint: css, scss, etc. files
-
--- trouble settings
-require('trouble').setup{}
 
 -- completion and lsp settings
-  -- Setup nvim-cmp.
-  local cmp = require'cmp'
+-- Setup nvim-cmp.
+local cmp = require('cmp')
 
-  cmp.setup({
+cmp.setup({
     snippet = {
       expand = function(args)
         -- For `vsnip` user.
@@ -236,7 +290,28 @@ require('trouble').setup{}
       ['<C-f>'] = cmp.mapping.scroll_docs(4),
       ['<C-Space>'] = cmp.mapping.complete(),
       ['<C-e>'] = cmp.mapping.close(),
-      ['<CR>'] = cmp.mapping.confirm({ select = true }),
+      ['<CR>'] = cmp.mapping.confirm({
+          behavior = cmp.ConfirmBehavior.Replace,
+          select = true
+      }),
+      --['<Tab>'] = cmp.mapping(function(fallback)
+      --  if cmp.visible() then
+      --    cmp.select_next_item()
+      --  elseif luasnip.expand_or_jumpable() then
+      --    luasnip.expand_or_jump()
+      --  else
+      --    fallback()
+      --  end
+      --end, { 'i', 's' }),
+      --['<S-Tab>'] = cmp.mapping(function(fallback)
+      --  if cmp.visible() then
+      --    cmp.select_prev_item()
+      --  elseif luasnip.jumpable(-1) then
+      --    luasnip.jump(-1)
+      --  else
+      --    fallback()
+      --  end
+      --end, { 'i', 's' }),
     }),
     sources = {
       { name = 'nvim_lsp' },
@@ -252,47 +327,61 @@ require('trouble').setup{}
 
       { name = 'buffer' },
     }
-  })
+})
 
-  --[[
-  -- Setup lspconfig.
-  require('lspconfig')[%YOUR_LSP_SERVER%].setup {
-      capabilities = require('cmp_nvim_lsp').default_capabilities()
-  }-- Setup nvim-cmp.
-      ]]
-  -- local cmp = require'cmp'
+--[[
+-- Setup lspconfig.
+require('lspconfig')[%YOUR_LSP_SERVER%].setup {
+  capabilities = require('cmp_nvim_lsp').default_capabilities()
+}-- Setup nvim-cmp.
+  ]]
+-- local cmp = require'cmp'
 
-  local function config(_config)
-    return vim.tbl_deep_extend("force", {
-      capabilities = require('cmp_nvim_lsp').default_capabilities()
-    }, _config or {})
+-- Diagnostics Configs
+-- open diagnostic (error) messages in floating window
+nnoremap('<leader>le', function() vim.diagnostic.open_float() end)
+-- move to next diagnostic
+nnoremap('<leader>ln', function() vim.diagnostic.goto_next() end)
+nnoremap('<leader>lp', function() vim.diagnostic.goto_prev() end)
+
+local function config(_config)
+return vim.tbl_deep_extend("force", {
+  capabilities = require('cmp_nvim_lsp').default_capabilities(),
+  on_attach = function(client, bufnr)
+    local bufopts = { buffer=bufnr }
+    -- lsp bindings for various awesomeness
+    -- jump to definition of symbol
+    nnoremap('<leader>ld', function() vim.lsp.buf.definition() end, bufopts)
+    -- jump to implementation of symbol
+    nnoremap('<leader>li', function() vim.lsp.buf.implementation() end, bufopts)
+    -- display signature info (params, etc.) for symbol
+    nnoremap('<leader>ls', function() vim.lsp.buf.signature_help() end, bufopts)
+    -- list all refs to symbol in QF window
+    nnoremap('<leader>lrr', function() vim.lsp.buf.references() end, bufopts)
+    -- rename all refs under symbol
+    nnoremap('<leader>lrn', function() vim.lsp.buf.rename() end, bufopts)
+    nnoremap('<leader>lh', function() vim.lsp.buf.hover() end, bufopts)
+    -- select code action at point (need to experiment)
+    nnoremap('<leader>lca', function() vim.lsp.buf.code_action() end, bufopts)
   end
+}, _config or {})
+end
 
-  local lspconfig = require('lspconfig')
-  lspconfig.stylelint_lsp.setup(config())
-  lspconfig.angularls.setup(config())
-  lspconfig.jsonls.setup(config())
-  lspconfig.yamlls.setup(config())
-  lspconfig.jedi_language_server.setup(config({
-    cmd={os.getenv("HOME")..'/.local/bin/jedi-language-server'}
-  }))
-  lspconfig.tsserver.setup(config())
-  lspconfig.eslint.setup(config())
-  lspconfig.gopls.setup(config())
-  lspconfig.kotlin_language_server.setup(config())
-  lspconfig.bashls.setup(config({
-    filetypes = { "sh", "zsh" }
-  }))
-  -- lspconfig.vuels.setup(config())
-  -- lspconfig.jdtls.setup(config({
-  --   cmd={'jdt-language-server'};
-  -- }))
-  lspconfig.java_language_server.setup(config({
-    cmd={''} -- replace w/ path to command
-  }))
-  lspconfig.gdscript.setup(config())
+require('mason-lspconfig').setup_handlers {
+    function (server_name) -- default handler
+        require('lspconfig')[server_name].setup(config())
+    end,
+    -- override specific servers here
+    ['bashls'] = function()
+        require('lspconfig').bashls.setup(config({
+            filetypes = { 'sh', 'zsh' }
+        }))
+    end
+}
+-- gdscript doesn't have mason support atm
+require('lspconfig').gdscript.setup(config())
 
-require'nvim-web-devicons'.setup {
+require('nvim-web-devicons').setup({
  -- your personnal icons can go here (to override)
  -- you can specify color or cterm_color instead of specifying both of them
  -- DevIcon will be appended to `name`
@@ -307,73 +396,8 @@ require'nvim-web-devicons'.setup {
  -- globally enable default icons (default to false)
  -- will get overriden by `get_icons` option
  default = true;
-}
+})
 
--- use treesitter for folding
-vim.opt.foldmethod = 'expr'
-vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
-
--- Telescope Bindings
-local builtin = require('telescope.builtin')
-nnoremap('<leader>ff', function()
-  builtin.find_files()
-end)
-nnoremap('<leader>faf', function()
-  builtin.find_files({hidden=true})
-end)
-nnoremap('<leader>fg', function()
-  builtin.live_grep()
-end)
-nnoremap('<leader>fb', function()
-  builtin.buffers()
-end)
-nnoremap('<leader>fh', function()
-  builting.help_tags()
-end)
-
--- lsp bindings for various awesomeness
--- jump to definition of symbol
-nnoremap('<leader>ld', function()
-  vim.lsp.buf.definition()
-end)
--- jump to implementation of symbol
-nnoremap('<leader>li', function()
-  vim.lsp.buf.implementation()
-end)
--- display signature info (params, etc.) for symbol
-nnoremap('<leader>ls', function()
-  vim.lsp.buf.signature_help()
-end)
--- list all refs to symbol in QF window
-nnoremap('<leader>lrr', function()
-  vim.lsp.buf.references()
-end)
--- rename all refs under symbol
-nnoremap('<leader>lrn', function()
-  vim.lsp.buf.rename()
-end)
-
--- below was commented out
---nnoremap <leader>lh :lua vim.lsp.buf.hover()<CR>
-
--- select code action at point (need to experiment)
-nnoremap('<leader>lca', function()
-  vim.lsp.buf.code_action()
-end)
--- open diagnostic (error) messages in floating window
-nnoremap('<leader>le', function()
-  vim.diagnostic.open_float();
-end)
--- move to next diagnostic
-nnoremap('<leader>ln', function()
-  vim.lsp.diagnostic.goto_next()
-end)
-
--- config for netrw built in file browser - set up similar to Nerdtree
-vim.g.netrw_banner = 0
-vim.g.netrw_liststyle = 3
-vim.g.netrw_altv = 1
-vim.g.netrw_winsize = 25
 
 -- set width to 80 for markdown
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
