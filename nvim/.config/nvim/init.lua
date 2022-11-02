@@ -15,7 +15,7 @@ local packer_bootstrap = ensure_packer()
 require('packer').startup(function(use)
   use 'wbthomason/packer.nvim'
   -- My plugins here
-  use 'gpanders/editorconfig.nvim'
+  ---use 'gpanders/editorconfig.nvim'
 
   -- COLORS!!
   use 'sainnhe/gruvbox-material'
@@ -234,6 +234,7 @@ require("mason-lspconfig").setup({
         --'vuels', -- vue
         --'gdscript', -- godot script (not available currently)
         'jedi_language_server', -- python
+        'sumneko_lua', -- lua
     }
 })
 -- trouble (diagnostics) settings
@@ -376,7 +377,31 @@ require('mason-lspconfig').setup_handlers {
         require('lspconfig').bashls.setup(config({
             filetypes = { 'sh', 'zsh' }
         }))
-    end
+    end,
+    ['sumneko_lua'] = function()
+        require('lspconfig').sumneko_lua.setup(config({
+            settings = {
+                Lua = {
+                  runtime = {
+                    -- Tell the language server which version of Lua you're using (most likely LuaJIT in the case of Neovim)
+                    version = 'LuaJIT',
+                  },
+                  diagnostics = {
+                    -- Get the language server to recognize the `vim` global
+                    globals = {'vim'},
+                  },
+                  workspace = {
+                    -- Make the server aware of Neovim runtime files
+                    library = vim.api.nvim_get_runtime_file("", true),
+                  },
+                  -- Do not send telemetry data containing a randomized but unique identifier
+                  telemetry = {
+                    enable = false,
+                  },
+                },
+              }
+        }))
+    end,
 }
 -- gdscript doesn't have mason support atm
 require('lspconfig').gdscript.setup(config())
