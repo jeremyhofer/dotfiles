@@ -154,14 +154,15 @@ vim.g.netrw_winsize = 25
 
 -- helper function for key bindings
 local function bind(op, outer_opts)
-    outer_opts = outer_opts or {noremap = true}
-    return function(lhs, rhs, opts)
-        opts = vim.tbl_extend("force",
-            outer_opts,
-            opts or {}
-        )
-        vim.keymap.set(op, lhs, rhs, opts)
-    end
+  outer_opts = outer_opts or {noremap = true}
+  return function(lhs, rhs, opts)
+    opts = vim.tbl_extend(
+      "force",
+      outer_opts,
+      opts or {}
+    )
+    vim.keymap.set(op, lhs, rhs, opts)
+  end
 end
 
 local nnoremap = bind('n')
@@ -203,39 +204,39 @@ nnoremap('<leader>q', '<C-w>q')
 -- hardline status line
 require('hardline').setup({})
 require('nvim-treesitter.configs').setup({
-    ensure_installed = 'all',
-    highlight = {
-        enable = true
-    }
+  ensure_installed = 'all',
+  highlight = {
+    enable = true
+  }
 })
 -- LSP client manager, auto installer, and auto configuration
 require("mason").setup({
-    ui = {
-        icons = {
-            package_installed = "✓",
-            package_pending = "➜",
-            package_uninstalled = "✗"
-        }
+  ui = {
+    icons = {
+      package_installed = "✓",
+      package_pending = "➜",
+      package_uninstalled = "✗"
     }
+  }
 })
 -- for servers: https://github.com/williamboman/mason-lspconfig.nvim
 require("mason-lspconfig").setup({
-    ensure_installed = {
-        'tsserver', -- typescript
-        'stylelint_lsp', -- css, scss, etc.
-        'angularls', -- angular
-        'jsonls', -- JSON
-        'yamlls', -- YAML
-        'jdtls', -- java
-        'eslint', -- eslint
-        --'gopls', -- go
-        --'kotlin_language_server', -- kotlin
-        'bashls', -- bash / zsh
-        --'vuels', -- vue
-        --'gdscript', -- godot script (not available currently)
-        'jedi_language_server', -- python
-        'sumneko_lua', -- lua
-    }
+  ensure_installed = {
+    'tsserver', -- typescript
+    'stylelint_lsp', -- css, scss, etc.
+    'angularls', -- angular
+    'jsonls', -- JSON
+    'yamlls', -- YAML
+    'jdtls', -- java
+    'eslint', -- eslint
+    --'gopls', -- go
+    --'kotlin_language_server', -- kotlin
+    'bashls', -- bash / zsh
+    --'vuels', -- vue
+    --'gdscript', -- godot script (not available currently)
+    'jedi_language_server', -- python
+    'sumneko_lua', -- lua
+  }
 })
 -- trouble (diagnostics) settings
 require('trouble').setup({})
@@ -274,60 +275,60 @@ require('telescope').setup{
 local cmp = require('cmp')
 
 cmp.setup({
-    snippet = {
-      expand = function(args)
-        -- For `vsnip` user.
-        -- vim.fn["vsnip#anonymous"](args.body)
+  snippet = {
+    expand = function(args)
+      -- For `vsnip` user.
+      -- vim.fn["vsnip#anonymous"](args.body)
 
-        -- For `luasnip` user.
-        require('luasnip').lsp_expand(args.body)
+      -- For `luasnip` user.
+      require('luasnip').lsp_expand(args.body)
 
-        -- For `ultisnips` user.
-        -- vim.fn["UltiSnips#Anon"](args.body)
-      end,
-    },
-    mapping = cmp.mapping.preset.insert({
-      ['<C-d>'] = cmp.mapping.scroll_docs(-4),
-      ['<C-f>'] = cmp.mapping.scroll_docs(4),
-      ['<C-Space>'] = cmp.mapping.complete(),
-      ['<C-e>'] = cmp.mapping.close(),
-      ['<CR>'] = cmp.mapping.confirm({
-          behavior = cmp.ConfirmBehavior.Replace,
-          select = true
-      }),
-      --['<Tab>'] = cmp.mapping(function(fallback)
-      --  if cmp.visible() then
-      --    cmp.select_next_item()
-      --  elseif luasnip.expand_or_jumpable() then
-      --    luasnip.expand_or_jump()
-      --  else
-      --    fallback()
-      --  end
-      --end, { 'i', 's' }),
-      --['<S-Tab>'] = cmp.mapping(function(fallback)
-      --  if cmp.visible() then
-      --    cmp.select_prev_item()
-      --  elseif luasnip.jumpable(-1) then
-      --    luasnip.jump(-1)
-      --  else
-      --    fallback()
-      --  end
-      --end, { 'i', 's' }),
+      -- For `ultisnips` user.
+      -- vim.fn["UltiSnips#Anon"](args.body)
+    end,
+  },
+  mapping = cmp.mapping.preset.insert({
+    ['<C-d>'] = cmp.mapping.scroll_docs(-4),
+    ['<C-f>'] = cmp.mapping.scroll_docs(4),
+    ['<C-Space>'] = cmp.mapping.complete(),
+    ['<C-e>'] = cmp.mapping.close(),
+    ['<CR>'] = cmp.mapping.confirm({
+      behavior = cmp.ConfirmBehavior.Replace,
+      select = true
     }),
-    sources = {
-      { name = 'nvim_lsp' },
+  --['<Tab>'] = cmp.mapping(function(fallback)
+  --  if cmp.visible() then
+  --    cmp.select_next_item()
+  --  elseif luasnip.expand_or_jumpable() then
+  --    luasnip.expand_or_jump()
+  --  else
+  --    fallback()
+  --  end
+  --end, { 'i', 's' }),
+  --['<S-Tab>'] = cmp.mapping(function(fallback)
+  --  if cmp.visible() then
+  --    cmp.select_prev_item()
+  --  elseif luasnip.jumpable(-1) then
+  --    luasnip.jump(-1)
+  --  else
+  --    fallback()
+  --  end
+  --end, { 'i', 's' }),
+  }),
+  sources = {
+    { name = 'nvim_lsp' },
 
-      -- For vsnip user.
-      -- { name = 'vsnip' },
+    -- For vsnip user.
+    -- { name = 'vsnip' },
 
-      -- For luasnip user.
-      { name = 'luasnip' },
+    -- For luasnip user.
+    { name = 'luasnip' },
 
-      -- For ultisnips user.
-      -- { name = 'ultisnips' },
+    -- For ultisnips user.
+    -- { name = 'ultisnips' },
 
-      { name = 'buffer' },
-    }
+    { name = 'buffer' },
+  }
 })
 
 --[[
@@ -346,63 +347,63 @@ nnoremap('<leader>ln', function() vim.diagnostic.goto_next() end)
 nnoremap('<leader>lp', function() vim.diagnostic.goto_prev() end)
 
 local function config(_config)
-return vim.tbl_deep_extend("force", {
-  capabilities = require('cmp_nvim_lsp').default_capabilities(),
-  on_attach = function(client, bufnr)
-    local bufopts = { buffer=bufnr }
-    -- lsp bindings for various awesomeness
-    -- jump to definition of symbol
-    nnoremap('<leader>ld', function() vim.lsp.buf.definition() end, bufopts)
-    -- jump to implementation of symbol
-    nnoremap('<leader>li', function() vim.lsp.buf.implementation() end, bufopts)
-    -- display signature info (params, etc.) for symbol
-    nnoremap('<leader>ls', function() vim.lsp.buf.signature_help() end, bufopts)
-    -- list all refs to symbol in QF window
-    nnoremap('<leader>lrr', function() vim.lsp.buf.references() end, bufopts)
-    -- rename all refs under symbol
-    nnoremap('<leader>lrn', function() vim.lsp.buf.rename() end, bufopts)
-    nnoremap('<leader>lh', function() vim.lsp.buf.hover() end, bufopts)
-    -- select code action at point (need to experiment)
-    nnoremap('<leader>lca', function() vim.lsp.buf.code_action() end, bufopts)
-  end
-}, _config or {})
+  return vim.tbl_deep_extend("force", {
+    capabilities = require('cmp_nvim_lsp').default_capabilities(),
+    on_attach = function(_, bufnr) -- client, bufnr
+      local bufopts = { buffer=bufnr }
+      -- lsp bindings for various awesomeness
+      -- jump to definition of symbol
+      nnoremap('<leader>ld', function() vim.lsp.buf.definition() end, bufopts)
+      -- jump to implementation of symbol
+      nnoremap('<leader>li', function() vim.lsp.buf.implementation() end, bufopts)
+      -- display signature info (params, etc.) for symbol
+      nnoremap('<leader>ls', function() vim.lsp.buf.signature_help() end, bufopts)
+      -- list all refs to symbol in QF window
+      nnoremap('<leader>lrr', function() vim.lsp.buf.references() end, bufopts)
+      -- rename all refs under symbol
+      nnoremap('<leader>lrn', function() vim.lsp.buf.rename() end, bufopts)
+      nnoremap('<leader>lh', function() vim.lsp.buf.hover() end, bufopts)
+      -- select code action at point (need to experiment)
+      nnoremap('<leader>lca', function() vim.lsp.buf.code_action() end, bufopts)
+    end
+  }, _config or {})
 end
 
-require('mason-lspconfig').setup_handlers {
-    function (server_name) -- default handler
-        require('lspconfig')[server_name].setup(config())
-    end,
-    -- override specific servers here
-    ['bashls'] = function()
-        require('lspconfig').bashls.setup(config({
-            filetypes = { 'sh', 'zsh' }
-        }))
-    end,
-    ['sumneko_lua'] = function()
-        require('lspconfig').sumneko_lua.setup(config({
-            settings = {
-                Lua = {
-                  runtime = {
-                    -- Tell the language server which version of Lua you're using (most likely LuaJIT in the case of Neovim)
-                    version = 'LuaJIT',
-                  },
-                  diagnostics = {
-                    -- Get the language server to recognize the `vim` global
-                    globals = {'vim'},
-                  },
-                  workspace = {
-                    -- Make the server aware of Neovim runtime files
-                    library = vim.api.nvim_get_runtime_file("", true),
-                  },
-                  -- Do not send telemetry data containing a randomized but unique identifier
-                  telemetry = {
-                    enable = false,
-                  },
-                },
-              }
-        }))
-    end,
-}
+require('mason-lspconfig').setup_handlers({
+  function (server_name) -- default handler
+    require('lspconfig')[server_name].setup(config())
+  end,
+  -- override specific servers here
+  ['bashls'] = function()
+    require('lspconfig').bashls.setup(config({
+      filetypes = { 'sh', 'zsh' }
+    }))
+  end,
+  ['sumneko_lua'] = function()
+    require('lspconfig').sumneko_lua.setup(config({
+      settings = {
+        Lua = {
+          runtime = {
+            -- Tell the language server which version of Lua you're using (most likely LuaJIT in the case of Neovim)
+            version = 'LuaJIT',
+          },
+          diagnostics = {
+            -- Get the language server to recognize the `vim` global
+            globals = {'vim'},
+          },
+          workspace = {
+            -- Make the server aware of Neovim runtime files
+            library = vim.api.nvim_get_runtime_file("", true),
+          },
+          -- Do not send telemetry data containing a randomized but unique identifier
+          telemetry = {
+            enable = false,
+          },
+        },
+      }
+    }))
+  end,
+})
 -- gdscript doesn't have mason support atm
 require('lspconfig').gdscript.setup(config())
 
@@ -426,40 +427,40 @@ require('nvim-web-devicons').setup({
 
 -- set width to 80 for markdown
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
-    pattern = '*.md',
-    callback = function () vim.opt_local.textwidth = 80 end
+  pattern = '*.md',
+  callback = function () vim.opt_local.textwidth = 80 end
 })
 
 -- override filetype for specific files
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
-    pattern = 'Snakefile',
-    callback = function () vim.opt_local.filetype = 'python' end
+  pattern = 'Snakefile',
+  callback = function () vim.opt_local.filetype = 'python' end
 })
 
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
-    pattern = '.envrc',
-    callback = function () vim.opt_local.filetype = 'sh' end
+  pattern = '.envrc',
+  callback = function () vim.opt_local.filetype = 'sh' end
 })
 
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
-    pattern = '.mdx',
-    callback = function () vim.opt_local.filetype = 'markdown' end
+  pattern = '.mdx',
+  callback = function () vim.opt_local.filetype = 'markdown' end
 })
 
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
-    pattern = { 'zshrc', 'zprofile' },
-    callback = function () vim.opt_local.filetype = 'zsh' end
+  pattern = { 'zshrc', 'zprofile' },
+  callback = function () vim.opt_local.filetype = 'zsh' end
 })
 
 -- toggle relative numbers on insert mode enter/exit
 local numbertoggle_id = vim.api.nvim_create_augroup('numbertoggle', {})
 vim.api.nvim_create_autocmd({'BufEnter', 'FocusGained', 'InsertLeave'}, {
-    group = numbertoggle_id,
-    pattern = "*",
-    callback = function() vim.opt.relativenumber = true end
+  group = numbertoggle_id,
+  pattern = "*",
+  callback = function() vim.opt.relativenumber = true end
 })
 vim.api.nvim_create_autocmd({'BufLeave', 'FocusLost', 'InsertEnter'}, {
-    group = numbertoggle_id,
-    pattern = "*",
-    callback = function() vim.opt.relativenumber = false end
+  group = numbertoggle_id,
+  pattern = "*",
+  callback = function() vim.opt.relativenumber = false end
 })
