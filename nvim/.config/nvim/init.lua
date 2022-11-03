@@ -42,7 +42,7 @@ require('packer').startup(function(use)
 
   -- linter lsp integration
   -- https://github.com/mfussenegger/nvim-lint
-  use 'mfussenegger/nvim-lint'
+  -- use 'mfussenegger/nvim-lint'
 
   -- formatter integration
   -- https://github.com/mhartington/formatter.nvim
@@ -346,7 +346,7 @@ nnoremap('<leader>le', function() vim.diagnostic.open_float() end)
 nnoremap('<leader>ln', function() vim.diagnostic.goto_next() end)
 nnoremap('<leader>lp', function() vim.diagnostic.goto_prev() end)
 
-local function config(_config)
+local function config(server_config)
   return vim.tbl_deep_extend("force", {
     capabilities = require('cmp_nvim_lsp').default_capabilities(),
     on_attach = function(_, bufnr) -- client, bufnr
@@ -366,7 +366,7 @@ local function config(_config)
       -- select code action at point (need to experiment)
       nnoremap('<leader>lca', function() vim.lsp.buf.code_action() end, bufopts)
     end
-  }, _config or {})
+  }, server_config or {})
 end
 
 require('mason-lspconfig').setup_handlers({
