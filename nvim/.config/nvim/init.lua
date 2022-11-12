@@ -53,6 +53,10 @@ require('packer').startup(function(use)
     'nvim-treesitter/nvim-treesitter',
     run = function() require('nvim-treesitter.install').update({ with_sync = true }) end,
   }
+  use 'nvim-treesitter/nvim-treesitter-context'
+
+  -- smart indentation based on treesitter. ref to experiment later
+  -- use({ "yioneko/nvim-yati", tag = "*", requires = "nvim-treesitter/nvim-treesitter" })
 
   -- Telescope!
   --use 'nvim-lua/popup.nvim'
@@ -204,10 +208,65 @@ nnoremap('<leader>q', '<C-w>q')
 -- hardline status line
 require('hardline').setup({})
 require('nvim-treesitter.configs').setup({
-  ensure_installed = 'all',
-  highlight = {
+  ensure_installed = {
+    'bash',
+    'c',
+    'cmake',
+    'comment',
+    'cpp',
+    'css',
+    'diff',
+    'dockerfile',
+    'dot',
+    'fennel',
+    'gdscript',
+    'git_rebase',
+    'gitattributes',
+    'gitignore',
+    'go',
+    'godot_resource',
+    'graphql',
+    'hcl',
+    'help',
+    'html',
+    'hocon',
+    'http',
+    'java',
+    'javascript',
+    'jsdoc',
+    'json',
+    'kotlin',
+    'lua',
+    'make',
+    'markdown',
+    'markdown_inline',
+    'python',
+    'regex',
+    'scss',
+    'sql',
+    'swift',
+    'toml',
+    'typescript',
+    'vim',
+    'vue',
+    'yaml'
+  }, -- install all parsers
+  indent = { -- EXPERIMENTAL. may need to try nvim-yati
     enable = true
-  }
+  },
+  highlight = {
+    -- can configure to disable for specific languages, or function to e.g. not use on a large file
+    enable = true
+  },
+  incremental_selection = { -- maybe look into textregions
+    enable = true,
+    keymaps = {
+      init_selection = "gnn",
+      node_incremental = "grn",
+      scope_incremental = "grc",
+      node_decremental = "grm",
+    },
+  },
 })
 -- LSP client manager, auto installer, and auto configuration
 require("mason").setup({
