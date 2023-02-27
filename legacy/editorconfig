@@ -11,7 +11,7 @@ indent_style = space
 indent_size = 4
 
 # Use 2 spaces for specific file types
-[{*.{html,js,css,scss,json,rb,ml,feature,lua},Dockerfile}]
+[{*.{html,js,css,scss,json,rb,ml,feature,lua,ts},Dockerfile}]
 indent_size = 2
 
 # tab-by boys
@@ -24,7 +24,7 @@ trim_trailing_whitespace = false
 
 # don't add final newlines
 [*.json]
-insert_final_newline = ignore
+insert_final_newline = false
 
 # Minified JavaScript files shouldn't be changed
 [**.min.js]
