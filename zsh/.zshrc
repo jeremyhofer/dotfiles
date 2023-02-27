@@ -113,6 +113,7 @@ export EDITOR='nvim'
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias vim='nvim'
+alias tvim='NVIM_APPNAME=nvim-test nvim'
 alias ovim='/usr/bin/vim'
 
 if [ -f "$HOME/.personal/zshrc" ]; then
