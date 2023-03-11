@@ -1,13 +1,15 @@
 return {
   -- COLORS!!
   {
-    'ellisonleao/gruvbox.nvim',
-    branch = 'main',
+    'sainnhe/gruvbox-material',
     lazy = false, --false as this is main color theme
     priority = 1000, --top priority
     config = function ()
       -- load colorscheme
-      vim.cmd.colorscheme('gruvbox')
+      vim.g.gruvbox_material_background = 'hard'
+      vim.g.gruvbox_material_better_performance = 1
+      vim.g.gruvbox_material_foreground = 'original'
+      vim.cmd.colorscheme('gruvbox-material')
     end
   },
   -- statusline
