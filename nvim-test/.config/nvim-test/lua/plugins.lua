@@ -1,13 +1,13 @@
 return {
   -- COLORS!!
   {
-    'luisiacc/gruvbox-baby',
+    'ellisonleao/gruvbox.nvim',
     branch = 'main',
     lazy = false, --false as this is main color theme
     priority = 1000, --top priority
     config = function ()
       -- load colorscheme
-      vim.cmd.colorscheme('gruvbox-baby')
+      vim.cmd.colorscheme('gruvbox')
     end
   },
   -- statusline
