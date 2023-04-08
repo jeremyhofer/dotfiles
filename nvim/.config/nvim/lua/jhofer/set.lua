@@ -1,11 +1,5 @@
 -- General Settings
 vim.opt.background = 'dark'
--- TODO: handle colorscheme elswhere. also, switched gruvbox plugin, so materials can probably go away
---vim.g.gruvbox_material_background = 'hard'
---vim.g.gruvbox_material_better_performance = 1
---vim.g.gruvbox_material_foreground = 'original'
---vim.cmd.colorscheme 'gruvbox-material'
-
 vim.opt.termguicolors = true
 vim.opt.number = true -- line numbers
 vim.opt.relativenumber = true -- for relative line numbers for jumping up/down
@@ -26,9 +20,8 @@ vim.opt.hlsearch = false -- gets annoying having stuff highlighted
 vim.opt.smartindent = true
 vim.opt.undofile = true
 -- use treesitter for folding
--- TODO: handle treesitter folding elsewhere
---vim.opt.foldmethod = 'expr'
---vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
+vim.opt.foldmethod = 'expr'
+vim.opt.foldexpr = 'nvim_treesitter#foldexpr()'
 vim.opt.foldlevelstart = 99
 
 -- config for netrw built in file browser - set up similar to Nerdtree
