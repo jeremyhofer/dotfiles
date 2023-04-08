@@ -300,5 +300,93 @@ return {
 
       lsp.setup()
     end
+  },
+  {
+    'TimUntersberger/neogit',
+    dependencies = {
+      {'nvim-lua/plenary.nvim'}
+    },
+    config = true
+  },
+  {
+    "rest-nvim/rest.nvim",
+    dependencies = {
+      {'nvim-lua/plenary.nvim'}
+    },
+    config = function()
+      require("rest-nvim").setup({
+        -- Open request results in a horizontal split
+        result_split_horizontal = false,
+        -- Keep the http file buffer above|left when split horizontal|vertical
+        result_split_in_place = false,
+        -- Skip SSL verification, useful for unknown certificates
+        skip_ssl_verification = false,
+        -- Encode URL before making request
+        encode_url = true,
+        -- Highlight request on run
+        highlight = {
+          enabled = true,
+          timeout = 150,
+        },
+        result = {
+          -- toggle showing URL, HTTP info, headers at top the of result window
+          show_url = true,
+          show_http_info = true,
+          show_headers = true,
+          -- executables or functions for formatting response body [optional]
+          -- set them to false if you want to disable them
+          formatters = {
+            json = "jq",
+            html = function(body)
+              return vim.fn.system({"tidy", "-i", "-q", "-"}, body)
+            end
+          },
+        },
+        -- Jump to request line on run
+        jump_to_request = false,
+        env_file = '.env',
+        custom_dynamic_variables = {},
+        yank_dry_run = true,
+      })
+    end
+  },
+  {
+    "gnikdroy/projections.nvim", -- https://github.com/GnikDroy/projections.nvim
+    dependencies = {
+      {'nvim-telescope/telescope.nvim'}
+    },
+    config = function()
+      require("projections").setup({
+        workspaces = {                                -- Default workspaces to search for
+          -- { "~/Documents/dev", { ".git" } },        Documents/dev is a workspace. patterns = { ".git" }
+          -- { "~/repos", {} },                        An empty pattern list indicates that all subdirectories are considered projects
+          -- "~/dev",                                  dev is a workspace. default patterns is used (specified below)
+        },
+        -- patterns = { ".git", ".svn", ".hg" },      -- Default patterns to use if none were specified. These are NOT regexps.
+        -- store_hooks = { pre = nil, post = nil },   -- pre and post hooks for store_session, callable | nil
+        -- restore_hooks = { pre = nil, post = nil }, -- pre and post hooks for restore_session, callable | nil
+        -- workspaces_file = "path/to/file",          -- Path to workspaces json file
+        -- sessions_directory = "path/to/dir",        -- Directory where sessions are stored
+      })
+
+      -- Bind <leader>fp to Telescope projections
+      require('telescope').load_extension('projections')
+      local utils = require("jhofer.utils")
+      utils.nnoremap('<leader>fp', function() vim.cmd("Telescope projections") end)
+
+      -- Autostore session on VimExit
+      --local Session = require("projections.session")
+      --vim.api.nvim_create_autocmd({ 'VimLeavePre' }, {
+      --  callback = function() Session.store(vim.loop.cwd()) end,
+      --})
+
+      ---- Switch to project if vim was started in a project dir
+      --local switcher = require("projections.switcher")
+      --vim.api.nvim_create_autocmd({ "VimEnter" }, {
+      --  callback = function()
+      --    if vim.fn.argc() == 0 then switcher.switch(vim.loop.cwd()) end
+      --  end,
+      --})
+    end
   }
 }

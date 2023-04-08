@@ -21,7 +21,11 @@ utils.nnoremap('<leader>rm', function() vim.api.nvim_call_function('delete', {vi
 utils.nnoremap('<leader>rwy', 'ciw<C-r>0')
 
 -- quick edit config with \v
-utils.nnoremap('<leader>v', function() vim.cmd.e(vim.api.nvim_eval('$MYVIMRC')) end)
+utils.nnoremap('<leader>vc', function() vim.cmd.e(vim.api.nvim_eval('$MYVIMRC')) end)
+utils.nnoremap('<leader>vp', function() vim.cmd.e(vim.fn.stdpath("config") .. "/lua/plugins.lua") end)
+utils.nnoremap('<leader>vs', function() vim.cmd.e(vim.fn.stdpath("config") .. "/lua/jhofer/set.lua") end)
+utils.nnoremap('<leader>va', function() vim.cmd.e(vim.fn.stdpath("config") .. "/lua/jhofer/autocmd.lua") end)
+utils.nnoremap('<leader>vr', function() vim.cmd.e(vim.fn.stdpath("config") .. "/lua/jhofer/remap.lua") end)
 
 -- toggle spell
 utils.nnoremap('<leader>sp', function() vim.opt_local.spell = not vim.opt_local.spell:get() end)
