@@ -29,6 +29,7 @@ vim.g.netrw_banner = 0
 vim.g.netrw_liststyle = 3
 vim.g.netrw_altv = 1
 vim.g.netrw_winsize = 25
+vim.opt.sessionoptions:append("localoptions") -- save local opts to session file
 -- below are legacy things. may not need and don't readily use
 --set exrc "allow per-project rc's!! - check if I really need/want this
 --set splitright " new split to the right of current window - I don't really use splits anymore
