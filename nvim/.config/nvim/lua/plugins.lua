@@ -57,7 +57,6 @@ return {
         'gitattributes',
         'gitignore',
         'godot_resource',
-        'help',
         'html',
         'http',
         'java',
@@ -76,6 +75,7 @@ return {
         'swift',
         'typescript',
         'vim',
+        'vimdoc',
         'vue',
         'yaml'
       }, -- install all parsers
