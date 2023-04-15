@@ -15,7 +15,7 @@ if [ "$action" = "D" ] || [ "$action" = "S" ] || [ "$action" = "R" ]; then
     fi
 
     # shellcheck disable=SC2086
-    stow -t ~ "-$action" $projects
+    stow --dotfiles -t "$HOME" "-$action" $projects
 else
     echo "Valid Commands: S (stow) R (restow) D (delete)"
     exit 1
