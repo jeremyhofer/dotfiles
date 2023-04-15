@@ -5,7 +5,6 @@ function M.get_domain_config()
     plugins = {
       projections = {
         workspaces = {
-          { '~/.dotfiles', {} }
         }
       }
     }
