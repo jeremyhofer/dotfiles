@@ -16,10 +16,12 @@ function M.get_domain_config()
 
   if has_home then
     config = vim.tbl_deep_extend("force", config, home)
+    home.setup_autocmds()
   end
 
   if has_work then
     config = vim.tbl_deep_extend("force", config, work)
+    work.setup_autocmds()
   end
 
   return config
