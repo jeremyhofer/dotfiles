@@ -107,20 +107,24 @@ return {
     'nvim-telescope/telescope.nvim',
     branch = '0.1.x',
     dependencies = {
-      {'nvim-lua/plenary.nvim'}
+      {'nvim-lua/plenary.nvim'},
+      {'folke/trouble.nvim'}
     },
     config = function()
       local actions = require('telescope.actions')
+      local trouble = require("trouble.providers.telescope")
       require("telescope").setup({
         defaults = {
           mappings = {
             i = {
               ["<C-w>"] = actions.send_selected_to_qflist,
               ["<C-q>"] = actions.send_to_qflist,
+              ["<C-t>"] = trouble.open_with_trouble,
             },
             n = {
               ["<C-w>"] = actions.send_selected_to_qflist,
               ["<C-q>"] = actions.send_to_qflist,
+              ["<C-t>"] = trouble.open_with_trouble,
             },
           }
         }
@@ -149,7 +153,43 @@ return {
   },
   {
     'folke/trouble.nvim',
-    config = true
+    config = function ()
+      local trouble = require('trouble')
+      trouble.setup()
+
+      local utils = require("jhofer.utils")
+
+      utils.nnoremap("<leader>tx", function() trouble.toggle() end,
+        {silent = true}
+      )
+      utils.nnoremap("<leader>tw", function() trouble.toggle({mode="workspace_diagnostics"}) end,
+        {silent = true}
+      )
+      utils.nnoremap("<leader>td", function() trouble.toggle({mode="document_diagnostics"}) end,
+        {silent = true}
+      )
+      utils.nnoremap("<leader>tl", function() trouble.toggle({mode="loclist"}) end,
+        {silent = true}
+      )
+      utils.nnoremap("<leader>tq", function() trouble.toggle({mode="quickfix"}) end,
+        {silent = true}
+      )
+      -- open all references to thing under cursor
+      utils.nnoremap("gR", function() trouble.toggle({mode="lsp_references"}) end,
+        {silent = true}
+      )
+      -- jump to the next item, skipping the groups
+      utils.nnoremap("<leader>tn", function() trouble.next({skip_groups = true, jump = true}) end);
+
+      -- jump to the previous item, skipping the groups
+      utils.nnoremap("<leader>tp", function() trouble.previous({skip_groups = true, jump = true}) end);
+
+      -- jump to the first item, skipping the groups
+      utils.nnoremap("<leader>tf", function() trouble.first({skip_groups = true, jump = true}) end);
+
+      -- jump to the last item, skipping the groups
+      utils.nnoremap("<leader>te", function() trouble.last({skip_groups = true, jump = true}) end);
+    end
   },
   {
     'VonHeikemen/lsp-zero.nvim',
@@ -382,9 +422,8 @@ return {
         callback = function()
           if vim.fn.argc() ~= 0 then return end
           local session_info = Session.info(vim.loop.cwd())
-          if session_info == nil then
-            Session.restore_latest()
-          else
+
+          if session_info ~= nil then
             Session.restore(vim.loop.cwd())
           end
         end,
