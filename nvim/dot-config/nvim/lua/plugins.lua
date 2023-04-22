@@ -239,6 +239,7 @@ return {
       local utils = require("jhofer.utils")
 
       lsp.on_attach(function(_, bufnr) -- client, bufnr
+        lsp.default_keymaps({buffer = bufnr, omit={'gi'}})
         local bufopts = { buffer=bufnr }
         -- lsp bindings for various awesomeness
         -- jump to definition of symbol. default gd
@@ -247,6 +248,7 @@ return {
         utils.nnoremap('<leader>lD', function() vim.lsp.buf.declaration() end, bufopts)
         -- jump to implementation of symbol. default gi
         utils.nnoremap('<leader>li', function() vim.lsp.buf.implementation() end, bufopts)
+        utils.nnoremap('gI', function() vim.lsp.buf.implementation() end, bufopts)
         -- jump to type definition of symbol. default go
         utils.nnoremap('<leader>lo', function() vim.lsp.buf.type_definition() end, bufopts)
         -- display signature info (params, etc.) for symbol. default gs
