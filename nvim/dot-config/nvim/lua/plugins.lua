@@ -57,6 +57,7 @@ return {
         'gitattributes',
         'gitignore',
         'godot_resource',
+        'graphql',
         'html',
         'http',
         'java',
@@ -193,11 +194,16 @@ return {
   },
   {
     'VonHeikemen/lsp-zero.nvim',
-    branch = 'v1.x',
+    branch = 'v2.x',
     dependencies = {
       -- LSP Support
       {'neovim/nvim-lspconfig'},             -- Required
-      {'williamboman/mason.nvim'},           -- Optional
+      {
+        'williamboman/mason.nvim',
+        build = function()
+          pcall(vim.cmd, 'MasonUpdate')
+        end,
+      }, -- Optional
       {'williamboman/mason-lspconfig.nvim'}, -- Optional
 
       -- Autocompletion
@@ -218,46 +224,15 @@ return {
       local lsp = require('lsp-zero').preset({
         name = 'minimal',
         set_lsp_keymaps = false, -- don't set lsp-zero defaults, use mine
-        manage_nvim_cmp = true,
+        manage_nvim_cmp = {
+          set_sources = 'recommended',
+          set_basic_mappings = true,
+          set_extra_mappings = true,
+          use_luasnip = true,
+          set_format = true,
+          documentation_window = true
+        },
         suggest_lsp_servers = false,
-      })
-
-      -- set cmp settings and keybindings
-      local cmp = require('cmp')
-
-      lsp.setup_nvim_cmp({
-        --preselect = 'none',
-        --completion = {
-        --  completeopt = 'menu,menuone,noinsert,noselect'
-        --},
-        mapping = cmp.mapping.preset.insert({
-          ['<C-d>'] = cmp.mapping.scroll_docs(-4),
-          ['<C-f>'] = cmp.mapping.scroll_docs(4),
-          ['<C-Space>'] = cmp.mapping.complete(),
-          ['<C-e>'] = cmp.mapping.close(),
-          ['<CR>'] = cmp.mapping.confirm({
-            behavior = cmp.ConfirmBehavior.Replace,
-            select = true
-          }),
-          --['<Tab>'] = cmp.mapping(function(fallback)
-          --  if cmp.visible() then
-          --    cmp.select_next_item()
-          --  elseif luasnip.expand_or_jumpable() then
-          --    luasnip.expand_or_jump()
-          --  else
-          --    fallback()
-          --  end
-          --end, { 'i', 's' }),
-          --['<S-Tab>'] = cmp.mapping(function(fallback)
-          --  if cmp.visible() then
-          --    cmp.select_prev_item()
-          --  elseif luasnip.jumpable(-1) then
-          --    luasnip.jump(-1)
-          --  else
-          --    fallback()
-          --  end
-          --end, { 'i', 's' }),
-        }),
       })
 
       -- set lsp keybindings
@@ -269,17 +244,19 @@ return {
         -- jump to definition of symbol. default gd
         utils.nnoremap('<leader>ld', function() vim.lsp.buf.definition() end, bufopts)
         -- jump to global definition of symbol. default gD
-        utils.nnoremap('<leader>lD', function() vim.lsp.buf.definition() end, bufopts)
+        utils.nnoremap('<leader>lD', function() vim.lsp.buf.declaration() end, bufopts)
         -- jump to implementation of symbol. default gi
         utils.nnoremap('<leader>li', function() vim.lsp.buf.implementation() end, bufopts)
         -- jump to type definition of symbol. default go
         utils.nnoremap('<leader>lo', function() vim.lsp.buf.type_definition() end, bufopts)
-        -- display signature info (params, etc.) for symbol. default <C-k>
+        -- display signature info (params, etc.) for symbol. default gs
         utils.nnoremap('<leader>ls', function() vim.lsp.buf.signature_help() end, bufopts)
         -- list all refs to symbol in QF window. default gr
         utils.nnoremap('<leader>lrr', function() vim.lsp.buf.references() end, bufopts)
         -- rename all refs under symbol. default F2
         utils.nnoremap('<leader>lrn', function() vim.lsp.buf.rename() end, bufopts)
+        -- format buffer. default F3
+        utils.nnoremap('<leader>lf', function() vim.lsp.buf.format() end, bufopts)
         -- display hover info. default K
         utils.nnoremap('<leader>lh', function() vim.lsp.buf.hover() end, bufopts)
         -- select code action at point (need to experiment). default F4
@@ -312,7 +289,7 @@ return {
       })
 
       lsp.configure('bashls', {
-        filetypes = { 'sh', 'zsh' }
+        filetypes = { 'sh', 'zsh', 'bash' }
       })
 
       lsp.configure('lua_ls', {
@@ -336,6 +313,13 @@ return {
             },
           },
         }
+      })
+
+      lsp.format_on_save({
+        format_opts = {
+          timeout_ms = 10000
+        },
+        servers = {}
       })
 
       lsp.setup()
