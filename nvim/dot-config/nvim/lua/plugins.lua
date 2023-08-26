@@ -328,7 +328,7 @@ return {
     end
   },
   {
-    'TimUntersberger/neogit',
+    'NeogitOrg/neogit',
     dependencies = {
       {'nvim-lua/plenary.nvim'}
     },
@@ -378,6 +378,7 @@ return {
   },
   {
     "gnikdroy/projections.nvim", -- https://github.com/GnikDroy/projections.nvim
+    branch = "pre_release",
     dependencies = {
       {'nvim-telescope/telescope.nvim'}
     },
