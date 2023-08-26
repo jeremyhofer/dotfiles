@@ -37,6 +37,7 @@ return {
     end,
     dependencies = {
       {'nvim-treesitter/nvim-treesitter-context'},
+      {'windwp/nvim-ts-autotag'}
     },
     config = function(_, opts)
       require("nvim-treesitter.configs").setup(opts)
@@ -96,6 +97,9 @@ return {
           node_decremental = "grm",
         },
       },
+      autotag = {
+        enable = true,
+      }
     }
   },
 
@@ -109,12 +113,16 @@ return {
     branch = '0.1.x',
     dependencies = {
       {'nvim-lua/plenary.nvim'},
-      {'folke/trouble.nvim'}
+      {'folke/trouble.nvim'},
+      {'debugloop/telescope-undo.nvim'},
+      {'nvim-telescope/telescope-file-browser.nvim'},
+      {'Marskey/telescope-sg'}
     },
     config = function()
+      local telescope = require("telescope")
       local actions = require('telescope.actions')
       local trouble = require("trouble.providers.telescope")
-      require("telescope").setup({
+      telescope.setup({
         defaults = {
           mappings = {
             i = {
@@ -128,8 +136,50 @@ return {
               ["<C-t>"] = trouble.open_with_trouble,
             },
           }
-        }
+        },
+        extensions = {
+          undo = {
+-- https://github.com/debugloop/telescope-undo.nvim/blob/main/lua/telescope/_extensions/undo.lua#L6
+--            use_delta = true,
+--            use_custom_command = nil, -- setting this implies `use_delta = false`. Accepted format is: { "bash", "-c", "echo '$DIFF' | delta" }
+            side_by_side = true,
+            layout_strategy = "vertical",
+            layout_config = {
+              preview_height = 0.8,
+            },
+--            diff_context_lines = vim.o.scrolloff,
+--            entry_format = "state #$ID, $STAT, $TIME",
+--            time_format = "",
+--            mappings = {
+--              i = {
+--                -- IMPORTANT: Note that telescope-undo must be available when telescope is configured if
+--                -- you want to replicate these defaults and use the following actions. This means
+--                -- installing as a dependency of telescope in it's `requirements` and loading this
+--                -- extension from there instead of having the separate plugin definition as outlined
+--                -- above.
+--                ["<cr>"] = require("telescope-undo.actions").yank_additions,
+--                ["<S-cr>"] = require("telescope-undo.actions").yank_deletions,
+--                ["<C-cr>"] = require("telescope-undo.actions").restore,
+--              },
+--            },
+          },
+          file_browser = {
+            hijack_netrw = true,
+          },
+          ast_grep = {
+--            command = {
+--              "sg",
+--              "--json=stream",
+--            }, -- must have --json=stream
+            grep_open_files = false, -- search in opened files
+            lang = nil, -- string value, specify language for ast-grep `nil` for default
+          }
+        },
       })
+      telescope.load_extension("undo")
+      telescope.load_extension("file_browser")
+      telescope.load_extension("ast_grep")
+
       local utils = require("jhofer.utils")
       local builtin = require('telescope.builtin')
       utils.nnoremap('<leader>ff', function() builtin.find_files() end)
@@ -137,6 +187,9 @@ return {
       utils.nnoremap('<leader>fg', function() builtin.live_grep() end)
       utils.nnoremap('<leader>fb', function() builtin.buffers() end)
       utils.nnoremap('<leader>fh', function() builtin.help_tags() end)
+      utils.nnoremap('<leader>fu', function() telescope.extensions.undo.undo() end)
+      utils.nnoremap('<leader>fv', function() telescope.extensions.file_browser.file_browser() end)
+      utils.nnoremap('<leader>fc', function() vim.cmd("Telescope ast_grep") end) -- https://ast-grep.github.io/guide/introduction.html
     end
   },
 
@@ -149,11 +202,12 @@ return {
 
   -- diagnostics, the nice way
   {
-    'kyazdani42/nvim-web-devicons',
+    'nvim-tree/nvim-web-devicons',
     config = true
   },
   {
     'folke/trouble.nvim',
+    dependencies = { "nvim-tree/nvim-web-devicons" },
     config = function ()
       local trouble = require('trouble')
       trouble.setup()
@@ -179,7 +233,7 @@ return {
       utils.nnoremap("gR", function() trouble.toggle({mode="lsp_references"}) end,
         {silent = true}
       )
-      -- jump to the next item, skipping the groups
+     -- jump to the next item, skipping the groups
       utils.nnoremap("<leader>tn", function() trouble.next({skip_groups = true, jump = true}) end);
 
       -- jump to the previous item, skipping the groups
@@ -190,6 +244,15 @@ return {
 
       -- jump to the last item, skipping the groups
       utils.nnoremap("<leader>te", function() trouble.last({skip_groups = true, jump = true}) end);
+    end
+  },
+  {
+    'lewis6991/gitsigns.nvim',
+    dependencies = {
+      { 'folke/trouble.nvim' }
+    },
+    config = function()
+      require('gitsigns').setup({})
     end
   },
   {
@@ -417,5 +480,12 @@ return {
         desc = "Restore last session automatically"
       })
     end
+  },
+  {
+    'numToStr/Comment.nvim', -- https://github.com/numToStr/Comment.nvim
+    opts = {
+        -- add any options here
+    },
+    lazy = false,
   }
 }
