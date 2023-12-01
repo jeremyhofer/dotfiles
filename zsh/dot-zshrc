@@ -115,6 +115,8 @@ export EDITOR='nvim'
 alias vim='nvim'
 alias tvim='NVIM_APPNAME=nvim-test nvim'
 alias ovim='/usr/bin/vim'
+alias nx='nocorrect npx nx'
+eval "$(direnv hook zsh)"
 
 if [ -f "$HOME/.personal/zshrc" ]; then
     source "$HOME/.personal/zshrc"
