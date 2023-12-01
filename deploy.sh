@@ -6,9 +6,9 @@ if [ "$action" = "D" ] || [ "$action" = "S" ] || [ "$action" = "R" ]; then
     projects=""
 
     if [ "$domain" = "h" ]; then
-        projects="alacritty git i3 nvim ssh tmux X yamllint zsh"
+        projects="alacritty git i3 nvim editorconfig ssh tmux X yamllint zsh"
     elif [ "$domain" = "w" ]; then
-        projects="git nvim ssh tmux yamllint zsh"
+        projects="git nvim editorconfig ssh tmux yamllint zsh"
     else
         echo "Valid Domains: h (home) w (work)"
         exit 1
