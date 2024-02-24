@@ -82,6 +82,13 @@ plugins=(
   ripgrep
   tmux
   vi-mode
+  node
+  colored-man-pages
+  colorize
+  command-not-found
+  direnv
+  dirpersist
+  jsontools
 )
 
 source $ZSH/oh-my-zsh.sh
@@ -112,11 +119,12 @@ export EDITOR='nvim'
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
-alias vim='nvim'
 alias tvim='NVIM_APPNAME=nvim-test nvim'
-alias ovim='/usr/bin/vim'
-alias nx='nocorrect npx nx'
+nx() { nocorrect npx nx "$@"; }
 eval "$(direnv hook zsh)"
+NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
+export NVM_DIR
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm
 
 if [ -f "$HOME/.personal/zshrc" ]; then
     source "$HOME/.personal/zshrc"

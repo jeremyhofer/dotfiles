@@ -21,7 +21,7 @@ vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
 })
 
 vim.api.nvim_create_autocmd({'BufRead', 'BufNewFile'}, {
-  pattern = { 'zshrc', 'zprofile' },
+  pattern = { '*zshrc', '*zprofile' },
   callback = function () vim.opt_local.filetype = 'zsh' end
 })
 

@@ -38,16 +38,16 @@
 #keystate_scrolllock= enable
 
 # fn + f1 (mute):
-"pactl set-sink-mute @DEFAULT_SINK@ toggle"
-    XF86AudioMute
+#"pactl set-sink-mute @DEFAULT_SINK@ toggle"
+    #XF86AudioMute
 
 # fn + f2 (volume down):
-"pactl set-sink-volume @DEFAULT_SINK@ -2%"
-    XF86AudioLowerVolume
+#"pactl set-sink-volume @DEFAULT_SINK@ -2%"
+    #XF86AudioLowerVolume
 
 # fn + f3 (volume up):
-"pactl set-sink-volume @DEFAULT_SINK@ +2%"
-    XF86AudioRaiseVolume
+#"pactl set-sink-volume @DEFAULT_SINK@ +2%"
+    #XF86AudioRaiseVolume
 
 # fn + up (brightness up):
 "xbacklight -inc 10"
