@@ -1,6 +1,6 @@
-[user]
-    email = <email>
-    name = <name>
+[include]
+    path = "~/.personal/gitconfig"
+    path = "~/.work/gitconfig"
 [alias]
     lg = log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --all
 [sendemail]
@@ -15,7 +15,22 @@
     defaultBranch = master
 [core]
     excludesfile = ~/.gitignore_global
-[url "git@github.com:"]
-    insteadOf = https://github.com/
-[url "ssh://aur@aur.archlinux.org"]
-    insteadOf = https://aur.archlinux.org
+	pager = delta
+[merge]
+	conflictStyle = zdiff3
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	line-numbers = true
+[diff]
+	colorMoved = default
+	algorithm = histogram
+[fetch]
+	prune = true
+[log]
+	date = iso
+[push]
+	autoSetupRemote = true
+[branch]
+	sort = -committerdate
