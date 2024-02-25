@@ -10,4 +10,5 @@ Host *
     ServerAliveInterval 60
     ServerAliveCountMax 30
     AddKeysToAgent yes
-    UseKeychain yes
+# uncomment for osx
+#    UseKeychain yes
