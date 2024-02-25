@@ -1,9 +1,11 @@
-Host <name>
-    Hostname <IP or dns>
-    User <user>
+Include ~/.ssh/personal/config
+Include ~/.ssh/work/config
+#Host <name>
+#    Hostname <IP or dns>
+#    User <user>
 
 Host *
-    IdentityFile <ssh-key-path>
+    IdentityFile ~/.ssh/%u@%l
     ForwardAgent yes
     ServerAliveInterval 60
     ServerAliveCountMax 30
