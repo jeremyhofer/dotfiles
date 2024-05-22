@@ -89,6 +89,7 @@ plugins=(
   direnv
   dirpersist
   jsontools
+  rbenv
 )
 
 source $ZSH/oh-my-zsh.sh
