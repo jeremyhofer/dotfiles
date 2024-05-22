@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -e
+
+[[ -z "$1" ]] && echo "Usage: git-merge-diff <base-branch> <merge-branch>" && exit 1
+
+[[ -z "$2" ]] && echo "Usage: git-merge-diff <base-branch> <merge-branch>" && exit 1
+
+git fetch
+BASE_COMMIT=$(git merge-base "$2" "$1")
+git diff "${BASE_COMMIT}"..."$2"
