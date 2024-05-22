@@ -120,7 +120,7 @@ export EDITOR='nvim'
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
-alias tvim='NVIM_APPNAME=nvim-test nvim'
+alias ovim='NVIM_APPNAME=nvim-old nvim'
 nx() { nocorrect npx nx "$@"; }
 eval "$(direnv hook zsh)"
 NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
