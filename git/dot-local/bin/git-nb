@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -e
+gitDir=$(git rev-parse --git-dir | sed 's/\/\.bare.*//')
+[[ $gitDir == '.bare' ]] && gitDir=$(pwd)
+[[ -z "$1" ]] && echo "Usage: git-nb <branch-name>" && exit 1
+baseName=$(basename "$1")
+git fetch
+
+if [[ -z "$2" ]]; then
+    cd "$gitDir" && git worktree add "$baseName" "$1"
+else
+    cd "$gitDir" && git worktree add -b "$baseName" "$2"
+fi
