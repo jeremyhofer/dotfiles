@@ -72,25 +72,89 @@ DISABLE_UNTRACKED_FILES_DIRTY="true"
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(
-  git
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/jsontools
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/alias-finder
+  alias-finder
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/aliases
+  aliases
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/archlinux
   archlinux
-  npm
-  ng
-  nvm
-  nx-completion
-  pyenv
-  ripgrep
-  tmux
-  vi-mode
-  node
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/colored-man-pages
   colored-man-pages
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/colorize
   colorize
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/command-not-found
   command-not-found
-  direnv
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/cp
+  cp
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/dirpersist
   dirpersist
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/docker
+  docker
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/docker-compose
+  docker-compose
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/encode64
+  encode64
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/extract
+  extract
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/fzf
+  fzf
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/git
+  git
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/git-prompt
+  git-prompt
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/isodate
+  isodate
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/jsontools
   jsontools
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/man
+  man
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/ng
+  ng
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/node
+  node
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/npm
+  npm
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/nvm
+  nvm
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/nx-completion
+  nx-completion
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/procs
+  procs
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/pyenv
+  pyenv
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/rbenv
   rbenv
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/rsync
+  rsync
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/ssh
+  ssh
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/sudo
+  sudo
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/systemd
+  systemd
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/thefuck
+  thefuck
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/tmux
+  tmux
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/urltools
+  urltools
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/vi-mode
+  vi-mode
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/wd
+  wd
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/web-search
+  web-search
+  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/yarn
+  yarn
 )
+
+# Plugin configurations
+zstyle ':omz:plugins:nvm' autoload yes
+zstyle ':omz:plugins:alias-finder' autoload yes # disabled by default
+zstyle ':omz:plugins:alias-finder' longer yes # disabled by default
+zstyle ':omz:plugins:alias-finder' exact yes # disabled by default
+zstyle ':omz:plugins:alias-finder' cheaper yes # disabled by default
 
 source $ZSH/oh-my-zsh.sh
 
@@ -120,6 +184,7 @@ export EDITOR='nvim'
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+alias vim='nvim'
 alias ovim='NVIM_APPNAME=nvim-old nvim'
 nx() { nocorrect npx nx "$@"; }
 eval "$(direnv hook zsh)"
