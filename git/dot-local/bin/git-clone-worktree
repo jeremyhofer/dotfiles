@@ -28,6 +28,9 @@ cd "$name"
 git clone --bare "$url" .bare
 echo "gitdir: ./.bare" >.git
 
+# delete the local branches a bare checkout creates by default
+git branch | xargs git branch -D
+
 # Explicitly sets the remote origin fetch so we can fetch remote branches
 git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 
@@ -35,7 +38,7 @@ git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 git fetch origin
 
 # Checkout default branch and set upstream
-defaultBranch=$(git remote show origin origin | sed -n '/HEAD branch/s/.*: /p')
+defaultBranch=$(git remote show origin | sed -n '/HEAD branch/ s/.*: //p')
 defaultBasename=$(basename "$defaultBranch")
 
 git worktree add "$defaultBasename" "$defaultBranch"
