@@ -29,7 +29,7 @@ git clone --bare "$url" .bare
 echo "gitdir: ./.bare" >.git
 
 # delete the local branches a bare checkout creates by default
-git branch | xargs git branch -D
+git branch | grep -v "\*" | xargs git branch -D
 
 # Explicitly sets the remote origin fetch so we can fetch remote branches
 git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
