@@ -50,12 +50,12 @@
     #XF86AudioRaiseVolume
 
 # fn + up (brightness up):
-"xbacklight -inc 10"
-    XF86MonBrightnessUp
+#"xbacklight -inc 10"
+    #XF86MonBrightnessUp
 
 # fn + down (brightness down):
-"xbacklight -dec 10"
-    XF86MonBrightnessDown
+#"xbacklight -dec 10"
+    #XF86MonBrightnessDown
 
 ##################################
 # End of xbindkeys configuration #

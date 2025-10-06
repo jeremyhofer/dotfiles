@@ -48,6 +48,10 @@ bindsym XF86AudioMicMute exec --no-startup-id pactl set-source-mute @DEFAULT_SOU
 bindsym Print exec --no-startup-id maim ~/Pictures/screenshots/$(date +%s).png
 bindsym Shift+Print exec --no-startup-id maim -s ~/Pictures/screenshots/$(date +%s).png
 
+# Screen Brightness Control
+bindsym XF86MonBrightnessUp exec --no-startup-id light -A 5
+bindsym XF86MonBrightnessDown exec --no-startup-id light -U 5
+
 # Use playerctl(d) to control MPRIS compliant audio applications (spotify, vlc, etc.)
 bindsym XF86AudioPrev exec --no-startup-id playerctl previous
 bindsym XF86AudioPlay exec --no-startup-id playerctl play-pause
