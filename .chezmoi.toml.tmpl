@@ -1,0 +1,7 @@
+{{- $domain := promptStringOnce . "domain" "Domain (personal|work)" "personal" -}}
+{{- $overlayRepo := promptStringOnce . "overlayRepo" "Overlay repo git URL" -}}
+{{- $dpi := promptStringOnce . "dpi" "Display DPI" "120" -}}
+[data]
+    domain = {{ $domain | quote }}
+    overlayRepo = {{ $overlayRepo | quote }}
+    dpi = {{ $dpi | quote }}
