@@ -1,0 +1,14 @@
+Include ~/.dotlocal/ssh/config
+#Host <name>
+#    Hostname <IP or dns>
+#    User <user>
+
+Host *
+    IdentityFile ~/.ssh/%u@%l
+    ForwardAgent yes
+    ServerAliveInterval 60
+    ServerAliveCountMax 30
+    AddKeysToAgent yes
+{{- if eq .chezmoi.os "darwin" }}
+    UseKeychain yes
+{{- end }}

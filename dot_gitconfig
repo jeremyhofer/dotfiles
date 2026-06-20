@@ -1,0 +1,41 @@
+[include]
+    path = "~/.dotlocal/gitconfig"
+[alias]
+    lg = log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --all
+#[sendemail]
+#    smtpserver = <server>
+#    smtpuser = <email>
+#    smtpencryption = tls
+#    smtpserverport = 587
+#    smtpPass = <pass>
+[pull]
+    ff = only
+[init]
+    defaultBranch = master
+[core]
+    excludesfile = ~/.gitignore_global
+	pager = delta
+[merge]
+	conflictStyle = zdiff3
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	line-numbers = true
+[diff]
+	colorMoved = default
+	algorithm = histogram
+[fetch]
+	prune = true
+[log]
+	date = iso
+[push]
+	autoSetupRemote = true
+[branch]
+	sort = -committerdate
+[rerere]
+	enabled = true
+[gpg]
+	format = ssh
+[commit]
+	gpgsign = true

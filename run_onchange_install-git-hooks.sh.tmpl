@@ -1,0 +1,45 @@
+#!/bin/sh
+# Installs a pre-push leak guard into the chezmoi SOURCE repo (.git/hooks/pre-push).
+# Defense-in-depth on the publish boundary: the public base must never carry private
+# content. The hook lives in .git/hooks (never pushed), so it may hold the literal
+# overlay URL; THIS installer is committed+public, so it injects that URL via the
+# {{ "{{ .overlayRepo }}" }} template var rather than a literal.
+set -eu
+
+src="{{ .chezmoi.sourceDir }}"
+[ -d "$src/.git" ] || exit 0          # only meaningful in the git-backed source repo
+hook="$src/.git/hooks/pre-push"
+mkdir -p "$src/.git/hooks"
+
+cat > "$hook" <<'HOOK'
+#!/bin/sh
+# pre-push leak guard (installed by chezmoi run_onchange_install-git-hooks).
+# Blocks pushing private content to the public GitHub remote.
+remote_url="$2"
+case "$remote_url" in *github.com*) ;; *) exit 0 ;; esac   # only guard the public remote
+
+KEY_RE='-----BEGIN[ A-Z]*PRIVATE KEY-----'
+OVERLAY='{{ .overlayRepo }}'
+zero=0000000000000000000000000000000000000000
+block=0
+while read -r localref localsha remoteref remotesha; do
+    [ "$localsha" = "$zero" ] && continue                 # branch deletion
+    hits=$(git grep -nIE "$KEY_RE" "$localsha" 2>/dev/null || true)
+    if [ -n "$OVERLAY" ]; then
+        hits="$hits
+$(git grep -nIF "$OVERLAY" "$localsha" 2>/dev/null || true)"
+    fi
+    hits=$(printf '%s\n' "$hits" | sed '/^$/d')
+    [ -n "$hits" ] && { printf '%s\n' "$hits" >&2; block=1; }
+done
+
+if [ "$block" -ne 0 ]; then
+    echo "pre-push BLOCKED: private content (private key or overlay URL) detected in a push to the public remote." >&2
+    echo "Remove it from the pushed commits (history rewrite if already committed) before pushing." >&2
+    exit 1
+fi
+exit 0
+HOOK
+
+chmod +x "$hook"
+echo "installed pre-push leak guard -> $hook"
