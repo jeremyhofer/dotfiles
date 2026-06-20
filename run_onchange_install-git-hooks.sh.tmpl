@@ -14,9 +14,9 @@ mkdir -p "$src/.git/hooks"
 cat > "$hook" <<'HOOK'
 #!/bin/sh
 # pre-push leak guard (installed by chezmoi run_onchange_install-git-hooks).
-# Blocks pushing private content to the public GitHub remote.
-remote_url="$2"
-case "$remote_url" in *github.com*) ;; *) exit 0 ;; esac   # only guard the public remote
+# The base must never carry private content -> scan EVERY push (any remote; also
+# covers a combined multi-pushurl `all` remote, where the URL handed to the hook
+# may not be github's).
 
 KEY_RE='-----BEGIN[ A-Z]*PRIVATE KEY-----'
 OVERLAY='{{ .overlayRepo }}'
@@ -34,7 +34,7 @@ $(git grep -nIF "$OVERLAY" "$localsha" 2>/dev/null || true)"
 done
 
 if [ "$block" -ne 0 ]; then
-    echo "pre-push BLOCKED: private content (private key or overlay URL) detected in a push to the public remote." >&2
+    echo "pre-push BLOCKED: private content (private key or overlay URL) detected in the push." >&2
     echo "Remove it from the pushed commits (history rewrite if already committed) before pushing." >&2
     exit 1
 fi
