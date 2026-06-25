@@ -168,6 +168,13 @@ source $ZSH/oh-my-zsh.sh
 # fi
 export EDITOR='nvim'
 
+# Shared local-dev TLS cert: path-only contract for the mkcert localhost cert (paths, not secrets,
+# so it is safe here and reaches every machine). Projects read these env vars instead of hardcoding
+# a path, so the cert's issuer or location can change without touching any project. Provisioned by
+# run_once_after_setup-dev-tls.sh.tmpl at the default path below.
+export DEV_TLS_CERT="${DEV_TLS_CERT:-$HOME/.local/share/devcerts/localhost.pem}"
+export DEV_TLS_KEY="${DEV_TLS_KEY:-$HOME/.local/share/devcerts/localhost-key.pem}"
+
 # Compilation flags
 # export ARCHFLAGS="-arch x86_64"
 

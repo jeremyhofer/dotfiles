@@ -1,0 +1,32 @@
+#!/bin/sh
+# Provision the shared local-development TLS cert (mkcert). Idempotent; safe to re-run.
+# (Personal domain only — excluded on work machines via .chezmoiignore.)
+# - Ensures the mkcert local CA is trusted (system + NSS/browser stores) via `mkcert -install`.
+#   That step needs root, so `chezmoi apply` will prompt for your sudo password HERE. (Under test —
+#   if the buried prompt is unreliable, this moves out to a manual one-time `mkcert -install` step.)
+# - Generates ONE shared leaf for localhost / 127.0.0.1 / ::1 at the stable XDG path, consumed by every
+#   dev project through the DEV_TLS_CERT / DEV_TLS_KEY env vars (exported from the base zshrc). The leaf
+#   PRIVATE KEY is generated per-machine and never enters any repo.
+set -eu
+
+CERT_DIR="$HOME/.local/share/devcerts"
+CERT="$CERT_DIR/localhost.pem"
+KEY="$CERT_DIR/localhost-key.pem"
+
+if ! command -v mkcert >/dev/null 2>&1; then
+  echo "dev-tls: mkcert not installed — install it (Arch: pacman -S mkcert) then re-run 'chezmoi apply'"
+  exit 0
+fi
+
+# Trust the local CA in the system + NSS stores. Idempotent (no-op if already trusted).
+# Needs sudo the first time (system trust-store write).
+mkcert -install
+
+# Generate the shared localhost leaf once; never overwrite an existing one.
+if [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
+  mkdir -p "$CERT_DIR"
+  mkcert -cert-file "$CERT" -key-file "$KEY" localhost 127.0.0.1 ::1
+  echo "dev-tls: generated shared leaf at $CERT"
+else
+  echo "dev-tls: shared leaf already present at $CERT"
+fi
