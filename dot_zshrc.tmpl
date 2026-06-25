@@ -182,6 +182,18 @@ export EDITOR='nvim'
 alias vim='nvim'
 alias ovim='NVIM_APPNAME=nvim-old nvim'
 nx() { nocorrect npx nx "$@"; }
+
+# chezmoi-overlay: run the private overlay's own chezmoi instance,
+# with its config / state / cache isolated from the base.
+chezmoi-overlay() {
+  local cfgdir="$HOME/.config/chezmoi/overlay" src="$HOME/.local/share/chezmoi-overlay"
+  if [ ! -f "$cfgdir/chezmoi.toml" ] || [ ! -d "$src" ]; then
+    print -u2 "chezmoi-overlay: overlay not set up — run the base bootstrap first"; return 1
+  fi
+  chezmoi --config "$cfgdir/chezmoi.toml" --source "$src" \
+    --persistent-state "$cfgdir/chezmoistate.boltdb" --cache "$HOME/.cache/chezmoi/overlay" "$@"
+}
+
 eval "$(direnv hook zsh)"
 eval "$(fnm env --use-on-cd --version-file-strategy recursive --shell zsh)"
 
