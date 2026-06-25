@@ -1,0 +1,7 @@
+#!/bin/sh
+# Generic overlay-deploy trigger — runs after every `chezmoi apply`.
+# Keeps all specifics in the private ~/.dotlocal overlay; this public hook
+# reveals nothing. The deploy script is idempotent (symlinks), so re-running
+# each apply is cheap and picks up manifest changes.
+[ -x "$HOME/.dotlocal/deploy.sh" ] && exec "$HOME/.dotlocal/deploy.sh" apply
+exit 0
