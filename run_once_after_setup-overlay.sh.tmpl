@@ -1,0 +1,18 @@
+#!/bin/sh
+# Bootstrap the private overlay as its own chezmoi instance, with config/state/cache
+# isolated from the base. Idempotent; defensive — skips if no overlay repo is set for
+# this machine. The overlay URL stays machine-local (never committed to the public base).
+set -eu
+OVERLAY_REPO="{{ .overlayRepo | default "" }}"
+SRC="$HOME/.local/share/chezmoi-overlay"
+CFGDIR="$HOME/.config/chezmoi/overlay"
+CACHE="$HOME/.cache/chezmoi/overlay"
+
+[ -n "$OVERLAY_REPO" ] || { echo "overlay: no overlayRepo set — skipping"; exit 0; }
+
+[ -d "$SRC/.git" ] || git clone "$OVERLAY_REPO" "$SRC"
+mkdir -p "$CFGDIR" "$CACHE"
+[ -f "$CFGDIR/chezmoi.toml" ] || printf 'sourceDir = "%s"\ndestDir = "%s"\n[data]\n' "$SRC" "$HOME" > "$CFGDIR/chezmoi.toml"
+
+chezmoi --config "$CFGDIR/chezmoi.toml" --source "$SRC" \
+  --persistent-state "$CFGDIR/chezmoistate.boltdb" --cache "$CACHE" apply
