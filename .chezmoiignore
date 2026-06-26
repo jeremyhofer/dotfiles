@@ -11,6 +11,9 @@ CLAUDE.md
 .xbindkeysrc
 .config/i3/config
 .config/i3status/config
+# systemd-user ssh-agent routing — Linux-only (no systemd/environment.d on macOS,
+# which uses its own launchd ssh-agent; deploying this would clobber it).
+.config/environment.d/ssh-auth-sock.conf
 {{ end }}
 
 {{ if eq .domain "work" }}
