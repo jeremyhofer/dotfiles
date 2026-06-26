@@ -1,0 +1,16 @@
+# Single ssh-agent for the whole session: point at the openssh systemd-user
+# ssh-agent.socket. environment.d covers systemd/dbus-activated apps; this
+# covers the login shell + the WM exec'd below (which then propagates to
+# dex-launched GUI apps, e.g. KeePassXC's SSH-agent integration). Same generic
+# value as environment.d, so no drift.
+export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
+
+# Start the graphical session from the login shell (no display manager):
+# i3 on VT1 via startx, sway on VT2.
+if [ -z "${DISPLAY}" ] && [ "${XDG_VTNR}" -eq 1 ]; then
+    exec startx
+fi
+
+if [ -z "${WAYLAND_DISPLAY}" ] && [ "${XDG_VTNR}" -eq 2 ]; then
+    exec sway
+fi

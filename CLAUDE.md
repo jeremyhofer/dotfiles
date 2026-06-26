@@ -18,6 +18,11 @@ machine (home + work). **Treat everything here as world-readable.**
 - **Prefer `.chezmoiignore` (it is templated) over in-file domain conditionals** for "manage this only on some
   machines": add the file's **target name** under a `{{ if eq .domain "work" }}` block to exclude it on work.
   Get the target name with `chezmoi target-path <source>`.
+- **OS/scope-varying content → `.chezmoitemplates/<topic>.<scope>` fragments**, composed from a thin orchestrator
+  via `{{ includeTemplate "<topic>.<scope>" . }}` (pass `.` explicitly). Name by scope (`zprofile.linux`,
+  `zshrc.darwin`) so `git diff` shows the scope in the **filename** — prefer this over inline
+  `{{ if eq .chezmoi.os … }}` blocks, even for small diffs. (`chezmoi diff` shows *rendered* output for this
+  machine; use `chezmoi git -- diff` / the source to see which scope a change lands in.)
 - Non-deployable repo files (`README.md`, `CLAUDE.md`) are listed in `.chezmoiignore` so they are not deployed.
 
 ## The private overlay
