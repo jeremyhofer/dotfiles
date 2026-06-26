@@ -5,6 +5,12 @@
 # value as environment.d, so no drift.
 export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
 
+# Never use a GUI askpass: SSH keys are served by the agent, so a passphrase prompt
+# should never be needed. If the agent holds no key, an SSH op fails clean or falls
+# to a terminal prompt rather than popping a GUI askpass dialog that can get stuck
+# on an unanswerable prompt.
+export SSH_ASKPASS_REQUIRE=never
+
 # Start the graphical session from the login shell (no display manager):
 # i3 on VT1 via startx, sway on VT2.
 if [ -z "${DISPLAY}" ] && [ "${XDG_VTNR}" -eq 1 ]; then
