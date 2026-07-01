@@ -12,11 +12,17 @@ export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
 export SSH_ASKPASS_REQUIRE=never
 
 # Start the graphical session from the login shell (no display manager):
-# i3 on VT1 via startx, sway on VT2.
-if [ -z "${DISPLAY}" ] && [ "${XDG_VTNR}" -eq 1 ]; then
-    exec startx
+# Wayland/sway is the DEFAULT on VT1; X11/i3 is the break-glass fallback on VT2.
+if [ -z "${WAYLAND_DISPLAY}" ] && [ "${XDG_VTNR}" -eq 1 ] && uwsm check may-start 1; then
+    # Launch sway as a uwsm-managed systemd session (bound to graphical-session.target, env
+    # sourced from environment.d, clean teardown). `uwsm check may-start 1` guards: allowed on
+    # VT1, system at graphical.target, no graphical session already active. The sway config's
+    # `exec uwsm finalize` completes the env/dbus handoff into the user manager.
+    exec uwsm start sway
 fi
 
-if [ -z "${WAYLAND_DISPLAY}" ] && [ "${XDG_VTNR}" -eq 2 ]; then
-    exec sway
+# X11/i3 break-glass on VT2 (plain startx). X11 does not read environment.d, so it relies on
+# the SSH_AUTH_SOCK export at the top of this file.
+if [ -z "${DISPLAY}" ] && [ "${XDG_VTNR}" -eq 2 ]; then
+    exec startx
 fi

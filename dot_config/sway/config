@@ -33,8 +33,9 @@ font pango:Inconsolata Nerd Font 12
 
 ### Output configuration
 #
-# Default wallpaper (more resolutions are available in /usr/share/backgrounds/sway/)
-#output * bg /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png fill
+# Wallpaper: solid-black fallback in the base config. The actual image is supplied by the
+# private overlay as a sway drop-in (loaded via `include ~/.config/sway/config.d/*` near the
+# end of this file), so the personal wallpaper stays out of the public base.
 output * bg #000000 solid_color
 #
 # Example configuration:
@@ -61,8 +62,26 @@ output eDP-1 {
 
 ### Autostart
 #
+# uwsm finalize: export WAYLAND_DISPLAY/DISPLAY (and any declared vars) from this sway
+# instance into the systemd/dbus user activation environment, so `systemd --user` units
+# and dbus-activated apps see the running compositor. Must run early, before session
+# components that rely on those vars. Requires sway to have been launched via `uwsm start sway`.
+exec uwsm finalize
+
+# Polkit authentication agent (parity with i3's lxqt-policykit-agent): provides GUI
+# auth prompts for privileged actions (mounts, nm, and notably non-root fprintd-enroll).
+# Wrapped in `uwsm app` so it's scoped as a proper systemd user unit under the session.
+exec uwsm app -- lxqt-policykit-agent
+
+# Idle + lock manager: lock the screen (hyprlock) after 30 min idle (matches i3's
+# `xset s 1800`) and before the system sleeps. `-w` waits for the locker to map before
+# the sleep completes. Wrapped in `uwsm app` for proper session-unit scoping.
+exec uwsm app -- swayidle -w timeout 1800 'hyprlock' before-sleep 'hyprlock'
+
 # Launch XDG autostart .desktop files (parity with i3's `dex --autostart`), so tray/background
 # apps like the credential manager start on login under sway too.
+# NOTE: under uwsm, systemd-xdg-autostart may already start these .desktop entries, making
+# dex redundant — leave it in place until that parity is verified, then it can be dropped.
 exec dex --autostart --environment sway
 
 ### Input configuration
@@ -85,6 +104,31 @@ exec dex --autostart --environment sway
 #
     # Start a terminal
     bindsym $mod+Return exec $term
+
+    # Multimedia keys — volume/mute via pactl (PipeWire), players via playerctl.
+    # --locked keeps volume + mute working while the screen is locked.
+    set $refresh_i3status killall -SIGUSR1 i3status
+    bindsym --locked XF86AudioRaiseVolume exec pactl set-sink-volume @DEFAULT_SINK@ +5% && $refresh_i3status
+    bindsym --locked Shift+XF86AudioRaiseVolume exec pactl set-sink-volume @DEFAULT_SINK@ 100% && $refresh_i3status
+    bindsym --locked XF86AudioLowerVolume exec pactl set-sink-volume @DEFAULT_SINK@ -5% && $refresh_i3status
+    bindsym --locked Shift+XF86AudioLowerVolume exec pactl set-sink-volume @DEFAULT_SINK@ 0% && $refresh_i3status
+    bindsym --locked XF86AudioMute exec pactl set-sink-mute @DEFAULT_SINK@ toggle && $refresh_i3status
+    bindsym --locked XF86AudioMicMute exec pactl set-source-mute @DEFAULT_SOURCE@ toggle && $refresh_i3status
+    bindsym XF86AudioPlay exec playerctl play-pause
+    bindsym XF86AudioPrev exec playerctl previous
+    bindsym XF86AudioNext exec playerctl next
+
+    # Lock the screen on demand with hyprlock (parity with i3's $mod+Ctrl+l → i3lock).
+    # hyprlock gives fingerprint + password unlock; swayidle also calls it on idle/before-sleep.
+    bindsym $mod+Ctrl+l exec hyprlock
+
+    # Brightness (light writes sysfs, so it works under Wayland). --locked = also on the lock screen.
+    bindsym --locked XF86MonBrightnessDown exec light -U 5
+    bindsym --locked XF86MonBrightnessUp exec light -A 5
+
+    # Screenshots — grim (+ slurp for region select), the Wayland equivalents of i3's maim.
+    bindsym Print exec grim ~/Pictures/screenshots/$(date +%s).png
+    bindsym Shift+Print exec grim -g "$(slurp)" ~/Pictures/screenshots/$(date +%s).png
 
     # Kill focused window
     bindsym $mod+Shift+q kill
@@ -109,6 +153,8 @@ exec dex --autostart --environment sway
 
     # Reload the configuration file
     bindsym $mod+Shift+c reload
+    # $mod+Shift+r also reloads — i3 muscle memory (i3 used it for "restart in place").
+    bindsym $mod+Shift+r reload
 
     # Exit sway (logs you out of your Wayland session)
     bindsym $mod+Shift+e exec swaynag -t warning -m 'You pressed the exit shortcut. Do you really want to exit sway? This will end your Wayland session.' -B 'Yes, exit sway' 'swaymsg exit'
@@ -170,6 +216,8 @@ exec dex --autostart --environment sway
     # $mod+b or $mod+v, for horizontal and vertical splits
     # respectively.
     bindsym $mod+b splith
+    # $mod+z also splits horizontally — i3 muscle memory (sway's native split-h bind is $mod+b).
+    bindsym $mod+z splith
     bindsym $mod+v splitv
 
     # Switch the current container between different layout styles
@@ -251,3 +299,5 @@ for_window [class="^.*"] border pixel 1
 hide_edge_borders both
 
 include /etc/sway/config.d/*
+# User drop-ins, loaded last so they can override the above (e.g. the overlay's wallpaper).
+include ~/.config/sway/config.d/*
