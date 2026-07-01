@@ -98,6 +98,14 @@ exec uwsm app -- swayidle -w timeout 1800 'hyprlock' before-sleep 'hyprlock'
 # You can get the names of your inputs by running: swaymsg -t get_inputs
 # Read `man 5 sway-input` for more information about this section.
 
+# Touchpad scroll tuning. Native-Wayland apps (Brave/Chromium via Ozone) get libinput's
+# high-resolution touchpad scroll + kinetic momentum directly — which scrolls fast and "flings"
+# a bit on finger-release (X11 didn't; it emulated a plain mouse wheel). scroll_factor scales
+# scroll velocity, taming both the speed and the fling. Tune 0.1–1.0 to taste (1.0 = default).
+input type:touchpad {
+    scroll_factor 0.5
+}
+
 ### Key bindings
 #
 # Basics:
