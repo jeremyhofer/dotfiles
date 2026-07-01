@@ -1,0 +1,18 @@
+# mako — Wayland notification daemon. Gruvbox palette + Inconsolata Nerd Font (matches sway/
+# hyprlock). mako is D-Bus-activated (org.freedesktop.Notifications), so it starts on the first
+# notification — no explicit autostart needed. Reload after edits with: makoctl reload
+font=Inconsolata Nerd Font 11
+background-color=#282828
+text-color=#ebdbb2
+border-color=#a89984
+border-size=2
+border-radius=6
+padding=8
+margin=8
+default-timeout=5000
+max-visible=5
+anchor=top-right
+
+[urgency=critical]
+border-color=#cc241d
+default-timeout=0

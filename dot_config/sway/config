@@ -78,11 +78,11 @@ exec uwsm app -- lxqt-policykit-agent
 # the sleep completes. Wrapped in `uwsm app` for proper session-unit scoping.
 exec uwsm app -- swayidle -w timeout 1800 'hyprlock' before-sleep 'hyprlock'
 
-# Launch XDG autostart .desktop files (parity with i3's `dex --autostart`), so tray/background
-# apps like the credential manager start on login under sway too.
-# NOTE: under uwsm, systemd-xdg-autostart may already start these .desktop entries, making
-# dex redundant — leave it in place until that parity is verified, then it can be dropped.
-exec dex --autostart --environment sway
+# XDG autostart (.desktop → nm-applet, the credential manager, EasyEffects, blueman, …) is handled natively
+# by uwsm's systemd-xdg-autostart generator under graphical-session.target — each app gets its
+# own app-<name>@autostart.service. dex is intentionally NOT used: it would race those systemd
+# units and win, leaving them dead (verified) — the native path gives per-app systemd scoping
+# and clean teardown instead.
 
 ### Input configuration
 #
