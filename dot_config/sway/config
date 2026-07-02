@@ -134,9 +134,18 @@ input type:touchpad {
     bindsym --locked XF86MonBrightnessDown exec light -U 5
     bindsym --locked XF86MonBrightnessUp exec light -A 5
 
-    # Screenshots — grim (+ slurp for region select), the Wayland equivalents of i3's maim.
-    bindsym Print exec grim ~/Pictures/screenshots/$(date +%s).png
-    bindsym Shift+Print exec grim -g "$(slurp)" ~/Pictures/screenshots/$(date +%s).png
+    # Screenshots — grim + slurp (Wayland equivalents of i3's maim + slop) + swappy (annotate).
+    # Human-readable timestamps. Save to disk OR copy to clipboard (clipboard = paste into chats/AI). mako notifies.
+    # region → file
+    bindsym Shift+Print exec grim -g "$(slurp)" ~/Pictures/screenshots/$(date +%Y-%m-%d_%H-%M-%S).png && notify-send "Screenshot" "Region saved"
+    # region → clipboard
+    bindsym Ctrl+Shift+Print exec grim -g "$(slurp)" - | wl-copy && notify-send "Screenshot" "Region copied to clipboard"
+    # full screen → file
+    bindsym Print exec grim ~/Pictures/screenshots/$(date +%Y-%m-%d_%H-%M-%S).png && notify-send "Screenshot" "Screen saved"
+    # full screen → clipboard
+    bindsym Ctrl+Print exec grim - | wl-copy && notify-send "Screenshot" "Screen copied to clipboard"
+    # region → swappy (annotate; then Ctrl+S saves, Ctrl+C copies)
+    bindsym Alt+Shift+Print exec grim -g "$(slurp)" - | swappy -f -
 
     # Kill focused window
     bindsym $mod+Shift+q kill
