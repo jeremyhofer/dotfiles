@@ -1,0 +1,10 @@
+[Desktop Entry]
+# User override disabling the audio-recorder autostart. The audio-recorder
+# package ships a per-user autostart entry that launches its window on login
+# (Exec=audio-recorder --show-window=1). Hidden=true tells XDG autostart
+# processors (systemd-xdg-autostart under Wayland, dex under i3) to skip it, so
+# audio-recorder no longer starts automatically; it still launches normally when
+# opened by hand.
+Type=Application
+Name=Audio Recorder
+Hidden=true
