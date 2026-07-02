@@ -1,0 +1,21 @@
+[Desktop Entry]
+# User override of /etc/xdg/autostart/picom.desktop.
+# picom is an X11 compositor; sway (Wayland) self-composites and would fail to
+# start it ("Another composite manager is already running"). OnlyShowIn=i3
+# allowlists this autostart to the i3/X11 break-glass session only: i3 runs
+# `dex --autostart --environment i3`, which matches OnlyShowIn=i3 and starts
+# picom, while sway's systemd-xdg-autostart and every other environment skip it.
+Version=1.0
+Type=Application
+NoDisplay=true
+Name=Picom
+GenericName=X compositor
+Comment=An X compositor
+Categories=Utility;
+Keywords=compositor;composite manager;window effects;transparency;opacity;
+TryExec=picom
+Exec=picom
+StartupNotify=false
+Terminal=false
+OnlyShowIn=i3;
+Icon=compton
