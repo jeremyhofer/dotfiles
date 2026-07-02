@@ -103,7 +103,7 @@ exec uwsm app -- swayidle -w timeout 1800 'hyprlock' before-sleep 'hyprlock'
 # a bit on finger-release (X11 didn't; it emulated a plain mouse wheel). scroll_factor scales
 # scroll velocity, taming both the speed and the fling. Tune 0.1–1.0 to taste (1.0 = default).
 input type:touchpad {
-    scroll_factor 0.5
+    scroll_factor 0.75
 }
 
 ### Key bindings
