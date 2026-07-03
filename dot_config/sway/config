@@ -315,6 +315,11 @@ bar {
 for_window [class="^.*"] border pixel 1
 hide_edge_borders both
 
+# Float Brave/Chromium Picture-in-Picture windows. They expose no app_id/class,
+# so match on title. `sticky` keeps the video visible across all workspaces
+# (i.e. detached from any one workspace), not just the one it opened on.
+for_window [title="^Picture in picture$"] floating enable, sticky enable
+
 include /etc/sway/config.d/*
 # User drop-ins, loaded last so they can override the above (e.g. the overlay's wallpaper).
 include ~/.config/sway/config.d/*
