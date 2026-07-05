@@ -318,7 +318,9 @@ hide_edge_borders both
 # Float Brave/Chromium Picture-in-Picture windows. They expose no app_id/class,
 # so match on title. `sticky` keeps the video visible across all workspaces
 # (i.e. detached from any one workspace), not just the one it opened on.
-for_window [title="^Picture in picture$"] floating enable, sticky enable
+# Brave Picture-in-Picture: float, keep visible, default to 832x468 (true 16:9).
+# (Dynamic bottom-right positioning is a backlog idea — see notes ideas-from-notes.md.)
+for_window [title="^Picture in picture$"] floating enable, sticky enable, resize set 832 px 468 px
 
 include /etc/sway/config.d/*
 # User drop-ins, loaded last so they can override the above (e.g. the overlay's wallpaper).
