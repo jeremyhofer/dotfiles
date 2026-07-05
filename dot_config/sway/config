@@ -309,6 +309,9 @@ bindsym $mod+r mode "resize"
 #}
 bar {
     status_command i3status --config ~/.config/i3status/config
+    # Icon theme for tray items (nm-applet, blueman, etc.). Without this, swaybar
+    # can't resolve themed icon names and shows a broken-icon fallback.
+    icon_theme "Adwaita"
 }
 
 # config for windows
