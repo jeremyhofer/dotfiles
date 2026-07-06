@@ -11,6 +11,7 @@ CLAUDE.md
 .xbindkeysrc
 .config/i3/config
 .config/i3status/config
+.config/sway/config
 .config/autostart/picom.desktop
 .config/autostart/audio-recorder.desktop
 # systemd-user ssh-agent routing — Linux-only (no systemd/environment.d on macOS,

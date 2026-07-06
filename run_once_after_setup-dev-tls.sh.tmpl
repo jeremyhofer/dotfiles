@@ -14,7 +14,11 @@ CERT="$CERT_DIR/localhost.pem"
 KEY="$CERT_DIR/localhost-key.pem"
 
 if ! command -v mkcert >/dev/null 2>&1; then
+{{- if eq .chezmoi.os "darwin" }}
+  echo "dev-tls: mkcert not installed — brew install mkcert nss, then re-run 'chezmoi apply'"
+{{- else }}
   echo "dev-tls: mkcert not installed — install it (Arch: pacman -S mkcert) then re-run 'chezmoi apply'"
+{{- end }}
   exit 0
 fi
 
