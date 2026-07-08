@@ -1,0 +1,80 @@
+#!/bin/sh
+# nvim-healthdump — capture an nvim health + plugin-inventory report for cross-machine
+# parity comparison (e.g. Framework vs bigmac). Runs nvim HEADLESS (no UI needed), so it
+# works over SSH. Output: a single text file (default ~/nvim-health-<host>.txt), safe to
+# paste/share. Re-run any time; it overwrites the file.
+set -eu
+
+# Hostname: macOS LocalHostName, else `hostname` short form (avoid the `localhost` that
+# `hostname -s` yields on some Linux setups).
+if [ "$(uname -s)" = Darwin ]; then
+  host="$(scutil --get LocalHostName 2>/dev/null || hostname)"
+else
+  host="$(hostname 2>/dev/null | cut -d. -f1)"
+  [ -z "$host" ] || [ "$host" = localhost ] && host="$(uname -n | cut -d. -f1)"
+fi
+out="${1:-$HOME/nvim-health-$host.txt}"
+command -v nvim >/dev/null 2>&1 || { echo "nvim-healthdump: nvim not found on PATH" >&2; exit 1; }
+
+# --- plugin/parser/icon inventory. Gathered via `-c luafile` (NOT `nvim -l`): -l runs in a
+#     stripped runtime where LazyVim's plugins aren't loaded, so require() of mason/lazy/icons
+#     falsely fails. `-c` runs after full startup (same context :checkhealth uses). The probe
+#     writes to $inv_file so we don't depend on headless stdout capture. ---
+inv_file="$(mktemp)"
+lua_probe="$(mktemp)"
+cat > "$lua_probe" <<LUA
+local F = assert(io.open("$inv_file", "w"))
+local function hdr(s) F:write("\n## "..s.."\n") end
+local function line(s) F:write(tostring(s).."\n") end
+LUA
+cat >> "$lua_probe" <<'LUA'
+
+hdr("treesitter parsers (installed .so on runtimepath)")
+local seen = {}
+for _, p in ipairs(vim.api.nvim_get_runtime_file('parser/*.so', true)) do
+  seen[vim.fn.fnamemodify(p, ':t:r')] = true
+end
+local names = {} ; for n in pairs(seen) do names[#names+1] = n end ; table.sort(names)
+line(("count=%d"):format(#names)) ; line(table.concat(names, ", "))
+
+hdr("mason packages")
+local ok, reg = pcall(require, "mason-registry")
+if ok then
+  local inst = reg.get_installed_packages and reg.get_installed_packages() or {}
+  local mn = {} ; for _, pkg in ipairs(inst) do mn[#mn+1] = pkg.name end ; table.sort(mn)
+  line(("mason PRESENT; installed=%d"):format(#mn)) ; line(table.concat(mn, ", "))
+else
+  line("mason-registry NOT available (require failed) -> Mason not installed/loaded")
+end
+
+hdr("icon provider / nerd font")
+line("vim.g.have_nerd_font = " .. tostring(vim.g.have_nerd_font))
+line("mini.icons loadable  = " .. tostring((pcall(require, "mini.icons"))))
+line("nvim-web-devicons    = " .. tostring((pcall(require, "nvim-web-devicons"))))
+
+hdr("lazy plugin stats")
+local okl, lazy = pcall(require, "lazy")
+if okl then local st = lazy.stats() ; line(("total=%d loaded=%d"):format(st.count, st.loaded))
+else line("lazy not available") end
+
+F:close()
+LUA
+
+nvim --headless -c "luafile $lua_probe" -c "qa!" >/dev/null 2>&1 || true
+{
+  echo "# nvim health report"
+  echo "host: $host    os: $(uname -s)    date: $(date '+%F %T')"
+  echo
+  echo "## nvim --version (head)"
+  nvim --version | sed -n '1,3p'
+  cat "$inv_file" 2>/dev/null || echo "(lua inventory probe produced no output)"
+} > "$out"
+rm -f "$lua_probe" "$inv_file"
+
+# :checkhealth renders into a buffer; capture it by writing that buffer to a file.
+tmp_h="$(mktemp)"
+nvim --headless -c "checkhealth" -c "silent write! $tmp_h" -c "qa!" >/dev/null 2>&1 || true
+{ echo ; echo "## :checkhealth (full)" ; cat "$tmp_h" 2>/dev/null || echo "(checkhealth capture failed)" ; } >> "$out"
+rm -f "$tmp_h"
+
+echo "nvim-healthdump: wrote $out"
