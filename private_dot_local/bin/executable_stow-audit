@@ -1,0 +1,32 @@
+#!/bin/sh
+# stow-audit — before a stow->chezmoi cutover, list every stow-managed symlink in $HOME and
+# whether chezmoi already manages the same target path, so nothing is left behind.
+# Usage: stow-audit [STOW_SOURCE_DIR]   (default ~/.dotfiles). Exit 1 if anything is uncovered.
+set -eu
+STOW_SRC="${1:-$HOME/.dotfiles}"
+[ -d "$STOW_SRC" ] || { echo "stow-audit: stow source not found: $STOW_SRC" >&2; exit 2; }
+managed="$(chezmoi managed 2>/dev/null || true)"
+marker="$(mktemp)"
+trap 'rm -f "$marker"' EXIT
+# Symlinks in $HOME whose target points into the stow source = stow-owned. Single pass:
+# record uncovered ones to a real file (survives the pipe subshell), check it after.
+find "$HOME" -maxdepth 4 -type l 2>/dev/null | while IFS= read -r link; do
+  tgt="$(readlink "$link" 2>/dev/null || true)"
+  case "$tgt" in
+    "$STOW_SRC"/*|*/.dotfiles/*) : ;;   # stow-owned
+    *) continue ;;
+  esac
+  rel="${link#"$HOME"/}"
+  if printf '%s\n' "$managed" | grep -qxF "$rel"; then
+    printf '  ok        %s\n' "$rel"
+  else
+    printf '  UNCOVERED %s  -> %s\n' "$rel" "$tgt"
+    echo x >> "$marker"
+  fi
+done
+if [ -s "$marker" ]; then
+  echo "stow-audit: some stow symlinks are NOT covered by chezmoi (see UNCOVERED above)" >&2
+  exit 1
+fi
+echo "stow-audit: all stow symlinks are covered by chezmoi"
+exit 0
