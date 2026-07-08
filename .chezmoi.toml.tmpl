@@ -1,9 +1,15 @@
 {{- $domain := promptStringOnce . "domain" "Domain (personal|work)" "personal" -}}
 {{- $overlayRepo := promptStringOnce . "overlayRepo" "Overlay repo git URL" -}}
 {{- $secretsRepo := promptStringOnce . "secretsRepo" "Secrets repo git URL (blank to skip)" -}}
+{{- /* dpi is an X11/.Xresources concern (Linux only); with Wayland primary + X break-glass,
+       macOS should never be prompted for it. .Xresources is darwin-ignored, so no consumer. */ -}}
+{{- if eq .chezmoi.os "linux" -}}
 {{- $dpi := promptStringOnce . "dpi" "Display DPI" "120" -}}
+{{- end -}}
 [data]
     domain = {{ $domain | quote }}
     overlayRepo = {{ $overlayRepo | quote }}
     secretsRepo = {{ $secretsRepo | quote }}
-    dpi = {{ $dpi | quote }}
+{{- if eq .chezmoi.os "linux" }}
+    dpi = {{ .dpi | quote }}
+{{- end }}
