@@ -69,17 +69,18 @@ ensure_node() {
 #     private-host reference). apply's run_once sets up the overlay + its private stores. ---
 ensure_chezmoi() {
   log "chezmoi"
+  # --no-pager: an apply/update diff must never block a near-unattended bootstrap in a pager.
   if [ -d "$HOME/.local/share/chezmoi/.git" ]; then
-    chezmoi update --verbose
+    chezmoi --no-pager update --verbose
   else
-    chezmoi init "$REPO_DIR" --apply --verbose
+    chezmoi --no-pager init "$REPO_DIR" --apply --verbose
   fi
   # The overlay's setup run_once fires only on first apply; refresh it explicitly on re-runs.
   OSRC="$HOME/.local/share/chezmoi-overlay"; OCFG="$HOME/.config/chezmoi/overlay"
   if [ -d "$OSRC/.git" ] && [ -f "$OCFG/chezmoi.toml" ]; then
     echo "chezmoi: refreshing overlay (2nd instance)"
     git -C "$OSRC" pull --ff-only 2>/dev/null || true
-    chezmoi --config "$OCFG/chezmoi.toml" --source "$OSRC" \
+    chezmoi --no-pager --config "$OCFG/chezmoi.toml" --source "$OSRC" \
       --persistent-state "$OCFG/chezmoistate.boltdb" --cache "$HOME/.cache/chezmoi/overlay" apply || true
   fi
 }
