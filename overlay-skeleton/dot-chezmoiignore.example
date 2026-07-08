@@ -1,0 +1,5 @@
+# The new overlay's own .chezmoiignore — things present in the overlay repo but NOT deployed to $HOME.
+README.md
+CLAUDE.md
+tests/
+**/__pycache__/

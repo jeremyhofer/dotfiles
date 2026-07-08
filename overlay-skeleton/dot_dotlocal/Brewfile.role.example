@@ -1,0 +1,17 @@
+# Role Brewfile for this domain (work/personal). It layers ON TOP of the public base Brewfile.
+#
+# Composition ([ref] Option C): eval the base, then add this role's entries. Point
+# `brew bundle --file ~/.dotlocal/Brewfile.role` at THIS file to describe the WHOLE machine;
+# `brew bundle cleanup --file ~/.dotlocal/Brewfile.role` to prune (dry-run first; --force to apply).
+instance_eval(File.read(File.expand_path("~/.local/share/chezmoi/Brewfile")))
+
+# --- role apps ---
+# cask "some-app"
+# brew "some-cli"
+
+# --- custom work tap: tap it, then install from it ---
+# tap "yourorg/internal", "https://git.internal.example.com/yourorg/homebrew-internal.git"
+# brew "yourorg/internal/some-tool"
+
+# --- Mac App Store apps (needs `mas`) ---
+# mas "Some App", id: 000000000

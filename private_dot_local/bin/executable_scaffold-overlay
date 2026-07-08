@@ -1,0 +1,21 @@
+#!/bin/sh
+# scaffold-overlay — create a brand-new, self-documented overlay repo skeleton (for a fresh
+# work/personal overlay). Copies the committed skeleton, dropping `.example` suffixes and
+# mapping a leading `dot-` -> `.` (chezmoi's own `dot_` prefix is left intact).
+# Usage: scaffold-overlay <DEST_DIR>   (DEST_DIR must be new/empty)
+set -eu
+DEST="${1:?usage: scaffold-overlay <DEST_DIR>}"
+SKEL="${SKEL:-$HOME/.local/share/chezmoi/overlay-skeleton}"
+[ -d "$SKEL" ] || { echo "scaffold-overlay: skeleton not found: $SKEL" >&2; exit 2; }
+if [ -e "$DEST" ] && [ -n "$(ls -A "$DEST" 2>/dev/null)" ]; then
+  echo "scaffold-overlay: $DEST is not empty — refusing to scaffold over it" >&2; exit 1
+fi
+mkdir -p "$DEST"
+( cd "$SKEL" && find . -type f ) | while IFS= read -r f; do
+  rel=${f#./}
+  out=$(printf '%s' "$rel" | sed -e 's/\.example$//' -e 's#^dot-#.#' -e 's#/dot-#/.#')
+  mkdir -p "$DEST/$(dirname "$out")"
+  cp "$SKEL/$rel" "$DEST/$out"
+done
+echo "scaffold-overlay: wrote skeleton -> $DEST"
+echo "next: fill in the files, then 'git init' + add your remote, and set overlayRepo to it at chezmoi init."

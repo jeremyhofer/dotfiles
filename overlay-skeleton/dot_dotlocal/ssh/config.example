@@ -1,0 +1,18 @@
+# vim: ft=sshconfig
+# Host-specific SSH entries for this overlay. The public base's ~/.ssh/config does
+# `Include ~/.dotlocal/ssh/config`, so anything here is picked up automatically.
+#
+# Pin each host to ONE key with IdentitiesOnly — without it the agent offers every loaded
+# key and a strict sshd aborts with "Too many authentication failures".
+#
+# --- Example: a work git host ---
+# Host work-git
+#     Hostname git.internal.example.com
+#     User <your-username>
+#     IdentityFile ~/.ssh/<your-work-key>
+#     IdentitiesOnly yes
+#
+# --- Example: a forge that must use its own transport key ---
+# Host git.internal.example.com
+#     IdentityFile ~/.ssh/<forge-key>
+#     IdentitiesOnly yes
