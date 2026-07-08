@@ -112,6 +112,8 @@ input type:touchpad {
 #
     # Start a terminal
     bindsym $mod+Return exec $term
+    # Ghostty — trial alternative terminal (kitty-graphics protocol for nvim images)
+    bindsym $mod+Ctrl+Return exec ghostty
 
     # Multimedia keys — volume/mute via pactl (PipeWire), players via playerctl.
     # --locked keeps volume + mute working while the screen is locked.

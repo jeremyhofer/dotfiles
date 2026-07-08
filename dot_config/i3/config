@@ -76,6 +76,8 @@ tiling_drag modifier titlebar
 
 # start a terminal
 bindsym $mod+Return exec alacritty
+# Ghostty — trial alternative terminal (kitty-graphics protocol for nvim images)
+bindsym $mod+Ctrl+Return exec ghostty
 
 # kill focused window
 bindsym $mod+Shift+q kill
