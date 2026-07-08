@@ -1,0 +1,68 @@
+#!/bin/sh
+# brew-inventory — snapshot this Mac's Homebrew state as Brewfile lines, to author a role
+# Brewfile (e.g. the work Brewfile.role) from a box's ACTUAL state.
+#
+# Wraps `brew bundle dump` (the maintained path — it records leaves/casks/taps/mas under the
+# hood and, crucially, formats `mas` entries with the correct App Store id, which hand-parsing
+# `mas list` gets wrong). Prefer the maintained tool over reinventing the parser.
+#
+# Usage:
+#   brew-inventory                  # full machine state (tap/brew/cask/mas) to stdout
+#   brew-inventory --delta [BASE]   # only entries NOT already in BASE (default: the deployed
+#                                   #   base Brewfile) -> the role-fragment delta to paste
+#                                   #   under the `instance_eval(base)` line of a Brewfile.role
+# Exit: 0 ok; 2 if brew (or --delta's BASE) is missing.
+set -eu
+
+BASE_DEFAULT="$HOME/.local/share/chezmoi/Brewfile"
+mode=full
+base="$BASE_DEFAULT"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --delta)
+      mode=delta
+      if [ $# -ge 2 ]; then
+        case "$2" in -*) : ;; *) base="$2"; shift ;; esac
+      fi
+      ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    *) echo "brew-inventory: unknown arg: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+command -v brew >/dev/null 2>&1 || { echo "brew-inventory: Homebrew not found (run on a Mac with brew)" >&2; exit 2; }
+
+# Limit to the four types we care about for a role Brewfile (tap/brew/cask/mas); exclude the
+# other ecosystems dump can emit. --no-describe keeps the output terse.
+if ! dump="$(brew bundle dump --file=- --no-describe \
+    --no-vscode --no-go --no-cargo --no-uv --no-flatpak --no-winget --no-krew --no-npm 2>/dev/null)"; then
+  echo "brew-inventory: 'brew bundle dump' failed" >&2; exit 2
+fi
+
+if [ "$mode" = full ]; then
+  printf '%s\n' "$dump"
+  exit 0
+fi
+
+# --delta: emit only declarations whose key isn't already present in BASE.
+[ -f "$base" ] || { echo "brew-inventory: base Brewfile not found: $base" >&2; exit 2; }
+
+# key(): reduce a Brewfile declaration to "<type>|<name-or-id>", ignoring options/comments.
+# Returns non-zero for non-declaration lines (comments/blanks).
+key() {
+  case "$1" in
+    tap\ *|brew\ *|cask\ *) printf '%s|%s\n' "${1%% *}" "$(printf '%s' "$1" | sed -n 's/^[a-z]* "\([^"]*\)".*/\1/p')" ;;
+    mas\ *) printf 'mas|%s\n' "$(printf '%s' "$1" | sed -n 's/.*id:[[:space:]]*\([0-9]*\).*/\1/p')" ;;
+    *) return 1 ;;
+  esac
+}
+
+basekeys="$(mktemp)"; trap 'rm -f "$basekeys"' EXIT
+while IFS= read -r line; do key "$line" >> "$basekeys" 2>/dev/null || true; done < "$base"
+
+printf '%s\n' "$dump" | while IFS= read -r line; do
+  if k="$(key "$line" 2>/dev/null)"; then
+    grep -qxF "$k" "$basekeys" || printf '%s\n' "$line"   # keep only entries absent from base
+  fi
+done
