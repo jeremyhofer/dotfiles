@@ -1,0 +1,9 @@
+#!/bin/sh
+# A post-chezmoi bootstrap stage. The base's bootstrap-mac.sh runs ~/.dotlocal/bootstrap.d/*.sh
+# in lexical order AFTER chezmoi has applied. Number your files (10-, 20-, 30-, ...) to order them.
+#
+# Contract: POSIX sh, idempotent (safe to re-run), takes no args, exits non-zero ONLY on hard
+# failure. Personal-infra specifics (NAS mounts, keys, secrets, hostnames) belong HERE in the
+# private overlay — never in the public base.
+set -eu
+echo "example stage: replace this file with a real stage (e.g. 10-hostname, 20-nas-mount, 30-keys)."
