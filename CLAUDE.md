@@ -7,6 +7,10 @@ machine (home + work). **Treat everything here as world-readable.**
 - **PUBLIC — never leak private context.** Do not reference any private/personal decision records, internal
   docs, ticket or "ADR" numbers, or private repo paths/URLs in any file or commit message here. Comments must
   be **self-contained**: describe *what the thing does*, not *why per some external doc*.
+- **Describe the generic pattern, never the private specifics.** The base+overlay architecture and generic
+  `$HOME`/XDG paths (`~/.dotlocal/…`, `~/.config/…`) are fine to document here. NEVER put the security posture
+  (key/secret tooling, how secrets are protected), the personal org layout (`~/REDACTED/…`, `~/REDACTED/…`), or the
+  private overlay's internals in any file, comment, or commit message here — those live only in the private layer.
 - **Edit the source, never the deployed copy.** Files here deploy to `~` via `chezmoi apply`; never edit the
   deployed `~/.config/...` / `~/.<file>` copies (apply overwrites them). Edit here, then `chezmoi apply`.
 - **Source names are attribute-encoded:** `dot_` → leading `.`; `*.tmpl` → templated;
