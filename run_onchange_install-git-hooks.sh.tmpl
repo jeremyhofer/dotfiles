@@ -1,9 +1,10 @@
 #!/bin/sh
-# Installs a pre-push leak guard into the chezmoi SOURCE repo (.git/hooks/pre-push).
-# Defense-in-depth on the publish boundary: the public base must never carry private
-# content. The hook lives in .git/hooks (never pushed), so it may hold the literal
-# overlay URL; THIS installer is committed+public, so it injects that URL via the
-# {{ "{{ .overlayRepo }}" }} template var rather than a literal.
+# Installs the FALLBACK pre-push leak-guard floor into the chezmoi SOURCE repo
+# (.git/hooks/pre-push). The FULL publish-boundary guard (markers + sensitive terms) is
+# provided globally by the overlay when present; this floor is what a public-base-only
+# clone (no overlay) still gets. The hook lives in .git/hooks (never pushed), so it may
+# hold the literal overlay URL; THIS installer is committed+public, so it injects that URL
+# via the {{ "{{ .overlayRepo }}" }} template var rather than a literal.
 set -eu
 
 src="{{ .chezmoi.sourceDir }}"
@@ -13,45 +14,22 @@ mkdir -p "$src/.git/hooks"
 
 cat > "$hook" <<'HOOK'
 #!/bin/sh
-# pre-push leak guard (installed by chezmoi run_onchange_install-git-hooks).
-# The base must never carry private content -> scan EVERY push (any remote; also
-# covers a combined multi-pushurl `all` remote, where the URL handed to the hook
-# may not be github's).
-
+# Generic pre-push floor for a public-base-only clone (no overlay). The FULL
+# publish-boundary guard (markers + sensitive terms) is provided by the overlay's
+# global core.hooksPath hook when present; this is only the fallback for a bare clone.
 KEY_RE='-----BEGIN[ A-Z]*PRIVATE KEY-----'
 OVERLAY='{{ .overlayRepo }}'
-# Program-marker patterns NAME the private program, so they must NOT live in this PUBLIC repo.
-# They are supplied by the private overlay via a machine-local file; its first non-comment line
-# is used as an extended-regex. Absent -> the marker scan is skipped (a public-only clone still
-# gets the generic private-key + overlay-URL guard).
-MARKERS_FILE="$HOME/.dotlocal/git-leak-markers"
-MARK_RE=""
-[ -f "$MARKERS_FILE" ] && MARK_RE=$(grep -vE '^[[:space:]]*(#|$)' "$MARKERS_FILE" 2>/dev/null | head -1)
 zero=0000000000000000000000000000000000000000
 block=0
-while read -r localref localsha remoteref remotesha; do
-    [ "$localsha" = "$zero" ] && continue                 # branch deletion
-    # 1) file CONTENT at the pushed tip: private keys, the overlay URL, and (if configured) markers
-    hits=$(git grep -nIE "$KEY_RE" "$localsha" 2>/dev/null || true)
-    [ -n "$OVERLAY" ] && hits="$hits
-$(git grep -nIF "$OVERLAY" "$localsha" 2>/dev/null || true)"
-    [ -n "$MARK_RE" ] && hits="$hits
-$(git grep -nIE "$MARK_RE" "$localsha" 2>/dev/null || true)"
-    hits=$(printf '%s\n' "$hits" | sed '/^$/d')
-    [ -n "$hits" ] && { echo "content leak:" >&2; printf '%s\n' "$hits" >&2; block=1; }
-    # 2) commit MESSAGES in the pushed range (the gap that let the markers through) — markers only
-    if [ -n "$MARK_RE" ]; then
-        if [ "$remotesha" = "$zero" ]; then range="$localsha"; else range="$remotesha..$localsha"; fi
-        mhits=$(git log --format='%H %s%n%b' "$range" 2>/dev/null | grep -InE "$MARK_RE" || true)
-        [ -n "$mhits" ] && { echo "commit-message leak:" >&2; printf '%s\n' "$mhits" >&2; block=1; }
-    fi
+while read -r lref lsha rref rsha; do
+  [ "$lsha" = "$zero" ] && continue
+  hits=$(git grep -nIE "$KEY_RE" "$lsha" 2>/dev/null || true)
+  [ -n "$OVERLAY" ] && hits="$hits
+$(git grep -nIF "$OVERLAY" "$lsha" 2>/dev/null || true)"
+  hits=$(printf '%s\n' "$hits" | sed '/^$/d')
+  [ -n "$hits" ] && { echo "content leak:" >&2; printf '%s\n' "$hits" >&2; block=1; }
 done
-
-if [ "$block" -ne 0 ]; then
-    echo "pre-push BLOCKED: private content (private key or overlay URL) detected in the push." >&2
-    echo "Remove it from the pushed commits (history rewrite if already committed) before pushing." >&2
-    exit 1
-fi
+[ "$block" -ne 0 ] && { echo "pre-push BLOCKED: private key or overlay URL in the push." >&2; exit 1; }
 exit 0
 HOOK
 
