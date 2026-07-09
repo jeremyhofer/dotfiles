@@ -11,7 +11,7 @@
 [pull]
     ff = only
 [init]
-    defaultBranch = master
+    defaultBranch = main
 [core]
     excludesfile = ~/.gitignore_global
 	pager = delta
