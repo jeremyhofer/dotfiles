@@ -1,7 +1,7 @@
 # Single ssh-agent for the whole session: point at the openssh systemd-user
 # ssh-agent.socket. environment.d covers systemd/dbus-activated apps; this
 # covers the login shell + the WM exec'd below (which then propagates to
-# dex-launched GUI apps, e.g. the credential manager's SSH-agent integration). Same generic
+# dex-launched GUI apps, e.g. a GUI app's SSH-agent integration). Same generic
 # value as environment.d, so no drift.
 export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
 
