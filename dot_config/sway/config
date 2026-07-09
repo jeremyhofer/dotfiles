@@ -78,7 +78,7 @@ exec uwsm app -- lxqt-policykit-agent
 # the sleep completes. Wrapped in `uwsm app` for proper session-unit scoping.
 exec uwsm app -- swayidle -w timeout 1800 'hyprlock' before-sleep 'hyprlock'
 
-# XDG autostart (.desktop → nm-applet, the credential manager, EasyEffects, blueman, …) is handled natively
+# XDG autostart (.desktop → nm-applet, EasyEffects, blueman, …) is handled natively
 # by uwsm's systemd-xdg-autostart generator under graphical-session.target — each app gets its
 # own app-<name>@autostart.service. dex is intentionally NOT used: it would race those systemd
 # units and win, leaving them dead (verified) — the native path gives per-app systemd scoping
