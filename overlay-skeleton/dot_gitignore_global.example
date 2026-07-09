@@ -1,0 +1,6 @@
+# Global gitignore for this domain — deploys to ~/.gitignore_global (the base's
+# core.excludesfile points here). Seeded with the base defaults; APPEND your domain-specific
+# ignores below (e.g. work tooling artifacts). Overlay-owned so the public base stays generic.
+.exrc
+.envrc
+# --- domain-specific additions below ---

@@ -2,7 +2,7 @@
 # Test: scaffold-overlay writes the renamed, self-documented skeleton into a new dir.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-script="$here/../private_dot_local/bin/executable_scaffold-overlay"
+script="$here/../setup/scaffold-overlay"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 SKEL="$here/../overlay-skeleton" sh "$script" "$tmp/new-overlay"

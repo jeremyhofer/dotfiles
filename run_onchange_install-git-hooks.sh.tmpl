@@ -20,17 +20,31 @@ cat > "$hook" <<'HOOK'
 
 KEY_RE='-----BEGIN[ A-Z]*PRIVATE KEY-----'
 OVERLAY='{{ .overlayRepo }}'
+# Program-marker patterns NAME the private program, so they must NOT live in this PUBLIC repo.
+# They are supplied by the private overlay via a machine-local file; its first non-comment line
+# is used as an extended-regex. Absent -> the marker scan is skipped (a public-only clone still
+# gets the generic private-key + overlay-URL guard).
+MARKERS_FILE="$HOME/.dotlocal/git-leak-markers"
+MARK_RE=""
+[ -f "$MARKERS_FILE" ] && MARK_RE=$(grep -vE '^[[:space:]]*(#|$)' "$MARKERS_FILE" 2>/dev/null | head -1)
 zero=0000000000000000000000000000000000000000
 block=0
 while read -r localref localsha remoteref remotesha; do
     [ "$localsha" = "$zero" ] && continue                 # branch deletion
+    # 1) file CONTENT at the pushed tip: private keys, the overlay URL, and (if configured) markers
     hits=$(git grep -nIE "$KEY_RE" "$localsha" 2>/dev/null || true)
-    if [ -n "$OVERLAY" ]; then
-        hits="$hits
+    [ -n "$OVERLAY" ] && hits="$hits
 $(git grep -nIF "$OVERLAY" "$localsha" 2>/dev/null || true)"
-    fi
+    [ -n "$MARK_RE" ] && hits="$hits
+$(git grep -nIE "$MARK_RE" "$localsha" 2>/dev/null || true)"
     hits=$(printf '%s\n' "$hits" | sed '/^$/d')
-    [ -n "$hits" ] && { printf '%s\n' "$hits" >&2; block=1; }
+    [ -n "$hits" ] && { echo "content leak:" >&2; printf '%s\n' "$hits" >&2; block=1; }
+    # 2) commit MESSAGES in the pushed range (the gap that let the markers through) — markers only
+    if [ -n "$MARK_RE" ]; then
+        if [ "$remotesha" = "$zero" ]; then range="$localsha"; else range="$remotesha..$localsha"; fi
+        mhits=$(git log --format='%H %s%n%b' "$range" 2>/dev/null | grep -InE "$MARK_RE" || true)
+        [ -n "$mhits" ] && { echo "commit-message leak:" >&2; printf '%s\n' "$mhits" >&2; block=1; }
+    fi
 done
 
 if [ "$block" -ne 0 ]; then

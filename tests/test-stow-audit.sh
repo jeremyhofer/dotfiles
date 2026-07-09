@@ -2,7 +2,7 @@
 # Test: stow-audit reports a stow symlink that chezmoi does NOT manage (exit 1).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-script="$here/../private_dot_local/bin/executable_stow-audit"
+script="$here/../setup/stow-audit"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 # Fake a stow source + a $HOME with one symlink into it, and a fake `chezmoi` that
