@@ -3,7 +3,7 @@
 # Uses a fake `brew` on PATH that emits a canned `brew bundle dump`, so it runs on any OS.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-script="$here/../private_dot_local/bin/executable_brew-inventory"
+script="$here/../setup/brew-inventory"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # Fake brew: respond to `brew bundle dump ...` with a canned Brewfile snapshot.
