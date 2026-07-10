@@ -1,0 +1,24 @@
+# vim: ft=zsh
+# ~/.zshenv — read by EVERY zsh: login, interactive, non-interactive, scripts, `ssh host cmd`.
+# The universal ENV layer (ADR-0045 D1): exports only, fast, silent, no TTY assumptions. PATH lives
+# here (not .zprofile/.zshrc) so non-interactive / ssh / GUI-adjacent contexts get it too.
+
+typeset -U path fpath
+path=($path "$HOME/.local/bin" "$HOME/go/bin")
+
+export EDITOR='nvim'
+
+# Shared local-dev TLS cert paths (paths, not secrets) — projects read these instead of hardcoding,
+# so the cert's issuer/location can change without touching any project.
+export DEV_TLS_CERT="${DEV_TLS_CERT:-$HOME/.local/share/devcerts/localhost.pem}"
+export DEV_TLS_KEY="${DEV_TLS_KEY:-$HOME/.local/share/devcerts/localhost-key.pem}"
+{{ if eq .chezmoi.os "linux" -}}
+# Session env shared with ~/.config/environment.d — rendered from the same SSOT (.chezmoidata.yaml),
+# so shells and the systemd/GUI session env can't drift.
+{{ range .session_env -}}
+export {{ .name }}="{{ .value }}"
+{{ end -}}
+{{- end }}
+
+# Private env layer (overlay), if present.
+[ -f "$HOME/.dotlocal/zshenv" ] && source "$HOME/.dotlocal/zshenv"
