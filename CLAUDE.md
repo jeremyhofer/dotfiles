@@ -36,6 +36,13 @@ Private/machine-local config lives in a **separate** chezmoi instance (the "over
 references overlay-deployed paths **generically** (e.g. `source ~/.dotlocal/zshrc`) — never the overlay's URL
 or private content.
 
+## Setting up / adopting a machine
+To bring a **new machine** — or one that already has config (stow, hand-placed, managed) — into this setup
+**without clobbering** what's there, follow **[`setup/README.md`](setup/README.md)**: foundation → scaffold
+overlay → capture existing config into base/overlay → `adopt-audit` → **guarded apply** (`chezmoi-safe-apply`:
+gate → backup → diff → confirm) → verify → cleanup. `bootstrap-mac.sh` orchestrates it and uses the guarded
+apply (never a raw `chezmoi apply`). A Claude session helping with a work/new-machine setup should start there.
+
 ## Verify
 `chezmoi diff` before `chezmoi apply` · `chezmoi target-path <source>` for a deploy path · `chezmoi ignored`
 for per-machine exclusions.

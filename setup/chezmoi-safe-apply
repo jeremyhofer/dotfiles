@@ -1,0 +1,58 @@
+#!/bin/sh
+# chezmoi-safe-apply — guarded chezmoi apply for adopting a machine without clobbering uncaptured
+# config. Order: gate (adopt-audit) -> backup every would-change file -> show diff -> confirm ->
+# apply base, then overlay (overlay last so its overrides win on co-owned paths).
+#
+# REFUSES without a TTY: a silent, unattended overwrite is exactly what this guards against. Run it
+# interactively (from the base checkout); bootstrap-mac.sh calls it in place of a raw apply.
+set -eu
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+OCFG="$HOME/.config/chezmoi/overlay"; OSRC="$HOME/.local/share/chezmoi-overlay"
+overlay() {
+  chezmoi --config "$OCFG/chezmoi.toml" --source "$OSRC" \
+    --persistent-state "$OCFG/chezmoistate.boltdb" --cache "$HOME/.cache/chezmoi/overlay" "$@"
+}
+have_overlay() { [ -f "$OCFG/chezmoi.toml" ] && [ -d "$OSRC" ] && overlay managed >/dev/null 2>&1; }
+
+# 1. Gate — refuse if any uncaptured content would be clobbered.
+if ! sh "$HERE/adopt-audit"; then
+  echo "chezmoi-safe-apply: aborting — capture the flagged files first (see adopt-audit above)." >&2
+  exit 1
+fi
+
+# 2. Backup — snapshot every would-change target (dereferencing symlinks) before touching anything.
+changed_targets() {
+  chezmoi status 2>/dev/null | sed 's/^...//'
+  have_overlay && overlay status 2>/dev/null | sed 's/^...//'
+}
+ts=$(date +%Y%m%d-%H%M%S)
+bkp="$HOME/.bootstrap-backups/$ts"
+backed=0
+changed_targets | sort -u | while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  src="$HOME/$rel"; [ -e "$src" ] || continue
+  dst="$bkp/$rel"; mkdir -p "$(dirname "$dst")"
+  # -L: copy the symlink's TARGET content (real recovery), not a dangling link.
+  cp -L "$src" "$dst" 2>/dev/null || cp -R "$src" "$dst" 2>/dev/null || true
+done
+[ -d "$bkp" ] && echo "chezmoi-safe-apply: backed up would-change files -> $bkp"
+
+# 3. Preview + confirm (refuse without a TTY).
+echo "=== base diff ==="; chezmoi diff || true
+if have_overlay; then echo "=== overlay diff ==="; overlay diff || true; fi
+if [ ! -t 0 ]; then
+  echo "chezmoi-safe-apply: no TTY — refusing to apply unattended. Re-run interactively." >&2
+  exit 1
+fi
+printf 'Apply the above (base then overlay)? [y/N] '
+read -r ans
+case "$ans" in
+  y|Y|yes|YES) ;;
+  *) echo "chezmoi-safe-apply: not applying."; exit 1 ;;
+esac
+
+# 4. Apply base, then overlay.
+chezmoi --no-pager apply
+if have_overlay; then overlay --no-pager apply; fi
+echo "chezmoi-safe-apply: done. (Backups kept at $bkp — prune once verified.)"
