@@ -68,21 +68,20 @@ ensure_node() {
 # --- chezmoi: init/apply from THIS repo (its own location — no hardcoded source URL, so no
 #     private-host reference). apply's run_once sets up the overlay + its private stores. ---
 ensure_chezmoi() {
-  log "chezmoi"
-  # --no-pager: an apply/update diff must never block a near-unattended bootstrap in a pager.
+  log "chezmoi (sync source, then GUARDED apply)"
+  # Set up / refresh the SOURCE only — the apply is the guarded step below, never a raw apply that
+  # could clobber uncaptured config (see setup/README.md). The guarded apply gates on adopt-audit
+  # (capture-before-clobber), backs up every would-change file, shows the diff, and confirms.
   if [ -d "$HOME/.local/share/chezmoi/.git" ]; then
-    chezmoi --no-pager update --verbose
+    git -C "$HOME/.local/share/chezmoi" pull --ff-only 2>/dev/null || true
   else
-    chezmoi --no-pager init "$REPO_DIR" --apply --verbose
+    chezmoi --no-pager init "$REPO_DIR" --verbose   # init config + source; NO apply here
   fi
-  # The overlay's setup run_once fires only on first apply; refresh it explicitly on re-runs.
-  OSRC="$HOME/.local/share/chezmoi-overlay"; OCFG="$HOME/.config/chezmoi/overlay"
-  if [ -d "$OSRC/.git" ] && [ -f "$OCFG/chezmoi.toml" ]; then
-    echo "chezmoi: refreshing overlay (2nd instance)"
-    git -C "$OSRC" pull --ff-only 2>/dev/null || true
-    chezmoi --no-pager --config "$OCFG/chezmoi.toml" --source "$OSRC" \
-      --persistent-state "$OCFG/chezmoistate.boltdb" --cache "$HOME/.cache/chezmoi/overlay" apply || true
-  fi
+  # Refresh the overlay source if present (2nd instance); its apply also happens in the guarded step.
+  OSRC="$HOME/.local/share/chezmoi-overlay"
+  [ -d "$OSRC/.git" ] && git -C "$OSRC" pull --ff-only 2>/dev/null || true
+  # GUARDED apply: adopt-audit gate -> backup -> diff -> confirm -> apply base then overlay.
+  sh "$REPO_DIR/setup/chezmoi-safe-apply"
 }
 
 # --- overlay extension stages: run ~/.dotlocal/bootstrap.d/*.sh (numbered, lexical) if present.

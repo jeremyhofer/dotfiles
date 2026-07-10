@@ -1,0 +1,71 @@
+#!/bin/sh
+# adopt-audit — pre-apply "would-clobber" safety check (OS-neutral). For every path a chezmoi apply
+# (base + overlay) would change, flag any file already deployed there whose content is reproduced by
+# NEITHER instance's source — i.e. foreign content (a stow symlink, a hand-placed or managed file)
+# that an apply would silently overwrite and lose. Capture those into the right layer first.
+#
+# Exit 0 = safe to apply; 1 = uncaptured content found; 2 = precondition error. Standalone-runnable
+# from the checkout before any apply; also the gate inside chezmoi-safe-apply. No OS assumptions.
+#
+# Note on scope: this is the ADOPTION gate. A file whose content already matches base or overlay
+# source is "captured" and safe. On a machine already adopted (source applied), targets match source
+# so nothing is flagged. The one case it can over-flag is a pulled-but-unapplied base update on an
+# already-adopted machine — resolve by `chezmoi apply <path>` (sync it) or capture custom content.
+set -eu
+
+command -v chezmoi >/dev/null 2>&1 || { echo "adopt-audit: chezmoi not found on PATH" >&2; exit 2; }
+
+OCFG="$HOME/.config/chezmoi/overlay"; OSRC="$HOME/.local/share/chezmoi-overlay"
+overlay() {
+  chezmoi --config "$OCFG/chezmoi.toml" --source "$OSRC" \
+    --persistent-state "$OCFG/chezmoistate.boltdb" --cache "$HOME/.cache/chezmoi/overlay" "$@"
+}
+have_overlay() { [ -f "$OCFG/chezmoi.toml" ] && [ -d "$OSRC" ] && overlay managed >/dev/null 2>&1; }
+
+# Portable sha256 of stdin -> bare hex.
+sha() {
+  if   command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'
+  elif command -v shasum     >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'
+  else openssl dgst -sha256 | awk '{print $NF}'; fi
+}
+
+# Rel-paths of every target either instance would change (strip the 2-col status prefix).
+changed_targets() {
+  chezmoi status 2>/dev/null | sed 's/^...//'
+  have_overlay && overlay status 2>/dev/null | sed 's/^...//'
+}
+
+marker=$(mktemp); trap 'rm -f "$marker"' EXIT
+
+changed_targets | sort -u | while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  tgt="$HOME/$rel"
+  # A regular file (or symlink to one) that exists is the clobber risk; absent target = create,
+  # directory = structural (its files show separately) — skip both.
+  [ -f "$tgt" ] || continue
+  cur=$(cat "$tgt" 2>/dev/null | sha) || continue
+  [ -n "$cur" ] || continue
+  bsrc=$(chezmoi cat "$tgt" 2>/dev/null | sha || true)
+  osrc=""; have_overlay && osrc=$(overlay cat "$tgt" 2>/dev/null | sha || true)
+  if [ "$cur" = "$bsrc" ] || { [ -n "$osrc" ] && [ "$cur" = "$osrc" ]; }; then
+    :   # captured / safe (matches a source that would produce it)
+  else
+    printf '  UNCAPTURED  %s\n' "$rel"
+    printf 'x\n' >> "$marker"
+  fi
+done
+
+if [ -s "$marker" ]; then
+  cat >&2 <<'MSG'
+
+adopt-audit: the deployed files above would be OVERWRITTEN by an apply, and their content is not
+captured in base or overlay source. Capture each into the right layer first:
+  - machine/domain-specific or private -> the OVERLAY  (chezmoi --source <overlay> ... add <path>)
+  - generic / shareable                -> the BASE     (chezmoi add <path>; rare — base is upstream)
+Then re-run. (If a flagged file is just a managed file with a pending upstream update — not custom
+content — run `chezmoi apply <path>` to sync it, then re-run.)
+MSG
+  exit 1
+fi
+echo "adopt-audit: clean — every file a coming apply would change is captured (or newly created)."
+exit 0

@@ -8,9 +8,10 @@ tests/
 # Overlay starter skeleton — in-repo template for scaffold-overlay, not a deployable dotfile.
 overlay-skeleton/
 
-# Mac setup core + one-off bootstrap tools — in-repo, run from the checkout, NOT deployed.
-# (setup/ holds prereq scripts — stow-audit, scaffold-overlay, brew-inventory — that must be
-#  runnable BEFORE any chezmoi apply, so they are plain scripts here, not deployed executables.)
+# Mac setup core + machine-adoption tools — in-repo, run from the checkout, NOT deployed.
+# (setup/ holds the adoption guide (README.md) + scripts — adopt-audit, chezmoi-safe-apply,
+#  scaffold-overlay, brew-inventory — that must be runnable BEFORE any chezmoi apply, so they are
+#  plain scripts here, not deployed executables.)
 bootstrap-mac.sh
 Brewfile
 setup/
