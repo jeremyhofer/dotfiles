@@ -1,6 +1,6 @@
-#export PATH="$HOME/.cargo/bin:$PATH"
-export PATH="$PATH:$HOME/.local/bin"
-export PATH="$PATH:$HOME/go/bin"
+# vim: ft=zsh
+# ~/.zprofile — login shells only (after .zshenv, before .zshrc). Login ACTIONS only (ADR-0045 D1);
+# PATH and env vars live in ~/.zshenv so every context (incl. non-interactive/ssh/GUI) gets them.
 
 [ -f "$HOME/.dotlocal/zprofile" ] && source "$HOME/.dotlocal/zprofile"
 {{- if eq .chezmoi.os "linux" }}

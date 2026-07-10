@@ -1,15 +1,7 @@
-# Single ssh-agent for the whole session: point at the openssh systemd-user
-# ssh-agent.socket. environment.d covers systemd/dbus-activated apps; this
-# covers the login shell + the WM exec'd below (which then propagates to
-# dex-launched GUI apps, e.g. a GUI app's SSH-agent integration). Same generic
-# value as environment.d, so no drift.
-export SSH_AUTH_SOCK="${XDG_RUNTIME_DIR}/ssh-agent.socket"
-
-# Never use a GUI askpass: SSH keys are served by the agent, so a passphrase prompt
-# should never be needed. If the agent holds no key, an SSH op fails clean or falls
-# to a terminal prompt rather than popping a GUI askpass dialog that can get stuck
-# on an unanswerable prompt.
-export SSH_ASKPASS_REQUIRE=never
+# Linux login-shell ACTIONS (ADR-0045 D1/D3). Env (SSH_AUTH_SOCK, SSH_ASKPASS_REQUIRE) now comes from
+# ~/.zshenv (rendered from the session-env SSOT, same values as ~/.config/environment.d — no drift).
+# The login shell reads .zshenv BEFORE this file, so the graphical sessions exec'd below inherit those
+# vars — including X11/i3, which does not read environment.d.
 
 # Start the graphical session from the login shell (no display manager):
 # Wayland/sway is the DEFAULT on VT1; X11/i3 is the break-glass fallback on VT2.
@@ -21,8 +13,8 @@ if [ -z "${WAYLAND_DISPLAY}" ] && [ "${XDG_VTNR}" -eq 1 ] && uwsm check may-star
     exec uwsm start sway
 fi
 
-# X11/i3 break-glass on VT2 (plain startx). X11 does not read environment.d, so it relies on
-# the SSH_AUTH_SOCK export at the top of this file.
+# X11/i3 break-glass on VT2 (plain startx). X11 does not read environment.d; it relies on the
+# SSH_AUTH_SOCK exported by ~/.zshenv (read before this file), inherited through `exec startx`.
 if [ -z "${DISPLAY}" ] && [ "${XDG_VTNR}" -eq 2 ]; then
     exec startx
 fi

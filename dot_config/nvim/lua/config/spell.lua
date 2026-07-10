@@ -15,16 +15,14 @@ local shared = spelldir .. "/shared.utf-8.add"        -- entry 2 (base, public)
 
 vim.opt.spellfile = personal .. "," .. shared
 
--- The overlay always deploys the private-capture helper to this fixed path; call it
--- by absolute path rather than via $PATH (which isn't guaranteed on every machine).
-local spell_capture = vim.fn.expand("~/.dotlocal/bin/spell-capture")
-
+-- The capture helper (spell-capture) is on PATH via ~/.local/bin (~/.zshenv) on every machine
+-- and context, so resolve it by name rather than a hardcoded path (ADR-0045).
 local function capture()
   if vim.fn.executable("chezmoi") == 1 then
     vim.fn.jobstart({ "chezmoi", "re-add", shared }) -- public list -> base source
   end
-  if vim.fn.executable(spell_capture) == 1 then
-    vim.fn.jobstart({ spell_capture, personal }) -- private list -> overlay source
+  if vim.fn.executable("spell-capture") == 1 then
+    vim.fn.jobstart({ "spell-capture", personal }) -- private list -> overlay source
   end
 end
 
