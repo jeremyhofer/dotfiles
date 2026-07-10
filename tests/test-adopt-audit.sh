@@ -5,7 +5,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/adopt-audit"
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-adopt-audit.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home" "$tmp/bin"
 
 # Stub chezmoi: `status` reports one would-change target (.foo); `cat` echoes the base-source content
