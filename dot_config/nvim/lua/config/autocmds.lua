@@ -17,3 +17,7 @@ vim.api.nvim_create_autocmd("User", {
     end
   end,
 })
+
+-- Two-tier spell wordlists + zg-capture. Loaded here because LazyVim auto-loads
+-- config.autocmds but not arbitrary config modules.
+require("config.spell")
