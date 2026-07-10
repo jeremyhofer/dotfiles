@@ -35,7 +35,7 @@ changed_targets() {
   have_overlay && overlay status 2>/dev/null | sed 's/^...//'
 }
 
-marker=$(mktemp); trap 'rm -f "$marker"' EXIT
+marker=$(mktemp "${TMPDIR:-/tmp}/adopt-audit.XXXXXX"); trap 'rm -f "$marker"' EXIT
 
 changed_targets | sort -u | while IFS= read -r rel; do
   [ -n "$rel" ] || continue

@@ -3,7 +3,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/scaffold-overlay"
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-scaffold-overlay.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 SKEL="$here/../overlay-skeleton" sh "$script" "$tmp/new-overlay"
 [ -f "$tmp/new-overlay/.chezmoiignore" ]                     || { echo "FAIL: .chezmoiignore"; exit 1; }

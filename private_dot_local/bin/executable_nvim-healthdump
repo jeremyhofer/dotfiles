@@ -20,8 +20,8 @@ command -v nvim >/dev/null 2>&1 || { echo "nvim-healthdump: nvim not found on PA
 #     stripped runtime where LazyVim's plugins aren't loaded, so require() of mason/lazy/icons
 #     falsely fails. `-c` runs after full startup (same context :checkhealth uses). The probe
 #     writes to $inv_file so we don't depend on headless stdout capture. ---
-inv_file="$(mktemp)"
-lua_probe="$(mktemp)"
+inv_file="$(mktemp "${TMPDIR:-/tmp}/nvim-healthdump.XXXXXX")"
+lua_probe="$(mktemp "${TMPDIR:-/tmp}/nvim-healthdump.XXXXXX")"
 cat > "$lua_probe" <<LUA
 local F = assert(io.open("$inv_file", "w"))
 local function hdr(s) F:write("\n## "..s.."\n") end
@@ -72,7 +72,7 @@ nvim --headless -c "luafile $lua_probe" -c "qa!" >/dev/null 2>&1 || true
 rm -f "$lua_probe" "$inv_file"
 
 # :checkhealth renders into a buffer; capture it by writing that buffer to a file.
-tmp_h="$(mktemp)"
+tmp_h="$(mktemp "${TMPDIR:-/tmp}/nvim-healthdump.XXXXXX")"
 nvim --headless -c "checkhealth" -c "silent write! $tmp_h" -c "qa!" >/dev/null 2>&1 || true
 { echo ; echo "## :checkhealth (full)" ; cat "$tmp_h" 2>/dev/null || echo "(checkhealth capture failed)" ; } >> "$out"
 rm -f "$tmp_h"

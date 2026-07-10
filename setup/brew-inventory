@@ -58,7 +58,7 @@ key() {
   esac
 }
 
-basekeys="$(mktemp)"; trap 'rm -f "$basekeys"' EXIT
+basekeys="$(mktemp "${TMPDIR:-/tmp}/brew-inventory.XXXXXX")"; trap 'rm -f "$basekeys"' EXIT
 while IFS= read -r line; do key "$line" >> "$basekeys" 2>/dev/null || true; done < "$base"
 
 printf '%s\n' "$dump" | while IFS= read -r line; do

@@ -4,7 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/brew-inventory"
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-brew-inventory.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 
 # Fake brew: respond to `brew bundle dump ...` with a canned Brewfile snapshot.
 cat > "$tmp/brew" <<'EOF'
