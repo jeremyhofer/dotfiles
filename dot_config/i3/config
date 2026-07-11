@@ -74,10 +74,9 @@ floating_modifier $mod
 # or left-clicking anywhere into the window while holding the floating modifier.
 tiling_drag modifier titlebar
 
-# start a terminal
-bindsym $mod+Return exec alacritty
-# Ghostty — trial alternative terminal (kitty-graphics protocol for nvim images)
-bindsym $mod+Ctrl+Return exec ghostty
+# start a terminal — ghostty default (kitty-graphics protocol for nvim images), alacritty fallback
+bindsym $mod+Return exec ghostty
+bindsym $mod+Ctrl+Return exec alacritty
 
 # kill focused window
 bindsym $mod+Shift+q kill
