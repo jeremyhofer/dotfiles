@@ -13,8 +13,8 @@ set $left h
 set $down j
 set $up k
 set $right l
-# Your preferred terminal emulator
-set $term alacritty
+# Your preferred terminal emulator — ghostty (kitty-graphics protocol for nvim images); alacritty = fallback
+set $term ghostty
 # Your preferred application launcher
 # Note: pass the final command to swaymsg so that the resulting window can be opened
 # on the original workspace that the command was run on.
@@ -112,8 +112,8 @@ input type:touchpad {
 #
     # Start a terminal
     bindsym $mod+Return exec $term
-    # Ghostty — trial alternative terminal (kitty-graphics protocol for nvim images)
-    bindsym $mod+Ctrl+Return exec ghostty
+    # Alacritty — fallback terminal ($mod+Return launches ghostty, the $term default)
+    bindsym $mod+Ctrl+Return exec alacritty
 
     # Multimedia keys — volume/mute via pactl (PipeWire), players via playerctl.
     # --locked keeps volume + mute working while the screen is locked.
