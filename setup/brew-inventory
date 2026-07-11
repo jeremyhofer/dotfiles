@@ -7,8 +7,9 @@
 # `mas list` gets wrong). Prefer the maintained tool over reinventing the parser.
 #
 # NB: the intent is USER-EXPLICIT installs only — `brew list --formula --installed-on-request`,
-# NOT dependencies. On a real Mac, confirm `brew bundle dump`'s formula set is on-request (its
-# historical `brew leaves` basis can include orphaned deps); if not, filter by --installed-on-request.
+# NOT dependencies. Verified on a real Apple Silicon Mac (2026-07-10): `brew bundle dump`'s formula
+# set EQUALS `brew list --formula --installed-on-request` (identical both directions), so no
+# on-request filter is needed here — dump's leaves basis already matches user-on-request.
 #
 # Usage:
 #   brew-inventory                  # full machine state (tap/brew/cask/mas) to stdout
