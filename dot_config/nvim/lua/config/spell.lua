@@ -1,19 +1,19 @@
 -- Two-tier spell wordlists.
---   zg  -> personal.utf-8.add  (overlay, private, per-domain)   [entry 1, default]
+--   zg  -> private.utf-8.add   (overlay, private, per-domain)   [entry 1, default]
 --   2zg -> shared.utf-8.add    (base,    public,  fleet-wide)   [entry 2]
 -- Both are loaded for checking; the count only picks the write target (:h {count}zg).
 --
 -- `zg` edits the DEPLOYED copy, which `chezmoi apply` would clobber. So after each
 -- add/undo we re-import the wordlist back into the chezmoi SOURCE -- same pattern as
 -- the lazy-lock `chezmoi re-add` autocmd in autocmds.lua. Capture != commit != push.
--- The overlay-specific chezmoi invocation lives in the overlay-shipped `spell-capture`
--- helper, so this public-base config names only a generic command.
+-- The overlay-specific chezmoi invocation lives in the `spell-capture` helper (shipped
+-- by the base, targeting the overlay instance), so this config names only a generic command.
 
 local spelldir = vim.fn.stdpath("config") .. "/spell" -- ~/.config/nvim/spell
-local personal = spelldir .. "/personal.utf-8.add"    -- entry 1 (overlay, private)
+local private = spelldir .. "/private.utf-8.add"      -- entry 1 (overlay, private)
 local shared = spelldir .. "/shared.utf-8.add"        -- entry 2 (base, public)
 
-vim.opt.spellfile = personal .. "," .. shared
+vim.opt.spellfile = private .. "," .. shared
 
 -- The capture helper (spell-capture) is on PATH via ~/.local/bin (~/.zshenv) on every machine
 -- and context, so resolve it by name rather than a hardcoded path (ADR-0045).
@@ -22,7 +22,7 @@ local function capture()
     vim.fn.jobstart({ "chezmoi", "re-add", shared }) -- public list -> base source
   end
   if vim.fn.executable("spell-capture") == 1 then
-    vim.fn.jobstart({ "spell-capture", personal }) -- private list -> overlay source
+    vim.fn.jobstart({ "spell-capture", private }) -- private list -> overlay source
   end
 end
 
