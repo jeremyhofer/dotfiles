@@ -1,4 +1,4 @@
-# Session-environment SSOT (ADR-0045 D2). Rendered by chezmoi into BOTH ~/.zshenv (as `export K=V`)
+# Session-environment SSOT. Rendered by chezmoi into BOTH ~/.zshenv (as `export K=V`)
 # and ~/.config/environment.d/ (as `K=V`) so each value is defined once and can't drift between the
 # shell env and the systemd/GUI session env. Linux values; the macOS agent story fills its own
 # (zshrc.darwin / launchd) when that node is provisioned. Ordered list so renders are deterministic.

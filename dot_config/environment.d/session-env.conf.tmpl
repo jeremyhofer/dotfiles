@@ -1,4 +1,4 @@
-# systemd-user / GUI session env. RENDERED from the session-env SSOT (ADR-0045 D2) — the same values
+# systemd-user / GUI session env. RENDERED from the session-env SSOT — the same values
 # are rendered into ~/.zshenv, so shells and the systemd/GUI session can't drift. Read by `systemd --user`
 # (systemd-user units + dbus-activated/compositor-launched apps); plain shells get these from ~/.zshenv.
 {{ range .session_env -}}
