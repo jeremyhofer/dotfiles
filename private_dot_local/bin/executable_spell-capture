@@ -1,0 +1,16 @@
+#!/bin/sh
+# spell-capture -- re-import a private nvim spell wordlist ($1) back into the
+# overlay chezmoi source, so `chezmoi-overlay apply` can't clobber a word added
+# via `zg`. Called (non-interactively) from nvim's spell keymaps -- see
+# ~/.config/nvim/lua/config/spell.lua. No-op if the overlay isn't set up here.
+set -u
+
+cfg="$HOME/.config/chezmoi/overlay"
+[ -f "$cfg/chezmoi.toml" ] || exit 0
+
+exec chezmoi \
+  --config "$cfg/chezmoi.toml" \
+  --source "$HOME/.local/share/chezmoi-overlay" \
+  --persistent-state "$cfg/chezmoistate.boltdb" \
+  --cache "$HOME/.cache/chezmoi/overlay" \
+  re-add "$1"
