@@ -6,10 +6,17 @@
 # hood and, crucially, formats `mas` entries with the correct App Store id, which hand-parsing
 # `mas list` gets wrong). Prefer the maintained tool over reinventing the parser.
 #
-# NB: the intent is USER-EXPLICIT installs only — `brew list --formula --installed-on-request`,
-# NOT dependencies. Verified on a real Apple Silicon Mac (2026-07-10): `brew bundle dump`'s formula
-# set EQUALS `brew list --formula --installed-on-request` (identical both directions), so no
-# on-request filter is needed here — dump's leaves basis already matches user-on-request.
+# NB — SCOPE: `brew bundle dump` is the source of truth for ALL entry types (tap/brew/cask/mas).
+# Taps ARE included by default (Homebrew: dump "writes all installed casks, formulae, images, and
+# taps") and this script does NOT pass --no-tap, so a custom third-party tap is captured — as a
+# `tap "org/repo"` line plus fully-qualified `brew "org/repo/formula"` for its formulae. `brew list`
+# is formula-only and NEVER used as the inventory source; it appears only as the on-request check
+# below, which concerns the `brew` (formula) subset — never taps/casks/mas.
+#
+# On-request: intent is USER-EXPLICIT formulae, not dependency formulae. Verified on a real Apple
+# Silicon Mac (2026-07-10): dump's `brew` set EQUALS `brew list --formula --installed-on-request`
+# (identical both directions) -> no on-request filter needed. (That box had no taps to exercise;
+# the tap path is confirmed from Homebrew docs + the flags above, and lands on any box with a tap.)
 #
 # Usage:
 #   brew-inventory                  # full machine state (tap/brew/cask/mas) to stdout
