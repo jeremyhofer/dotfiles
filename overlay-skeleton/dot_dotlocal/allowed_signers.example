@@ -1,0 +1,3 @@
+# FIXME(overlay-doctor): add THIS domain's signer principals, then delete this line.
+# Format: <principal> <keytype> <pubkey>   (matches [gpg.ssh].allowedSignersFile)
+# you@example.com ssh-ed25519 AAAA...
