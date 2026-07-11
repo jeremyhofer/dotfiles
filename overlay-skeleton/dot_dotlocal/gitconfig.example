@@ -1,0 +1,13 @@
+# vim: ft=gitconfig
+# FIXME(overlay-doctor): fill in THIS domain's identity + signing, then delete this line.
+# Included by the base-managed ~/.gitconfig. Identity + signing only. The leak-guard
+# hooksPath wiring is home-only and deliberately NOT part of a fresh overlay.
+[user]
+	email = you@example.com
+	name = Your Name
+	signingkey = ~/.ssh/<your-signing-key>.pub
+[gpg "ssh"]
+	allowedSignersFile = ~/.dotlocal/allowed_signers
+[commit]
+	# home = true; a locked-down box that cannot sign (agent/~/.ssh blocked) sets this false.
+	gpgsign = true

@@ -1,3 +1,4 @@
+# FIXME(overlay-doctor): fill in for THIS domain, then delete this line.
 # vim: ft=sshconfig
 # Host-specific SSH entries for this overlay. The public base's ~/.ssh/config does
 # `Include ~/.dotlocal/ssh/config`, so anything here is picked up automatically.

@@ -1,0 +1,4 @@
+# vim: ft=zsh
+# FIXME(overlay-doctor): private ENV layer — exports only, fast/silent. Delete this line when filled.
+# Example — the fleet-generic signing-key preload contract (points at this domain's key loader):
+# export SSH_SIGNING_PRELOAD="$HOME/.local/bin/ensure-keys"

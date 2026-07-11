@@ -1,9 +1,0 @@
-# PRIVATE program markers for the public base's pre-push leak guard. The base reads
-# ~/.dotlocal/git-leak-markers and uses its FIRST non-comment line as an extended-regex;
-# any pushed commit whose content OR message matches is blocked. This keeps the private
-# marker vocabulary in THIS (private) overlay, never in the public base.
-#
-# Uncomment + edit the line below with your private program's markers, e.g.:
-#   (MYPROG|FOO)-[0-9]+|my-private-program-codename
-#
-# (No active line here = the marker scan is skipped; the generic key/overlay-URL guard still runs.)
