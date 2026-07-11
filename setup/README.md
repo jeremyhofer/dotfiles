@@ -22,6 +22,7 @@ overwrites it).
 |------|--------------|
 | `../bootstrap-mac.sh` | macOS entry point: foundation → `brew bundle` → default Node → **guarded apply** → overlay bootstrap stages. Re-runnable. |
 | `setup/scaffold-overlay <dir>` | Create a brand-new overlay source skeleton (self-documented) to fill in. |
+| `setup/overlay-doctor` | **Compliance audit**: checks an overlay has every required Tier-B (private-vocab) + Tier-C (domain) piece present and filled; fail-loud, read-only. Runnable from the base checkout alone. |
 | `setup/adopt-audit` | **Pre-apply safety check**: for every path an apply would write, flags any *differing* file already deployed there that isn't yet captured in source (base or overlay). Non-zero exit = capture those first. |
 | `setup/chezmoi-safe-apply` | **Guarded apply**: runs `adopt-audit` as a gate, backs up every would-change file, shows the diff, asks to confirm, then applies base then overlay. |
 | `setup/brew-inventory` | Snapshot installed Homebrew formulae/casks (to seed a Brewfile). |
@@ -63,6 +64,21 @@ steps 2–3, then re-run and it proceeds. Steps 2–3 need your judgment (and ar
    expect. Spot-check the things you migrated.
 7. **Cleanup** — once verified, decommission the old setup (e.g. remove the stow symlinks / retire `~/.dotfiles`),
    and prune the backup dir. Do this **last** — never before the apply is verified.
+
+## Upgrading an existing overlay to the current standard
+
+An overlay created earlier can lack pieces added since. Bring it current without re-scaffolding:
+
+1. **Pull the base** and apply it — the generic mechanism (Tier A, e.g. `spell-capture`) arrives
+   automatically; there is nothing to hand-copy.
+2. **Run the audit:** `sh setup/overlay-doctor`. It lists every MISSING or PLACEHOLDER required
+   piece (Tier B private-vocab, Tier C domain-specific).
+3. **Provision what it flags** from THIS domain's own vault/records — author the file (the skeleton
+   under `overlay-skeleton/` shows each one's shape), delete its `FIXME(overlay-doctor)` line, and
+   `chezmoi --source <overlay> … add`/commit it. Never copy another domain's private values.
+4. **Re-run** `overlay-doctor` until it reports `compliant`.
+
+The publish-boundary leak-guard is home-only and intentionally out of this flow.
 
 ## Safety guarantees
 
