@@ -37,5 +37,5 @@
 	enabled = true
 [gpg]
 	format = ssh
-[commit]
-	gpgsign = true
+# NOTE: commit.gpgsign is set per-domain in the overlay gitconfig (~/.dotlocal/gitconfig),
+# NOT here — a work machine may need signing off (locked-down agent), home keeps it on.

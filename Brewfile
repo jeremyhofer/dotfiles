@@ -10,6 +10,7 @@
 brew "chezmoi"
 brew "git"
 brew "gh"
+brew "git-delta"         # git diff/pager syntax highlighting (gitconfig [core] pager + [interactive] diffFilter)
 brew "lazygit"           # git TUI (LazyVim/snacks integration)
 brew "fnm"               # node version manager (per-project node)
 brew "uv"                # python
@@ -21,13 +22,16 @@ brew "thefuck"           # command corrector (zsh plugin)
 brew "tree"              # directory tree listing
 brew "just"              # task runner
 brew "age"               # file encryption (generic)
+brew "jq"                # JSON processor (scripts / CLI)
+brew "watch"             # periodic command re-runner (not shipped on macOS)
+brew "findutils"         # GNU find/xargs (gfind/gxargs; macOS ships only BSD find)
 
 # --- nvim rendering / diagram / PDF / LaTeX tooling (parity with the Framework's pacman set;
 #     tracked by personal-systems/parity). Inline image DISPLAY also needs a kitty-graphics
 #     terminal (ghostty). ---
 brew "ripgrep"
 brew "fd"
-brew "tree-sitter"       # brew's formula name (Arch calls it tree-sitter-cli)
+brew "tree-sitter"       # nvim's parser runtime; the separate tree-sitter-cli (grammar builder) is NOT needed
 brew "luarocks"
 brew "imagemagick"
 brew "ghostscript"
