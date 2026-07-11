@@ -1,4 +1,4 @@
-# Linux login-shell ACTIONS (ADR-0045 D1/D3). Env (SSH_AUTH_SOCK, SSH_ASKPASS_REQUIRE) now comes from
+# Linux login-shell ACTIONS. Env (SSH_AUTH_SOCK, SSH_ASKPASS_REQUIRE) now comes from
 # ~/.zshenv (rendered from the session-env SSOT, same values as ~/.config/environment.d — no drift).
 # The login shell reads .zshenv BEFORE this file, so the graphical sessions exec'd below inherit those
 # vars — including X11/i3, which does not read environment.d.

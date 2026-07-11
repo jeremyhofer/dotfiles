@@ -16,7 +16,7 @@ local shared = spelldir .. "/shared.utf-8.add"        -- entry 2 (base, public)
 vim.opt.spellfile = private .. "," .. shared
 
 -- The capture helper (spell-capture) is on PATH via ~/.local/bin (~/.zshenv) on every machine
--- and context, so resolve it by name rather than a hardcoded path (ADR-0045).
+-- and context, so resolve it by name rather than a hardcoded path.
 local function capture()
   if vim.fn.executable("chezmoi") == 1 then
     vim.fn.jobstart({ "chezmoi", "re-add", shared }) -- public list -> base source

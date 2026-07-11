@@ -1,6 +1,6 @@
 # vim: ft=zsh
 # ~/.zshenv — read by EVERY zsh: login, interactive, non-interactive, scripts, `ssh host cmd`.
-# The universal ENV layer (ADR-0045 D1): exports only, fast, silent, no TTY assumptions. PATH lives
+# The universal ENV layer: exports only, fast, silent, no TTY assumptions. PATH lives
 # here (not .zprofile/.zshrc) so non-interactive / ssh / GUI-adjacent contexts get it too.
 
 typeset -U path fpath

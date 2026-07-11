@@ -1,3 +1,3 @@
 # Deprecated targets to ensure absent fleet-wide (chezmoi removes these on apply).
-# ssh-auth-sock.conf was folded into session-env.conf (rendered from the session-env SSOT) — ADR-0045.
+# ssh-auth-sock.conf was folded into session-env.conf (rendered from the session-env SSOT).
 .config/environment.d/ssh-auth-sock.conf
