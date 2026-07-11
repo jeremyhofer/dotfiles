@@ -1,0 +1,82 @@
+#!/bin/sh
+# overlay-doctor — audit a private overlay against the current standard and point at what
+# to provision. READ-ONLY; never mutates. Exit 0 = compliant; 1 = a required piece is
+# missing/placeholder; 2 = precondition error. Runnable from the public base checkout ALONE
+# (a fresh/locked-down box may have only the base cloned) — it inspects the overlay SOURCE
+# tree for presence + shape, and PATH for the base-provided generic mechanism.
+#
+# Tiers: A generic (from the base, auto-propagated) · B private-vocab (authored per-domain
+# from THAT domain's own vault — never copied from another domain) · C domain-specific ·
+# H leak-guard (OPTIONAL, home-only by design). Only required A/B/C pieces gate the exit;
+# Tier H is reported, never enforced.
+set -eu
+
+OSRC="${OVERLAY_SRC:-$HOME/.local/share/chezmoi-overlay}"
+STUB_MARK='FIXME(overlay-doctor)'   # scaffold stubs carry this until filled in
+fail=0
+note() { printf '  %s\n' "$*"; }
+miss() { printf '  MISSING     %s\n' "$*"; fail=1; }
+stub() { printf '  PLACEHOLDER %s\n' "$*"; fail=1; }
+
+[ -d "$OSRC" ] || {
+  echo "overlay-doctor: no overlay source at $OSRC" >&2
+  echo "  scaffold one first:  setup/scaffold-overlay $OSRC" >&2
+  exit 2
+}
+
+# require REL DESC — a required file must exist and not still carry the stub sentinel.
+require() {
+  if [ ! -f "$OSRC/$1" ]; then miss "$1 ($2)"
+  elif grep -q "$STUB_MARK" "$OSRC/$1" 2>/dev/null; then stub "$1"
+  fi
+}
+
+echo "overlay-doctor: auditing $OSRC"
+
+# --- Tier A: generic mechanism (base-provided; auto-propagated, non-gating) ---
+if command -v spell-capture >/dev/null 2>&1; then
+  note "OK          Tier A: spell-capture on PATH (base applied)"
+else
+  note "WARN        Tier A: spell-capture not on PATH — apply the base (chezmoi apply)"
+fi
+
+# --- Tier B: private-vocab (author from THIS domain's vault) ---
+require dot_dotlocal/gitconfig                  "identity: user/signingkey/gpgsign"
+if [ -f "$OSRC/dot_dotlocal/gitconfig" ] && ! grep -q 'signingkey' "$OSRC/dot_dotlocal/gitconfig"; then
+  miss "dot_dotlocal/gitconfig: no signingkey (identity incomplete)"
+fi
+require dot_dotlocal/allowed_signers            "signer principals"
+require dot_dotlocal/zshenv.tmpl                "private env layer"
+require dot_config/nvim/spell/private.utf-8.add "private spell tier (may be empty)"
+# ensure-keys required only where this domain actually signs.
+if [ -f "$OSRC/dot_dotlocal/gitconfig" ] && grep -Eq 'gpgsign[[:space:]]*=[[:space:]]*true' "$OSRC/dot_dotlocal/gitconfig"; then
+  [ -f "$OSRC/private_dot_local/bin/executable_ensure-keys" ] \
+    || miss "private_dot_local/bin/executable_ensure-keys (gpgsign=true needs the signing-key preload)"
+fi
+
+# --- Tier C: domain-specific ---
+require dot_dotlocal/Brewfile.role "role Brewfile (instance_eval the base + domain apps)"
+require dot_dotlocal/ssh/config    "ssh host config"
+ls "$OSRC"/dot_dotlocal/bootstrap.d/*.sh >/dev/null 2>&1 \
+  || miss "dot_dotlocal/bootstrap.d/*.sh (at least one stage)"
+
+# --- Tier H: leak-guard (optional, home-only) ---
+if [ -d "$OSRC/dot_dotlocal/git-hooks" ]; then
+  note "OK          Tier H: leak-guard present (home profile)"
+else
+  note "info        Tier H: leak-guard not installed (optional; home-only by design)"
+fi
+
+if [ "$fail" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+overlay-doctor: the overlay is INCOMPLETE. Provision each MISSING/PLACEHOLDER item above
+from THIS domain's own vault/records (identity + signing key, signer principals, host
+aliases) and remove the FIXME line once filled. Generic mechanism (Tier A) comes from the
+base automatically — apply the base if it is not on PATH. Never copy private values from
+another domain's overlay.
+MSG
+  exit 1
+fi
+echo "overlay-doctor: compliant — every required tier is present and filled."
+exit 0
