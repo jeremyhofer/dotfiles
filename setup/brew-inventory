@@ -6,6 +6,10 @@
 # hood and, crucially, formats `mas` entries with the correct App Store id, which hand-parsing
 # `mas list` gets wrong). Prefer the maintained tool over reinventing the parser.
 #
+# NB: the intent is USER-EXPLICIT installs only — `brew list --formula --installed-on-request`,
+# NOT dependencies. On a real Mac, confirm `brew bundle dump`'s formula set is on-request (its
+# historical `brew leaves` basis can include orphaned deps); if not, filter by --installed-on-request.
+#
 # Usage:
 #   brew-inventory                  # full machine state (tap/brew/cask/mas) to stdout
 #   brew-inventory --delta [BASE]   # only entries NOT already in BASE (default: the deployed
