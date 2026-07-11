@@ -10,8 +10,13 @@ instance_eval(File.read(File.expand_path("~/.local/share/chezmoi/Brewfile")))
 # cask "some-app"
 # brew "some-cli"
 
-# --- custom work tap: tap it, then install from it ---
-# tap "yourorg/internal", "https://git.internal.example.com/yourorg/homebrew-internal.git"
+# --- custom tap (work or personal): tap it, then install from it ---
+# Third-party taps are UNTRUSTED by default (Homebrew "Tap Trust") — `brew bundle` SILENTLY SKIPS
+# their formulae/casks unless you mark trust, so nothing from the tap installs. Fix: add trust.
+#   `trusted: true` trusts the WHOLE tap — the simple call for a tap YOU own (and `brew bundle dump`
+#   writes it back, so it survives a regenerated Brewfile). For a tap you do NOT control, prefer
+#   granular (hash-pinned, re-trust on change): tap "yourorg/internal", trusted: { formulae: ["some-tool"] }
+# tap "yourorg/internal", "https://git.internal.example.com/yourorg/homebrew-internal.git", trusted: true
 # brew "yourorg/internal/some-tool"
 
 # --- Mac App Store apps (needs `mas`) ---
