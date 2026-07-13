@@ -51,4 +51,28 @@ out=$(OVERLAY_SRC="$tmp/nope" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 2 ] || { echo "FAIL(E): missing overlay dir should exit 2, got ${rc:-0}"; echo "$out"; exit 1; }
 echo "ok:   missing overlay dir -> exit 2"
 
+# ---- cross-layer safety (base <-> overlay), with a hermetic fake BASE_SRC ----
+mkbase() { b="$1"; rm -rf "$b"; mkdir -p "$b/private_dot_local/bin" "$b/dot_config"; }  # clean, agrees w/ mk overlay
+
+# Case F — overlay carries an exact_ directory (a deletion vector) -> exit 1, flagged.
+mk "$tmp/ov"; mkbase "$tmp/base"; mkdir -p "$tmp/ov/exact_dot_somewhere"
+out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$tmp/base" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(F): exact_ should exit 1, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -qi 'exact_' || { echo "FAIL(F): exact_ not flagged"; echo "$out"; exit 1; }
+echo "ok:   destructive exact_ attribute flagged (exit 1)"
+
+# Case G — base + overlay co-own ~/.local with CONFLICTING attrs (base plain vs overlay private_) -> exit 1.
+mk "$tmp/ov"; b="$tmp/base"; rm -rf "$b"; mkdir -p "$b/dot_local/bin" "$b/dot_config"
+out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(G): attr conflict should exit 1, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -q "CONFLICT.*'.local'" || { echo "FAIL(G): .local conflict not flagged"; echo "$out"; exit 1; }
+echo "ok:   co-owned dir attribute conflict flagged (exit 1)"
+
+# Case H — clean fake base + complete overlay, agreeing attrs -> exit 0, NO false-positive CONFLICT.
+mk "$tmp/ov"; mkbase "$tmp/base"
+out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$tmp/base" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(H): clean cross-layer should exit 0, got ${rc:-0}"; echo "$out"; exit 1; }
+if echo "$out" | grep -q 'CONFLICT'; then echo "FAIL(H): false-positive CONFLICT"; echo "$out"; exit 1; fi
+echo "ok:   clean cross-layer passes, no false positive (exit 0)"
+
 echo "PASS"

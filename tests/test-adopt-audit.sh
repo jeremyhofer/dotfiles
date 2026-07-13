@@ -13,9 +13,10 @@ mkdir -p "$tmp/home" "$tmp/bin"
 cat > "$tmp/bin/chezmoi" <<'STUB'
 #!/bin/sh
 case "$1" in
-  status) printf ' M .foo\n' ;;
-  cat)    [ -n "${FAKE_BASE:-}" ] && printf '%s' "$FAKE_BASE" ;;
-  *)      : ;;
+  status)  [ "${FAKE_STATUS_EMPTY:-}" = 1 ] || printf ' M .foo\n' ;;
+  managed) [ -n "${FAKE_MANAGED:-}" ] && printf '%s\n' "$FAKE_MANAGED" ;;
+  cat)     [ -n "${FAKE_BASE:-}" ] && printf '%s' "$FAKE_BASE" ;;
+  *)       : ;;
 esac
 STUB
 chmod +x "$tmp/bin/chezmoi"
@@ -34,5 +35,14 @@ printf 'BASE generic content' > "$tmp/home/.foo"
 out=$(run 'BASE generic content') && rc=0 || rc=$?
 [ "${rc:-0}" -eq 0 ] || { echo "FAIL(B): expected exit 0 (clean), got ${rc:-0}"; echo "$out"; exit 1; }
 echo "ok:   captured content passes (exit 0)"
+
+# Case C — a managed target's ANCESTOR dir is a symlink (stow-fold): chezmoi would replace it with a
+# real directory and lose its contents -> flagged SYMLINK-DIR, exit 1. (No status changes this case.)
+mkdir -p "$tmp/home/.local/realbin"
+ln -s realbin "$tmp/home/.local/bin"
+out=$(HOME="$tmp/home" PATH="$tmp/bin:$PATH" FAKE_STATUS_EMPTY=1 FAKE_MANAGED='.local/bin/ensure-keys' sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(C): symlinked managed dir should exit 1, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'SYMLINK-DIR .*.local/bin' || { echo "FAIL(C): symlinked dir not flagged"; echo "$out"; exit 1; }
+echo "ok:   symlinked ancestor dir flagged (exit 1)"
 
 echo "PASS"

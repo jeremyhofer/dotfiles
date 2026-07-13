@@ -55,15 +55,34 @@ changed_targets | sort -u | while IFS= read -r rel; do
   fi
 done
 
+# Symlink-directory pre-flight: chezmoi materializes REAL directories, so any managed target whose
+# ANCESTOR path is currently a symlink (e.g. a stow-folded ~/.local/bin) gets remove-and-recreated on
+# apply — silently destroying whatever the link pointed at. Flag every such directory. (This is the
+# gap the content check above cannot catch: it skips non-regular-file targets like a symlinked dir.)
+managed_all() { chezmoi managed 2>/dev/null; have_overlay && overlay managed 2>/dev/null; }
+managed_all | while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  d=$(dirname "$rel")
+  while [ "$d" != "." ] && [ "$d" != "/" ] && [ -n "$d" ]; do
+    if [ -L "$HOME/$d" ]; then printf '%s\n' "$d"; fi
+    d=$(dirname "$d")
+  done
+done | sort -u | while IFS= read -r sd; do
+  [ -n "$sd" ] || continue
+  printf '  SYMLINK-DIR %s  ->  %s\n' "$sd" "$(readlink "$HOME/$sd" 2>/dev/null || echo '?')"
+  printf 'x\n' >> "$marker"
+done
+
 if [ -s "$marker" ]; then
   cat >&2 <<'MSG'
 
-adopt-audit: the deployed files above would be OVERWRITTEN by an apply, and their content is not
-captured in base or overlay source. Capture each into the right layer first:
-  - machine/domain-specific or private -> the OVERLAY  (chezmoi --source <overlay> ... add <path>)
-  - generic / shareable                -> the BASE     (chezmoi add <path>; rare — base is upstream)
-Then re-run. (If a flagged file is just a managed file with a pending upstream update — not custom
-content — run `chezmoi apply <path>` to sync it, then re-run.)
+adopt-audit: an apply would DESTROY or OVERWRITE the items above.
+  - UNCAPTURED <file> : deployed content matches NEITHER base nor overlay source. Capture it into the
+      right layer first (OVERLAY for machine/private, BASE for generic), then re-run. (If it is only a
+      managed file with a pending upstream update, `chezmoi apply <path>` to sync it, then re-run.)
+  - SYMLINK-DIR <dir> : chezmoi will REPLACE this symlink with a real directory and lose whatever it
+      points at (classic stow-fold footgun). Move the link target's contents into a real <dir> and
+      remove the symlink BEFORE applying.
 MSG
   exit 1
 fi
