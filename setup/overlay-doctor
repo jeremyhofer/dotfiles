@@ -12,6 +12,7 @@
 set -eu
 
 OSRC="${OVERLAY_SRC:-$HOME/.local/share/chezmoi-overlay}"
+BSRC="${BASE_SRC:-$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd)}"
 STUB_MARK='FIXME(overlay-doctor)'   # scaffold stubs carry this until filled in
 fail=0
 note() { printf '  %s\n' "$*"; }
@@ -66,6 +67,86 @@ if [ -d "$OSRC/dot_dotlocal/git-hooks" ]; then
 else
   note "info        Tier H: leak-guard not installed (optional; home-only by design)"
 fi
+
+# ============================================================================================
+# Cross-layer safety — base <-> overlay are two chezmoi instances both targeting ~. Their managed
+# sets must stay disjoint and neither may put a DELETING attribute (exact_/remove_) on a co-owned or
+# shared directory, or conflicting perms on a co-owned one. (Born from a real data-loss incident.)
+# ============================================================================================
+TAB=$(printf '\t')
+
+# Map a chezmoi SOURCE relpath to its TARGET relpath + the (sorted) attribute-set on its LAST component.
+_totarget() {
+  _p=$1; _tgt=""; _la=""; _oIFS=$IFS; IFS=/
+  for _c in $_p; do
+    [ "$_c" = "." ] && continue
+    _r=$_c; _a=""
+    while :; do
+      case $_r in
+        encrypted_*)  _a="${_a}encrypted ";  _r=${_r#encrypted_} ;;
+        private_*)    _a="${_a}private ";    _r=${_r#private_} ;;
+        readonly_*)   _a="${_a}readonly ";   _r=${_r#readonly_} ;;
+        exact_*)      _a="${_a}exact ";      _r=${_r#exact_} ;;
+        executable_*) _a="${_a}executable "; _r=${_r#executable_} ;;
+        symlink_*)    _a="${_a}symlink ";    _r=${_r#symlink_} ;;
+        create_*)     _a="${_a}create ";     _r=${_r#create_} ;;
+        modify_*)     _a="${_a}modify ";     _r=${_r#modify_} ;;
+        remove_*)     _a="${_a}remove ";     _r=${_r#remove_} ;;
+        literal_*)    _r=${_r#literal_} ;;
+        *) break ;;
+      esac
+    done
+    case $_r in dot_*) _r=".${_r#dot_}" ;; esac
+    _tgt="$_tgt/$_r"; _la=$_a
+  done
+  IFS=$_oIFS
+  printf '%s\t%s\n' "${_tgt#/}" "$(printf '%s' "$_la" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
+}
+
+# Emit "target<TAB>attrs" per managed directory in a source tree (skip VCS + non-deployed meta dirs).
+_emit_dirs() {
+  [ -d "$1" ] || return 0
+  ( CDPATH= cd -- "$1" && find . -type d \
+      ! -path './.git' ! -path './.git/*' \
+      ! -name '.chezmoitemplates' ! -path './.chezmoitemplates/*' \
+      ! -path './tests' ! -path './tests/*' ! -path './setup' ! -path './setup/*' \
+      ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' -print ) \
+  | while IFS= read -r _pp; do [ "$_pp" = "." ] || _totarget "${_pp#./}"; done
+}
+
+echo
+echo "cross-layer safety (base <-> overlay):"
+xmark=$(mktemp "${TMPDIR:-/tmp}/xdoctor.XXXXXX"); btmp=$(mktemp "${TMPDIR:-/tmp}/xdoctor-b.XXXXXX")
+trap 'rm -f "$xmark" "$btmp"' EXIT
+xbad() { printf '  CONFLICT    %s\n' "$*"; printf 'x\n' >> "$xmark"; }
+
+# (1) Destructive attributes anywhere (exact_/remove_) — the ONLY attrs that delete unmanaged files.
+#     A stray exact_ on a co-owned dir (~/.local/bin, ~/.config) wipes the other layer + real tools.
+_dz=$(find "$BSRC" "$OSRC" -path '*/.git' -prune -o \( -name '*exact_*' -o -name 'remove_*' \) -print 2>/dev/null || true)
+if [ -n "$_dz" ]; then
+  printf '%s\n' "$_dz" | while IFS= read -r _d; do [ -n "$_d" ] && printf '  found       %s\n' "$_d"; done
+  xbad "'exact_'/'remove_' attribute present (above) — it deletes unmanaged files in its target dir; forbidden on the co-owned home tree. Remove it, or confine it to a directory ONLY this layer owns."
+fi
+
+# (2) Directory attribute conflicts on co-owned dirs (e.g. private_ vs plain -> 0700<->0755 flip-flop).
+_emit_dirs "$BSRC" > "$btmp"
+_emit_dirs "$OSRC" | while IFS="$TAB" read -r _otgt _oattr; do
+  [ -n "$_otgt" ] || continue
+  if _battr=$(awk -F"$TAB" -v t="$_otgt" '$1==t{print $2; f=1} END{exit !f}' "$btmp"); then
+    [ "$_battr" = "$_oattr" ] || xbad "directory '$_otgt' co-owned with CONFLICTING attributes — base:[${_battr:-none}] overlay:[${_oattr:-none}] (perms flip-flop on alternating applies). Make them agree."
+  fi
+done
+
+# (3) Always-print destructive-directive summary — the "be careful, review this" line, never silent.
+for _pair in "base=$BSRC" "overlay=$OSRC"; do
+  _who=${_pair%%=*}; _dir=${_pair#*=}
+  if [ -f "$_dir/.chezmoiremove" ]; then
+    grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$_dir/.chezmoiremove" 2>/dev/null \
+      | while IFS= read -r _ln; do [ -n "$_ln" ] && printf '  removes (%s)  %s\n' "$_who" "$_ln"; done
+  fi
+done
+
+if [ -s "$xmark" ]; then fail=1; else note "OK          no cross-layer conflicts"; fi
 
 if [ "$fail" -ne 0 ]; then
   cat >&2 <<'MSG'
