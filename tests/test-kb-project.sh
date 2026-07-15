@@ -35,4 +35,14 @@ grep -q 'draft-rule' "$a"  && { echo "FAIL: draft tier-0 record leaked into AGEN
 grep -qi 'do not edit' "$a" || { echo "FAIL: AGENTS.md missing do-not-edit banner"; exit 1; }
 echo "ok:   kb project emits AGENTS.md with only active tier-0 records"
 
+# --- Task 2: per-harness derivations ---
+c="$d/index/projections/CLAUDE.md"; g="$d/index/projections/GEMINI.md"
+[ -f "$c" ] && [ -f "$g" ] || { echo "FAIL: CLAUDE.md/GEMINI.md not generated"; exit 1; }
+grep -qx '@AGENTS.md' "$c" || { echo "FAIL: CLAUDE.md missing '@AGENTS.md' import"; exit 1; }
+grep -qi 'do not edit' "$c" || { echo "FAIL: CLAUDE.md missing do-not-edit banner"; exit 1; }
+grep -qi 'claude-only additions' "$c" || { echo "FAIL: CLAUDE.md missing additions section marker"; exit 1; }
+grep -q 'Always do the universal thing.' "$g" || { echo "FAIL: GEMINI.md missing tier-0 content"; exit 1; }
+grep -q 'some-detail' "$g" && { echo "FAIL: tier-2 leaked into GEMINI.md"; exit 1; }
+echo "ok:   CLAUDE.md is a thin @AGENTS import; GEMINI.md inlines tier-0"
+
 echo "PASS"
