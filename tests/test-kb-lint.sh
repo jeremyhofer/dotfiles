@@ -73,4 +73,13 @@ mv "$d/context/a.md" "$d/context/a.md.age"
 KB_ROOT="$d" kb lint >/dev/null 2>&1 || { echo "FAIL: encrypted .md.age should be skipped (opaque), lint clean"; exit 1; }
 echo "ok:   restricted-path rule enforced (plaintext flagged; ciphertext skipped)"
 
+# (e') a plaintext restricted record must be flagged even when an ANCESTOR dir merely
+# contains the substring ".age" (suffix check, not substring).
+base=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$base"' EXIT
+root="$base/notes.agenda"; mkdir -p "$root/context"
+emit "$root/context/a.md" a 'related: []'; sed -i 's/^sensitivity: internal$/sensitivity: restricted/' "$root/context/a.md"
+KB_ROOT="$root" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL: restricted plaintext under a '.age'-substring dir should still be flagged, got ${rc:-0}"; exit 1; }
+echo "ok:   restricted check is a .md.age suffix, not a substring"
+
 echo "PASS"

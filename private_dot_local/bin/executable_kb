@@ -146,7 +146,7 @@ cmd_new() {
     exit 2
   }
   case "$_slug" in
-    ""|*/*|*[!a-z0-9-]*) echo "kb: invalid slug: '$_slug' (use a kebab-case slug: a-z 0-9 -)" >&2; exit 2 ;;
+    ""|-*|*-|*/*|*[!a-z0-9-]*) echo "kb: invalid slug: '$_slug' (kebab-case: a-z 0-9 -, no leading/trailing hyphen)" >&2; exit 2 ;;
   esac
   _root=$(kb_resolve_root) || exit 1
   _dir="$_root/$_zone"
@@ -209,11 +209,19 @@ kb_body() {
   ' "$1"
 }
 
-# kb_find_records DIR -- list plaintext record files under DIR (skips VCS, templates,
-# generated index, and encrypted ciphertext which is opaque to lint).
+# Record zones (a record's type maps to one of these dirs; see kb_zone_for_type). Records
+# only ever live in a zone, so anything else under the root (README, generated index/,
+# .templates/, kb.toml) is not a record.
+KB_ZONES='standards decisions context research registers'
+
+# kb_find_records ROOT -- list plaintext record files in ROOT's record zones. Non-record
+# markdown at the KB root and the generated/template dirs are excluded by construction;
+# encrypted ciphertext (*.md.age) is opaque to lint and skipped by the *.md filter.
 kb_find_records() {
-  find "$1" -type f -name '*.md' \
-    ! -path '*/.git/*' ! -path '*/.templates/*' ! -path '*/index/*' 2>/dev/null || true
+  for _z in $KB_ZONES; do
+    if [ -d "$1/$_z" ]; then find "$1/$_z" -type f -name '*.md' 2>/dev/null || true; fi
+  done
+  return 0
 }
 
 KB_ENUM_TYPE='standard decision context research register'
@@ -247,9 +255,10 @@ kb_lint_file() {
   _st=$(kb_fm_get "$_f" status)
   [ -z "$_st" ] || kb_in_set "$_st" "$KB_ENUM_STATUS" || { echo "$_f: invalid status '$_st'" >&2; _frc=1; }
 
-  # restricted records must be encrypted at rest (a `.age` path); a plaintext .md may not.
+  # restricted records must be encrypted at rest (a `.md.age` ciphertext, which lint never
+  # parses); a parsed plaintext record may not declare restricted.
   if [ "$_s" = restricted ]; then
-    case "$_f" in *.age*) ;; *) echo "$_f: restricted record must be encrypted at rest (.age path)" >&2; _frc=1 ;; esac
+    case "$_f" in *.md.age) ;; *) echo "$_f: restricted record must be encrypted at rest (.md.age)" >&2; _frc=1 ;; esac
   fi
 
   # every edge target must resolve to an existing record name
@@ -281,14 +290,13 @@ cmd_lint() {
   _scope=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
   _namesu=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
   _names=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
-  trap 'rm -f "$_all" "$_scope" "$_namesu" "$_names"' RETURN 2>/dev/null || true
 
   kb_find_records "$_root" > "$_all"
 
   if [ $# -gt 0 ]; then
     : > "$_scope"
     for _p in "$@"; do
-      if [ -d "$_p" ]; then kb_find_records "$_p" >> "$_scope"
+      if [ -d "$_p" ]; then find "$_p" -type f -name '*.md' 2>/dev/null >> "$_scope" || true
       elif [ -f "$_p" ]; then printf '%s\n' "$_p" >> "$_scope"
       fi
     done
@@ -323,6 +331,7 @@ cmd_lint() {
     kb_lint_file "$_f" "$_namesu" || _rc=1
   done < "$_scope"
 
+  rm -f "$_all" "$_scope" "$_namesu" "$_names"
   return $_rc
 }
 
@@ -430,7 +439,7 @@ kb_index_root() {
       [ -n "$_f" ] || continue
       _n=$(kb_fm_get "$_f" name)
       [ -n "$_n" ] || continue
-      _desc=$(kb_fm_get "$_f" description)
+      _desc=$(kb_fm_get "$_f" description | tr '\t' ' ')
       _rel=${_f#"$_root"/}
       printf '%s\t%s\t%s\n' "$_n" "$_rel" "$_desc"
     done | sort | awk -F'\t' '{ line=$1 " — " $2; if ($3 != "") line=line " — " $3; print line }'
@@ -509,7 +518,7 @@ cmd_rename() {
   _a=$1
   _c=$2
   case "$_c" in
-    ""|*/*|*[!a-z0-9-]*) echo "kb: invalid new slug: '$_c' (use a kebab-case slug)" >&2; exit 2 ;;
+    ""|-*|*-|*/*|*[!a-z0-9-]*) echo "kb: invalid new slug: '$_c' (kebab-case, no leading/trailing hyphen)" >&2; exit 2 ;;
   esac
   _root=$(kb_resolve_root) || exit 1
 
@@ -566,6 +575,12 @@ cmd_retire() {
 cmd_install_hooks() {
   if [ $# -ge 1 ]; then _repo=$1; else _repo=$(pwd); fi
 
+  # Resolve the KB root now and embed it in the hook, so the hook lints the actual KB
+  # (which may be nested below the git top level) rather than depending on the hook's cwd.
+  _kbroot=$(kb_resolve_root) \
+    || { echo "kb: cannot resolve a KB root to lint; run from inside the KB or set --kb-root/KB_ROOT/config" >&2; exit 1; }
+  case "$_kbroot" in /*) ;; *) _kbroot="$(pwd)/$_kbroot" ;; esac
+
   _common=$(git -C "$_repo" rev-parse --git-common-dir 2>/dev/null) \
     || { echo "kb: not a git repository: $_repo" >&2; exit 1; }
   case "$_common" in /*) ;; *) _common="$_repo/$_common" ;; esac
@@ -579,14 +594,14 @@ cmd_install_hooks() {
     exit 1
   fi
 
-  cat > "$_hook" <<'HOOK'
+  # Unquoted heredoc so the resolved root is embedded; backticks escaped.
+  cat > "$_hook" <<HOOK
 #!/bin/sh
 # kb-precommit (generated) — block a commit if the KB fails validation.
 # Composes with any global hooks router: a global core.hooksPath hook runs its own
 # checks and then chains to this repo hook. Standalone, git runs this directly.
-# `kb` is expected on PATH (it installs to ~/.local/bin).
-repo=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-exec kb lint --kb-root "$repo"
+# \`kb\` is expected on PATH (it installs to ~/.local/bin).
+exec kb --kb-root "$_kbroot" lint
 HOOK
   chmod +x "$_hook"
   echo "installed kb pre-commit hook -> $_hook"
