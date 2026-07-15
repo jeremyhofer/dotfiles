@@ -19,7 +19,10 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
 
   help                 show this help
   --version            print the kb version
+  new <type> <slug>    scaffold a record with complete, valid frontmatter
   debug-root           print the resolved KB root (resolution seam)
+
+Record types: standard | decision | context | research | register
 
 Global options (before the subcommand):
   --kb-root DIR        use DIR as the KB root (highest precedence)
@@ -83,6 +86,72 @@ kb_resolve_root() {
   return 1
 }
 
+# kb_zone_for_type TYPE -- print the zone directory for a record type; non-zero if unknown.
+kb_zone_for_type() {
+  case "$1" in
+    standard) printf 'standards\n' ;;
+    context)  printf 'context\n' ;;
+    register) printf 'registers\n' ;;
+    decision) printf 'decisions\n' ;;
+    research) printf 'research\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# kb_default_frontmatter TYPE NAME UPDATED -- emit the built-in record template. Lean,
+# lint-clean defaults; the agent fills content, never structure. Edges start empty.
+kb_default_frontmatter() {
+  cat <<EOF
+---
+name: $2
+description:
+type: $1
+sensitivity: internal
+tier: 2
+status: draft
+related: []
+depends-on: []
+supersedes: []
+updated: $3
+---
+
+EOF
+}
+
+# kb_render TYPE NAME UPDATED ROOT -- emit a scaffolded record. A per-instance override
+# at <root>/.templates/<type>.md wins (tokens __NAME__/__TYPE__/__UPDATED__ substituted);
+# otherwise the built-in template is used.
+kb_render() {
+  _ovr="$4/.templates/$1.md"
+  if [ -f "$_ovr" ]; then
+    sed -e "s|__NAME__|$2|g" -e "s|__TYPE__|$1|g" -e "s|__UPDATED__|$3|g" "$_ovr"
+  else
+    kb_default_frontmatter "$1" "$2" "$3"
+  fi
+}
+
+# cmd_new -- kb new <type> <slug>
+cmd_new() {
+  [ $# -eq 2 ] || { echo "usage: kb new <type> <slug>" >&2; exit 2; }
+  _type=$1
+  _slug=$2
+  _zone=$(kb_zone_for_type "$_type") || {
+    echo "kb: unknown type: $_type (valid: standard|decision|context|research|register)" >&2
+    exit 2
+  }
+  case "$_slug" in
+    ""|*/*|*[!a-z0-9-]*) echo "kb: invalid slug: '$_slug' (use a kebab-case slug: a-z 0-9 -)" >&2; exit 2 ;;
+  esac
+  _root=$(kb_resolve_root) || exit 1
+  _dir="$_root/$_zone"
+  _file="$_dir/$_slug.md"
+  [ -e "$_file" ] && { echo "kb: record already exists: $_file" >&2; exit 1; }
+  _date=${KB_DATE:-$(date +%F)}
+  mkdir -p "$_dir"
+  kb_render "$_type" "$_slug" "$_date" "$_root" > "$_file"
+  printf '%s\n' "$_file"
+}
+
 main() {
   kb_root_flag=""
   kb_instance=""
@@ -103,6 +172,7 @@ main() {
   case "$cmd" in
     help|-h|--help) usage ;;
     --version|-V) printf '%s\n' "$KB_VERSION" ;;
+    new) cmd_new "$@" ;;
     debug-root) kb_resolve_root ;;
     *)
       printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
