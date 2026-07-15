@@ -45,4 +45,21 @@ grep -q 'Always do the universal thing.' "$g" || { echo "FAIL: GEMINI.md missing
 grep -q 'some-detail' "$g" && { echo "FAIL: tier-2 leaked into GEMINI.md"; exit 1; }
 echo "ok:   CLAUDE.md is a thin @AGENTS import; GEMINI.md inlines tier-0"
 
+# --- Task 3: idempotence + --check drift guard ---
+KB_ROOT="$d" kb project >/dev/null
+for base in AGENTS.md CLAUDE.md GEMINI.md; do cp "$d/index/projections/$base" "$d/$base.1"; done
+KB_ROOT="$d" kb project >/dev/null
+for base in AGENTS.md CLAUDE.md GEMINI.md; do
+  cmp -s "$d/index/projections/$base" "$d/$base.1" || { echo "FAIL: $base not deterministic"; exit 1; }
+done
+echo "ok:   projection output is deterministic across runs"
+
+KB_ROOT="$d" kb project --check >/dev/null 2>&1 || { echo "FAIL: --check should pass when in sync"; exit 1; }
+printf 'A new universal rule.\n' >> "$d/standards/universal-rule.md"
+KB_ROOT="$d" kb project --check >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL: --check should exit 1 on drift, got ${rc:-0}"; exit 1; }
+KB_ROOT="$d" kb project --check 2>&1 | grep -q 'AGENTS.md' || { echo "FAIL: --check should name the drifted file"; exit 1; }
+grep -q 'A new universal rule.' "$d/index/projections/AGENTS.md" && { echo "FAIL: --check must not write outputs"; exit 1; }
+echo "ok:   --check guards projection drift without writing"
+
 echo "PASS"

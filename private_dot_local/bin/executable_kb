@@ -23,7 +23,7 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
   lint [path...]        validate records (schema, edges, boundary); fail-loud
   link <A> --EDGE <B>  add a forward edge A->B (EDGE: --related|--depends-on|--supersedes)
   index                regenerate index/ (sources-of-truth + backlinks); derived output
-  project [--out DIR]  generate the tier-0 projection (AGENTS.md base + harness stubs)
+  project [--out DIR] [--check]  generate (or --check for drift) the tier-0 projection
   rename <A> <C>       rename a record + rewrite every inbound edge A->C
   retire <A>           mark a record retired + strip inbound edges
   install-hooks [repo] wire a pre-commit that runs `kb lint` (blocks malformed commits)
@@ -643,15 +643,29 @@ kb_render_claude() {
 # derived/disposable; default --out is a staging dir under the generated index/.
 cmd_project() {
   _outflag=""
+  _check=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) [ $# -ge 2 ] || { echo "kb: --out needs a value" >&2; exit 2; }; _outflag=$2; shift 2 ;;
       --out=*) _outflag=${1#*=}; shift ;;
+      --check) _check=1; shift ;;
       *) echo "kb: project: unexpected argument '$1'" >&2; exit 2 ;;
     esac
   done
   _root=$(kb_resolve_root) || exit 1
   if [ -n "$_outflag" ]; then _out=$_outflag; else _out="$_root/index/projections"; fi
+
+  if [ -n "$_check" ]; then
+    # regenerate to a temp and compare; never write the real outputs. Exit 1 on any drift.
+    _drift=0
+    _tmp=$(mktemp "${TMPDIR:-/tmp}/kb.proj.XXXXXX")
+    kb_render_agents "$_root" > "$_tmp"; cmp -s "$_tmp" "$_out/AGENTS.md" 2>/dev/null || { echo "kb: projection drift: $_out/AGENTS.md" >&2; _drift=1; }
+    kb_render_claude          > "$_tmp"; cmp -s "$_tmp" "$_out/CLAUDE.md" 2>/dev/null || { echo "kb: projection drift: $_out/CLAUDE.md" >&2; _drift=1; }
+    kb_render_agents "$_root" > "$_tmp"; cmp -s "$_tmp" "$_out/GEMINI.md" 2>/dev/null || { echo "kb: projection drift: $_out/GEMINI.md" >&2; _drift=1; }
+    rm -f "$_tmp"
+    return $_drift
+  fi
+
   mkdir -p "$_out"
   kb_render_agents "$_root" > "$_out/AGENTS.md"
   kb_render_claude          > "$_out/CLAUDE.md"
