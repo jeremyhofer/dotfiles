@@ -62,4 +62,48 @@ KB_ROOT="$d" kb project --check 2>&1 | grep -q 'AGENTS.md' || { echo "FAIL: --ch
 grep -q 'A new universal rule.' "$d/index/projections/AGENTS.md" && { echo "FAIL: --check must not write outputs"; exit 1; }
 echo "ok:   --check guards projection drift without writing"
 
+# ========== additional coverage (isolated KBs) ==========
+d2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2"' EXIT
+mk2() { KB_ROOT="$d2" KB_DATE=2026-07-15 kb new "$1" "$2" >/dev/null; }
+for s in zzz-rule aaa-rule mmm-rule; do
+  mk2 standard "$s"
+  set_field "$d2/standards/$s.md" tier 0; set_field "$d2/standards/$s.md" status active
+  printf 'Body of %s.\n' "$s" >> "$d2/standards/$s.md"
+done
+mk2 standard priv-rule
+set_field "$d2/standards/priv-rule.md" tier 0; set_field "$d2/standards/priv-rule.md" status active
+set_field "$d2/standards/priv-rule.md" sensitivity private
+printf 'PRIVATE body.\n' >> "$d2/standards/priv-rule.md"
+
+KB_ROOT="$d2" kb project >/dev/null
+a2="$d2/index/projections/AGENTS.md"; g2="$d2/index/projections/GEMINI.md"
+
+# sensitivity gate: private tier-0 excluded by default (--max-sensitivity internal)
+grep -q 'PRIVATE body.' "$a2" && { echo "FAIL: private tier-0 leaked into default projection"; exit 1; }
+grep -q '^## priv-rule$' "$a2" && { echo "FAIL: private tier-0 section leaked"; exit 1; }
+echo "ok:   private tier-0 excluded by default"
+KB_ROOT="$d2" kb project --max-sensitivity private >/dev/null
+grep -q 'PRIVATE body.' "$a2" || { echo "FAIL: --max-sensitivity private should include private"; exit 1; }
+echo "ok:   --max-sensitivity private includes private records"
+KB_ROOT="$d2" kb project >/dev/null   # restore default ceiling
+
+# deterministic byte-sort by name (not creation order): aaa < mmm < zzz
+order=$(grep '^## ' "$a2" | sed 's/^## //' | tr '\n' ' ')
+printf '%s' "$order" | grep -q 'aaa-rule mmm-rule zzz-rule' || { echo "FAIL: tier-0 sections not byte-sorted (got: $order)"; exit 1; }
+echo "ok:   tier-0 sections byte-sorted by name"
+
+# GEMINI.md byte-identical to AGENTS.md
+cmp -s "$a2" "$g2" || { echo "FAIL: GEMINI.md not byte-identical to AGENTS.md"; exit 1; }
+echo "ok:   GEMINI.md == AGENTS.md byte-for-byte"
+
+# fresh KB (never projected): --check -> exit 1, names the missing output, writes nothing
+d3=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3"' EXIT
+KB_ROOT="$d3" KB_DATE=2026-07-15 kb new standard r >/dev/null
+set_field "$d3/standards/r.md" tier 0; set_field "$d3/standards/r.md" status active
+KB_ROOT="$d3" kb project --check >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL: --check on a never-projected KB should exit 1, got ${rc:-0}"; exit 1; }
+KB_ROOT="$d3" kb project --check 2>&1 | grep -q 'AGENTS.md' || { echo "FAIL: --check should name the missing AGENTS.md"; exit 1; }
+[ -d "$d3/index/projections" ] && { echo "FAIL: --check must not create the output dir"; exit 1; }
+echo "ok:   --check on a fresh KB reports missing outputs without writing"
+
 echo "PASS"
