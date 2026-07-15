@@ -15,22 +15,95 @@ KB_VERSION=0.1.0
 
 usage() {
   cat <<'EOF'
-usage: kb <subcommand> [args]
+usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
 
   help                 show this help
   --version            print the kb version
+  debug-root           print the resolved KB root (resolution seam)
+
+Global options (before the subcommand):
+  --kb-root DIR        use DIR as the KB root (highest precedence)
+  --instance NAME      select a named instance from the config file
+
+KB-root resolution precedence:
+  --kb-root  >  KB_ROOT env  >  ~/.config/kb/config.toml  >  discovery
+Discovery walks the current directory upward for a `kb.toml` file or a `.kb/` dir.
 
 Records are created and edited through kb, not by hand-authoring frontmatter.
 EOF
 }
 
+# kb_config_root CONFIG INSTANCE -- print the `root` for the named instance (or the
+# top-level `root` when INSTANCE is empty) from a small TOML config. Prints nothing if
+# absent. Format:
+#   root = "/default"
+#   [instance.personal]
+#   root = "/personal"
+kb_config_root() {
+  _cfg=$1
+  _inst=${2:-}
+  awk -v want="$_inst" '
+    function trim(s){ sub(/^[ \t]+/,"",s); sub(/[ \t]+$/,"",s); return s }
+    function unquote(s){ sub(/^"/,"",s); sub(/"$/,"",s); return s }
+    /^[ \t]*#/ { next }
+    /^[ \t]*\[/ {
+      sec=trim($0); sub(/^\[/,"",sec); sub(/\][ \t]*$/,"",sec)
+      cur=""
+      if (sec ~ /^instance\./) { cur=substr(sec, length("instance.")+1) }
+      next
+    }
+    /^[ \t]*root[ \t]*=/ {
+      v=$0; sub(/^[ \t]*root[ \t]*=[ \t]*/,"",v); v=unquote(trim(v))
+      if (want=="" && cur=="") { print v; exit }
+      if (want!="" && cur==want) { print v; exit }
+    }
+  ' "$_cfg"
+}
+
+# kb_resolve_root -- print the resolved KB root per the precedence above; error non-zero
+# if none resolves. Reads globals: kb_root_flag, kb_instance.
+kb_resolve_root() {
+  if [ -n "${kb_root_flag:-}" ]; then printf '%s\n' "$kb_root_flag"; return 0; fi
+  if [ -n "${KB_ROOT:-}" ]; then printf '%s\n' "$KB_ROOT"; return 0; fi
+
+  _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/kb/config.toml"
+  if [ -f "$_cfg" ]; then
+    _root=$(kb_config_root "$_cfg" "${kb_instance:-}")
+    if [ -n "$_root" ]; then printf '%s\n' "$_root"; return 0; fi
+  fi
+
+  _dir=$(pwd)
+  while [ -n "$_dir" ]; do
+    if [ -f "$_dir/kb.toml" ] || [ -d "$_dir/.kb" ]; then printf '%s\n' "$_dir"; return 0; fi
+    [ "$_dir" = "/" ] && break
+    _dir=$(dirname "$_dir")
+  done
+
+  echo "kb: could not resolve a KB root (set --kb-root, KB_ROOT, ${XDG_CONFIG_HOME:-\$HOME/.config}/kb/config.toml, or run inside a KB with a kb.toml/.kb marker)" >&2
+  return 1
+}
+
 main() {
+  kb_root_flag=""
+  kb_instance=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kb-root) [ $# -ge 2 ] || { echo "kb: --kb-root needs a value" >&2; exit 2; }; kb_root_flag=$2; shift 2 ;;
+      --kb-root=*) kb_root_flag=${1#*=}; shift ;;
+      --instance) [ $# -ge 2 ] || { echo "kb: --instance needs a value" >&2; exit 2; }; kb_instance=$2; shift 2 ;;
+      --instance=*) kb_instance=${1#*=}; shift ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+
   [ $# -ge 1 ] || { usage >&2; exit 2; }
   cmd=$1
   shift
   case "$cmd" in
     help|-h|--help) usage ;;
     --version|-V) printf '%s\n' "$KB_VERSION" ;;
+    debug-root) kb_resolve_root ;;
     *)
       printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
       usage >&2
