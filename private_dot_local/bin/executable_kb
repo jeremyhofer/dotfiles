@@ -20,6 +20,7 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
   help                 show this help
   --version            print the kb version
   new <type> <slug>    scaffold a record with complete, valid frontmatter
+  lint [path...]        validate records (schema, edges, boundary); fail-loud
   debug-root           print the resolved KB root (resolution seam)
 
 Record types: standard | decision | context | research | register
@@ -152,6 +153,174 @@ cmd_new() {
   printf '%s\n' "$_file"
 }
 
+# --- frontmatter parsing helpers ---------------------------------------------
+# Records begin with a `---` fenced YAML frontmatter block. These helpers read that
+# block only (never the body), matching the inline forms kb itself writes.
+
+# kb_fm_get FILE KEY -- print the scalar value of a top-level frontmatter key (empty if
+# absent). Matches only a line beginning exactly `KEY:`.
+kb_fm_get() {
+  awk -v key="$2" '
+    NR==1 && $0=="---" { infm=1; next }
+    infm && $0=="---" { exit }
+    infm && index($0, key ":")==1 {
+      v=substr($0, length(key)+2)
+      sub(/^[ \t]+/,"",v); sub(/[ \t]+$/,"",v)
+      print v; exit
+    }
+  ' "$1"
+}
+
+# kb_fm_has FILE KEY -- exit 0 if the frontmatter contains a line beginning `KEY:`.
+kb_fm_has() {
+  awk -v key="$2" '
+    NR==1 && $0=="---" { infm=1; next }
+    infm && $0=="---" { exit }
+    infm && index($0, key ":")==1 { found=1; exit }
+    END { exit(found?0:1) }
+  ' "$1"
+}
+
+# kb_fm_list FILE KEY -- print the items of an inline `[a, b, c]` list, one per line
+# (nothing for an empty list, a missing key, or a non-list scalar).
+kb_fm_list() {
+  _v=$(kb_fm_get "$1" "$2")
+  case "$_v" in
+    \[*\])
+      _inner=${_v#\[}
+      _inner=${_inner%\]}
+      printf '%s' "$_inner" | tr ',' '\n' | sed 's/^[ \t]*//; s/[ \t]*$//' | grep -v '^$' || true
+      ;;
+    *) : ;;
+  esac
+}
+
+# kb_body FILE -- print the record body (everything after the frontmatter block).
+kb_body() {
+  awk '
+    NR==1 && $0=="---" { infm=1; next }
+    infm && $0=="---" { infm=0; body=1; next }
+    body { print }
+  ' "$1"
+}
+
+# kb_find_records DIR -- list plaintext record files under DIR (skips VCS, templates,
+# generated index, and encrypted ciphertext which is opaque to lint).
+kb_find_records() {
+  find "$1" -type f -name '*.md' \
+    ! -path '*/.git/*' ! -path '*/.templates/*' ! -path '*/index/*' 2>/dev/null || true
+}
+
+KB_ENUM_TYPE='standard decision context research register'
+KB_ENUM_SENS='public internal private restricted'
+KB_ENUM_TIER='0 1 2'
+KB_ENUM_STATUS='active draft retired'
+
+# kb_in_set VALUE SET -- exit 0 if VALUE is a whitespace-separated word in SET.
+kb_in_set() {
+  for _w in $2; do [ "$1" = "$_w" ] && return 0; done
+  return 1
+}
+
+# kb_lint_file FILE NAMES_UNIQ -- validate one record against the schema; print
+# `FILE: reason` per violation on stderr; return non-zero if any.
+kb_lint_file() {
+  _f=$1
+  _namesu=$2
+  _frc=0
+
+  for _k in name description type sensitivity tier status updated; do
+    kb_fm_has "$_f" "$_k" || { echo "$_f: missing required field '$_k'" >&2; _frc=1; }
+  done
+
+  _t=$(kb_fm_get "$_f" type)
+  [ -z "$_t" ] || kb_in_set "$_t" "$KB_ENUM_TYPE" || { echo "$_f: invalid type '$_t'" >&2; _frc=1; }
+  _s=$(kb_fm_get "$_f" sensitivity)
+  [ -z "$_s" ] || kb_in_set "$_s" "$KB_ENUM_SENS" || { echo "$_f: invalid sensitivity '$_s'" >&2; _frc=1; }
+  _ti=$(kb_fm_get "$_f" tier)
+  [ -z "$_ti" ] || kb_in_set "$_ti" "$KB_ENUM_TIER" || { echo "$_f: invalid tier '$_ti'" >&2; _frc=1; }
+  _st=$(kb_fm_get "$_f" status)
+  [ -z "$_st" ] || kb_in_set "$_st" "$KB_ENUM_STATUS" || { echo "$_f: invalid status '$_st'" >&2; _frc=1; }
+
+  # restricted records must be encrypted at rest (a `.age` path); a plaintext .md may not.
+  if [ "$_s" = restricted ]; then
+    case "$_f" in *.age*) ;; *) echo "$_f: restricted record must be encrypted at rest (.age path)" >&2; _frc=1 ;; esac
+  fi
+
+  # every edge target must resolve to an existing record name
+  _dang=$(for _et in related depends-on supersedes; do
+    kb_fm_list "$_f" "$_et" | while IFS= read -r _item; do
+      [ -n "$_item" ] || continue
+      grep -qxF "$_item" "$_namesu" || echo "$_et target '$_item'"
+    done
+  done)
+  if [ -n "$_dang" ]; then
+    printf '%s\n' "$_dang" | while IFS= read -r _m; do echo "$_f: dangling $_m" >&2; done
+    _frc=1
+  fi
+
+  # prose must be self-contained: no `[[` wikilinks in the body
+  if kb_body "$_f" | grep -q '\[\['; then
+    echo "$_f: '[[' wikilink in prose (relationships belong in typed frontmatter edges)" >&2
+    _frc=1
+  fi
+
+  return $_frc
+}
+
+# cmd_lint -- kb lint [path...]
+cmd_lint() {
+  _root=$(kb_resolve_root) || exit 1
+
+  _all=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
+  _scope=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
+  _namesu=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
+  _names=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
+  trap 'rm -f "$_all" "$_scope" "$_namesu" "$_names"' RETURN 2>/dev/null || true
+
+  kb_find_records "$_root" > "$_all"
+
+  if [ $# -gt 0 ]; then
+    : > "$_scope"
+    for _p in "$@"; do
+      if [ -d "$_p" ]; then kb_find_records "$_p" >> "$_scope"
+      elif [ -f "$_p" ]; then printf '%s\n' "$_p" >> "$_scope"
+      fi
+    done
+  else
+    cp "$_all" "$_scope"
+  fi
+
+  # name-set (whole root, always) + duplicate detection
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    _n=$(kb_fm_get "$_f" name)
+    [ -n "$_n" ] && printf '%s\n' "$_n"
+  done < "$_all" | sort > "$_names"
+  sort -u "$_names" > "$_namesu"
+
+  _rc=0
+  # duplicate names -> flag each file bearing a duplicated name
+  _dups=$(uniq -d "$_names" || true)
+  if [ -n "$_dups" ]; then
+    printf '%s\n' "$_dups" | while IFS= read -r _dn; do
+      [ -n "$_dn" ] || continue
+      while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        [ "$(kb_fm_get "$_f" name)" = "$_dn" ] && echo "$_f: duplicate name '$_dn'" >&2
+      done < "$_all"
+    done
+    _rc=1
+  fi
+
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    kb_lint_file "$_f" "$_namesu" || _rc=1
+  done < "$_scope"
+
+  return $_rc
+}
+
 main() {
   kb_root_flag=""
   kb_instance=""
@@ -173,6 +342,7 @@ main() {
     help|-h|--help) usage ;;
     --version|-V) printf '%s\n' "$KB_VERSION" ;;
     new) cmd_new "$@" ;;
+    lint) cmd_lint "$@" ;;
     debug-root) kb_resolve_root ;;
     *)
       printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
