@@ -25,6 +25,7 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
   index                regenerate index/ (sources-of-truth + backlinks); derived output
   rename <A> <C>       rename a record + rewrite every inbound edge A->C
   retire <A>           mark a record retired + strip inbound edges
+  install-hooks [repo] wire a pre-commit that runs `kb lint` (blocks malformed commits)
   debug-root           print the resolved KB root (resolution seam)
 
 Record types: standard | decision | context | research | register
@@ -557,6 +558,40 @@ cmd_retire() {
   kb_index_root "$_root"
 }
 
+# cmd_install_hooks -- kb install-hooks [repo]: wire a pre-commit that runs `kb lint`.
+# Installs into the repo's OWN hooks dir (resolved via --git-common-dir so it is
+# worktree-correct and ignores any global core.hooksPath). It never touches
+# core.hooksPath, so a global hooks router (e.g. a leak-guard) still runs and simply
+# chains to this hook. Refuses to clobber a foreign (non-kb) pre-commit.
+cmd_install_hooks() {
+  if [ $# -ge 1 ]; then _repo=$1; else _repo=$(pwd); fi
+
+  _common=$(git -C "$_repo" rev-parse --git-common-dir 2>/dev/null) \
+    || { echo "kb: not a git repository: $_repo" >&2; exit 1; }
+  case "$_common" in /*) ;; *) _common="$_repo/$_common" ;; esac
+  _hookdir="$_common/hooks"
+  mkdir -p "$_hookdir"
+  _hook="$_hookdir/pre-commit"
+
+  if [ -e "$_hook" ] && ! grep -qF 'kb-precommit (generated)' "$_hook" 2>/dev/null; then
+    echo "kb: refusing to overwrite an existing non-kb pre-commit hook: $_hook" >&2
+    echo "kb: integrate 'kb lint' into it manually, or remove it and re-run." >&2
+    exit 1
+  fi
+
+  cat > "$_hook" <<'HOOK'
+#!/bin/sh
+# kb-precommit (generated) — block a commit if the KB fails validation.
+# Composes with any global hooks router: a global core.hooksPath hook runs its own
+# checks and then chains to this repo hook. Standalone, git runs this directly.
+# `kb` is expected on PATH (it installs to ~/.local/bin).
+repo=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+exec kb lint --kb-root "$repo"
+HOOK
+  chmod +x "$_hook"
+  echo "installed kb pre-commit hook -> $_hook"
+}
+
 main() {
   kb_root_flag=""
   kb_instance=""
@@ -583,6 +618,7 @@ main() {
     index) cmd_index "$@" ;;
     rename) cmd_rename "$@" ;;
     retire) cmd_retire "$@" ;;
+    install-hooks) cmd_install_hooks "$@" ;;
     debug-root) kb_resolve_root ;;
     *)
       printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
