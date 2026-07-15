@@ -82,4 +82,11 @@ KB_ROOT="$root" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: restricted plaintext under a '.age'-substring dir should still be flagged, got ${rc:-0}"; exit 1; }
 echo "ok:   restricted check is a .md.age suffix, not a substring"
 
+# (f) a non-kebab-case name (here with an underscore + uppercase) is flagged
+d=$(newkb); emit "$d/context/a.md" a 'related: []'; sed -i 's/^name: a$/name: Bad_Name/' "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL: non-kebab name should exit 1, got ${rc:-0}"; exit 1; }
+KB_ROOT="$d" kb lint 2>&1 | grep -qi 'name' || { echo "FAIL: reason should mention the invalid name"; exit 1; }
+echo "ok:   non-kebab name caught"
+
 echo "PASS"
