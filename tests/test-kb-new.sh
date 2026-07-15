@@ -33,6 +33,13 @@ KB_ROOT="$d" kb new bogus x >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 2 ] || { echo "FAIL: invalid type should exit 2, got ${rc:-0}"; exit 1; }
 echo "ok:   invalid type exits 2"
 
+# degenerate slugs (leading/trailing/all hyphen) -> exit 2
+for bad in -bad bad- -- - 'has space' 'up/dir'; do
+  KB_ROOT="$d" kb new context "$bad" >/dev/null 2>&1 && rc=0 || rc=$?
+  [ "${rc:-0}" -eq 2 ] || { echo "FAIL: invalid slug '$bad' should exit 2, got ${rc:-0}"; exit 1; }
+done
+echo "ok:   degenerate slugs rejected"
+
 # existing slug -> non-zero (no clobber)
 KB_ROOT="$d" KB_DATE=2026-07-15 kb new context sample-fact >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -ne 0 ] || { echo "FAIL: re-creating an existing slug should fail"; exit 1; }

@@ -1,68 +1,87 @@
 #!/bin/sh
-# Test: `kb install-hooks` wires a repo-local pre-commit that runs `kb lint`, so a
-# malformed record physically cannot land. The hook is generic: it composes with any
-# global hooks router (which chains to a repo's own pre-commit) and also works standalone.
-# This test isolates from any ambient global core.hooksPath by pinning the repo's own
-# hooks dir locally. Run: `sh tests/test-kb-precommit.sh`.
+# Test: `kb install-hooks` wires a repo-local pre-commit that runs `kb lint` against the
+# ACTUAL KB root (resolved + embedded at install time, so it works even when the KB is
+# nested below the git top level), so a malformed record cannot land. The hook is generic:
+# it composes with any global hooks router and also works standalone. Regression coverage:
+#   - the embedded `--kb-root` must precede the subcommand (else it is silently ignored),
+#   - non-record markdown at the repo root (e.g. README) must NOT be linted,
+#   - a KB nested below the git top level must still be validated.
+# The test isolates from any ambient global core.hooksPath by pinning the repo's own hooks
+# dir. Run: `sh tests/test-kb-precommit.sh`.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 kb() { sh "$KB" "$@"; }
-
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not available"; exit 0; }
 
-r=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r"' EXIT
-git -C "$r" init -q
-# isolate: pin this repo's own hooks dir (override any ambient global core.hooksPath) and
-# disable signing so the throwaway commit does not depend on a signing key.
-git -C "$r" config core.hooksPath "$r/.git/hooks"
-git -C "$r" config user.email t@example.invalid
-git -C "$r" config user.name  tester
-git -C "$r" config commit.gpgsign false
-
+# init_repo DIR -- a git repo isolated from any ambient global hooks + signing.
+init_repo() {
+  git -C "$1" init -q
+  git -C "$1" config core.hooksPath "$1/.git/hooks"
+  git -C "$1" config user.email t@example.invalid
+  git -C "$1" config user.name  tester
+  git -C "$1" config commit.gpgsign false
+}
 # make `kb` reachable on PATH for the hook (production: it deploys to ~/.local/bin/kb)
-bin="$r/bin"; mkdir -p "$bin"
-printf '#!/bin/sh\nexec sh "%s" "$@"\n' "$KB" > "$bin/kb"; chmod +x "$bin/kb"
+mk_kb_shim() { mkdir -p "$1"; printf '#!/bin/sh\nexec sh "%s" "$@"\n' "$KB" > "$1/kb"; chmod +x "$1/kb"; }
 
-# install + mark the repo as a KB (discovery/kb-root marker)
-kb install-hooks "$r" >/dev/null || { echo "FAIL: install-hooks errored"; exit 1; }
-[ -x "$r/.git/hooks/pre-commit" ] || { echo "FAIL: pre-commit hook not installed/executable"; exit 1; }
-grep -qF 'kb-precommit (generated)' "$r/.git/hooks/pre-commit" || { echo "FAIL: hook missing marker"; exit 1; }
-: > "$r/kb.toml"
-echo "ok:   install-hooks writes an executable, marked pre-commit hook"
+# ---------- KB == repo root, with a non-record README present ----------
+r=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r"' EXIT
+init_repo "$r"
+bin="$r/bin"; mk_kb_shim "$bin"
+printf '# project readme\nnot a KB record\n' > "$r/README.md"   # must be ignored by lint
 
-# a malformed record (missing required fields) -> commit BLOCKED
+KB_ROOT="$r" kb install-hooks "$r" >/dev/null || { echo "FAIL: install-hooks errored"; exit 1; }
+hook="$r/.git/hooks/pre-commit"
+[ -x "$hook" ] || { echo "FAIL: pre-commit hook not installed/executable"; exit 1; }
+grep -qF 'kb-precommit (generated)' "$hook" || { echo "FAIL: hook missing marker"; exit 1; }
+# the flag MUST precede the subcommand, else kb ignores it
+grep -qE 'kb --kb-root "[^"]+" lint' "$hook" || { echo "FAIL: hook has --kb-root after the subcommand (would be ignored)"; exit 1; }
+echo "ok:   install-hooks writes a marked hook with --kb-root before the subcommand"
+
+# malformed record -> blocked
 mkdir -p "$r/context"; printf '%s\n' '---' 'name: x' 'type: context' '---' > "$r/context/x.md"
 git -C "$r" add -A
 ( cd "$r" && PATH="$bin:$PATH" git commit -q -m bad ) >/dev/null 2>&1 && rc=0 || rc=$?
-[ "${rc:-0}" -ne 0 ] || { echo "FAIL: commit of malformed record was not blocked"; exit 1; }
-echo "ok:   malformed record blocks the commit"
-
-# the block cites the offending file / a validation reason
+[ "${rc:-0}" -ne 0 ] || { echo "FAIL: malformed record commit not blocked"; exit 1; }
 out=$( ( cd "$r" && PATH="$bin:$PATH" git commit -q -m bad ) 2>&1 || true )
 printf '%s' "$out" | grep -qi 'x\.md\|required\|missing' || { echo "FAIL: block did not report a reason"; echo "$out"; exit 1; }
-echo "ok:   block reports the offending record"
+# the README must NOT be among the reported violations
+printf '%s' "$out" | grep -qi 'README' && { echo "FAIL: README was linted as a record"; exit 1; }
+echo "ok:   malformed record blocks; README is not linted"
 
-# fix it (scaffold a valid record) -> commit SUCCEEDS
-rm "$r/context/x.md"
-KB_ROOT="$r" KB_DATE=2026-07-15 kb new context x >/dev/null
+# fix -> commit succeeds (valid record + README coexist)
+rm "$r/context/x.md"; KB_ROOT="$r" KB_DATE=2026-07-15 kb new context x >/dev/null
 git -C "$r" add -A
 ( cd "$r" && PATH="$bin:$PATH" git commit -q -m ok ) >/dev/null 2>&1 && rc=0 || rc=$?
-[ "${rc:-0}" -eq 0 ] || { echo "FAIL: commit of a valid KB should succeed, got ${rc:-0}"; exit 1; }
-echo "ok:   valid KB commits cleanly"
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: valid KB commit should succeed, got ${rc:-0}"; exit 1; }
+echo "ok:   valid KB (alongside a README) commits cleanly"
 
-# re-install is idempotent (marker present -> no refusal)
-kb install-hooks "$r" >/dev/null 2>&1 || { echo "FAIL: re-install should be idempotent"; exit 1; }
+# ---------- KB nested BELOW the git top level ----------
+r2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r" "$r2"' EXIT
+init_repo "$r2"
+bin2="$r2/bin"; mk_kb_shim "$bin2"
+kbroot="$r2/kb"; mkdir -p "$kbroot"; : > "$kbroot/kb.toml"
+KB_ROOT="$kbroot" kb install-hooks "$r2" >/dev/null || { echo "FAIL: nested install-hooks errored"; exit 1; }
+grep -qF "$kbroot" "$r2/.git/hooks/pre-commit" || { echo "FAIL: hook did not embed the nested KB root"; exit 1; }
+# a malformed record in the nested KB must block a commit made from the git top level
+mkdir -p "$kbroot/context"; printf '%s\n' '---' 'name: y' 'type: context' '---' > "$kbroot/context/y.md"
+git -C "$r2" add -A
+( cd "$r2" && PATH="$bin2:$PATH" git commit -q -m bad ) >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -ne 0 ] || { echo "FAIL: nested-KB malformed record not blocked (hook did not target the KB)"; exit 1; }
+echo "ok:   hook validates a KB nested below the git top level"
+
+# ---------- guards ----------
+KB_ROOT="$r" kb install-hooks "$r" >/dev/null 2>&1 || { echo "FAIL: re-install should be idempotent"; exit 1; }
 echo "ok:   re-install is idempotent"
 
-# a foreign (non-kb) pre-commit is not clobbered
-r2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r" "$r2"' EXIT
-git -C "$r2" init -q
-printf '#!/bin/sh\nexit 0\n' > "$r2/.git/hooks/pre-commit"; chmod +x "$r2/.git/hooks/pre-commit"
-kb install-hooks "$r2" >/dev/null 2>&1 && rc=0 || rc=$?
+r3=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r" "$r2" "$r3"' EXIT
+init_repo "$r3"
+printf '#!/bin/sh\nexit 0\n' > "$r3/.git/hooks/pre-commit"; chmod +x "$r3/.git/hooks/pre-commit"
+KB_ROOT="$r3" kb install-hooks "$r3" >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -ne 0 ] || { echo "FAIL: should refuse to clobber a foreign pre-commit"; exit 1; }
-grep -qF 'kb-precommit' "$r2/.git/hooks/pre-commit" && { echo "FAIL: foreign hook was overwritten"; exit 1; }
+grep -qF 'kb-precommit' "$r3/.git/hooks/pre-commit" && { echo "FAIL: foreign hook overwritten"; exit 1; }
 echo "ok:   foreign pre-commit preserved"
 
 echo "PASS"

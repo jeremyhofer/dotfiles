@@ -23,13 +23,15 @@ sot="$d/index/sources-of-truth.md"
 [ -f "$sot" ] || { echo "FAIL: sources-of-truth.md not generated"; exit 1; }
 echo "ok:   index files generated"
 
-# reverse edge b <- a (depended-on-by)
-grep -q 'b' "$bl" && grep -qi 'depended-on-by.*a' "$bl" || { echo "FAIL: reverse edge b<-a missing"; exit 1; }
+# reverse edge b <- a (depended-on-by), anchored to the exact generated lines
+grep -qx '## b' "$bl"               || { echo "FAIL: backlinks missing '## b' section"; exit 1; }
+grep -qx 'depended-on-by: a' "$bl"  || { echo "FAIL: exact reverse edge 'depended-on-by: a' missing"; exit 1; }
 echo "ok:   depended-on-by reverse edge present"
 
-# reverse edge a <- c (superseded-by) and a's related-by
-grep -qi 'superseded-by.*c' "$bl" || { echo "FAIL: superseded-by c missing"; exit 1; }
-grep -qi 'related-by.*a'     "$bl" || { echo "FAIL: related-by a missing (c<-a related)"; exit 1; }
+# reverse edge a <- c (superseded-by) and a's related-by, anchored
+grep -qx '## a' "$bl"               || { echo "FAIL: backlinks missing '## a' section"; exit 1; }
+grep -qx 'superseded-by: c' "$bl"   || { echo "FAIL: exact 'superseded-by: c' missing"; exit 1; }
+grep -qx 'related-by: a' "$bl"      || { echo "FAIL: exact 'related-by: a' missing (c<-a related)"; exit 1; }
 echo "ok:   superseded-by and related-by reverse edges present"
 
 # sources-of-truth lists each record name at line start
