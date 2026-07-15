@@ -21,6 +21,7 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
   --version            print the kb version
   new <type> <slug>    scaffold a record with complete, valid frontmatter
   lint [path...]        validate records (schema, edges, boundary); fail-loud
+  link <A> --EDGE <B>  add a forward edge A->B (EDGE: --related|--depends-on|--supersedes)
   debug-root           print the resolved KB root (resolution seam)
 
 Record types: standard | decision | context | research | register
@@ -321,6 +322,66 @@ cmd_lint() {
   return $_rc
 }
 
+# kb_file_for_name ROOT NAME -- print the file path of the record whose `name` == NAME
+# (first match; empty if none).
+kb_file_for_name() {
+  kb_find_records "$1" | while IFS= read -r _f; do
+    [ "$(kb_fm_get "$_f" name)" = "$2" ] && { printf '%s\n' "$_f"; break; }
+  done
+}
+
+# kb_add_edge FILE EDGETYPE TARGET -- add TARGET to FILE's inline EDGETYPE list in the
+# frontmatter (idempotent). Creates the key before the closing fence if absent.
+kb_add_edge() {
+  _tmp="$1.kbtmp.$$"
+  awk -v et="$2" -v tgt="$3" '
+    NR==1 && $0=="---" { print; infm=1; next }
+    infm && $0=="---" {
+      if (!seen) print et ": [" tgt "]"
+      infm=0; print; next
+    }
+    infm && index($0, et ":")==1 && !seen {
+      seen=1
+      val=substr($0, length(et)+2); sub(/^[ \t]+/,"",val); sub(/[ \t]+$/,"",val)
+      if (val ~ /^\[.*\]$/) {
+        inner=substr(val, 2, length(val)-2); gsub(/^[ \t]+|[ \t]+$/,"",inner)
+        if (inner=="") { print et ": [" tgt "]" }
+        else {
+          n=split(inner, arr, ","); found=0
+          for (i=1;i<=n;i++){ g=arr[i]; gsub(/^[ \t]+|[ \t]+$/,"",g); if (g==tgt) found=1 }
+          if (found) print $0
+          else print et ": [" inner ", " tgt "]"
+        }
+      } else {
+        print et ": [" tgt "]"
+      }
+      next
+    }
+    { print }
+  ' "$1" > "$_tmp" && mv "$_tmp" "$1"
+}
+
+# cmd_link -- kb link <A> --related|--depends-on|--supersedes <B>
+cmd_link() {
+  [ $# -eq 3 ] || { echo "usage: kb link <A> --related|--depends-on|--supersedes <B>" >&2; exit 2; }
+  _a=$1
+  case "$2" in
+    --related) _et=related ;;
+    --depends-on) _et=depends-on ;;
+    --supersedes) _et=supersedes ;;
+    *) echo "kb: link needs an edge type: --related|--depends-on|--supersedes" >&2; exit 2 ;;
+  esac
+  _b=$3
+  _root=$(kb_resolve_root) || exit 1
+
+  _fa=$(kb_file_for_name "$_root" "$_a")
+  [ -n "$_fa" ] || { echo "kb: no record named '$_a'" >&2; exit 1; }
+  _fb=$(kb_file_for_name "$_root" "$_b")
+  [ -n "$_fb" ] || { echo "kb: edge target '$_b' does not exist" >&2; exit 1; }
+
+  kb_add_edge "$_fa" "$_et" "$_b"
+}
+
 main() {
   kb_root_flag=""
   kb_instance=""
@@ -343,6 +404,7 @@ main() {
     --version|-V) printf '%s\n' "$KB_VERSION" ;;
     new) cmd_new "$@" ;;
     lint) cmd_lint "$@" ;;
+    link) cmd_link "$@" ;;
     debug-root) kb_resolve_root ;;
     *)
       printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
