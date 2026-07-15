@@ -23,6 +23,8 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
   lint [path...]        validate records (schema, edges, boundary); fail-loud
   link <A> --EDGE <B>  add a forward edge A->B (EDGE: --related|--depends-on|--supersedes)
   index                regenerate index/ (sources-of-truth + backlinks); derived output
+  rename <A> <C>       rename a record + rewrite every inbound edge A->C
+  retire <A>           mark a record retired + strip inbound edges
   debug-root           print the resolved KB root (resolution seam)
 
 Record types: standard | decision | context | research | register
@@ -309,7 +311,7 @@ cmd_lint() {
       [ -n "$_dn" ] || continue
       while IFS= read -r _f; do
         [ -n "$_f" ] || continue
-        [ "$(kb_fm_get "$_f" name)" = "$_dn" ] && echo "$_f: duplicate name '$_dn'" >&2
+        if [ "$(kb_fm_get "$_f" name)" = "$_dn" ]; then echo "$_f: duplicate name '$_dn'" >&2; fi
       done < "$_all"
     done
     _rc=1
@@ -327,7 +329,7 @@ cmd_lint() {
 # (first match; empty if none).
 kb_file_for_name() {
   kb_find_records "$1" | while IFS= read -r _f; do
-    [ "$(kb_fm_get "$_f" name)" = "$2" ] && { printf '%s\n' "$_f"; break; }
+    if [ "$(kb_fm_get "$_f" name)" = "$2" ]; then printf '%s\n' "$_f"; break; fi
   done
 }
 
@@ -394,9 +396,15 @@ kb_reverse_label() {
 }
 
 # cmd_index -- kb index. Regenerates <root>/index/{sources-of-truth,backlinks}.md.
-# All views are DERIVED and disposable; forward edges in records are the source of truth.
 cmd_index() {
   _root=$(kb_resolve_root) || exit 1
+  kb_index_root "$_root"
+}
+
+# kb_index_root ROOT -- (re)generate the derived index for ROOT. All views are DERIVED
+# and disposable; the forward edges in records are the source of truth.
+kb_index_root() {
+  _root=$1
   _idx="$_root/index"
   mkdir -p "$_idx"
 
@@ -446,6 +454,109 @@ cmd_index() {
   rm -f "$_edges"
 }
 
+# kb_set_field FILE KEY VALUE -- replace the scalar value of a frontmatter KEY in place
+# (first occurrence only; no-op if the key is absent).
+kb_set_field() {
+  _tmp="$1.kbtmp.$$"
+  awk -v key="$2" -v val="$3" '
+    NR==1 && $0=="---" { print; infm=1; next }
+    infm && $0=="---" { infm=0; print; next }
+    infm && index($0, key ":")==1 && !done { print key ": " val; done=1; next }
+    { print }
+  ' "$1" > "$_tmp" && mv "$_tmp" "$1"
+}
+
+# kb_edge_rewrite FILE OLD NEW -- in each inline edge list of FILE's frontmatter, replace
+# list-item OLD with NEW; an empty NEW removes OLD. Body is untouched.
+kb_edge_rewrite() {
+  _tmp="$1.kbtmp.$$"
+  awk -v old="$2" -v new="$3" '
+    function emit(key, val,   inner,n,arr,i,g,out,cnt) {
+      inner=substr(val, 2, length(val)-2)
+      n=split(inner, arr, ","); cnt=0; out=""
+      for (i=1;i<=n;i++) {
+        g=arr[i]; gsub(/^[ \t]+|[ \t]+$/,"",g)
+        if (g=="") continue
+        if (g==old) { if (new=="") continue; else g=new }
+        out=(cnt==0 ? g : out ", " g); cnt++
+      }
+      return key ": [" out "]"
+    }
+    NR==1 && $0=="---" { print; infm=1; next }
+    infm && $0=="---" { infm=0; print; next }
+    infm && $0 ~ /^(related|depends-on|supersedes):/ {
+      key=$0; sub(/:.*/,"",key)
+      val=substr($0, length(key)+2); sub(/^[ \t]+/,"",val); sub(/[ \t]+$/,"",val)
+      if (val ~ /^\[.*\]$/) { print emit(key, val); next }
+      print; next
+    }
+    { print }
+  ' "$1" > "$_tmp" && mv "$_tmp" "$1"
+}
+
+# kb_has_inbound FILE NAME -- exit 0 if any of FILE's edge lists contains NAME.
+kb_has_inbound() {
+  for _et in related depends-on supersedes; do
+    kb_fm_list "$1" "$_et" | grep -qxF "$2" && return 0
+  done
+  return 1
+}
+
+# cmd_rename -- kb rename <A> <C>: rename the record + name, rewrite every inbound edge.
+cmd_rename() {
+  [ $# -eq 2 ] || { echo "usage: kb rename <old-slug> <new-slug>" >&2; exit 2; }
+  _a=$1
+  _c=$2
+  case "$_c" in
+    ""|*/*|*[!a-z0-9-]*) echo "kb: invalid new slug: '$_c' (use a kebab-case slug)" >&2; exit 2 ;;
+  esac
+  _root=$(kb_resolve_root) || exit 1
+
+  _fa=$(kb_file_for_name "$_root" "$_a")
+  [ -n "$_fa" ] || { echo "kb: no record named '$_a'" >&2; exit 1; }
+  _fc=$(kb_file_for_name "$_root" "$_c")
+  [ -n "$_fc" ] && { echo "kb: a record named '$_c' already exists: $_fc" >&2; exit 1; }
+
+  _dir=$(dirname "$_fa")
+  _base=$(basename "$_fa")
+  case "$_base" in "$_a".*) _suffix=${_base#"$_a"} ;; *) _suffix=".md" ;; esac
+  _new="$_dir/$_c$_suffix"
+
+  kb_set_field "$_fa" name "$_c"
+  mv "$_fa" "$_new"
+
+  kb_find_records "$_root" | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    [ "$_f" = "$_new" ] && continue
+    if grep -qw -- "$_a" "$_f"; then kb_edge_rewrite "$_f" "$_a" "$_c"; fi
+  done
+
+  kb_index_root "$_root"
+}
+
+# cmd_retire -- kb retire <A>: mark retired, strip inbound edges, report affected files.
+cmd_retire() {
+  [ $# -eq 1 ] || { echo "usage: kb retire <slug>" >&2; exit 2; }
+  _a=$1
+  _root=$(kb_resolve_root) || exit 1
+
+  _fa=$(kb_file_for_name "$_root" "$_a")
+  [ -n "$_fa" ] || { echo "kb: no record named '$_a'" >&2; exit 1; }
+
+  kb_set_field "$_fa" status retired
+
+  kb_find_records "$_root" | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    [ "$_f" = "$_fa" ] && continue
+    if kb_has_inbound "$_f" "$_a"; then
+      kb_edge_rewrite "$_f" "$_a" ""
+      echo "kb: removed inbound edge to '$_a' from $_f" >&2
+    fi
+  done
+
+  kb_index_root "$_root"
+}
+
 main() {
   kb_root_flag=""
   kb_instance=""
@@ -470,6 +581,8 @@ main() {
     lint) cmd_lint "$@" ;;
     link) cmd_link "$@" ;;
     index) cmd_index "$@" ;;
+    rename) cmd_rename "$@" ;;
+    retire) cmd_retire "$@" ;;
     debug-root) kb_resolve_root ;;
     *)
       printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
