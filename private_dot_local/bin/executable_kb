@@ -1,0 +1,42 @@
+#!/bin/sh
+# kb -- a small, deterministic CLI for a markdown knowledge base (KB).
+#
+# The KB is a set of markdown records with YAML frontmatter and typed, forward-only
+# relationship edges. `kb` makes records correct-by-construction (scaffolding, valid
+# frontmatter), enforces the conventions mechanically (fail-loud lint, edge-target
+# validation), and generates all derived views (reverse-edge/backlink index) so the
+# store is never left to manual vigilance.
+#
+# The KB root is resolved at runtime (never hardcoded), so one tool serves many KBs
+# across machines. See `kb help`.
+set -eu
+
+KB_VERSION=0.1.0
+
+usage() {
+  cat <<'EOF'
+usage: kb <subcommand> [args]
+
+  help                 show this help
+  --version            print the kb version
+
+Records are created and edited through kb, not by hand-authoring frontmatter.
+EOF
+}
+
+main() {
+  [ $# -ge 1 ] || { usage >&2; exit 2; }
+  cmd=$1
+  shift
+  case "$cmd" in
+    help|-h|--help) usage ;;
+    --version|-V) printf '%s\n' "$KB_VERSION" ;;
+    *)
+      printf 'kb: unknown subcommand: %s\n' "$cmd" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
