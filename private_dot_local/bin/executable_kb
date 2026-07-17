@@ -21,6 +21,8 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
   help                 show this help
   --version            print the kb version
   new <type> <slug>    scaffold a record with complete, valid frontmatter
+  promote <src> --type T --domain D [--tier N] [--sensitivity S] [--slug NAME] [--date D]
+                       scaffold a record from an existing memory file (migration)
   lint [path...]        validate records (schema, edges, boundary); fail-loud
   link <A> --EDGE <B>  add a forward edge A->B (EDGE: --related|--depends-on|--supersedes)
   index                regenerate index/ (sources-of-truth + backlinks); derived output
@@ -71,6 +73,53 @@ kb_config_root() {
   ' "$_cfg"
 }
 
+# kb_config_path -- print the path to the kb config file (may not exist).
+kb_config_path() { printf '%s/kb/config.toml\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+
+# kb_config_domains CONFIG -- print each configured domain slug (one per line) from
+# `[domain.<slug>]` sections. Prints nothing if the file has none.
+kb_config_domains() {
+  awk '
+    /^[ \t]*#/ { next }
+    /^[ \t]*\[/ {
+      sec=$0; sub(/^[ \t]*\[/,"",sec); sub(/\][ \t]*$/,"",sec)
+      if (sec ~ /^domain\./) print substr(sec, length("domain.")+1)
+    }
+  ' "$1"
+}
+
+# kb_config_domain_repo CONFIG SLUG -- print the `repo` path for `[domain.<slug>]`
+# (empty if absent).
+kb_config_domain_repo() {
+  awk -v want="$2" '
+    function trim(s){ sub(/^[ \t]+/,"",s); sub(/[ \t]+$/,"",s); return s }
+    function unquote(s){ sub(/^"/,"",s); sub(/"$/,"",s); return s }
+    /^[ \t]*#/ { next }
+    /^[ \t]*\[/ {
+      sec=$0; sub(/^[ \t]*\[/,"",sec); sub(/\][ \t]*$/,"",sec)
+      cur=""
+      if (sec ~ /^domain\./) cur=substr(sec, length("domain.")+1)
+      next
+    }
+    /^[ \t]*repo[ \t]*=/ {
+      v=$0; sub(/^[ \t]*repo[ \t]*=[ \t]*/,"",v); v=unquote(trim(v))
+      if (cur==want) { print v; exit }
+    }
+  ' "$1"
+}
+
+# kb_valid_domains -- print the space-joined set of valid domain values: `universal`
+# plus every configured `[domain.*]` slug. `universal` is always valid, config or not.
+kb_valid_domains() {
+  _cfg=$(kb_config_path)
+  _vd=universal
+  if [ -f "$_cfg" ]; then
+    _cd=$(kb_config_domains "$_cfg" | tr '\n' ' ')
+    [ -n "$_cd" ] && _vd="universal $_cd"
+  fi
+  printf '%s' "$_vd"
+}
+
 # kb_resolve_root -- print the resolved KB root per the precedence above; error non-zero
 # if none resolves. Reads globals: kb_root_flag, kb_instance.
 kb_resolve_root() {
@@ -114,6 +163,7 @@ kb_default_frontmatter() {
 name: $2
 description:
 type: $1
+domain: universal
 sensitivity: internal
 tier: 2
 status: draft
@@ -237,14 +287,16 @@ kb_in_set() {
   return 1
 }
 
-# kb_lint_file FILE NAMES_UNIQ -- validate one record against the schema; print
-# `FILE: reason` per violation on stderr; return non-zero if any.
+# kb_lint_file FILE NAMES_UNIQ VALID_DOMAINS -- validate one record against the schema;
+# print `FILE: reason` per violation on stderr; return non-zero if any. VALID_DOMAINS is
+# the space-joined set of acceptable `domain` values (universal + configured slugs).
 kb_lint_file() {
   _f=$1
   _namesu=$2
+  _validdomains=$3
   _frc=0
 
-  for _k in name description type sensitivity tier status updated; do
+  for _k in name description type domain sensitivity tier status updated; do
     kb_fm_has "$_f" "$_k" || { echo "$_f: missing required field '$_k'" >&2; _frc=1; }
   done
 
@@ -257,6 +309,8 @@ kb_lint_file() {
 
   _t=$(kb_fm_get "$_f" type)
   [ -z "$_t" ] || kb_in_set "$_t" "$KB_ENUM_TYPE" || { echo "$_f: invalid type '$_t'" >&2; _frc=1; }
+  _dm=$(kb_fm_get "$_f" domain)
+  [ -z "$_dm" ] || kb_in_set "$_dm" "$_validdomains" || { echo "$_f: invalid domain '$_dm' (must be 'universal' or a configured [domain.*] slug)" >&2; _frc=1; }
   _s=$(kb_fm_get "$_f" sensitivity)
   [ -z "$_s" ] || kb_in_set "$_s" "$KB_ENUM_SENS" || { echo "$_f: invalid sensitivity '$_s'" >&2; _frc=1; }
   _ti=$(kb_fm_get "$_f" tier)
@@ -294,6 +348,7 @@ kb_lint_file() {
 # cmd_lint -- kb lint [path...]
 cmd_lint() {
   _root=$(kb_resolve_root) || exit 1
+  _validdomains=$(kb_valid_domains)
 
   _all=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
   _scope=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
@@ -337,7 +392,7 @@ cmd_lint() {
 
   while IFS= read -r _f; do
     [ -n "$_f" ] || continue
-    kb_lint_file "$_f" "$_namesu" || _rc=1
+    kb_lint_file "$_f" "$_namesu" "$_validdomains" || _rc=1
   done < "$_scope"
 
   rm -f "$_all" "$_scope" "$_namesu" "$_names"
@@ -628,26 +683,32 @@ kb_sens_rank() {
   esac
 }
 
-# kb_tier0_records ROOT MAXRANK -- record files with tier:0 AND status:active AND sensitivity
-# rank <= MAXRANK, sorted by name (LC_ALL=C makes this byte-stable). The sensitivity ceiling
-# keeps private/restricted content out of the broadly-read projection.
-kb_tier0_records() {
+# kb_projection_records ROOT MAXRANK TIER DOMAIN -- record files with tier:TIER AND
+# status:active AND domain:DOMAIN AND sensitivity rank <= MAXRANK, sorted by name (LC_ALL=C
+# makes this byte-stable). Selection is tier AND domain (orthogonal dimensions): the
+# universal Tier-0 slice uses TIER=0 DOMAIN=universal; a per-domain slice uses TIER=1 DOMAIN=<slug>. The
+# sensitivity ceiling keeps private/restricted content out of the broadly-read projection.
+kb_projection_records() {
   _maxrank=$2
+  _wanttier=$3
+  _wantdomain=$4
   kb_find_records "$1" | while IFS= read -r _f; do
     [ -n "$_f" ] || continue
-    [ "$(kb_fm_get "$_f" tier)" = 0 ] || continue
+    [ "$(kb_fm_get "$_f" tier)" = "$_wanttier" ] || continue
     [ "$(kb_fm_get "$_f" status)" = active ] || continue
+    _rd=$(kb_fm_get "$_f" domain); [ -n "$_rd" ] || _rd=universal
+    [ "$_rd" = "$_wantdomain" ] || continue
     [ "$(kb_sens_rank "$(kb_fm_get "$_f" sensitivity)")" -le "$_maxrank" ] || continue
     printf '%s\t%s\n' "$(kb_fm_get "$_f" name)" "$_f"
   done | sort | cut -f2-
 }
 
-# kb_render_agents ROOT MAXRANK -- the AGENTS.md content (deterministic; no timestamps): a
-# banner, a title, then per included Tier-0 record a `## <name>` section then the record body.
+# kb_render_agents ROOT MAXRANK TIER DOMAIN TITLE -- the AGENTS.md content (deterministic; no
+# timestamps): a banner, the TITLE, then per included record a `## <name>` section + body.
 kb_render_agents() {
   printf '%s\n\n' '<!-- Generated by `kb project` — do not edit by hand. Regenerate from the KB. -->'
-  printf '%s\n\n' '# Operating model (Tier 0)'
-  kb_tier0_records "$1" "$2" | while IFS= read -r _f; do
+  printf '# %s\n\n' "$5"
+  kb_projection_records "$1" "$2" "$3" "$4" | while IFS= read -r _f; do
     [ -n "$_f" ] || continue
     printf '## %s\n\n' "$(kb_fm_get "$_f" name)"
     kb_body "$_f"
@@ -668,11 +729,14 @@ kb_render_claude() {
 cmd_project() {
   _outflag=""
   _check=""
+  _domainflag=""
   _maxsens=internal   # default ceiling: include public+internal, exclude private/restricted
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) [ $# -ge 2 ] || { echo "kb: --out needs a value" >&2; exit 2; }; _outflag=$2; shift 2 ;;
       --out=*) _outflag=${1#*=}; [ -n "$_outflag" ] || { echo "kb: --out needs a value" >&2; exit 2; }; shift ;;
+      --domain) [ $# -ge 2 ] || { echo "kb: --domain needs a value" >&2; exit 2; }; _domainflag=$2; shift 2 ;;
+      --domain=*) _domainflag=${1#*=}; [ -n "$_domainflag" ] || { echo "kb: --domain needs a value" >&2; exit 2; }; shift ;;
       --max-sensitivity) [ $# -ge 2 ] || { echo "kb: --max-sensitivity needs a value" >&2; exit 2; }; _maxsens=$2; shift 2 ;;
       --max-sensitivity=*) _maxsens=${1#*=}; shift ;;
       --check) _check=1; shift ;;
@@ -686,13 +750,33 @@ cmd_project() {
   _maxrank=$(kb_sens_rank "$_maxsens")
 
   _root=$(kb_resolve_root) || exit 1
-  if [ -n "$_outflag" ]; then _out=$_outflag; else _out="$_root/index/projections"; fi
+
+  # Selection = tier AND domain. Bare: Tier-0 universal. --domain <slug>:
+  # that domain's Tier-1 slice, output repo resolved from config `[domain.<slug>] repo`.
+  if [ -n "$_domainflag" ]; then
+    _tier=1
+    _domain=$_domainflag
+    _title="Domain context: $_domain (Tier 1)"
+    if [ -n "$_outflag" ]; then _out=$_outflag
+    else
+      _cfg=$(kb_config_path)
+      _repo=""
+      [ -f "$_cfg" ] && _repo=$(kb_config_domain_repo "$_cfg" "$_domain")
+      if [ -n "$_repo" ]; then _out=$_repo
+      else _out="$_root/index/projections/domains/$_domain"; fi
+    fi
+  else
+    _tier=0
+    _domain=universal
+    _title="Operating model (Tier 0)"
+    if [ -n "$_outflag" ]; then _out=$_outflag; else _out="$_root/index/projections"; fi
+  fi
 
   if [ -n "$_check" ]; then
     # regenerate to a temp and compare; never write the real outputs. Exit 1 on any drift.
     _drift=0
     _tmp=$(mktemp "${TMPDIR:-/tmp}/kb.proj.XXXXXX")
-    kb_render_agents "$_root" "$_maxrank" > "$_tmp"
+    kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_tmp"
     cmp -s "$_tmp" "$_out/AGENTS.md" 2>/dev/null || { echo "kb: projection drift: $_out/AGENTS.md" >&2; _drift=1; }
     cmp -s "$_tmp" "$_out/GEMINI.md" 2>/dev/null || { echo "kb: projection drift: $_out/GEMINI.md" >&2; _drift=1; }
     kb_render_claude > "$_tmp"
@@ -703,10 +787,94 @@ cmd_project() {
 
   mkdir -p "$_out"
   # write via temp + mv so consumers never see a half-generated set
-  kb_render_agents "$_root" "$_maxrank" > "$_out/AGENTS.md.kbtmp.$$" && mv "$_out/AGENTS.md.kbtmp.$$" "$_out/AGENTS.md"
-  kb_render_claude                      > "$_out/CLAUDE.md.kbtmp.$$" && mv "$_out/CLAUDE.md.kbtmp.$$" "$_out/CLAUDE.md"
-  kb_render_agents "$_root" "$_maxrank" > "$_out/GEMINI.md.kbtmp.$$" && mv "$_out/GEMINI.md.kbtmp.$$" "$_out/GEMINI.md"
+  kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_out/AGENTS.md.kbtmp.$$" && mv "$_out/AGENTS.md.kbtmp.$$" "$_out/AGENTS.md"
+  kb_render_claude                                                    > "$_out/CLAUDE.md.kbtmp.$$" && mv "$_out/CLAUDE.md.kbtmp.$$" "$_out/CLAUDE.md"
+  kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_out/GEMINI.md.kbtmp.$$" && mv "$_out/GEMINI.md.kbtmp.$$" "$_out/GEMINI.md"
   printf '%s\n' "$_out"
+}
+
+# cmd_promote -- kb promote <src> --type T --domain D [--tier N] [--sensitivity S]
+#   [--slug NAME] [--date YYYY-MM-DD]. Scaffold a valid KB record from an existing memory
+# file: name from --slug > src `name:` > filename; description + body carried over (body
+# minus its frontmatter block; `[[wikilinks]]` kept verbatim for later edge conversion);
+# domain/tier/sensitivity from flags/defaults; status active; updated from --date/KB_DATE.
+# Runs `kb lint` on the result only as an ADVISORY: body wikilinks / dangling edges are an
+# expected transient during migration (resolved by edge conversion), so a lint finding does
+# NOT fail promote — the batch-end `kb lint` is the real backstop.
+cmd_promote() {
+  [ $# -ge 1 ] || { echo "usage: kb promote <src> --type T --domain D [--tier N] [--sensitivity S] [--slug NAME] [--date YYYY-MM-DD]" >&2; exit 2; }
+  _src=$1; shift
+  _ptype=""; _pdomain=""; _ptier=2; _psens=internal; _pslug=""; _pdate=${KB_DATE:-$(date +%F)}
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --type) [ $# -ge 2 ] || { echo "kb: --type needs a value" >&2; exit 2; }; _ptype=$2; shift 2 ;;
+      --type=*) _ptype=${1#*=}; shift ;;
+      --domain) [ $# -ge 2 ] || { echo "kb: --domain needs a value" >&2; exit 2; }; _pdomain=$2; shift 2 ;;
+      --domain=*) _pdomain=${1#*=}; shift ;;
+      --tier) [ $# -ge 2 ] || { echo "kb: --tier needs a value" >&2; exit 2; }; _ptier=$2; shift 2 ;;
+      --tier=*) _ptier=${1#*=}; shift ;;
+      --sensitivity) [ $# -ge 2 ] || { echo "kb: --sensitivity needs a value" >&2; exit 2; }; _psens=$2; shift 2 ;;
+      --sensitivity=*) _psens=${1#*=}; shift ;;
+      --slug) [ $# -ge 2 ] || { echo "kb: --slug needs a value" >&2; exit 2; }; _pslug=$2; shift 2 ;;
+      --slug=*) _pslug=${1#*=}; shift ;;
+      --date) [ $# -ge 2 ] || { echo "kb: --date needs a value" >&2; exit 2; }; _pdate=$2; shift 2 ;;
+      --date=*) _pdate=${1#*=}; shift ;;
+      *) echo "kb: promote: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+
+  [ -f "$_src" ] || { echo "kb: source file not found: $_src" >&2; exit 1; }
+  [ -n "$_ptype" ] || { echo "kb: promote requires --type" >&2; exit 2; }
+  [ -n "$_pdomain" ] || { echo "kb: promote requires --domain" >&2; exit 2; }
+  _zone=$(kb_zone_for_type "$_ptype") \
+    || { echo "kb: unknown type: $_ptype (valid: standard|decision|context|research|register)" >&2; exit 2; }
+
+  # domain must be universal or a configured slug; guard tier/sensitivity so we never
+  # scaffold a structurally-invalid record.
+  kb_in_set "$_pdomain" "$(kb_valid_domains)" \
+    || { echo "kb: unknown domain '$_pdomain' (must be 'universal' or a configured [domain.*] slug)" >&2; exit 2; }
+  kb_in_set "$_ptier" "$KB_ENUM_TIER" || { echo "kb: invalid tier '$_ptier' (0|1|2)" >&2; exit 2; }
+  kb_in_set "$_psens" "$KB_ENUM_SENS" || { echo "kb: invalid sensitivity '$_psens'" >&2; exit 2; }
+
+  # slug: --slug > src name: > filename (sans .md)
+  _name=$_pslug
+  [ -n "$_name" ] || _name=$(kb_fm_get "$_src" name)
+  if [ -z "$_name" ]; then _base=$(basename "$_src"); _name=${_base%.md}; fi
+  case "$_name" in
+    ""|-*|*-|*/*|*[!a-z0-9-]*) echo "kb: invalid slug: '$_name' (kebab-case: a-z 0-9 -, no leading/trailing hyphen)" >&2; exit 2 ;;
+  esac
+
+  _desc=$(kb_fm_get "$_src" description)
+
+  _root=$(kb_resolve_root) || exit 1
+  _dir="$_root/$_zone"
+  _file="$_dir/$_name.md"
+  [ -e "$_file" ] && { echo "kb: record already exists: $_file" >&2; exit 1; }
+  mkdir -p "$_dir"
+
+  # frontmatter from flags/defaults + carried description; body verbatim from src (minus fm)
+  {
+    printf '%s\n' '---'
+    printf 'name: %s\n' "$_name"
+    printf 'description: %s\n' "$_desc"
+    printf 'type: %s\n' "$_ptype"
+    printf 'domain: %s\n' "$_pdomain"
+    printf 'sensitivity: %s\n' "$_psens"
+    printf 'tier: %s\n' "$_ptier"
+    printf 'status: active\n'
+    printf 'related: []\n'
+    printf 'depends-on: []\n'
+    printf 'supersedes: []\n'
+    printf 'updated: %s\n' "$_pdate"
+    printf '%s\n' '---'
+    kb_body "$_src"
+  } > "$_file"
+
+  printf '%s\n' "$_file"
+
+  if ! cmd_lint "$_file" >/dev/null 2>&1; then
+    echo "kb: note: '$_name' has lint findings (expected during migration if the body has [[wikilinks]] or unresolved edges); rerun 'kb lint' after edge conversion." >&2
+  fi
 }
 
 main() {
@@ -730,6 +898,7 @@ main() {
     help|-h|--help) usage ;;
     --version|-V) printf '%s\n' "$KB_VERSION" ;;
     new) cmd_new "$@" ;;
+    promote) cmd_promote "$@" ;;
     lint) cmd_lint "$@" ;;
     link) cmd_link "$@" ;;
     index) cmd_index "$@" ;;

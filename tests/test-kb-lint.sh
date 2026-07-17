@@ -14,10 +14,10 @@ kb() { sh "$KB" "$@"; }
 
 newkb() { d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); mkdir -p "$d/context"; printf '%s' "$d"; }
 
-# valid record body with an overridable edge line ($1=name, $2=extra-line)
+# valid record body with an overridable edge line ($1=file, $2=name, $3=extra-line)
 emit() { # file name extra
-  { printf '%s\n' '---' "name: $2" 'description: x' 'type: context' 'sensitivity: internal' \
-      'tier: 2' 'status: active' "$3" 'updated: 2026-07-15' '---' 'body text'; } > "$1"
+  { printf '%s\n' '---' "name: $2" 'description: x' 'type: context' 'domain: universal' \
+      'sensitivity: internal' 'tier: 2' 'status: active' "$3" 'updated: 2026-07-15' '---' 'body text'; } > "$1"
 }
 
 # (b) dangling edge -> exit 1, reason names the target
