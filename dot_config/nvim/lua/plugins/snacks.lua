@@ -19,7 +19,9 @@ if vim.env.PUPPETEER_EXECUTABLE_PATH == nil or vim.env.PUPPETEER_EXECUTABLE_PATH
     "chromium", -- Arch: pacman-managed, preferred
     "google-chrome-stable",
     "brave",
-    -- macOS app bundles: not on $PATH, so probe the binary directly
+    -- macOS app bundles: not on $PATH, so probe the binary directly.
+    -- Brave is the one actually installed on the Mac; keep it listed here.
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   }
