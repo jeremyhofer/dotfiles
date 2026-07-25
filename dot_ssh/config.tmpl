@@ -5,7 +5,11 @@ Include ~/.dotlocal/ssh/config
 
 Host *
     IdentityFile ~/.ssh/%u@%l
-    ForwardAgent yes
+    # Agent forwarding OFF by default: a forwarded agent lets ANY host you connect to use your keys
+    # AS YOU for the whole session (and the remote's AddKeysToAgent can push its keys back into yours).
+    # Prefer per-host keys, ProxyJump for bastion hops, or an explicit `ssh -A` / per-Host override
+    # for one trusted host that genuinely needs onward auth.
+    ForwardAgent no
     ServerAliveInterval 60
     ServerAliveCountMax 30
     AddKeysToAgent yes
