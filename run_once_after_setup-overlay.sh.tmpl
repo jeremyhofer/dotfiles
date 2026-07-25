@@ -12,7 +12,17 @@ CACHE="$HOME/.cache/chezmoi/overlay"
 
 [ -d "$SRC/.git" ] || git clone "$OVERLAY_REPO" "$SRC"
 mkdir -p "$CFGDIR" "$CACHE"
-[ -f "$CFGDIR/chezmoi.toml" ] || printf 'sourceDir = "%s"\ndestDir = "%s"\n[data]\n' "$SRC" "$HOME" > "$CFGDIR/chezmoi.toml"
+
+# Generate the overlay config. If the overlay ships its own config template, let `chezmoi init`
+# render it — that prompts once for any unset config-data value and reuses whatever is already
+# set (idempotent; a configured host is never re-prompted). Overlays without a template fall back
+# to a minimal hand-written config (empty [data], filled in by hand).
+if [ -f "$SRC/.chezmoi.toml.tmpl" ]; then
+  chezmoi --config "$CFGDIR/chezmoi.toml" --source "$SRC" \
+    --persistent-state "$CFGDIR/chezmoistate.boltdb" --cache "$CACHE" init
+else
+  [ -f "$CFGDIR/chezmoi.toml" ] || printf 'sourceDir = "%s"\ndestDir = "%s"\n[data]\n' "$SRC" "$HOME" > "$CFGDIR/chezmoi.toml"
+fi
 
 chezmoi --config "$CFGDIR/chezmoi.toml" --source "$SRC" \
   --persistent-state "$CFGDIR/chezmoistate.boltdb" --cache "$CACHE" apply
