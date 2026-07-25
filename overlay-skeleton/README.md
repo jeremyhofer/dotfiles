@@ -10,8 +10,8 @@ non-publishable config on top of the public `dotfiles` base.
 - **B — private-vocab** (identity `gitconfig`, `allowed_signers`, private `zshenv`, the private
   spell list): **you author these from THIS domain's own vault/records.** Fill in the `*.example`
   stubs (drop `.example`). Never copy another domain's values.
-- **C — domain-specific** (`Brewfile.role`, `bootstrap.d/*`, `ssh/config`): this overlay writes
-  its own. Fill in the stubs.
+- **C — domain-specific** (`Brewfile.role`, `bootstrap.d/*`, `ssh/config`, `Devel/mani.yaml.tmpl`):
+  this overlay writes its own. Fill in the stubs.
 
 `dot_dotlocal/*` deploys to `~/.dotlocal/*` (the base's configs `Include`/read those paths).
 `bootstrap.d/*.sh` run post-`chezmoi apply`, lexically, by the base's `bootstrap-mac.sh`.

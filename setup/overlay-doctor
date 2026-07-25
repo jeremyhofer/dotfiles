@@ -58,6 +58,7 @@ fi
 # --- Tier C: domain-specific ---
 require dot_dotlocal/Brewfile.role "role Brewfile (instance_eval the base + domain apps)"
 require dot_dotlocal/ssh/config    "ssh host config"
+require Devel/mani.yaml.tmpl       "fleet repo manifest (mani clones/syncs ~/Devel)"
 ls "$OSRC"/dot_dotlocal/bootstrap.d/*.sh >/dev/null 2>&1 \
   || miss "dot_dotlocal/bootstrap.d/*.sh (at least one stage)"
 
