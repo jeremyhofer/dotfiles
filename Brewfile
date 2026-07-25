@@ -43,3 +43,12 @@ brew "mermaid-cli"
 # --- terminal + font (universal dev; ghostty is the fleet terminal, installable at work) ---
 cask "ghostty"
 cask "font-inconsolata-nerd-font"
+
+# --- machine-local role layer (optional) ---
+# This base is the standalone standard: `brew bundle --file Brewfile` installs the shared core on
+# any Mac (a machine with no overlay gets exactly this). If the machine's overlay has deployed a
+# private role Brewfile, include it here so ONE command installs both and `brew bundle cleanup`
+# sees the union — same base-includes-overlay pattern as ~/.ssh/config's `Include ~/.dotlocal/ssh/config`
+# and the gitconfig include. The overlay's role file adds; it never reaches back into this base.
+role = File.expand_path("~/.dotlocal/Brewfile.role")
+instance_eval(File.read(role)) if File.exist?(role)
