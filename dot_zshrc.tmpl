@@ -191,5 +191,7 @@ chezmoi-overlay() {
 
 eval "$(direnv hook zsh)"
 eval "$(fnm env --use-on-cd --version-file-strategy recursive --shell zsh)"
+# worktrunk: defines the dir-changing wt() wrapper + lazy completions (self-guards if wt absent)
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 
 [ -f "$HOME/.dotlocal/zshrc" ] && source "$HOME/.dotlocal/zshrc"
