@@ -41,6 +41,9 @@ else
   note "WARN        Tier A: spell-capture not on PATH — apply the base (chezmoi apply)"
 fi
 
+# --- Overlay config template (chezmoi init renders it; prompts the per-machine config data) ---
+require .chezmoi.toml.tmpl "overlay config template (prompts nasGit/secretsRepo via chezmoi init)"
+
 # --- Tier B: private-vocab (author from THIS domain's vault) ---
 require dot_dotlocal/gitconfig                  "identity: user/signingkey/gpgsign"
 if [ -f "$OSRC/dot_dotlocal/gitconfig" ] && ! grep -q 'signingkey' "$OSRC/dot_dotlocal/gitconfig"; then
@@ -56,7 +59,7 @@ if [ -f "$OSRC/dot_dotlocal/gitconfig" ] && grep -Eq 'gpgsign[[:space:]]*=[[:spa
 fi
 
 # --- Tier C: domain-specific ---
-require dot_dotlocal/Brewfile.role "role Brewfile (instance_eval the base + domain apps)"
+require dot_dotlocal/Brewfile.role "role Brewfile (private additions; the base self-includes it)"
 require dot_dotlocal/ssh/config    "ssh host config"
 require Devel/mani.yaml.tmpl       "fleet repo manifest (mani clones/syncs ~/Devel)"
 ls "$OSRC"/dot_dotlocal/bootstrap.d/*.sh >/dev/null 2>&1 \

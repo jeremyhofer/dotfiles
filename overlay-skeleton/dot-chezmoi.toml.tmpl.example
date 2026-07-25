@@ -1,0 +1,20 @@
+{{- /*
+  Overlay chezmoi config template (this SECOND chezmoi instance's config). `chezmoi init` renders it
+  and prompts once per machine for any unset [data] value, reusing whatever is already set
+  (idempotent — a configured host is never re-prompted). The git-root value stays EXPLICIT: its own
+  prompt/value, never computed from secretsRepo.
+
+  Fill in this domain's git-root default(s) below (e.g. per-OS mount paths), then delete the FIXME
+  line. Leaving the default empty just means the prompt starts blank — still valid.
+  FIXME(overlay-doctor): set this domain's git-root default(s).
+*/ -}}
+{{- $gitRootDefault := "" -}}
+{{- /* Example OS-aware default (uncomment + set for your fleet):
+       {{ if eq .chezmoi.os "darwin" }}{{ $gitRootDefault = "/path/on/macos" }}{{ else }}{{ $gitRootDefault = "/path/on/linux" }}{{ end }} */ -}}
+{{- $nasGit := promptStringOnce . "nasGit" "Central git root (explicit)" $gitRootDefault -}}
+{{- $secretsRepo := promptStringOnce . "secretsRepo" "Secrets repo git URL (bare)" (printf "%s/internal/secrets.git" $nasGit) -}}
+sourceDir = {{ .chezmoi.sourceDir | quote }}
+destDir   = {{ .chezmoi.homeDir | quote }}
+[data]
+    nasGit      = {{ $nasGit | quote }}
+    secretsRepo = {{ $secretsRepo | quote }}
