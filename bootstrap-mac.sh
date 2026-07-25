@@ -40,15 +40,13 @@ ensure_foundation() {
 
 # --- brew bundle: base (this repo) + the domain's role fragment (from the overlay). ---
 ensure_bundle() {
-  log "brew bundle (base + role)"
+  log "brew bundle (base; base includes ~/.dotlocal/Brewfile.role if the overlay deployed one)"
+  # The base Brewfile is the standalone standard and self-includes the machine's optional private
+  # role file, so one bundle installs both. Before the overlay is applied that role file is absent
+  # and this is base-only (re-run after the guarded apply to pick the role up). Cleanup mirrors this:
+  #   brew bundle cleanup --file "$REPO_DIR/Brewfile"   (dry-run; add --force to apply)
   # --adopt: adopt an already-installed app into brew mgmt instead of erroring on conflict.
   HOMEBREW_CASK_OPTS="--adopt" brew bundle --file "$REPO_DIR/Brewfile"
-  role="$HOME/.dotlocal/Brewfile.role"
-  if [ -f "$role" ]; then
-    HOMEBREW_CASK_OPTS="--adopt" brew bundle --file "$role"
-  else
-    echo "no role Brewfile at $role yet (overlay not applied?) — base only"
-  fi
 }
 
 # --- default Node via fnm (per-project is the norm; a default LTS is convenient + mmdc needs a
