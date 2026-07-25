@@ -12,6 +12,8 @@ brew "git"
 brew "gh"
 brew "git-delta"         # git diff/pager syntax highlighting (gitconfig [core] pager + [interactive] diffFilter)
 brew "lazygit"           # git TUI (LazyVim/snacks integration)
+brew "mani"              # multi-repo manager: declarative sync (mani sync) + run across repos (mani exec)
+brew "worktrunk"         # git worktree manager (wt): create/switch/list/merge, parallel-agent isolation
 brew "fnm"               # node version manager (per-project node)
 brew "uv"                # python
 brew "direnv"            # per-directory env (.envrc)
