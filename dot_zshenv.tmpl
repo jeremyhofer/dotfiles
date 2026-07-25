@@ -5,6 +5,9 @@
 
 typeset -U path fpath
 path=($path "$HOME/.local/bin" "$HOME/go/bin")
+# User completions dir, prepended so it's on fpath before omz runs compinit (zshenv precedes zshrc).
+# Holds generated tool completions (e.g. _mani) that aren't shipped as omz plugins.
+fpath=("$HOME/.local/share/zsh/completions" $fpath)
 
 export EDITOR='nvim'
 
