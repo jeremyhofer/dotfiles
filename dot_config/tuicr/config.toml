@@ -1,0 +1,24 @@
+# tuicr — code-review TUI. Full options: docs/CONFIG.md in the tuicr repo.
+# Deployed by chezmoi (base) to ~/.config/tuicr/config.toml on every machine (home + work).
+
+leader = ";"
+diff_view = "side-by-side"
+comment_vim = false   # default comment editor: Shift-Enter = newline, Enter = submit.
+                      # Shift-Enter needs tmux `extended-keys on` (wired in the base dot_tmux.conf).
+                      # (tuicr's other newline key, Ctrl-j, is deliberately left to vim-tmux-navigator
+                      # for pane switching; add tuicr to `is_vim` there only if Shift-Enter misbehaves.)
+
+[forge]
+comment_type_prefix = true   # prepend [ISSUE] etc. to comment bodies on GitHub/GitLab submit
+
+# Comment classifications — cycle with Tab while commenting (first = default; `None` at cycle's end).
+# `definition` is included in the export legend as guidance for LLMs, so it directly improves the
+# "review comments -> AI/Jira actionable work" pipeline. `comment_type` also lands in the JSON export,
+# so a downstream generator can route by type (issue -> bug, suggestion -> backlog, etc.).
+comment_types = [
+  { id = "issue",      label = "issue",   color = "red",     definition = "must fix before merge — a correctness, security, or contract defect" },
+  { id = "suggestion", label = "suggest", color = "yellow",  definition = "a concrete improvement the author should consider; not blocking" },
+  { id = "nit",        label = "nit",     color = "#d19a66", definition = "small optional style/polish tweak; safe to ignore" },
+  { id = "question",   label = "q",       color = "cyan",    definition = "ask for clarification; may become a follow-up task" },
+  { id = "praise",     label = "praise",  color = "green",   definition = "positive callout; a pattern worth repeating" },
+]
