@@ -12,8 +12,11 @@ brew "git"
 brew "gh"
 brew "git-delta"         # git diff/pager syntax highlighting (gitconfig [core] pager + [interactive] diffFilter)
 brew "lazygit"           # git TUI (LazyVim/snacks integration)
-tap "agavra/tap"         # tuicr's homebrew tap (not in homebrew-core)
-brew "agavra/tap/tuicr"  # code-review TUI (git/jj), vim keys — local + PR/MR review (Arch: official 'extra')
+# tuicr isn't in homebrew-core; this is the author's own tap. `trusted: true` declaratively trusts it
+# so `brew bundle` loads + installs tuicr with no separate `brew trust` step (Homebrew otherwise refuses
+# formulae from an untrusted third-party tap). Arch installs it from the official 'extra' repo.
+tap "agavra/tap", trusted: true
+brew "agavra/tap/tuicr"  # code-review TUI (git/jj), vim keys — local + PR/MR review
 brew "mani"              # multi-repo manager: declarative sync (mani sync) + run across repos (mani exec)
 brew "worktrunk"         # git worktree manager (wt): create/switch/list/merge, parallel-agent isolation
 brew "fnm"               # node version manager (per-project node)
