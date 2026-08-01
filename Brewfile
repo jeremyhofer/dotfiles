@@ -2,7 +2,11 @@
 # (`brew bundle --file Brewfile`) on EVERY Mac (personal + work). Keep it strictly to tools
 # that any dev machine — including a managed work Mac — can and should install. Anything
 # personal-only, preference, personal-infra, or not-installable-at-work belongs in the
-# overlay's Brewfile.role (which instance_eval's this file).
+# overlay's Brewfile.role, which THIS file includes at the bottom (see the role-layer block
+# there). The direction matters and this comment used to state it backwards: the base is the
+# entrypoint and the role file EXTENDS it. Reading it the other way suggests a Mac with no
+# overlay installs nothing, when in fact it installs exactly this core -- which is the whole
+# reason the base is the standalone standard.
 #
 # node is installed PER-PROJECT via fnm, NOT as a brew formula — do not add `brew "node"`.
 
