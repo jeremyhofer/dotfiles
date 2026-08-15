@@ -71,6 +71,44 @@ require Devel/mani.yaml.tmpl       "fleet repo manifest (mani clones/syncs ~/Dev
 ls "$OSRC"/dot_dotlocal/bootstrap.d/*.sh >/dev/null 2>&1 \
   || miss "dot_dotlocal/bootstrap.d/*.sh (at least one stage)"
 
+# --- Tier S: skills layer (base ships the public half; the overlay supplies private fragments) ---
+# Promised when the skills layer was designed and initially not built, so every hybrid skill's
+# fragment was verified BY HAND -- the vigilance-instead-of-mechanism this auditor exists to replace.
+_skdir="$BSRC/dot_claude/skills"
+if [ -d "$_skdir" ]; then
+  for _sk in "$_skdir"/*/SKILL.md; do
+    [ -f "$_sk" ] || continue
+    _skname=$(basename "$(dirname "$_sk")")
+    # Pointer resolution: a public skill that defers to a fragment must have that fragment supplied
+    # by THIS overlay, or its deferral is a dead end for the reader.
+    for _ref in $(grep -o '\.dotlocal/skills/[A-Za-z0-9._-]*\.md' "$_sk" 2>/dev/null | sort -u); do
+      _frag=${_ref##*/}
+      if [ -f "$OSRC/dot_dotlocal/skills/$_frag" ]; then
+        note "OK          Tier S: skill '$_skname' -> fragment $_frag supplied"
+      else
+        # Non-gating by design: the public half must stand alone on a machine whose domain has
+        # nothing to add, so an unsupplied fragment is a gap to notice, not a broken overlay.
+        note "WARN        Tier S: skill '$_skname' defers to $_frag, which this overlay does not supply"
+      fi
+    done
+  done
+
+  # Publish-safety: the base is PUBLIC. Its skills must not carry this domain's private vocabulary.
+  # The vocabulary is read from the OVERLAY at runtime, so the public base never embeds the patterns
+  # it is being checked against -- the same reason the leak-guard keeps its word list private.
+  _vocab="$OSRC/dot_dotlocal/git-leak-markers"
+  if [ -f "$_vocab" ]; then
+    _re=$(grep -v '^[[:space:]]*#' "$_vocab" 2>/dev/null | grep -v '^[[:space:]]*$' | head -1)
+    if [ -n "$_re" ]; then
+      _hits=$(grep -rInE "$_re" "$_skdir" 2>/dev/null | head -5 || true)
+      if [ -n "$_hits" ]; then
+        printf '%s\n' "$_hits" | while IFS= read -r _h; do [ -n "$_h" ] && printf '  found       %s\n' "$_h"; done
+        miss "public base skills carry this domain's private vocabulary (above) — move that content into an overlay fragment; the base is world-readable"
+      fi
+    fi
+  fi
+fi
+
 # --- Tier H: leak-guard (optional, home-only) ---
 if [ -d "$OSRC/dot_dotlocal/git-hooks" ]; then
   note "OK          Tier H: leak-guard present (home profile)"

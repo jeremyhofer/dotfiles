@@ -134,4 +134,38 @@ echo "$out" | grep -q 'removes.*{{' && { echo "FAIL(I): template control line sh
 echo "$out" | grep -q 'removes.*\.dotlocal/always.*ALWAYS' || { echo "FAIL(I): unguarded entry not marked ALWAYS"; echo "$out"; exit 1; }
 echo "$out" | grep -q 'removes.*\.dotlocal/guarded.*ONLY IF' || { echo "FAIL(I): guarded entry not marked conditional"; echo "$out"; exit 1; }
 echo "ok:   destructive summary distinguishes always-removed from conditional"
+
+# --- Tier S: the skills layer (ADR-promised check that was never built) ---
+
+mkskills() { # $1=base $2=overlay : a base skill pointing at an overlay fragment
+  mkdir -p "$1/dot_claude/skills/demo" "$2/dot_dotlocal/skills"
+  printf -- '---\nname: demo\n---\nGeneric half.\nIf `~/.dotlocal/skills/demo.md` exists, read it.\n' \
+    > "$1/dot_claude/skills/demo/SKILL.md"
+}
+
+# Case J — a base skill whose fragment the overlay supplies: reported OK, non-gating.
+mk "$tmp/ovj"; bj="$tmp/basej"; mkskills "$bj" "$tmp/ovj"
+echo 'domain half' > "$tmp/ovj/dot_dotlocal/skills/demo.md"
+out=$(OVERLAY_SRC="$tmp/ovj" BASE_SRC="$bj" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(J): satisfied fragment should not gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'Tier S.*demo' || { echo "FAIL(J): skills tier not reported"; echo "$out"; exit 1; }
+echo "ok:   Tier S reports a satisfied hybrid fragment"
+
+# Case K — the fragment is MISSING: warned, but not a hard failure (per the ADR: an optional
+# capability's missing fragment is not fatal; the public half still stands alone).
+mk "$tmp/ovk"; bk="$tmp/basek"; mkskills "$bk" "$tmp/ovk"
+out=$(OVERLAY_SRC="$tmp/ovk" BASE_SRC="$bk" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q 'WARN.*demo.md' || { echo "FAIL(K): missing fragment not warned"; echo "$out"; exit 1; }
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(K): missing fragment must warn, not gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "ok:   a missing hybrid fragment warns without gating"
+
+# Case L — a PUBLIC base skill carrying this domain's private vocabulary is a hard failure.
+# The vocabulary is read from the overlay at runtime, so the public base never embeds it.
+mk "$tmp/ovl"; bl="$tmp/basel"; mkskills "$bl" "$tmp/ovl"
+echo 'domain half' > "$tmp/ovl/dot_dotlocal/skills/demo.md"
+printf '# vocab\nSEKRITHOST\n' > "$tmp/ovl/dot_dotlocal/git-leak-markers"
+printf 'ssh SEKRITHOST for the thing\n' >> "$bl/dot_claude/skills/demo/SKILL.md"
+out=$(OVERLAY_SRC="$tmp/ovl" BASE_SRC="$bl" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(L): private vocab in a public skill must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "ok:   private vocabulary in a public base skill is a hard failure"
 echo "PASS"
