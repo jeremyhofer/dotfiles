@@ -1,6 +1,7 @@
 # Repo documentation / agent context — not deployable dotfiles.
 README.md
 CLAUDE.md
+CHANGELOG.md
 
 # Test harness for in-repo helper scripts — source-only, never deployed.
 tests/
