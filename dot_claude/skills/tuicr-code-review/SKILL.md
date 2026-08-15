@@ -83,16 +83,28 @@ The classifications are configured with definitions precisely so an agent can ro
 ```zsh
 tuicr review add --session <path> \
   --target-file src/thing.ts --line 42 \
-  --type note --username "<your model name>" \
+  --type suggestion --username "<your model name>" \
   "Fixed in <commit>: switched to the config form you described."
 ```
 
 - **Always pass `--username`.** tuicr's own help asks agents to, so human and agent comments are
   visually distinguishable in the TUI. Without it everything is stamped `user` and the human cannot
   tell who wrote what.
-- Omit `--target-file` for a review-level comment; add `--end-line` for a range.
-- **`--type` is not validated** — an unknown value is accepted silently, so a typo becomes a comment
-  nobody can route. Use one of the configured ids.
+- **There are three anchor levels, and the middle one is easy to miss:**
+
+  | Anchor | How | Use for |
+  | --- | --- | --- |
+  | review | omit `--target-file` | something about the change as a whole |
+  | **file** | `--target-file X` with **no `--line`** | something about a whole file — its name, its existence, its format |
+  | line / range | `--target-file X --line N` (+ `--end-line M`) | a specific place |
+
+  The file level exists and is easy to overlook — a reviewer who does not know it is there ends up
+  anchoring a whole-file point to line 1 and apologising for it in the comment text.
+- **`--type` is not validated, and its DEFAULT is wrong.** The CLI advertises `[default: note]`, but
+  `note` is **not** one of the configured classifications — so leaving `--type` off, or copying it
+  from `--help`, stamps a comment that nothing can route by and that the TUI cannot colour. Always
+  pass one of the configured ids explicitly: `issue` · `suggestion` · `nit` · `question` · `praise`.
+  An unknown value is accepted silently, so a typo fails the same quiet way.
 - `--input` takes literal JSON, `@file`, or `-` for stdin, which is the sane path for adding several
   comments at once.
 
