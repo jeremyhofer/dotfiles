@@ -1,11 +1,12 @@
 # Fleet repo manifest — `mani` clones/syncs these repos into ~/Devel. (Scaffold stub — fill in.)
 # FIXME(overlay-doctor): replace the example below with THIS domain's real repo set, then delete this line.
-# `nasGit` (set per-machine in the overlay chezmoi config [data]) is your git host root, so URLs stay
-# host-portable across machines. `mani sync` clones; `mani exec --all 'git pull --ff-only'` safely updates;
-# tag entries for subsets (e.g. `mani sync --tags active`). Exclude chezmoi-source dirs and retired repos.
+# `gitRoot` (set per-machine in the overlay chezmoi config [data]; name it in THIS domain's terms) is
+# your git host root, so URLs stay host-portable across machines. `mani sync` clones; `mani exec --all
+# 'git pull --ff-only'` safely updates; tag entries for subsets (e.g. `mani sync --tags active`).
+# Exclude chezmoi-source dirs and retired repos.
 
 projects:
   example-repo:
     path: internal/example-repo
-    url: {{ .nasGit }}/internal/example-repo.git
+    url: {{ .gitRoot }}/internal/example-repo.git
     tags: [internal, active]
