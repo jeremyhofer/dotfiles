@@ -48,7 +48,7 @@ else
 fi
 
 # --- Overlay config template (chezmoi init renders it; prompts the per-machine config data) ---
-require .chezmoi.toml.tmpl "overlay config template (prompts nasGit/secretsRepo via chezmoi init)"
+require .chezmoi.toml.tmpl "overlay config template (chezmoi init prompts this domain's [data] values)"
 
 # --- Tier B: private-vocab (author from THIS domain's vault) ---
 require dot_dotlocal/gitconfig                  "identity: user/signingkey/gpgsign"

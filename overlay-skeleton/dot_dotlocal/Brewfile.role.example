@@ -1,10 +1,11 @@
 # FIXME(overlay-doctor): fill in for THIS domain, then delete this line.
-# Role Brewfile for this domain (work/personal). It layers ON TOP of the public base Brewfile.
+# Role Brewfile for this domain (work/personal): ONLY this domain's additions.
 #
-# Composition (base + per-role layering): eval the base, then add this role's entries. Point
-# `brew bundle --file ~/.dotlocal/Brewfile.role` at THIS file to describe the WHOLE machine;
-# `brew bundle cleanup --file ~/.dotlocal/Brewfile.role` to prune (dry-run first; --force to apply).
-instance_eval(File.read(File.expand_path("~/.local/share/chezmoi/Brewfile")))
+# Composition direction: the BASE Brewfile includes this file (same base-includes-overlay
+# pattern as ~/.ssh/config's `Include ~/.dotlocal/ssh/config`). Do NOT `instance_eval` the
+# base from here — that is the superseded inverted shape and double-evaluates every entry.
+# Point `brew bundle --file ~/.local/share/chezmoi/Brewfile` at the BASE to describe the
+# whole machine; `brew bundle cleanup` against that same file to prune (dry-run first).
 
 # --- role apps ---
 # cask "some-app"

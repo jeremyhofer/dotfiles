@@ -15,7 +15,8 @@ non-publishable config on top of the public `dotfiles` base.
 
 `dot_dotlocal/*` deploys to `~/.dotlocal/*` (the base's configs `Include`/read those paths).
 `bootstrap.d/*.sh` run post-`chezmoi apply`, lexically, by the base's `bootstrap-mac.sh`.
-`Brewfile.role` `instance_eval`s the base Brewfile then adds domain apps.
+`Brewfile.role` holds ONLY this domain's additions — the base Brewfile includes it (never
+`instance_eval` the base from the role file; that inverted shape double-evaluates).
 
 ## Setting up
 
