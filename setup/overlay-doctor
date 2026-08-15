@@ -27,8 +27,14 @@ stub() { printf '  PLACEHOLDER %s\n' "$*"; fail=1; }
 
 # require REL DESC — a required file must exist and not still carry the stub sentinel.
 require() {
-  if [ ! -f "$OSRC/$1" ]; then miss "$1 ($2)"
-  elif grep -q "$STUB_MARK" "$OSRC/$1" 2>/dev/null; then stub "$1"
+  # A required piece may be authored as a chezmoi TEMPLATE -- ssh/config.tmpl is the same
+  # provisioned thing as ssh/config. Checking only the literal name reported the real home
+  # overlay's Brewfile.role.tmpl and ssh/config.tmpl as MISSING and exited 1 on a fully
+  # provisioned overlay; an audit that cries wolf on a correct setup trains you to ignore it.
+  _f="$OSRC/$1"
+  [ -f "$_f" ] || _f="$OSRC/$1.tmpl"
+  if [ ! -f "$_f" ]; then miss "$1 ($2)"
+  elif grep -q "$STUB_MARK" "$_f" 2>/dev/null; then stub "$1"
   fi
 }
 

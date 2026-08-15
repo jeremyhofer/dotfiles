@@ -17,6 +17,11 @@ mk() { # build a COMPLETE, compliant fake overlay source at $1
   echo 'base = ...; instance_eval(base)' > "$ov/dot_dotlocal/Brewfile.role"
   echo 'Host example'        > "$ov/dot_dotlocal/ssh/config"
   echo '#!/bin/sh'           > "$ov/dot_dotlocal/bootstrap.d/10-x.sh"
+  # Required pieces added to the doctor after this fixture was first written. Without them
+  # Case A failed on a pristine tree, i.e. the suite was red and nobody noticed.
+  mkdir -p "$ov/Devel"
+  echo '[data]'              > "$ov/.chezmoi.toml.tmpl"
+  echo 'projects: []'        > "$ov/Devel/mani.yaml.tmpl"
 }
 
 # Case A — complete overlay -> exit 0
@@ -75,4 +80,16 @@ out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$tmp/base" sh "$script" 2>&1) && rc=0 || r
 if echo "$out" | grep -q 'CONFLICT'; then echo "FAIL(H): false-positive CONFLICT"; echo "$out"; exit 1; fi
 echo "ok:   clean cross-layer passes, no false positive (exit 0)"
 
+
+# Case E — required pieces authored as chezmoi TEMPLATES (.tmpl) are still provisioned.
+# The real home overlay holds Brewfile.role.tmpl and ssh/config.tmpl, and the doctor reported
+# BOTH as MISSING on a fully-provisioned overlay, exiting 1. An audit that cries wolf on a
+# correct setup is worse than none: it trains you to ignore it.
+mk "$tmp/ovt"
+mv "$tmp/ovt/dot_dotlocal/Brewfile.role" "$tmp/ovt/dot_dotlocal/Brewfile.role.tmpl"
+mv "$tmp/ovt/dot_dotlocal/ssh/config"    "$tmp/ovt/dot_dotlocal/ssh/config.tmpl"
+out=$(OVERLAY_SRC="$tmp/ovt" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] || { echo "FAIL(E): .tmpl-authored overlay reported non-compliant (exit $rc)"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'MISSING' && { echo "FAIL(E): .tmpl pieces flagged MISSING"; echo "$out"; exit 1; }
+echo "ok:   required pieces authored as .tmpl are recognised"
 echo "PASS"
