@@ -1,6 +1,6 @@
 #!/bin/sh
 # nvim-healthdump — capture an nvim health + plugin-inventory report for cross-machine
-# parity comparison (e.g. Framework vs bigmac). Runs nvim HEADLESS (no UI needed), so it
+# parity comparison between two machines. Runs nvim HEADLESS (no UI needed), so it
 # works over SSH. Output: a single text file (default ~/nvim-health-<host>.txt), safe to
 # paste/share. Re-run any time; it overwrites the file.
 set -eu
