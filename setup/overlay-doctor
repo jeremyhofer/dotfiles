@@ -80,7 +80,7 @@ fi
 
 # ============================================================================================
 # Cross-layer safety — base <-> overlay are two chezmoi instances both targeting ~. Their managed
-# sets must stay disjoint and neither may put a DELETING attribute (exact_/remove_) on a co-owned or
+# sets must stay disjoint (no co-owned target FILE) and neither may put a DELETING attribute (exact_/remove_) on a co-owned or
 # shared directory, or conflicting perms on a co-owned one. (Born from a real data-loss incident.)
 # ============================================================================================
 TAB=$(printf '\t')
@@ -114,6 +114,19 @@ _totarget() {
 }
 
 # Emit "target<TAB>attrs" per managed directory in a source tree (skip VCS + non-deployed meta dirs).
+# Same as _emit_dirs but for FILES, and skipping chezmoi METADATA (.chezmoi*), which exists in
+# both trees by design and is never a deployed target -- counting it would false-positive forever.
+_emit_files() {
+  [ -d "$1" ] || return 0
+  ( CDPATH= cd -- "$1" && find . -type f \
+      ! -path './.git' ! -path './.git/*' \
+      ! -name '.chezmoi*' ! -path './.chezmoi*' \
+      ! -name '.chezmoitemplates' ! -path './.chezmoitemplates/*' \
+      ! -path './tests' ! -path './tests/*' ! -path './setup' ! -path './setup/*' \
+      ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' -print ) \
+  | while IFS= read -r _pp; do [ "$_pp" = "." ] || _totarget "${_pp#./}"; done
+}
+
 _emit_dirs() {
   [ -d "$1" ] || return 0
   ( CDPATH= cd -- "$1" && find . -type d \
@@ -127,12 +140,13 @@ _emit_dirs() {
 echo
 echo "cross-layer safety (base <-> overlay):"
 xmark=$(mktemp "${TMPDIR:-/tmp}/xdoctor.XXXXXX"); btmp=$(mktemp "${TMPDIR:-/tmp}/xdoctor-b.XXXXXX")
-trap 'rm -f "$xmark" "$btmp"' EXIT
+bftmp=$(mktemp "${TMPDIR:-/tmp}/xdoctor-bf.XXXXXX")
+trap 'rm -f "$xmark" "$btmp" "$bftmp"' EXIT
 xbad() { printf '  CONFLICT    %s\n' "$*"; printf 'x\n' >> "$xmark"; }
 
 # (1) Destructive attributes anywhere (exact_/remove_) — the ONLY attrs that delete unmanaged files.
 #     A stray exact_ on a co-owned dir (~/.local/bin, ~/.config) wipes the other layer + real tools.
-_dz=$(find "$BSRC" "$OSRC" -path '*/.git' -prune -o \( -name '*exact_*' -o -name 'remove_*' \) -print 2>/dev/null || true)
+_dz=$(find "$BSRC" "$OSRC" -path '*/.git' -prune -o \( -name 'exact_*' -o -name '*_exact_*' -o -name 'remove_*' -o -name '*_remove_*' \) -print 2>/dev/null || true)
 if [ -n "$_dz" ]; then
   printf '%s\n' "$_dz" | while IFS= read -r _d; do [ -n "$_d" ] && printf '  found       %s\n' "$_d"; done
   xbad "'exact_'/'remove_' attribute present (above) — it deletes unmanaged files in its target dir; forbidden on the co-owned home tree. Remove it, or confine it to a directory ONLY this layer owns."
@@ -144,6 +158,31 @@ _emit_dirs "$OSRC" | while IFS="$TAB" read -r _otgt _oattr; do
   [ -n "$_otgt" ] || continue
   if _battr=$(awk -F"$TAB" -v t="$_otgt" '$1==t{print $2; f=1} END{exit !f}' "$btmp"); then
     [ "$_battr" = "$_oattr" ] || xbad "directory '$_otgt' co-owned with CONFLICTING attributes — base:[${_battr:-none}] overlay:[${_oattr:-none}] (perms flip-flop on alternating applies). Make them agree."
+  fi
+done
+
+# (2b) The SAME TARGET FILE owned by BOTH layers. The rule at the top of this section -- managed
+# sets stay disjoint -- was stated but never enforced: only directory ATTRIBUTES were compared, so a
+# co-owned FILE passed silently and became last-apply-wins, each instance behaving correctly by its
+# own lights and neither able to see the other. That is the same silent-loss shape as a stray exact_,
+# and it is invisible after the fact. Repo docs are excluded above with the rest of the metadata.
+# Honour each tree's .chezmoiignore for this comparison: a file both trees carry but neither
+# DEPLOYS (agent context like CLAUDE.md, repo READMEs) is not a collision. Literal lines only --
+# templated or glob rules are not evaluated here, so this can only ever UNDER-ignore, i.e. it may
+# report a collision that ignores would have excused, never hide a real one.
+_ignored() {  # _ignored <tree> <target-path>
+  _ig="$1/.chezmoiignore"; [ -f "$_ig" ] || return 1
+  grep -v '^[[:space:]]*#' "$_ig" 2>/dev/null | grep -v '{{' \
+    | sed 's/[[:space:]]*$//' | grep -qxF "$2"
+}
+
+_emit_files "$BSRC" > "$bftmp"
+_emit_files "$OSRC" | while IFS="$TAB" read -r _otgt _oattr; do
+  [ -n "$_otgt" ] || continue
+  if awk -F"$TAB" -v t="$_otgt" '$1==t{f=1} END{exit !f}' "$bftmp"; then
+    _ignored "$BSRC" "$_otgt" && continue
+    _ignored "$OSRC" "$_otgt" && continue
+    xbad "co-owned file '$_otgt' is managed by BOTH layers — last-apply-wins, silently. Give it exactly one owner; if the other layer needs a say, use the ~/.dotlocal fragment-include indirection."
   fi
 done
 
