@@ -6,11 +6,12 @@
 set -u
 
 cfg="$HOME/.config/chezmoi/overlay"
+# Silent no-op when this machine has no overlay -- this runs from an nvim keymap, where an error
+# would be noise. The check stays HERE rather than being delegated, because chezmoi-overlay fails
+# loudly by design; quiet degradation is this caller's requirement, not the wrapper's.
 [ -f "$cfg/chezmoi.toml" ] || exit 0
 
-exec chezmoi \
-  --config "$cfg/chezmoi.toml" \
-  --source "$HOME/.local/share/chezmoi-overlay" \
-  --persistent-state "$cfg/chezmoistate.boltdb" \
-  --cache "$HOME/.cache/chezmoi/overlay" \
-  re-add "$1"
+# Delegate to the one definition of "the overlay instance" instead of re-deriving its flags, which
+# is how the two drifted apart into two copies. Absolute path, not PATH lookup: nvim may be launched
+# from a desktop session that never sourced .zshenv.
+exec "$HOME/.local/bin/chezmoi-overlay" re-add "$1"

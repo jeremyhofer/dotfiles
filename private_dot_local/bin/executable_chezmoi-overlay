@@ -1,0 +1,44 @@
+#!/bin/sh
+# chezmoi-overlay -- run the private overlay's own chezmoi instance, with its config,
+# persistent state and cache isolated from the base instance. The two instances share a
+# destination ($HOME) and must keep their managed file SETS disjoint; nothing here enforces
+# that, it is a property of what each source tree defines.
+#
+# Usage is exactly chezmoi's:  chezmoi-overlay diff | apply | managed | edit <file> | ...
+#
+# WHY A SCRIPT AND NOT A SHELL FUNCTION (it was a function in the base zshrc until 2026-08-15):
+# zsh reads .zshrc only for INTERACTIVE shells, so the function did not exist in any
+# non-interactive context -- notably `ssh <host> 'zsh -ls'`, which is how fleet automation and
+# agents drive a remote machine. There the command failed with "command not found", and the
+# obvious workarounds (re-deriving chezmoi's four flags inline, or forcing an interactive shell)
+# both invite drift or prompt noise. A script on PATH works identically in every context.
+#
+# It is safe to move because this wrapper only execs; it never mutates the calling shell. The
+# neighbouring zshrc functions that stayed functions did not qualify: `wt()` changes directory,
+# and `nx()` relies on zsh's `nocorrect`.
+#
+# PATH: $HOME/.local/bin is added by the base .zshenv, which zsh sources for non-interactive
+# shells too -- that is what makes this reachable over ssh.
+#
+# Fails loudly (exit 1) when no overlay is configured on this machine, because every use of this
+# command is an explicit request to act on the overlay. Callers that must degrade quietly instead
+# (e.g. spell-capture, invoked from an editor keymap on a possibly overlay-less box) check for
+# the config themselves before delegating here.
+set -u
+
+cfgdir="$HOME/.config/chezmoi/overlay"
+src="$HOME/.local/share/chezmoi-overlay"
+
+if [ ! -f "$cfgdir/chezmoi.toml" ] || [ ! -d "$src" ]; then
+  printf '%s\n' "chezmoi-overlay: overlay not set up on this machine -- run the base bootstrap first" >&2
+  printf '%s\n' "  expected config: $cfgdir/chezmoi.toml" >&2
+  printf '%s\n' "  expected source: $src" >&2
+  exit 1
+fi
+
+exec chezmoi \
+  --config "$cfgdir/chezmoi.toml" \
+  --source "$src" \
+  --persistent-state "$cfgdir/chezmoistate.boltdb" \
+  --cache "$HOME/.cache/chezmoi/overlay" \
+  "$@"
