@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Network (nm-applet) — suppressed
+Hidden=true
+
+# Suppresses /etc/xdg/autostart/nm-applet.desktop, shipped by the network-manager-applet
+# package. Per the XDG autostart spec, a user-level entry with Hidden=true is equivalent to the
+# system entry not existing, so nothing starts it.
+#
+# WHY: this fleet's wireless is iwd + systemd-networkd + systemd-resolved. NetworkManager is
+# disabled, so the applet sits in the tray managing nothing. Use `impala` (TUI) or `iwctl`.
+#
+# WHY HERE rather than in a WM config: every WM starts XDG autostart entries (i3 and sway both
+# run dex), so suppressing it per-WM means fixing it in each one and missing the next. This is
+# one file that covers all of them.
+#
+# WHY NOT uninstall the package: that is the system layer's call, not the dotfiles' — and this
+# is reversible by deleting one file if a machine ever does run NetworkManager.
