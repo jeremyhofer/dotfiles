@@ -1,6 +1,6 @@
 ---
 name: naming-build-tasks
-description: Use when adding, renaming or reviewing a runnable task in any build tool — an Nx target, a `just` recipe, a Make target, an npm/pnpm script, a CI job step — or when deciding what to call one, when two repos spell the same job differently, or when a task needs a variant (unit vs e2e, local vs CI). Covers the shared verb categories, the difference between `lint`/`check`/`verify`/`validate`, and why a task name never encodes a machine.
+description: Use when adding, renaming or reviewing a runnable task in a build tool — an Nx target, a `just` recipe, a Make target, an npm/pnpm script — or when deciding what to call one, when two repos spell the same job differently, or when a task needs a variant (unit vs e2e, local vs CI). Covers the shared verb categories, the difference between `lint`/`check`/`verify`/`validate`, and why a task name never encodes a machine.
 ---
 
 # Naming build tasks
@@ -39,6 +39,10 @@ opened the repo should be able to predict what a task does from its name alone.
 
 ## The categories
 
+**This is the complete set — fourteen.** A project extends a category with a qualifier (`test-e2e`);
+it does not get to spell a listed category differently. Adding a *new* category is allowed, but it is a
+change to the shared vocabulary, so it belongs in the record rather than in one repo's task list.
+
 | Verb | Means |
 | --- | --- |
 | `build` | produce the distributable artifact (`compile` is **not** a separate verb — it is this) |
@@ -46,14 +50,18 @@ opened the repo should be able to predict what a task does from its name alone.
 | `lint` | the codified linters — a standard tool with standard rules |
 | `typecheck` | type analysis only, nothing else |
 | `serve` | run it locally for a human to look at |
-| `e2e` | browser or full-integration suite |
 | `format` | rewrite source to canonical style |
 | `generate` | write generated sources into the working tree |
 | `clean` | remove build outputs |
 | `deploy` | push a running app to an environment |
 | `publish` | release a package to a registry |
-| `ci` | the **full gate** — the whole fan-out a CI run executes over the project's own targets |
+| `ci` | the **full gate** — the whole fan-out a CI run executes over the project's own targets. **The one category that is not a verb**, kept deliberately: universally recognised, and it names a composite no verb covers. `ci-check`, `ci-fast` are extensions within it |
 | `check` · `verify` · `validate` | three different jobs — see below |
+
+**A browser or full-integration suite is `test-e2e`, not `e2e`.** `e2e` is not a verb, and it is a
+*kind of test* — so it extends `test` exactly as `test-unit` and `test-visual` do. If bare `test` means
+unit tests in your repo, that is what qualifiers are for: `test-unit` and `test-e2e`, not `test` and
+`e2e`.
 
 **Synonyms to avoid, because each is already taken:** `dev` or `start` when you mean **`serve`** ·
 `release` when you mean **`publish`** · `lint-tsc` when you mean **`typecheck`** · `compile` when you
