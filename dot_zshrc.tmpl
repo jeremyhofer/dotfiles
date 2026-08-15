@@ -178,16 +178,12 @@ alias vim='nvim'
 alias ovim='NVIM_APPNAME=nvim-old nvim'
 nx() { nocorrect npx nx "$@"; }
 
-# chezmoi-overlay: run the private overlay's own chezmoi instance,
-# with its config / state / cache isolated from the base.
-chezmoi-overlay() {
-  local cfgdir="$HOME/.config/chezmoi/overlay" src="$HOME/.local/share/chezmoi-overlay"
-  if [ ! -f "$cfgdir/chezmoi.toml" ] || [ ! -d "$src" ]; then
-    print -u2 "chezmoi-overlay: overlay not set up — run the base bootstrap first"; return 1
-  fi
-  chezmoi --config "$cfgdir/chezmoi.toml" --source "$src" \
-    --persistent-state "$cfgdir/chezmoistate.boltdb" --cache "$HOME/.cache/chezmoi/overlay" "$@"
-}
+# chezmoi-overlay moved to a real script: ~/.local/bin/chezmoi-overlay (2026-08-15).
+# It was a function here, so it did not exist in non-interactive shells — `ssh <host> 'zsh -ls'`
+# got "command not found", which is how fleet automation and agents drive a remote machine.
+# It only execs, so nothing was lost by moving it; see the script's header for the full reasoning.
+# (Contrast wt() and nx() below/above, which must stay functions: one changes directory, the
+# other relies on zsh's nocorrect.)
 
 eval "$(direnv hook zsh)"
 eval "$(fnm env --use-on-cd --version-file-strategy recursive --shell zsh)"
