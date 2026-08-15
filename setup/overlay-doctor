@@ -190,8 +190,24 @@ done
 for _pair in "base=$BSRC" "overlay=$OSRC"; do
   _who=${_pair%%=*}; _dir=${_pair#*=}
   if [ -f "$_dir/.chezmoiremove" ]; then
+    # The file is a TEMPLATE. Printing it raw listed '{{ if ... }}' and '{{ end }}' as if they were
+    # removal targets, and left the reader unable to tell whether a guarded entry applies to THIS
+    # machine -- in a summary whose entire job is to warn before something is deleted. Control lines
+    # are now shown as the guard they are, and entries inside one are marked conditional.
+    _guard=""
     grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$_dir/.chezmoiremove" 2>/dev/null \
-      | while IFS= read -r _ln; do [ -n "$_ln" ] && printf '  removes (%s)  %s\n' "$_who" "$_ln"; done
+      | while IFS= read -r _ln; do
+          [ -n "$_ln" ] || continue
+          case "$_ln" in
+            *'{{'*'end'*'}}'*) _guard=""; continue ;;
+            *'{{'*)            _guard=$(printf '%s' "$_ln" | tr -d '{}' | sed 's/^[[:space:]-]*//;s/[[:space:]-]*$//'); continue ;;
+          esac
+          if [ -n "$_guard" ]; then
+            printf '  removes (%s)  %s   [ONLY IF: %s -- depends on this machine]\n' "$_who" "$_ln" "$_guard"
+          else
+            printf '  removes (%s)  %s   [ALWAYS]\n' "$_who" "$_ln"
+          fi
+        done
   fi
 done
 

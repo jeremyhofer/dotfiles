@@ -123,4 +123,15 @@ out=$(OVERLAY_SRC="$tmp/ovh" BASE_SRC="$bs3" sh "$script" 2>&1) && rc=0 || rc=$?
 echo "$out" | grep -q 'co-owned file' && { echo "FAIL(H): ignored file reported as a collision"; echo "$out"; exit 1; }
 [ "${rc:-0}" -eq 0 ] || { echo "FAIL(H): unexpected non-zero exit ${rc:-0}"; echo "$out"; exit 1; }
 echo "ok:   a file both trees ignore is not a collision"
+
+# Case I — the destructive summary must not present template control lines as removal targets,
+# and must say whether a guarded entry applies HERE. It printed '{{ if ... }}' / '{{ end }}' as
+# if they were paths, in the one summary whose job is to warn before a deletion.
+mk "$tmp/ovi"
+printf '.dotlocal/always\n{{ if not .someFlag }}\n.dotlocal/guarded\n{{ end }}\n' > "$tmp/ovi/.chezmoiremove"
+out=$(OVERLAY_SRC="$tmp/ovi" sh "$script" 2>&1) || true
+echo "$out" | grep -q 'removes.*{{' && { echo "FAIL(I): template control line shown as a target"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'removes.*\.dotlocal/always.*ALWAYS' || { echo "FAIL(I): unguarded entry not marked ALWAYS"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'removes.*\.dotlocal/guarded.*ONLY IF' || { echo "FAIL(I): guarded entry not marked conditional"; echo "$out"; exit 1; }
+echo "ok:   destructive summary distinguishes always-removed from conditional"
 echo "PASS"
