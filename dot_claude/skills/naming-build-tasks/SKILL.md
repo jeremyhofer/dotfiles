@@ -5,28 +5,33 @@ description: Use when adding, renaming or reviewing a runnable task in any build
 
 # Naming build tasks
 
-One vocabulary of **task verbs** across every build tool, so that `test:e2e` in one repo and `test-e2e`
-in another are recognisably the same kind of thing. A reader who has never opened the repo should be
-able to predict what a task does from its verb alone.
+One vocabulary of **task verbs** across every build tool, so that `test-e2e` means the same thing
+whether it is an Nx target, a `just` recipe, a Make target or an npm script. A reader who has never
+opened the repo should be able to predict what a task does from its name alone.
 
 ## The rule in three lines
 
-1. **Standardize the verb. Do not standardize the name shape or the separator.** `test-e2e` in a
-   justfile and `test:e2e` in a `package.json` are *the same verb*. Each tool keeps its own idiom, so
-   the qualifier separator is **per tool, then consistent within a repo**:
-   - **npm/pnpm scripts → `:`** (`test:e2e`). Universal in the ecosystem.
-   - **`just`, Make → `-`** (`test-e2e`). Neither has a namespacing separator of its own.
-   - **Nx → `-`** (`typecheck-scripts`). **In Nx the colon is the configuration delimiter — do not
-     spend it on qualifiers.** `:` in a target name does work, but `project:target:configuration` means
-     a target named `typecheck:scripts` collides with a `scripts` *configuration* on `typecheck`. Nx
-     handles the clash rather than breaking: it prints `Ambiguous target specifier`, resolves to the
-     **target**, and the shadowed configuration is then reachable only via `--configuration=scripts`.
-     Nx's own docs give quoting as the workaround — `nx run myapp:"build:test"` — explicitly "to avoid
-     configuration parsing conflicts". A qualifier is not worth acquiring a quoting rule for.
+1. **`verb-qualifier`, hyphen-separated, in every tool.** `test-e2e`, `lint-styles`,
+   `typecheck-scripts`, `check-csp-hashes` — the same spelling as an Nx target, a `just` recipe, a Make
+   target or an npm script. **Never a colon**, even in npm where `:` is the ecosystem habit.
 
-   A repo that fights its ecosystem's convention is harder to read, not easier.
+   One separator everywhere is the point: it is what lets a name be recognised without first working
+   out which tool you are looking at. And it costs nothing — npm script names are arbitrary strings, so
+   `npm run test-e2e` works exactly as well as `test:e2e`.
+
+   **In Nx the colon is not merely a habit, it is taken.** `project:target:configuration` means a
+   target named `typecheck:scripts` collides with a `scripts` *configuration* on `typecheck`. Nx does
+   not break — it prints `Ambiguous target specifier`, resolves to the **target**, and leaves the
+   shadowed configuration reachable only via `--configuration=scripts`. Nx's own docs offer quoting as
+   the workaround (`nx run myapp:"build:test"`, "to avoid configuration parsing conflicts"). Hyphens
+   mean you never meet any of that.
+
+   **The one thing to check before converting an existing repo:** tools that glob npm scripts by colon
+   segment — `npm-run-all` / `run-p` / `run-s` with patterns like `lint:*` — match on the `:`, so those
+   patterns must be rewritten alongside a rename. Nothing else in npm attaches meaning to the
+   separator.
 2. **These are categories to prefer and extend — not an allowlist to obey.** `test` is a category;
-   `test:unit`, `test:e2e`, `test:visual`, `test:browser` are extensions *within* it, and all stay
+   `test-unit`, `test-e2e`, `test-visual`, `test-browser` are extensions *within* it, and all stay
    legible to a stranger. Adding a category the list lacks is fine.
 3. **The only real prohibition: never use a listed verb to mean something else, and never invent a
    synonym for one.** A task nobody else has costs a reader one lookup. A verb that means something
@@ -51,7 +56,7 @@ able to predict what a task does from its verb alone.
 | `check` · `verify` · `validate` | three different jobs — see below |
 
 **Synonyms to avoid, because each is already taken:** `dev` or `start` when you mean **`serve`** ·
-`release` when you mean **`publish`** · `lint:tsc` when you mean **`typecheck`** · `compile` when you
+`release` when you mean **`publish`** · `lint-tsc` when you mean **`typecheck`** · `compile` when you
 mean **`build`**.
 
 **The one legitimate exception: a name the ecosystem itself reserves.** `npm start` and `npm test` run
@@ -117,4 +122,6 @@ capability is missing is the fix.
 - **A new synonym appearing.** `dev`, `start`, `release` and `compile` are the usual arrivals. Each one
   means the category it belongs to already lost.
 - **A variant invented as a new verb instead of an extension.** `e2e-visual-test` rather than
-  `test:visual`. Extend the category; do not mint a verb.
+  `test-visual`. Extend the category; do not mint a verb.
+- **A colon reappearing in a name.** Usually copied in from an ecosystem example. It is the one
+  separator this vocabulary does not use, and in Nx it is actively taken.
