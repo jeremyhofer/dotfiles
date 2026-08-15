@@ -16,10 +16,13 @@ able to predict what a task does from its verb alone.
    the qualifier separator is **per tool, then consistent within a repo**:
    - **npm/pnpm scripts → `:`** (`test:e2e`). Universal in the ecosystem.
    - **`just`, Make → `-`** (`test-e2e`). Neither has a namespacing separator of its own.
-   - **Nx → either, but pick one per repo.** `:` in a target name *works*, but it overloads Nx's own
-     `project:target:configuration` syntax, so `nx run app:typecheck:scripts` is only unambiguous while
-     no configuration shares that name. `-` sidesteps it entirely. Whichever you choose, do not mix
-     both in one workspace.
+   - **Nx → `-`** (`typecheck-scripts`). **In Nx the colon is the configuration delimiter — do not
+     spend it on qualifiers.** `:` in a target name does work, but `project:target:configuration` means
+     a target named `typecheck:scripts` collides with a `scripts` *configuration* on `typecheck`. Nx
+     handles the clash rather than breaking: it prints `Ambiguous target specifier`, resolves to the
+     **target**, and the shadowed configuration is then reachable only via `--configuration=scripts`.
+     Nx's own docs give quoting as the workaround — `nx run myapp:"build:test"` — explicitly "to avoid
+     configuration parsing conflicts". A qualifier is not worth acquiring a quoting rule for.
 
    A repo that fights its ecosystem's convention is harder to read, not easier.
 2. **These are categories to prefer and extend — not an allowlist to obey.** `test` is a category;
