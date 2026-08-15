@@ -54,9 +54,17 @@ the finding, not just the exit code.
 
 ## Cross-layer safety — the check that exists because of real data loss
 
-The base and overlay are two chezmoi instances targeting the same `$HOME`. The doctor also checks that
-their managed sets stay **disjoint**, and that **neither puts a deleting attribute (`exact_`,
-`remove_`) on a co-owned or shared directory**, nor conflicting permissions on one.
+The base and overlay are two chezmoi instances targeting the same `$HOME`. Precisely, the doctor
+makes three cross-layer checks:
+
+1. **No deleting attribute anywhere** — `exact_` or `remove_` in *either* tree, co-owned directory or
+   not. A blanket ban, not a scoped one.
+2. **No conflicting attributes on a co-owned directory** (e.g. `private_` on one side, plain on the
+   other → permissions flip-flop on alternating applies).
+3. **No co-owned target FILE** — the same deployed path managed by both layers. Files each tree
+   carries but neither *deploys* (agent context, repo docs) are excused by honouring the literal
+   lines of `.chezmoiignore`; templated or glob ignore rules are not evaluated, so this can
+   under-excuse and report a collision that ignores would have allowed — never the reverse.
 
 Treat a finding here as serious. `exact_` on a directory the other instance also writes into means one
 apply **deletes the other layer's files** — with no diagnostic, because each instance is behaving

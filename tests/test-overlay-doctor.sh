@@ -92,4 +92,35 @@ out=$(OVERLAY_SRC="$tmp/ovt" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || { echo "FAIL(E): .tmpl-authored overlay reported non-compliant (exit $rc)"; echo "$out"; exit 1; }
 echo "$out" | grep -q 'MISSING' && { echo "FAIL(E): .tmpl pieces flagged MISSING"; echo "$out"; exit 1; }
 echo "ok:   required pieces authored as .tmpl are recognised"
+
+# Case F — the SAME TARGET FILE owned by both layers must be flagged.
+# The header promises "their managed sets must stay disjoint", but only directory ATTRIBUTES
+# were ever compared -- a co-owned FILE sailed through as last-apply-wins with no diagnostic,
+# which is precisely the silent-loss class this section exists to prevent.
+mk "$tmp/ovf"
+bs="$tmp/basef"; mkdir -p "$bs/dot_config/demo" "$tmp/ovf/dot_config/demo"
+echo 'base version'    > "$bs/dot_config/demo/thing.conf"
+echo 'overlay version' > "$tmp/ovf/dot_config/demo/thing.conf"
+out=$(OVERLAY_SRC="$tmp/ovf" BASE_SRC="$bs" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(F): co-owned file not flagged (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "$out" | grep -q "co-owned" || { echo "FAIL(F): no co-owned file message"; echo "$out"; exit 1; }
+echo "ok:   the same target file owned by both layers is flagged"
+
+# Case G — chezmoi METADATA present in both trees is not a collision (it is never a target).
+mk "$tmp/ovg"; bs2="$tmp/baseg"; mkdir -p "$bs2"
+printf 'README.md\n' > "$bs2/.chezmoiignore"; printf 'README.md\n' > "$tmp/ovg/.chezmoiignore"
+out=$(OVERLAY_SRC="$tmp/ovg" BASE_SRC="$bs2" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q 'co-owned file' && { echo "FAIL(G): metadata false-positived"; echo "$out"; exit 1; }
+echo "ok:   chezmoi metadata in both trees is not a collision"
+
+# Case H — a file both trees carry but BOTH .chezmoiignore (agent context, repo docs) is not a
+# collision: it is never deployed, so there is nothing to win last. This false-positived on the
+# real trees (CLAUDE.md) the moment case F's check went in.
+mk "$tmp/ovh"; bs3="$tmp/baseh"; mkdir -p "$bs3"
+printf 'CLAUDE.md\n' > "$bs3/.chezmoiignore"; printf 'CLAUDE.md\n' > "$tmp/ovh/.chezmoiignore"
+echo 'ctx' > "$bs3/CLAUDE.md"; echo 'ctx' > "$tmp/ovh/CLAUDE.md"
+out=$(OVERLAY_SRC="$tmp/ovh" BASE_SRC="$bs3" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q 'co-owned file' && { echo "FAIL(H): ignored file reported as a collision"; echo "$out"; exit 1; }
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(H): unexpected non-zero exit ${rc:-0}"; echo "$out"; exit 1; }
+echo "ok:   a file both trees ignore is not a collision"
 echo "PASS"
