@@ -12,9 +12,16 @@ able to predict what a task does from its verb alone.
 ## The rule in three lines
 
 1. **Standardize the verb. Do not standardize the name shape or the separator.** `test-e2e` in a
-   justfile and `test:e2e` in a `package.json` are *the same verb*. Each tool keeps its own idiom —
-   `-` for `just` and Make, `:` for Nx and npm. A repo that fights its ecosystem's convention is harder
-   to read, not easier.
+   justfile and `test:e2e` in a `package.json` are *the same verb*. Each tool keeps its own idiom, so
+   the qualifier separator is **per tool, then consistent within a repo**:
+   - **npm/pnpm scripts → `:`** (`test:e2e`). Universal in the ecosystem.
+   - **`just`, Make → `-`** (`test-e2e`). Neither has a namespacing separator of its own.
+   - **Nx → either, but pick one per repo.** `:` in a target name *works*, but it overloads Nx's own
+     `project:target:configuration` syntax, so `nx run app:typecheck:scripts` is only unambiguous while
+     no configuration shares that name. `-` sidesteps it entirely. Whichever you choose, do not mix
+     both in one workspace.
+
+   A repo that fights its ecosystem's convention is harder to read, not easier.
 2. **These are categories to prefer and extend — not an allowlist to obey.** `test` is a category;
    `test:unit`, `test:e2e`, `test:visual`, `test:browser` are extensions *within* it, and all stay
    legible to a stranger. Adding a category the list lacks is fine.
@@ -43,6 +50,21 @@ able to predict what a task does from its verb alone.
 **Synonyms to avoid, because each is already taken:** `dev` or `start` when you mean **`serve`** ·
 `release` when you mean **`publish`** · `lint:tsc` when you mean **`typecheck`** · `compile` when you
 mean **`build`**.
+
+**The one legitimate exception: a name the ecosystem itself reserves.** `npm start` and `npm test` run
+without the `run`, which is why `start` keeps reappearing however many times it is renamed — the
+ecosystem is pulling it back. Do not fight that, and do not let it win either: **keep the reserved name
+as a thin alias to the standard verb**, never as the real definition.
+
+```jsonc
+"scripts": {
+  "serve": "ng serve",   // the real task, named by its category
+  "start": "npm run serve"  // npm's reserved shorthand, delegating
+}
+```
+
+The test for any such exception: the shorthand must **delegate**, so there is still exactly one
+definition of the job.
 
 ## `check` vs `verify` vs `validate` — they differ by WHAT THEY READ
 
