@@ -4,21 +4,21 @@
   (idempotent — a configured host is never re-prompted).
 
   [data] is THIS DOMAIN'S private vocabulary: define only the values this overlay's own templates
-  consume, named in this domain's terms. Nothing below is required by the base or by overlay-doctor —
-  an empty [data] is valid. `gitRoot` is kept as a worked example because most domains have one: the
-  git host root that Devel/mani.yaml.tmpl builds clone URLs from. Add further domain values the same
-  way (each consumer should `default ""` and skip, so an unset value degrades to a no-op instead of
-  breaking the apply).
+  consume, named in this domain's terms. Nothing here is required by the base or by overlay-doctor —
+  an empty [data] is valid, and a domain whose files need no shared values (e.g. its repo manifest
+  uses plain literal URLs) should leave it empty. If several of this overlay's templates DO share a
+  value (a common git host root, an internal registry URL), define it once here and prompt for it
+  per-machine, following this shape:
 
-  Fill in this domain's git-root default(s) below (e.g. per-OS mount paths), then delete the FIXME
-  line. Leaving the default empty just means the prompt starts blank — still valid.
-  FIXME(overlay-doctor): set this domain's git-root default(s), or remove the prompt if unused.
+      {{- $someValue := promptStringOnce . "someValue" "Prompt shown at chezmoi init" "default" -}}
+      [data]
+          someValue = {{ $someValue | quote }}
+
+  Every consumer of a [data] value must `default ""` and skip when unset, so a machine that leaves
+  a prompt blank degrades to a no-op instead of a broken apply.
+
+  FIXME(overlay-doctor): define this domain's [data] values (empty is a valid answer), then delete this line.
 */ -}}
-{{- $gitRootDefault := "" -}}
-{{- /* Example OS-aware default (uncomment + set for your fleet):
-       {{ if eq .chezmoi.os "darwin" }}{{ $gitRootDefault = "/path/on/macos" }}{{ else }}{{ $gitRootDefault = "/path/on/linux" }}{{ end }} */ -}}
-{{- $gitRoot := promptStringOnce . "gitRoot" "Git host root for this domain's repo manifest" $gitRootDefault -}}
 sourceDir = {{ .chezmoi.sourceDir | quote }}
 destDir   = {{ .chezmoi.homeDir | quote }}
 [data]
-    gitRoot = {{ $gitRoot | quote }}
