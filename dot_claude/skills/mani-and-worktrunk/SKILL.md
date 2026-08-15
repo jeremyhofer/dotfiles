@@ -56,9 +56,17 @@ mani check                      # validate the manifest
 is occasionally destructive. `-t <tag>` and `-p <project>` are how you scope; `mani list tags` tells
 you what is available before you guess.
 
-**`mani sync` is additive.** It clones what is missing and leaves existing checkouts alone — it is
-the "make this machine complete" command, not a "make this machine match" command. It does not pull,
-does not remove anything, and will not fix a repo that has drifted.
+**mani finds its manifest by walking UP from the current directory**, exactly like git finds `.git`.
+Run it from outside the tree and every command fails with `cannot find any configuration file … in
+current directory or any of the parent directories` — which reads like a broken install and is only a
+wrong `cwd`. There is no global fallback location.
+
+**`mani sync` is additive, with one write you should expect.** It clones what is missing and leaves
+existing checkouts alone — it is the "make this machine complete" command, not "make this machine
+match". It does not pull, does not remove, and will not fix a repo that has drifted. But it is **not
+read-only**: `--sync-gitignore` defaults to **true**, so it also writes a `.gitignore` in the manifest
+root. Pass `--sync-gitignore=false` if that is unwanted. Remotes are likewise **not** touched unless
+you pass `--sync-remotes`, so a freshly synced repo may have only its clone origin.
 
 ## The gap `mani` does not close
 
