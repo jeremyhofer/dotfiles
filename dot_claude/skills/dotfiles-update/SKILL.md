@@ -50,10 +50,14 @@ is read-only, so running it is always safe.
 - **`chezmoi apply` does not apply the overlay.** Two instances, two commands. A clean `chezmoi diff`
   says nothing about the overlay.
 - **A failing external aborts the whole apply, part-way.** `.chezmoiexternal` fetches third-party
-  content; if one fails (network, auth, a URL rewrite sending an HTTPS fetch over SSH), the apply
-  stops and later files are simply not written — with the earlier ones already changed.
-  `chezmoi apply --exclude=externals` converges everything else; treat the external failure
-  separately.
+  content; if one fails (network down, a bad URL), the apply stops and later files are simply not
+  written — with the earlier ones already changed. `chezmoi apply --exclude=externals` converges
+  everything else; treat the external failure separately. The historical worst case — the global
+  HTTPS→SSH git rewrite turning external refreshes into key-requiring fetches that failed on any
+  machine dormant past the refresh period — is gone as of 2026-08-16: every external is now
+  `type = "archive"` (chezmoi's own HTTP download, git never invoked, no key needed). If an
+  external failure mentions SSH or access rights, the machine is running a pre-archive config —
+  pull the base first.
 - **Never edit the deployed file to "fix" an update.** Edit the source and re-apply, or the next
   apply silently reverts you.
 - **A machine that has been dormant a long time** should not trust the changelog to be complete for
