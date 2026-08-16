@@ -1,20 +1,29 @@
+# All externals are archives, not git-repos, deliberately: a global git URL rewrite
+# (https://github.com/ -> SSH) turns anonymous git fetches into key-requiring SSH fetches,
+# and chezmoi aborts the whole apply part-way when an external refresh fails — which bites
+# hardest on a dormant machine (externals stale past refreshPeriod, agent keys not yet
+# loaded) where the pending change set is largest. Archives download over chezmoi's own
+# HTTP client: git is never invoked, no key is ever needed, and the rewrite (kept for
+# everything else by preference) is irrelevant here. `exact` keeps each tree pristine,
+# which also cleaned up the legacy .git dirs from the old git-repo deployments.
+
 [".oh-my-zsh"]
-    type = "git-repo"
-    url = "https://github.com/ohmyzsh/ohmyzsh.git"
+    type = "archive"
+    url = "https://github.com/ohmyzsh/ohmyzsh/archive/master.tar.gz"
+    exact = true
+    stripComponents = 1
     refreshPeriod = "168h"
-    [".oh-my-zsh".pull]
-        args = ["--ff-only"]
 
 [".oh-my-zsh/custom/plugins/nx-completion"]
-    type = "git-repo"
-    url = "https://github.com/jscutlery/nx-completion.git"
+    type = "archive"
+    url = "https://github.com/jscutlery/nx-completion/archive/main.tar.gz"
+    exact = true
+    stripComponents = 1
     refreshPeriod = "168h"
-    [".oh-my-zsh/custom/plugins/nx-completion".pull]
-        args = ["--ff-only"]
 
 [".tmux/plugins/tpm"]
-    type = "git-repo"
-    url = "https://github.com/tmux-plugins/tpm.git"
+    type = "archive"
+    url = "https://github.com/tmux-plugins/tpm/archive/master.tar.gz"
+    exact = true
+    stripComponents = 1
     refreshPeriod = "168h"
-    [".tmux/plugins/tpm".pull]
-        args = ["--ff-only"]
