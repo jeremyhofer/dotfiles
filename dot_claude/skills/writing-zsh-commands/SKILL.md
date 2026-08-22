@@ -1,12 +1,21 @@
 ---
 name: writing-zsh-commands
-description: Use when composing any non-trivial shell command — anything with a variable holding multiple values, a glob, a pipeline whose exit status you check, a loop, an array, or a command run over SSH — and when a command fails with "no matches found", "bad option", "parse error near", or "command not found" on a remote host, or when a command "worked" but returned nothing, matched nothing, or reported success it should not have. The interactive shell here is zsh, not bash, and several bash habits fail silently rather than loudly.
+description: LOAD THIS BEFORE WRITING ANY SHELL COMMAND ON THIS MACHINE. The shell is zsh, not bash, and the differences fail SILENTLY — wrong output, not an error. Do NOT skip it because the command "looks simple" or because the shell is incidental to some larger task: the traps fire on one-liners (a glob that matches nothing, a loop over a variable, a `local` parameter named `path`, a directory whose name starts with `-`) and typically return an empty result, a zero count, or a false success rather than failing. If you are about to run Bash, this applies. Also use when a command fails with "no matches found", "bad option", "parse error near", or "command not found" for a tool that plainly exists (usually PATH clobbered by a variable named `path`), or when a command "worked" but returned nothing, matched nothing, counted zero, or reported success it should not have.
 ---
 
 # Writing shell commands under zsh
 
 **The shell is zsh.** Most bash syntax works, but a handful of habits do not — and the dangerous
 ones are the ones that **fail silently**, producing a plausible wrong answer instead of an error.
+
+> **Do not gate reading this on the command looking hard.** The trap is that these fire on
+> *short* commands — a one-line `ls` in a loop, a `local` parameter that happens to be named
+> `path` — and the shell is usually incidental to whatever you were actually doing, so it never
+> gets classified as "shell work" at all. That is the observed failure mode, not a hypothetical
+> one: a session hit three of the traps below in a single sitting while treating each command as
+> plumbing in service of some other goal, and diagnosed each one individually afterwards instead of
+> recognising the class. **Two of the three were already documented here.** If you are about to run
+> a shell command, you are in scope.
 
 ## The two failure classes, and why one is far worse
 
@@ -122,6 +131,44 @@ print -r -- '--- section ---'  # correct
 
 Use `print -r --` whenever the text might begin with `-`. This bites constantly when formatting
 output with dashed separators.
+
+**The same trap applies to any command taking a PATH that begins with `-`**, and there it is much
+quieter, because the command runs and reports something plausible rather than erroring:
+
+```zsh
+ls -A -weird-dirname          # treated as FLAGS, not a directory name
+find -weird-dirname -name '*' # find reads it as an expression
+ls -A ./-weird-dirname        # correct — the ./ prefix makes it unambiguously a path
+```
+
+Any directory whose name starts with `-` needs the `./` prefix (or `--` where the command supports
+it). Watch for this with generated or encoded directory names, where a leading `-` is common and
+not obvious from a distance. **The failure mode is the dangerous one: a count comes back `0`, which
+reads as "nothing there" rather than "the command never looked."**
+
+## 5b. SILENT — `path` is the same variable as `PATH`, and `local path=…` breaks the function
+
+zsh ties several lowercase array variables to their familiar scalar counterparts: **`path`↔`PATH`**,
+`fpath`, `cdpath`, `manpath`. They are the *same variable in two views*, so assigning the lowercase
+name changes the real one.
+
+```zsh
+f() {
+  local expect=$1 path=$2       # <-- just destroyed PATH for this function
+  jq -n '{}' > /dev/null        # zsh: command not found: jq
+}
+```
+
+The symptom is a burst of `command not found` for tools that obviously exist — and if the function's
+failure branch is what records results, they turn into ordinary-looking test failures rather than
+anything that points at `PATH`. Real instance: a test helper took `path` as a parameter name, and
+every case using that helper failed while an adjacent helper taking `fp` passed, which reads as "the
+code under test is broken" rather than "the harness broke itself."
+
+**Never use `path`, `fpath`, `cdpath` or `manpath` as a variable name in zsh**, not even with
+`local`. Pick anything else (`fp`, `target`, `dir`). Note that `typeset -h` can hide the tie, but
+relying on that is worse than just renaming the variable — a reader has to know the special-cases
+list to see that the code is safe.
 
 ## 6. Bash-only constructs that are simply absent
 
