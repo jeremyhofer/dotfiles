@@ -1,46 +1,104 @@
 #!/usr/bin/env bash
-set -e
-
-# From: https://morgan.cugerone.com/blog/workarounds-to-git-worktree-using-bare-repository-and-cannot-fetch-remote-branches/
-# Examples of call:
-# git-clone-bare-for-worktrees git@github.com:name/repo.git
-# => Clones to a /repo directory
+# git-clone-worktree — clone a repo as a bare repository with worktrees as siblings.
 #
-# git-clone-bare-for-worktrees git@github.com:name/repo.git my-repo
-# => Clones to a /my-repo directory
-
-url=$1
-basename=${url##*/}
-name=${2:-${basename%.*}}
-
-mkdir "$name"
-cd "$name"
-
-# Moves all the administrative git files (a.k.a $GIT_DIR) under .bare directory.
+# Layout produced (the container directory IS the repo, from the outside):
 #
-# Plan is to create worktrees as siblings of this directory.
-# Example targeted structure:
-# .bare
-# main
-# new-awesome-feature
-# hotfix-bug-12
-# ...
-git clone --bare "$url" .bare
-echo "gitdir: ./.bare" >.git
+#   <target>/
+#     .bare/            the git directory (a bare clone)
+#     .git              a file containing "gitdir: ./.bare"
+#     <default-branch>/ a worktree for the repo's default branch
+#     <other-branch>/   further worktrees, added later with `git worktree add` or `wt`
+#
+# The point of the layout: no single directory's deletion is catastrophic. The git data lives in
+# .bare, so removing any one worktree — including the default branch's — loses only that checkout.
+# In the ordinary layout the git directory lives inside the primary checkout, and deleting it
+# orphans every other worktree of the repo.
+#
+# Usage:
+#   git-clone-worktree <url> [target]      target defaults to the repo name; may be nested
+#   git-clone-worktree --mani-project <name>
+#       Derive url and target from a mani project, so the clone location stays driven by the
+#       manifest rather than duplicated in a second place that can silently drift out of step.
+#
+# Idempotent: re-running against an existing container re-creates only what is missing and exits 0,
+# which is what makes it safe as a `clone:` command that a sync tool may invoke repeatedly.
+set -euo pipefail
 
-# delete the local branches a bare checkout creates by default
-git branch | grep -v "\*" | xargs git branch -D
+die() { printf 'git-clone-worktree: %s\n' "$1" >&2; exit 1; }
 
-# Explicitly sets the remote origin fetch so we can fetch remote branches
-git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+url=""; target=""
 
-# Gets all branches from origin
-git fetch origin
+if [ "${1:-}" = "--mani-project" ]; then
+  project="${2:?--mani-project requires a project name}"
+  command -v mani >/dev/null 2>&1 || die "--mani-project needs mani on PATH"
+  # `describe` prints plain "key: value" lines. Fail loudly rather than clone into a guessed path.
+  # NO_COLOR because `describe` colorizes even when piped, which would defeat the field match
+  # below; the sed is belt-and-braces for a version that ignores NO_COLOR. Getting this wrong does
+  # not fail loudly on its own -- it silently yields an empty url -- so the checks below are what
+  # turn it into an error rather than a clone into a guessed location.
+  desc=$(NO_COLOR=1 mani describe projects "$project" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g') \
+    || die "no such mani project: $project"
+  url=$(printf '%s\n' "$desc" | awk -F': *' '$1=="url"{print $2; exit}')
+  mpath=$(printf '%s\n' "$desc" | awk -F': *' '$1=="path"{print $2; exit}')
+  [ -n "$url" ]   || die "mani project '$project' has no url"
+  [ -n "$mpath" ] || die "mani project '$project' has no path"
+  # mani's path points at the DEFAULT-BRANCH WORKTREE inside the container, so the container is its
+  # parent. Keeping that convention is what lets `mani exec` run ordinary git commands: the
+  # container itself is bare and has no work tree, so it cannot be the exec target.
+  target=$(dirname "$mpath")
+  expected_wt=$(basename "$mpath")
+else
+  url="${1:?usage: git-clone-worktree <url> [target]   |   git-clone-worktree --mani-project <name>}"
+  target="${2:-}"
+  if [ -z "$target" ]; then base=${url##*/}; target=${base%.git}; fi
+  expected_wt=""
+fi
 
-# Checkout default branch and set upstream
-defaultBranch=$(git remote show origin | sed -n '/HEAD branch/ s/.*: //p')
-defaultBasename=$(basename "$defaultBranch")
+bare="$target/.bare"
 
-git worktree add "$defaultBasename" "$defaultBranch"
+if [ -d "$bare" ]; then
+  printf 'git-clone-worktree: %s already present; ensuring it is complete\n' "$target"
+else
+  mkdir -p "$target"
+  git clone --bare "$url" "$bare"
+  printf 'gitdir: ./.bare\n' > "$target/.git"
+fi
 
-git branch --set-upstream-to=origin/"$defaultBranch" "$defaultBranch"
+# A bare clone does not fetch like a normal one: without this refspec, `git fetch` updates nothing
+# and no refs/remotes/origin/* ever appear, so later `git worktree add <branch>` for a branch that
+# only exists on the remote would fail.
+git --git-dir="$bare" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git --git-dir="$bare" fetch --quiet origin
+
+# The default branch comes from the bare clone's own HEAD, which git set from the remote's HEAD at
+# clone time. This is why main / master / develop all work without being special-cased, and it
+# needs no second network round trip.
+default=$(git --git-dir="$bare" symbolic-ref --short HEAD 2>/dev/null || true)
+[ -n "$default" ] || die "could not determine the default branch of $url"
+
+# A bare clone creates a local branch for every remote branch, so `git branch` lists them all and
+# every one of them is a name that cannot be checked out anywhere useful. Keep only the default;
+# the rest remain reachable as refs/remotes/origin/*, which is what `git worktree add` wants.
+#
+# Deliberately a loop over for-each-ref rather than `git branch | grep -v '\*' | xargs git branch -D`:
+# that pipeline feeds `git branch -D` zero arguments when the default is the only branch, which
+# fails, and under `set -e` aborts the clone half-finished.
+while IFS= read -r branch; do
+  [ -n "$branch" ] || continue
+  [ "$branch" = "$default" ] && continue
+  git --git-dir="$bare" branch -D "$branch" >/dev/null
+done < <(git --git-dir="$bare" for-each-ref --format='%(refname:short)' refs/heads/)
+
+if [ -n "$expected_wt" ] && [ "$expected_wt" != "$default" ]; then
+  printf 'git-clone-worktree: WARNING: manifest expects the worktree at %s/%s, but the default branch is %s.\n' \
+    "$target" "$expected_wt" "$default" >&2
+  printf '                    Creating %s. Update the manifest path, or that path will not resolve.\n' "$default" >&2
+fi
+
+if [ -d "$target/$default" ]; then
+  printf 'git-clone-worktree: worktree %s/%s already present\n' "$target" "$default"
+else
+  git -C "$target" worktree add "$default" "$default"
+fi
+
+printf 'git-clone-worktree: %s ready (default branch: %s)\n' "$target" "$default"
