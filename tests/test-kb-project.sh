@@ -106,4 +106,44 @@ KB_ROOT="$d3" kb project --check 2>&1 | grep -q 'AGENTS.md' || { echo "FAIL: --c
 [ -d "$d3/index/projections" ] && { echo "FAIL: --check must not create the output dir"; exit 1; }
 echo "ok:   --check on a fresh KB reports missing outputs without writing"
 
+# --- Provenance is a pointer in the projection, never the full history ---
+# A projection is loaded at every session start and per subagent, so history in it is a recurring
+# cost forever, so it is kept lean by design. The rule body must survive intact; only the trailing
+# `### Provenance` section is replaced by a pointer at the source record.
+d4=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3" "$d4"' EXIT
+KB_ROOT="$d4" KB_DATE=2026-07-15 kb new standard prov-rule >/dev/null
+set_field "$d4/standards/prov-rule.md" tier 0
+set_field "$d4/standards/prov-rule.md" status active
+cat >> "$d4/standards/prov-rule.md" <<'BODY'
+
+### The rule
+
+OPERATIVE-RULE-TEXT: always do the thing.
+
+### Provenance
+
+HISTORICAL-DETAIL: adopted 2026-01-01 after a long incident nobody needs at runtime.
+BODY
+KB_ROOT="$d4" kb project >/dev/null
+a4="$d4/index/projections/AGENTS.md"
+grep -q 'OPERATIVE-RULE-TEXT' "$a4" || { echo "FAIL: projection dropped the rule body"; exit 1; }
+grep -q 'HISTORICAL-DETAIL' "$a4" && { echo "FAIL: projection still carries provenance history"; exit 1; }
+grep -q '^### Provenance' "$a4" || { echo "FAIL: projection should keep the Provenance heading as a pointer"; exit 1; }
+grep -q 'standards/prov-rule.md' "$a4" || { echo "FAIL: provenance pointer must name the source record"; exit 1; }
+echo "ok:   projection keeps the rule, replaces provenance with a pointer to the source"
+
+# The invariant that actually matters: the projection must not grow when history does. Comparing
+# a projection against its source record would instead measure the projection's own boilerplate,
+# which is why this appends history and re-projects rather than diffing the two artifacts.
+before=$(wc -c < "$a4")
+i=0; while [ "$i" -lt 100 ]; do
+  printf 'MORE-HISTORY line %d, appended to the provenance section.\n' "$i" >> "$d4/standards/prov-rule.md"
+  i=$((i+1))
+done
+KB_ROOT="$d4" kb project >/dev/null
+after=$(wc -c < "$a4")
+[ "$after" -eq "$before" ] || { echo "FAIL: projection grew with provenance ($before -> $after); history is leaking into the always-on set"; exit 1; }
+grep -q 'MORE-HISTORY' "$a4" && { echo "FAIL: appended history reached the projection"; exit 1; }
+echo "ok:   projection size is invariant to how much history a record accumulates"
+
 echo "PASS"

@@ -89,4 +89,27 @@ KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 KB_ROOT="$d" kb lint 2>&1 | grep -qi 'name' || { echo "FAIL: reason should mention the invalid name"; exit 1; }
 echo "ok:   non-kebab name caught"
 
+# (g) a section AFTER `### Provenance` is rejected. `kb project` renders a tier-0 body by replacing
+# provenance through end-of-file with a pointer, so a section filed after it silently never reaches
+# any session while looking perfectly correct in the source. Both directions are asserted: the
+# violation is caught, and provenance-as-the-last-section passes.
+d=$(newkb); emit "$d/context/a.md" a 'related: []'
+printf '\n### Provenance\n\nAdopted 2026-01-01.\n' >> "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: provenance as the last section should pass, got ${rc:-0}"; exit 1; }
+
+printf '\n### A rule filed after provenance\n\nThis would never reach a session.\n' >> "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL: a section after Provenance should exit 1, got ${rc:-0}"; exit 1; }
+KB_ROOT="$d" kb lint 2>&1 | grep -qi 'provenance' || { echo "FAIL: reason should name the provenance ordering rule"; exit 1; }
+echo "ok:   a section filed after Provenance is caught"
+
+# `####` and deeper are subsections OF the provenance and must stay legal, or every amendment
+# log in the tier-0 set would be a lint failure.
+d=$(newkb); emit "$d/context/a.md" a 'related: []'
+printf '\n### Provenance\n\nAdopted.\n\n#### Amended 2026-02-02\n\nDetail.\n' >> "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: '#### Amended' under Provenance must stay legal, got ${rc:-0}"; exit 1; }
+echo "ok:   amendment subsections under Provenance stay legal"
+
 echo "PASS"
