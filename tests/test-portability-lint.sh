@@ -13,6 +13,13 @@
 #     line was searched for a counterpart.
 #
 # Run: `sh tests/test-portability-lint.sh`
+#
+# portability-lint: disable-file
+#
+# This file is FULL of deliberately-bad spellings -- they are the fixtures. Note the fix is
+# the file-level escape hatch and NOT teaching the linter to skip heredoc bodies: heredocs
+# elsewhere in this repo carry code that really does execute (the git hooks written by the
+# run_onchange installer), and skipping them would blind the check to exactly that case.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 LINT="$here/../private_dot_local/bin/executable_portability-lint"
