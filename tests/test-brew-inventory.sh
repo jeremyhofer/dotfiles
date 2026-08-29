@@ -2,9 +2,13 @@
 # Test brew-inventory: full-snapshot output + --delta subtraction against a base Brewfile.
 # Uses a fake `brew` on PATH that emits a canned `brew bundle dump`, so it runs on any OS.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/brew-inventory"
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-brew-inventory.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "$_TMP/test-brew-inventory.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 
 # Fake brew: respond to `brew bundle dump ...` with a canned Brewfile snapshot.
 cat > "$tmp/brew" <<'EOF'

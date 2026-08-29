@@ -1,9 +1,13 @@
 #!/bin/sh
 # Test: scaffold-overlay writes the renamed, self-documented skeleton into a new dir.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/scaffold-overlay"
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-scaffold-overlay.XXXXXX")
+tmp=$(mktemp -d "$_TMP/test-scaffold-overlay.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 SKEL="$here/../overlay-skeleton" sh "$script" "$tmp/new-overlay"
 [ -f "$tmp/new-overlay/.chezmoiignore" ]                     || { echo "FAIL: .chezmoiignore"; exit 1; }

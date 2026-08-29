@@ -10,6 +10,10 @@
 # The KB root is resolved at runtime (never hardcoded), so one tool serves many KBs
 # across machines. See `kb help`.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 export LC_ALL=C   # deterministic, locale-independent sorting and byte-stable output
 
 KB_VERSION=0.3.0
@@ -372,10 +376,10 @@ cmd_lint() {
   _root=$(kb_resolve_root) || exit 1
   _validdomains=$(kb_valid_domains)
 
-  _all=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
-  _scope=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
-  _namesu=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
-  _names=$(mktemp "${TMPDIR:-/tmp}/kb.lint.XXXXXX")
+  _all=$(mktemp "$_TMP/kb.lint.XXXXXX")
+  _scope=$(mktemp "$_TMP/kb.lint.XXXXXX")
+  _namesu=$(mktemp "$_TMP/kb.lint.XXXXXX")
+  _names=$(mktemp "$_TMP/kb.lint.XXXXXX")
 
   kb_find_records "$_root" > "$_all"
 
@@ -525,7 +529,7 @@ cmd_index() {
       return 0
     fi
     _drift=0
-    _tmp=$(mktemp -d "${TMPDIR:-/tmp}/kb.index.XXXXXX")
+    _tmp=$(mktemp -d "$_TMP/kb.index.XXXXXX")
     kb_index_root "$_root" "$_tmp"
     for _n in sources-of-truth.md backlinks.md; do
       cmp -s "$_tmp/$_n" "$_root/index/$_n" 2>/dev/null \
@@ -932,7 +936,7 @@ cmd_project() {
     fi
     # regenerate to a temp and compare; never write the real outputs. Exit 1 on any drift.
     _drift=0
-    _tmp=$(mktemp "${TMPDIR:-/tmp}/kb.proj.XXXXXX")
+    _tmp=$(mktemp "$_TMP/kb.proj.XXXXXX")
     kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_tmp"
     cmp -s "$_tmp" "$_out/AGENTS.md" 2>/dev/null || { echo "kb: projection drift: $_out/AGENTS.md" >&2; _drift=1; }
     cmp -s "$_tmp" "$_out/GEMINI.md" 2>/dev/null || { echo "kb: projection drift: $_out/GEMINI.md" >&2; _drift=1; }

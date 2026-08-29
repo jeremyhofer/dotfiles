@@ -12,6 +12,10 @@ set -eu
 # BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file
 # as the script, which is silently destructive rather than merely failing. Temp-file + mv
 # behaves identically on both userlands.
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 sedi() { _e=$1; _f=$2; sed "$_e" "$_f" > "$_f.sedi.$$" && mv "$_f.sedi.$$" "$_f"; }
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +25,7 @@ kb() { sh "$KB" "$@"; }
 set_field() { sedi "s|^$2:.*|$2: $3|" "$1"; }
 
 # --- (a) kb new defaults domain to universal ---------------------------------
-d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
+d=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
 KB_ROOT="$d" KB_DATE=2026-07-15 kb new context sample >/dev/null
 grep -qx 'domain: universal' "$d/context/sample.md" || { echo "FAIL: kb new should default domain: universal"; exit 1; }
 echo "ok:   kb new defaults domain: universal"

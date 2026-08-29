@@ -26,6 +26,10 @@
 # Exit: 0 ok; 2 if brew (or --delta's BASE) is missing.
 set -eu
 
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 BASE_DEFAULT="$HOME/.local/share/chezmoi/Brewfile"
 mode=full
 base="$BASE_DEFAULT"
@@ -70,7 +74,7 @@ key() {
   esac
 }
 
-basekeys="$(mktemp "${TMPDIR:-/tmp}/brew-inventory.XXXXXX")"; trap 'rm -f "$basekeys"' EXIT
+basekeys="$(mktemp "$_TMP/brew-inventory.XXXXXX")"; trap 'rm -f "$basekeys"' EXIT
 while IFS= read -r line; do key "$line" >> "$basekeys" 2>/dev/null || true; done < "$base"
 
 printf '%s\n' "$dump" | while IFS= read -r line; do
