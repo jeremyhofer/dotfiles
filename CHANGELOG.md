@@ -41,6 +41,25 @@ Why it exists: a KB has two derived outputs, and only one of them was checkable.
 missing an entry for a topic adopted in that window, plus four superseded descriptions — while
 every projection stayed correct. The fresh layer is what hid the stale one.
 
+**New: `portability-lint`** — finds GNU-only shell spellings that break on BSD/macOS. Run it in
+any repo (`portability-lint`, or `portability-lint PATH...`); `--list` prints the rule table,
+`--strict` fails on warnings too. Ten rules, each probed against a real macOS userland rather than
+recalled: the in-place sed flag (no portable spelling exists — use temp-file + mv), `\t` inside a
+sed/grep bracket expression, `stat -c`, `date -d`, `base64 -w`, `grep -P`, `find -printf`,
+`timeout`, the `${TMPDIR:-/tmp}` trailing-slash trap, and a quoted `wc -l` compared as a string.
+
+It deliberately does NOT flag `readlink -f` or `xargs -r`, which are commonly listed as GNU-only and
+both work on modern macOS. An over-broad portability claim is worse than none — it sends you to
+write a workaround for a problem you do not have, and costs trust in the rules that are real.
+
+The two-spelling idiom (`stat -c … || stat -f …`) is the recommended FIX and is exempt, including
+when the GNU attempt and the BSD fallback are on different lines. Suppress a genuine single-platform
+case with `# portability-lint: ignore [rule,...]` on the line, or `# portability-lint: disable-file`.
+Needs python3 (present on macOS and here); targets 3.9, which is macOS's system version.
+
+ShellCheck does not overlap with this — it models shell syntax, not the userland of the commands you
+invoke, and was verified silent (exit 0) on every rule above.
+
 **Nothing ran the test suite — now something does.** The base ships 20 suites and had no
 runner, no CI and no hook; they were run by hand, one file at a time, when someone remembered.
 Added `tests/run-all.sh` (`sh tests/run-all.sh [filter]`, ~10s for all of them), and the git-hooks
