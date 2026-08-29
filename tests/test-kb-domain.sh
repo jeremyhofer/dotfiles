@@ -8,11 +8,17 @@
 #       config `[domain.<slug>] repo` (or --out).
 # Run directly: `sh tests/test-kb-domain.sh`.
 set -eu
+# sedi EXPR FILE -- in-place edit, portably. Deliberately NOT the GNU in-place flag: on
+# BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file
+# as the script, which is silently destructive rather than merely failing. Temp-file + mv
+# behaves identically on both userlands.
+sedi() { _e=$1; _f=$2; sed "$_e" "$_f" > "$_f.sedi.$$" && mv "$_f.sedi.$$" "$_f"; }
+
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 kb() { sh "$KB" "$@"; }
-set_field() { sed -i "s|^$2:.*|$2: $3|" "$1"; }
+set_field() { sedi "s|^$2:.*|$2: $3|" "$1"; }
 
 # --- (a) kb new defaults domain to universal ---------------------------------
 d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
