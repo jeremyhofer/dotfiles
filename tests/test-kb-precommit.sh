@@ -1,11 +1,15 @@
 #!/bin/sh
-# Test: `kb install-hooks` wires a repo-local pre-commit that runs `kb lint` against the
+# Test: `kb install-hooks` wires a repo-local pre-commit that runs `kb lint` AND both
+# derived-output freshness checks (`project --check`, `index --check`) against the
 # ACTUAL KB root (resolved + embedded at install time, so it works even when the KB is
 # nested below the git top level), so a malformed record cannot land. The hook is generic:
 # it composes with any global hooks router and also works standalone. Regression coverage:
 #   - the embedded `--kb-root` must precede the subcommand (else it is silently ignored),
 #   - non-record markdown at the repo root (e.g. README) must NOT be linted,
-#   - a KB nested below the git top level must still be validated.
+#   - a KB nested below the git top level must still be validated,
+#   - a KB that publishes NO derived outputs must still be able to commit (they are opt-in;
+#     a freshness gate that bricks a fresh KB would just get uninstalled),
+#   - but once a KB DOES publish an index, a stale one must block the commit.
 # The test isolates from any ambient global core.hooksPath by pinning the repo's own hooks
 # dir. Run: `sh tests/test-kb-precommit.sh`.
 set -eu
@@ -38,7 +42,10 @@ hook="$r/.git/hooks/pre-commit"
 grep -qF 'kb-precommit (generated)' "$hook" || { echo "FAIL: hook missing marker"; exit 1; }
 # the flag MUST precede the subcommand, else kb ignores it
 grep -qE 'kb --kb-root "[^"]+" lint' "$hook" || { echo "FAIL: hook has --kb-root after the subcommand (would be ignored)"; exit 1; }
+grep -qE 'kb --kb-root "[^"]+" project --check' "$hook" || { echo "FAIL: hook does not run project --check"; exit 1; }
+grep -qE 'kb --kb-root "[^"]+" index --check' "$hook" || { echo "FAIL: hook does not run index --check"; exit 1; }
 echo "ok:   install-hooks writes a marked hook with --kb-root before the subcommand"
+echo "ok:   hook runs all three checks (lint + both freshness checks)"
 
 # malformed record -> blocked
 mkdir -p "$r/context"; printf '%s\n' '---' 'name: x' 'type: context' '---' > "$r/context/x.md"
@@ -57,6 +64,32 @@ git -C "$r" add -A
 ( cd "$r" && PATH="$bin:$PATH" git commit -q -m ok ) >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 0 ] || { echo "FAIL: valid KB commit should succeed, got ${rc:-0}"; exit 1; }
 echo "ok:   valid KB (alongside a README) commits cleanly"
+echo "ok:   a KB publishing no derived outputs is not blocked by the freshness gate"
+
+# ---------- once an index IS published, a stale one blocks ----------
+# The gate's whole purpose. Plant the shape that actually drifted in production: one edited
+# description, index not regenerated. It must block, and name the drifted file.
+KB_ROOT="$r" kb index >/dev/null
+git -C "$r" add -A
+( cd "$r" && PATH="$bin:$PATH" git commit -q -m 'publish index' ) >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: committing a freshly generated index should succeed"; exit 1; }
+echo "ok:   a current published index commits cleanly"
+
+fx="$r/context/x.md"
+sed 's/^description:.*/description: "planted drift"/' "$fx" > "$fx.new" && mv "$fx.new" "$fx"
+git -C "$r" add -A
+out=$( ( cd "$r" && PATH="$bin:$PATH" git commit -q -m 'stale index' ) 2>&1 || true )
+( cd "$r" && PATH="$bin:$PATH" git commit -q -m 'stale index' ) >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -ne 0 ] || { echo "FAIL: stale index did not block the commit"; exit 1; }
+printf '%s' "$out" | grep -q 'sources-of-truth.md' || { echo "FAIL: block did not name the drifted file; got: $out"; exit 1; }
+echo "ok:   a stale published index blocks the commit, naming the drifted file"
+
+# regenerating clears it -- the gate is satisfiable, not merely obstructive
+KB_ROOT="$r" kb index >/dev/null
+git -C "$r" add -A
+( cd "$r" && PATH="$bin:$PATH" git commit -q -m 'regenerated' ) >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: regenerating the index should clear the gate"; exit 1; }
+echo "ok:   regenerating the index clears the gate"
 
 # ---------- KB nested BELOW the git top level ----------
 r2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r" "$r2"' EXIT

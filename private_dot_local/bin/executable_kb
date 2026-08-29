@@ -12,7 +12,7 @@
 set -eu
 export LC_ALL=C   # deterministic, locale-independent sorting and byte-stable output
 
-KB_VERSION=0.1.0
+KB_VERSION=0.3.0
 
 usage() {
   cat <<'EOF'
@@ -25,11 +25,16 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
                        scaffold a record from an existing memory file (migration)
   lint [path...]        validate records (schema, edges, boundary); fail-loud
   link <A> --EDGE <B>  add a forward edge A->B (EDGE: --related|--depends-on|--supersedes)
-  index                regenerate index/ (sources-of-truth + backlinks); derived output
-  project [--out DIR] [--max-sensitivity L] [--check]  generate the tier-0 projection
+  index [--check [--if-present]]
+                       regenerate index/ (sources-of-truth + backlinks); derived output.
+                       --check reports drift and writes nothing (exit 1 on drift);
+                       --if-present downgrades "never generated" to a pass
+  project [--out DIR] [--max-sensitivity L] [--check [--if-present]]
+                       generate the tier-0 projection
   rename <A> <C>       rename a record + rewrite every inbound edge A->C
   retire <A>           mark a record retired + strip inbound edges
-  install-hooks [repo] wire a pre-commit that runs `kb lint` (blocks malformed commits)
+  install-hooks [repo] wire a pre-commit that runs `kb lint` + both derived-output
+                       freshness checks (blocks malformed or stale-derived commits)
   debug-root           print the resolved KB root (resolution seam)
 
 Record types: standard | decision | context | research | register
@@ -481,16 +486,63 @@ kb_reverse_label() {
 }
 
 # cmd_index -- kb index. Regenerates <root>/index/{sources-of-truth,backlinks}.md.
+# cmd_index -- kb index [--check]. Bare: regenerate index/. --check: regenerate to a
+# temp dir, diff against the committed files, write nothing, exit 1 naming each drifted
+# file.
+#
+# WHY --check EXISTS. `kb project` had one from the start and `kb index` did not, so the
+# projection was gate-able and the index was not. It drifted, exactly as an ungated derived
+# output does: between 2026-08-17 and 2026-08-29 no KB commit ran `kb index`, and
+# sources-of-truth.md ended up with NO entry for a topic adopted in that window plus four
+# superseded descriptions -- while every projection in the window was correct. The fresh
+# layer is what hid it: people read the projection, saw it current, and took that as
+# evidence the whole derivation had run. Mechanising ONE derived output and leaving a
+# sibling to habit is worse than mechanising neither.
 cmd_index() {
+  _check=""
+  _ifpresent=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) _check=1; shift ;;
+      --if-present) _ifpresent=1; shift ;;
+      *) echo "kb: index: unexpected argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  [ -z "$_ifpresent" ] || [ -n "$_check" ] || { echo "kb: --if-present is only meaningful with --check" >&2; exit 2; }
+
   _root=$(kb_resolve_root) || exit 1
+
+  if [ -n "$_check" ]; then
+    if [ -n "$_ifpresent" ] \
+       && kb_check_absent "$_root/index/sources-of-truth.md" "$_root/index/backlinks.md"; then
+      echo "kb: no generated index present — nothing to check (--if-present)" >&2
+      return 0
+    fi
+    _drift=0
+    _tmp=$(mktemp -d "${TMPDIR:-/tmp}/kb.index.XXXXXX")
+    kb_index_root "$_root" "$_tmp"
+    for _n in sources-of-truth.md backlinks.md; do
+      cmp -s "$_tmp/$_n" "$_root/index/$_n" 2>/dev/null \
+        || { echo "kb: index drift: $_root/index/$_n" >&2; _drift=1; }
+    done
+    rm -rf "$_tmp"
+    [ "$_drift" -eq 0 ] || echo "kb: run \`kb index\` and stage the result" >&2
+    return $_drift
+  fi
+
   kb_index_root "$_root"
 }
 
-# kb_index_root ROOT -- (re)generate the derived index for ROOT. All views are DERIVED
-# and disposable; the forward edges in records are the source of truth.
+# kb_index_root ROOT [OUTDIR] -- (re)generate the derived index for ROOT. All views are
+# DERIVED and disposable; the forward edges in records are the source of truth.
+#
+# OUTDIR defaults to ROOT/index. It is a parameter only so `kb index --check` can render
+# the same bytes somewhere harmless and diff them, rather than duplicating the renderer --
+# a second copy of the renderer would let the checker and the generator disagree, which is
+# the one failure a freshness gate must not have.
 kb_index_root() {
   _root=$1
-  _idx="$_root/index"
+  if [ $# -ge 2 ] && [ -n "$2" ]; then _idx=$2; else _idx="$_root/index"; fi
   mkdir -p "$_idx"
 
   # collect forward edges as: <target>\t<edgetype>\t<source>
@@ -672,14 +724,63 @@ cmd_install_hooks() {
   # Unquoted heredoc so the resolved root is embedded; backticks escaped.
   cat > "$_hook" <<HOOK
 #!/bin/sh
-# kb-precommit (generated) — block a commit if the KB fails validation.
+# kb-precommit (generated) — block a commit if the KB fails validation OR if either
+# derived output is stale.
 # Composes with any global hooks router: a global core.hooksPath hook runs its own
 # checks and then chains to this repo hook. Standalone, git runs this directly.
 # \`kb\` is expected on PATH (it installs to ~/.local/bin).
-exec kb --kb-root "$_kbroot" lint
+#
+# THREE checks, not one. \`lint\` validates the records themselves. The other two assert
+# that the DERIVED outputs match those records: a KB edit that regenerates one derived
+# output and not the other leaves a stale layer that nothing else will notice, because the
+# fresh layer is the one people read. Both are pure comparisons — they write nothing.
+#
+# \`--if-present\` because this hook is GENERIC: a KB that has deliberately published no
+# derived outputs yet must still be able to commit. A repo that always publishes both
+# should gate with the strict form (drop \`--if-present\`), which additionally catches a
+# deleted output.
+#
+# Scope: the Tier-0 universal projection at the default sensitivity ceiling. A KB that
+# also emits per-domain projections (\`kb project --domain\`) is not covered here; add
+# those explicitly if the repo emits them.
+set -e
+kb --kb-root "$_kbroot" lint
+kb --kb-root "$_kbroot" project --check --if-present
+kb --kb-root "$_kbroot" index --check --if-present
 HOOK
   chmod +x "$_hook"
   echo "installed kb pre-commit hook -> $_hook"
+}
+
+# kb_check_absent FILE... -- true when EVERY named output is absent. Only consulted under
+# `--check --if-present`.
+#
+# WHY --if-present IS OPT-IN RATHER THAN THE DEFAULT. `--check` is STRICT by design: a KB
+# with projectable content and no projection is drift, and there is a test asserting exactly
+# that. Making absence benign for everyone would have silently overturned that decision --
+# it was caught only because the test existed, which is the argument for the test.
+#
+# But a GENERIC hook cannot be strict. `kb install-hooks` runs in any KB, including a fresh
+# one that has deliberately published nothing yet, and a gate that bricks such a repo the
+# moment it is wired up gets uninstalled rather than satisfied. So the generated hook asks
+# for `--if-present` explicitly, and the strict form remains what a human or a KB-specific
+# gate gets by default.
+#
+# ALL, deliberately, not ANY: a set where some outputs exist and some do not is a
+# half-generated set, which is real drift and stays red even under --if-present. The known
+# gap is that deleting a published output silences its gate under --if-present -- a
+# deliberate act, visible in the commit diff, and the reason a repo that always publishes
+# (like a KB whose projection is consumed at every session start) gates with the strict form
+# instead.
+#
+# This lives in kb rather than in each hook on purpose. Duplicating the existence test into
+# every consumer is how the checker and its callers drift into disagreeing about what is
+# being asserted -- the same failure the shared-renderer design avoids one layer down.
+kb_check_absent() {
+  for _f in "$@"; do
+    [ -e "$_f" ] && return 1
+  done
+  return 0
 }
 
 # kb_sens_rank LEVEL -- numeric rank of a sensitivity tier (higher = more sensitive); an
@@ -771,6 +872,7 @@ kb_render_claude() {
 cmd_project() {
   _outflag=""
   _check=""
+  _ifpresent=""
   _domainflag=""
   _maxsens=internal   # default ceiling: include public+internal, exclude private/restricted
   while [ $# -gt 0 ]; do
@@ -782,9 +884,11 @@ cmd_project() {
       --max-sensitivity) [ $# -ge 2 ] || { echo "kb: --max-sensitivity needs a value" >&2; exit 2; }; _maxsens=$2; shift 2 ;;
       --max-sensitivity=*) _maxsens=${1#*=}; shift ;;
       --check) _check=1; shift ;;
+      --if-present) _ifpresent=1; shift ;;
       *) echo "kb: project: unexpected argument '$1'" >&2; exit 2 ;;
     esac
   done
+  [ -z "$_ifpresent" ] || [ -n "$_check" ] || { echo "kb: --if-present is only meaningful with --check" >&2; exit 2; }
   case "$_maxsens" in
     public|internal|private) ;;
     *) echo "kb: --max-sensitivity must be public|internal|private (restricted is never projected)" >&2; exit 2 ;;
@@ -815,6 +919,11 @@ cmd_project() {
   fi
 
   if [ -n "$_check" ]; then
+    if [ -n "$_ifpresent" ] \
+       && kb_check_absent "$_out/AGENTS.md" "$_out/GEMINI.md" "$_out/CLAUDE.md"; then
+      echo "kb: no generated projection present — nothing to check (--if-present)" >&2
+      return 0
+    fi
     # regenerate to a temp and compare; never write the real outputs. Exit 1 on any drift.
     _drift=0
     _tmp=$(mktemp "${TMPDIR:-/tmp}/kb.proj.XXXXXX")
