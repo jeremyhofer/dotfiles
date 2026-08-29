@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""portability-lint -- find GNU-only shell spellings that break on BSD/macOS.
+
+WHY THIS EXISTS
+===============
+A machine fleet that mixes Linux and macOS runs the same scripts against two different
+userlands: GNU coreutils on one, BSD on the other. The failure mode is nastier than it
+sounds, and it is the entire reason for this tool:
+
+  A GNU-only spelling does not DEGRADE on BSD -- it errors, or worse, silently does
+  something different.
+
+`stat -c %Y f` exits non-zero with "illegal option" and prints NOTHING, so a caller written
+as `x=$(stat -c %Y f 2>/dev/null)` gets an empty string and makes a wrong decision somewhere
+else entirely. And the sharpest one, which motivated this tool: inside a BRACKET EXPRESSION,
+BSD sed does not read `\\t` as a tab -- it reads the set as {space, backslash, t}. So
+`sed 's/[ \\t]*$//'` strips a literal trailing `t`, and a value of `ghost` silently becomes
+`ghos`. No error, no exit code, just wrong data. That shipped undetected until the day
+someone first ran the test suite on the Mac.
+
+ShellCheck does not catch any of this. It models shell syntax, not the userland of the
+commands you invoke, so it has no notion of GNU vs BSD flag sets -- verified silent (exit 0)
+on every rule below.
+
+WHAT IT DELIBERATELY DOES NOT FLAG
+==================================
+Every rule here was probed against a real macOS userland, not recalled from a table.
+`readlink -f` and `xargs -r` are commonly listed as GNU-only and BOTH WORK on modern macOS,
+so they are absent by design. An over-broad portability claim is worse than none: it sends
+you to write an awkward workaround for a problem you do not have, and it costs you trust in
+the rules that are real. If you add a rule, probe it on the actual machine first.
+
+USAGE
+=====
+  portability-lint                 # git-tracked shell scripts in the current repo
+  portability-lint PATH...         # explicit files or directories
+  portability-lint --list          # print the rule table and exit
+  portability-lint --strict        # treat warnings as failures too
+  portability-lint --errors-only   # suppress warnings entirely
+
+Exit 0 clean, 1 findings, 2 usage error.
+
+SUPPRESSION
+===========
+  some_cmd   # portability-lint: ignore            (this line, all rules)
+  some_cmd   # portability-lint: ignore stat-c     (this line, named rules, comma-separated)
+  # portability-lint: disable-file                 (anywhere in the file)
+
+Suppress when a script is genuinely single-platform -- and prefer gating its DEPLOYMENT so
+it never reaches the other machine at all, rather than silencing the check.
+
+Targets Python 3.9 (the system python3 on current macOS). Keep it 3.9-compatible.
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+ERROR, WARN = "error", "warn"
+
+# id, severity, compiled pattern, what breaks, what to do instead, and an optional EXEMPT
+# pattern.
+#
+# `exempt` is checked against a WINDOW of surrounding lines, not just the matching line.
+# The two-spelling idiom is often a one-liner (`stat -c ... || stat -f ...`) but the date
+# case frequently is not: the GNU attempt sits on one line and the BSD `date -j -f` fallback
+# in a loop below it. Checking only the matching line flagged exactly that correct code.
+#
+# `exempt` matters more than it looks. The recommended fix for most of these is a
+# two-spelling line -- `stat -c %Y f 2>/dev/null || stat -f %m f 2>/dev/null` -- which still
+# CONTAINS the GNU spelling. Without an exemption the linter flags its own advice, and a
+# linter that rejects the correct answer gets uninstalled rather than satisfied. Caught by
+# running it against a fixture of correct code, which is a case worth keeping in any linter's
+# tests: assert the clean file is clean, not merely that the dirty file is dirty.
+#
+# `pattern` matches a LINE. Keep patterns narrow: a noisy linter gets ignored, and then it
+# guards nothing.
+RULES = [
+    (
+        "sed-in-place", ERROR,
+        re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*-i\b"),
+        "There is NO portable spelling of sed's in-place flag. GNU takes `-i` with no "
+        "argument; BSD requires a backup suffix, so `sed -i 's/a/b/' f` consumes the "
+        "EXPRESSION as the suffix and then treats f as the script -- silently destructive. "
+        "`sed -i ''` is the mirror image: it breaks on GNU.",
+        "Write to a temp file and move it: sed 'EXPR' f > f.tmp && mv f.tmp f",
+        None,
+    ),
+    (
+        "sed-bracket-tab", ERROR,
+        re.compile(r"(?:sed|grep)\b[^\n]*\[[^\]]*\\t"),
+        "Inside a bracket expression, BSD sed/grep do NOT interpret \\t as a tab -- the set "
+        "reads as {backslash, t, ...}. `[ \\t]` therefore matches a literal 't', so a "
+        "trailing-whitespace trim silently truncates any value ending in 't'. Wrong data, "
+        "no error. (awk is fine here; its own regex engine handles the escape.)",
+        "Use a POSIX class: [[:blank:]] for space-or-tab, [[:space:]] for all whitespace.",
+        None,
+    ),
+    (
+        "stat-c", ERROR,
+        re.compile(r"(?<![\w-])stat\s+(?:-[A-Za-z-]+\s+)*-c\b"),
+        "BSD stat has no -c; it exits non-zero printing nothing, so a `2>/dev/null` caller "
+        "silently receives an empty string.",
+        "Two-spelling helper: stat -c %Y \"$1\" 2>/dev/null || stat -f %m \"$1\" 2>/dev/null",
+        re.compile(r"stat\s+-f"),   # the two-spelling idiom is the FIX, never a finding
+    ),
+    (
+        "date-d", ERROR,
+        re.compile(r"(?<![\w-])date\s+(?:-[A-Za-z-]+\s+)*-d\b"),
+        "BSD date has no -d. Note this one is NOT merely a spelling difference: GNU -d takes "
+        "free-form input and BSD `-j -f` demands the format up front, with no free-form mode "
+        "at all, so the BSD branch must enumerate the shapes it accepts.",
+        "Formatting an epoch: date -d @N +FMT || date -r N +FMT. Parsing a string: enumerate "
+        "formats with date -j -f, MOST SPECIFIC FIRST (BSD date accepts a prefix and will "
+        "return the wrong instant successfully).",
+        re.compile(r"date\s+-[rj]\b"),   # the two-spelling idiom is the FIX, never a finding
+    ),
+    (
+        "base64-w", ERROR,
+        re.compile(r"(?<![\w-])base64\s+(?:-[A-Za-z-]+\s+)*-w"),
+        "BSD base64 has no -w; it does not wrap by default.",
+        "Use plain `base64` and, where GNU wrapping must be undone, pipe through `tr -d '\\n'`.",
+        re.compile(r"\|\|[^|]*\bbase64\b"),   # the two-spelling idiom is the FIX, never a finding
+    ),
+    (
+        "grep-P", ERROR,
+        re.compile(r"(?<![\w-])grep\s+(?:-[A-Za-z-]+\s+)*-P\b"),
+        "BSD grep has no -P (no PCRE).",
+        "Rewrite the pattern as an ERE and use grep -E, or shell out to perl -ne.",
+        re.compile(r"\|\|[^|]*\bgrep\s+-E\b"),   # the two-spelling idiom is the FIX, never a finding
+    ),
+    (
+        "find-printf", ERROR,
+        re.compile(r"(?<![\w-])find\b[^\n]*?\s-printf\b"),
+        "BSD find has no -printf.",
+        "Use -exec with stat, or -print0 piped into a loop.",
+        None,
+    ),
+    (
+        "timeout", WARN,
+        re.compile(r"(?<![\w-])timeout\s+[0-9]"),
+        "`timeout` is GNU coreutils and is absent from a stock macOS.",
+        "Resolve a bound at startup: timeout, else gtimeout, else "
+        "perl -e 'alarm shift @ARGV; exec @ARGV'. Keep the bound real -- a skipped hang-guard "
+        "means a regression hangs forever instead of failing.",
+        None,
+    ),
+    (
+        "tmpdir-slash", WARN,
+        re.compile(r"\$\{TMPDIR:-/tmp\}/"),
+        "macOS sets TMPDIR WITH a trailing slash, so \"${TMPDIR:-/tmp}/x.XXXXXX\" yields a "
+        "path containing '//'. Harmless for file I/O, and fatal the moment the path is "
+        "compared textually against one a tool reports back normalized.",
+        "Strip it first: t=${TMPDIR:-/tmp}; t=${t%/}; d=$(mktemp -d \"$t/x.XXXXXX\")",
+        None,
+    ),
+    (
+        "wc-l-quoted", WARN,
+        re.compile(r"\"\$\((?:[^()\"]|\([^()]*\))*\bwc -l[^)]*\)\""),
+        "BSD wc PADS its output with leading spaces, so a QUOTED substitution compared as a "
+        "string sees '       0' where GNU gives '0'. (Unquoted in an arithmetic or [ -eq ] "
+        "context it is word-split and harmless, which is why only the quoted form is flagged.)",
+        "Strip it: \"$(... | wc -l | tr -d '[:space:]')\", or count with awk 'END{print NR}'.",
+        None,
+    ),
+]
+
+SHEBANG = re.compile(rb"^#!.*\b(sh|bash|dash|ksh|zsh)\b")
+IGNORE = re.compile(r"#\s*portability-lint:\s*ignore(?:\s+([\w\-, ]+))?")
+DISABLE_FILE = re.compile(r"#\s*portability-lint:\s*disable-file")
+
+
+def is_shell(path):
+    if path.endswith((".sh", ".bash", ".zsh", ".ksh")):
+        return True
+    if path.endswith((".py", ".md", ".txt", ".json", ".toml", ".yml", ".yaml")):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            return bool(SHEBANG.match(fh.readline()))
+    except (OSError, ValueError):
+        return False
+
+
+def git_tracked(root):
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "ls-files", "-z"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return [os.path.join(root, p) for p in out.decode("utf-8", "replace").split("\0") if p]
+
+
+def walk(path):
+    if os.path.isfile(path):
+        return [path]
+    found = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", ".venv")]
+        found.extend(os.path.join(dirpath, f) for f in filenames)
+    return found
+
+
+def scan(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return []
+    if any(DISABLE_FILE.search(ln) for ln in lines):
+        return []
+
+    findings = []
+    WINDOW = 6   # lines either side searched for a BSD counterpart
+    for n, line in enumerate(lines, 1):
+        near = "\n".join(lines[max(0, n - 1 - WINDOW):n + WINDOW])
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue                      # a comment cannot execute
+        m = IGNORE.search(line)
+        if m:
+            named = m.group(1)
+            suppressed = {r.strip() for r in named.replace(",", " ").split()} if named else None
+        else:
+            suppressed = set()            # empty set == nothing suppressed here
+        for rid, sev, pat, why, fix, exempt in RULES:
+            if suppressed is None or rid in suppressed:
+                continue
+            if pat.search(line) and not (exempt and exempt.search(near)):
+                findings.append((path, n, rid, sev, line.strip(), why, fix))
+    return findings
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("paths", nargs="*")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--errors-only", action="store_true")
+    ap.add_argument("-h", "--help", action="store_true")
+    args = ap.parse_args()
+
+    if args.help:
+        sys.stdout.write(__doc__)
+        return 0
+    if args.list:
+        for rid, sev, _, why, fix, _ex in RULES:
+            print("%-18s %-5s %s" % (rid, sev, why.split(".")[0] + "."))
+            print("%-24s fix: %s\n" % ("", fix))
+        return 0
+
+    if args.paths:
+        candidates = []
+        for p in args.paths:
+            if not os.path.exists(p):
+                sys.stderr.write("portability-lint: no such path: %s\n" % p)
+                return 2
+            candidates.extend(walk(p))
+    else:
+        candidates = git_tracked(os.getcwd())
+        if candidates is None:
+            candidates = walk(os.getcwd())
+
+    findings = []
+    for path in sorted(set(candidates)):
+        if is_shell(path):
+            findings.extend(scan(path))
+
+    shown = [f for f in findings if not (args.errors_only and f[3] == WARN)]
+    seen_fix = set()
+    for path, n, rid, sev, text, why, fix in shown:
+        rel = os.path.relpath(path)
+        print("%s:%d: [%s] %s" % (rel, n, rid, sev.upper()))
+        print("    %s" % text)
+        if rid not in seen_fix:
+            print("    why: %s" % why)
+            print("    fix: %s" % fix)
+            seen_fix.add(rid)
+        print("")
+
+    errors = [f for f in shown if f[3] == ERROR]
+    warns = [f for f in shown if f[3] == WARN]
+    if shown:
+        print("%d finding(s): %d error, %d warn" % (len(shown), len(errors), len(warns)))
+    if errors or (args.strict and warns):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
