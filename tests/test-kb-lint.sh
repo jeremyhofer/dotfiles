@@ -11,6 +11,10 @@ set -eu
 # BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file
 # as the script, which is silently destructive rather than merely failing. Temp-file + mv
 # behaves identically on both userlands.
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 sedi() { _e=$1; _f=$2; sed "$_e" "$_f" > "$_f.sedi.$$" && mv "$_f.sedi.$$" "$_f"; }
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,7 +22,7 @@ KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 kb() { sh "$KB" "$@"; }
 
-newkb() { d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); mkdir -p "$d/context"; printf '%s' "$d"; }
+newkb() { d=$(mktemp -d "$_TMP/kb.XXXXXX"); mkdir -p "$d/context"; printf '%s' "$d"; }
 
 # valid record body with an overridable edge line ($1=file, $2=name, $3=extra-line)
 emit() { # file name extra
@@ -81,7 +85,7 @@ echo "ok:   restricted-path rule enforced (plaintext flagged; ciphertext skipped
 
 # (e') a plaintext restricted record must be flagged even when an ANCESTOR dir merely
 # contains the substring ".age" (suffix check, not substring).
-base=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$base"' EXIT
+base=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$base"' EXIT
 root="$base/notes.agenda"; mkdir -p "$root/context"
 emit "$root/context/a.md" a 'related: []'; sedi 's/^sensitivity: internal$/sensitivity: restricted/' "$root/context/a.md"
 KB_ROOT="$root" kb lint >/dev/null 2>&1 && rc=0 || rc=$?

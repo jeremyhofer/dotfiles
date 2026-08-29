@@ -2,9 +2,13 @@
 # Test: overlay-doctor passes a complete overlay, fails (exit 1) on a missing/placeholder
 # required file, requires ensure-keys iff gpgsign=true, and exit 2 when no overlay dir.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/overlay-doctor"
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-overlay-doctor.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "$_TMP/test-overlay-doctor.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 
 mk() { # build a COMPLETE, compliant fake overlay source at $1
   ov="$1"; rm -rf "$ov"

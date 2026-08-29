@@ -38,7 +38,9 @@ printf '%s' "$x" | sed 's/[ \t]*$//'
 stat -c %Y "$f"
 date -d @1 +%F
 base64 -w0 f
-grep -P 'x' f
+grep -qP 'x' f
+realpath -m -- "$p"
+sed -E 's/;/\n/g' f
 find . -printf '%p\n'
 timeout 5 sleep 1
 d=$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")
@@ -46,11 +48,19 @@ n="$(refs | wc -l)"
 SH
 lint "$d/dirty.sh" >"$d/out" 2>&1 && { echo "FAIL: dirty fixture should exit 1"; exit 1; }
 n=$(grep -c ':[0-9]*: \[' "$d/out" || true)
-[ "$n" -eq 10 ] || { echo "FAIL: expected 10 findings, got $n"; cat "$d/out"; exit 1; }
-for r in sed-in-place sed-bracket-tab stat-c date-d base64-w grep-P find-printf timeout tmpdir-slash wc-l-quoted; do
+[ "$n" -eq 12 ] || { echo "FAIL: expected 12 findings, got $n"; cat "$d/out"; exit 1; }
+for r in sed-in-place sed-bracket-tab sed-newline-replacement stat-c date-d base64-w grep-P \
+         realpath-m find-printf timeout tmpdir-slash wc-l-quoted; do
   grep -q "\[$r\]" "$d/out" || { echo "FAIL: rule '$r' did not fire"; exit 1; }
 done
-echo "ok:   all 10 rules fire, one finding each"
+echo "ok:   all 12 rules fire, one finding each"
+
+# REGRESSION: short flags CLUSTER. Requiring the flag to be its own token was a false NEGATIVE
+# that let a real macOS fail-open through undetected -- a homoglyph guard used `grep -qP`, the
+# rule looked for a bare `-P`, and the linter reported the repo clean while the guard allowed
+# everything on darwin. The fixture above uses `grep -qP` for exactly this reason.
+grep -q '\[grep-P\]' "$d/out" || { echo "FAIL: clustered short flag -qP not detected"; exit 1; }
+echo "ok:   REGRESSION a clustered short flag (-qP) is detected"
 
 # ---------- correct code is silent ----------
 cat > "$d/clean.sh" <<'SH'

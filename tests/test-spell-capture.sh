@@ -1,10 +1,14 @@
 #!/bin/sh
 # Test: the BASE ships spell-capture, and it no-ops (exit 0) when no overlay is configured.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 sc="$here/../private_dot_local/bin/executable_spell-capture"
 [ -f "$sc" ] || { echo "FAIL: base does not ship spell-capture"; exit 1; }
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-spell-capture.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "$_TMP/test-spell-capture.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 # Fake HOME with no overlay config -> must no-op cleanly (exit 0).
 HOME="$tmp" sh "$sc" "$tmp/whatever.utf-8.add" && rc=0 || rc=$?
 [ "${rc:-0}" -eq 0 ] || { echo "FAIL: expected no-op exit 0 without overlay, got ${rc:-0}"; exit 1; }

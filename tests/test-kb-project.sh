@@ -8,6 +8,10 @@ set -eu
 # BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file
 # as the script, which is silently destructive rather than merely failing. Temp-file + mv
 # behaves identically on both userlands.
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 sedi() { _e=$1; _f=$2; sed "$_e" "$_f" > "$_f.sedi.$$" && mv "$_f.sedi.$$" "$_f"; }
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -15,7 +19,7 @@ KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 kb() { sh "$KB" "$@"; }
 
-d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
+d=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
 mk() { KB_ROOT="$d" KB_DATE=2026-07-15 kb new "$1" "$2" >/dev/null; }   # type slug
 set_field() { sedi "s|^$2:.*|$2: $3|" "$1"; }
 
@@ -69,7 +73,7 @@ grep -q 'A new universal rule.' "$d/index/projections/AGENTS.md" && { echo "FAIL
 echo "ok:   --check guards projection drift without writing"
 
 # ========== additional coverage (isolated KBs) ==========
-d2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2"' EXIT
+d2=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d" "$d2"' EXIT
 mk2() { KB_ROOT="$d2" KB_DATE=2026-07-15 kb new "$1" "$2" >/dev/null; }
 for s in zzz-rule aaa-rule mmm-rule; do
   mk2 standard "$s"
@@ -103,7 +107,7 @@ cmp -s "$a2" "$g2" || { echo "FAIL: GEMINI.md not byte-identical to AGENTS.md"; 
 echo "ok:   GEMINI.md == AGENTS.md byte-for-byte"
 
 # fresh KB (never projected): --check -> exit 1, names the missing output, writes nothing
-d3=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3"' EXIT
+d3=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3"' EXIT
 KB_ROOT="$d3" KB_DATE=2026-07-15 kb new standard r >/dev/null
 set_field "$d3/standards/r.md" tier 0; set_field "$d3/standards/r.md" status active
 KB_ROOT="$d3" kb project --check >/dev/null 2>&1 && rc=0 || rc=$?
@@ -116,7 +120,7 @@ echo "ok:   --check on a fresh KB reports missing outputs without writing"
 # A projection is loaded at every session start and per subagent, so history in it is a recurring
 # cost forever, so it is kept lean by design. The rule body must survive intact; only the trailing
 # `### Provenance` section is replaced by a pointer at the source record.
-d4=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3" "$d4"' EXIT
+d4=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3" "$d4"' EXIT
 KB_ROOT="$d4" KB_DATE=2026-07-15 kb new standard prov-rule >/dev/null
 set_field "$d4/standards/prov-rule.md" tier 0
 set_field "$d4/standards/prov-rule.md" status active

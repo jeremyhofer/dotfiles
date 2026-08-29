@@ -11,6 +11,10 @@
 # Tier H is reported, never enforced.
 set -eu
 
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 OSRC="${OVERLAY_SRC:-$HOME/.local/share/chezmoi-overlay}"
 BSRC="${BASE_SRC:-$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd)}"
 STUB_MARK='FIXME(overlay-doctor)'   # scaffold stubs carry this until filled in
@@ -177,8 +181,8 @@ _emit_dirs() {
 
 echo
 echo "cross-layer safety (base <-> overlay):"
-xmark=$(mktemp "${TMPDIR:-/tmp}/xdoctor.XXXXXX"); btmp=$(mktemp "${TMPDIR:-/tmp}/xdoctor-b.XXXXXX")
-bftmp=$(mktemp "${TMPDIR:-/tmp}/xdoctor-bf.XXXXXX")
+xmark=$(mktemp "$_TMP/xdoctor.XXXXXX"); btmp=$(mktemp "$_TMP/xdoctor-b.XXXXXX")
+bftmp=$(mktemp "$_TMP/xdoctor-bf.XXXXXX")
 trap 'rm -f "$xmark" "$btmp" "$bftmp"' EXIT
 xbad() { printf '  CONFLICT    %s\n' "$*"; printf 'x\n' >> "$xmark"; }
 

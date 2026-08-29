@@ -13,6 +13,10 @@
 # already-adopted machine — resolve by `chezmoi apply <path>` (sync it) or capture custom content.
 set -eu
 
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 command -v chezmoi >/dev/null 2>&1 || { echo "adopt-audit: chezmoi not found on PATH" >&2; exit 2; }
 
 OCFG="$HOME/.config/chezmoi/overlay"; OSRC="$HOME/.local/share/chezmoi-overlay"
@@ -35,7 +39,7 @@ changed_targets() {
   have_overlay && overlay status 2>/dev/null | sed 's/^...//'
 }
 
-marker=$(mktemp "${TMPDIR:-/tmp}/adopt-audit.XXXXXX"); trap 'rm -f "$marker"' EXIT
+marker=$(mktemp "$_TMP/adopt-audit.XXXXXX"); trap 'rm -f "$marker"' EXIT
 
 changed_targets | sort -u | while IFS= read -r rel; do
   [ -n "$rel" ] || continue

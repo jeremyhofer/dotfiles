@@ -6,6 +6,10 @@
 # a .zshrc function does not exist at all. The third check is the one that would fail if someone
 # reintroduced the function: two definitions would drift, and the function would win interactively.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 co="$here/../private_dot_local/bin/executable_chezmoi-overlay"
 zshrc="$here/../dot_zshrc.tmpl"
@@ -14,7 +18,7 @@ zshrc="$here/../dot_zshrc.tmpl"
 echo "ok:   base ships chezmoi-overlay"
 
 # 1. No overlay configured -> must FAIL loudly (exit 1), unlike spell-capture's silent no-op.
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-chezmoi-overlay.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "$_TMP/test-chezmoi-overlay.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 HOME="$tmp" sh "$co" diff >"$tmp/out" 2>"$tmp/err" && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: expected exit 1 without an overlay, got ${rc:-0}"; exit 1; }
 grep -q 'overlay not set up' "$tmp/err" || { echo "FAIL: error text does not explain the cause"; exit 1; }

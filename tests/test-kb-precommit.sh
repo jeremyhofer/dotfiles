@@ -13,6 +13,10 @@
 # The test isolates from any ambient global core.hooksPath by pinning the repo's own hooks
 # dir. Run: `sh tests/test-kb-precommit.sh`.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
@@ -31,7 +35,7 @@ init_repo() {
 mk_kb_shim() { mkdir -p "$1"; printf '#!/bin/sh\nexec sh "%s" "$@"\n' "$KB" > "$1/kb"; chmod +x "$1/kb"; }
 
 # ---------- KB == repo root, with a non-record README present ----------
-r=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r"' EXIT
+r=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$r"' EXIT
 init_repo "$r"
 bin="$r/bin"; mk_kb_shim "$bin"
 printf '# project readme\nnot a KB record\n' > "$r/README.md"   # must be ignored by lint
@@ -92,7 +96,7 @@ git -C "$r" add -A
 echo "ok:   regenerating the index clears the gate"
 
 # ---------- KB nested BELOW the git top level ----------
-r2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r" "$r2"' EXIT
+r2=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$r" "$r2"' EXIT
 init_repo "$r2"
 bin2="$r2/bin"; mk_kb_shim "$bin2"
 kbroot="$r2/kb"; mkdir -p "$kbroot"; : > "$kbroot/kb.toml"
@@ -109,7 +113,7 @@ echo "ok:   hook validates a KB nested below the git top level"
 KB_ROOT="$r" kb install-hooks "$r" >/dev/null 2>&1 || { echo "FAIL: re-install should be idempotent"; exit 1; }
 echo "ok:   re-install is idempotent"
 
-r3=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$r" "$r2" "$r3"' EXIT
+r3=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$r" "$r2" "$r3"' EXIT
 init_repo "$r3"
 printf '#!/bin/sh\nexit 0\n' > "$r3/.git/hooks/pre-commit"; chmod +x "$r3/.git/hooks/pre-commit"
 KB_ROOT="$r3" kb install-hooks "$r3" >/dev/null 2>&1 && rc=0 || rc=$?

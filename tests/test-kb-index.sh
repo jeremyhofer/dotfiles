@@ -3,12 +3,16 @@
 # <root>/index/backlinks.md (every reverse edge, generated from the forward edges). Output
 # is deterministic (sorted, byte-stable across runs). Run: `sh tests/test-kb-index.sh`.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 kb() { sh "$KB" "$@"; }
 
-d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
+d=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
 mk() { KB_ROOT="$d" KB_DATE=2026-07-15 kb new context "$1" >/dev/null; }
 mk a; mk b; mk c
 KB_ROOT="$d" kb link a --depends-on b
@@ -100,7 +104,7 @@ echo "ok:   --check green after regeneration"
 # Both halves are asserted, because the whole point of the flag is that the two differ: a
 # generic hook needs the tolerant form, and a repo that always publishes wants the strict
 # one so a DELETED index still goes red.
-d2=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2"' EXIT
+d2=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d" "$d2"' EXIT
 KB_ROOT="$d2" KB_DATE=2026-07-15 kb new context z >/dev/null
 KB_ROOT="$d2" kb index --check >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: strict --check on a never-generated index should exit 1, got ${rc:-0}"; exit 1; }
@@ -132,7 +136,7 @@ echo "ok:   --if-present still red on a half-generated index"
 # which is why the assertion here is on the generated INDEX rather than on any error text.
 # It cannot fail on Linux -- which is the point: it is only meaningful when the suite is run
 # on both machines, and it went unobserved until the first macOS run on 2026-08-29.
-d3=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3"' EXIT
+d3=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3"' EXIT
 KB_ROOT="$d3" KB_DATE=2026-07-15 kb new context ghost >/dev/null
 KB_ROOT="$d3" KB_DATE=2026-07-15 kb new context holder >/dev/null
 hf=$(grep -rl '^name: holder$' "$d3" | head -1)

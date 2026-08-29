@@ -3,9 +3,13 @@
 # and passes when the deployed content matches source (exit 0). Stubs `chezmoi` on PATH so no real
 # chezmoi/source is needed. No overlay is configured, so only the base comparison is exercised.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/adopt-audit"
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-adopt-audit.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "$_TMP/test-adopt-audit.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home" "$tmp/bin"
 
 # Stub chezmoi: `status` reports one would-change target (.foo); `cat` echoes the base-source content

@@ -8,11 +8,15 @@
 # Rejects missing src / bad type / bad (unconfigured) domain / an existing slug.
 # Run directly: `sh tests/test-kb-promote.sh`.
 set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 
-d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
+d=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
 xdg="$d/xdg"; mkdir -p "$xdg/kb"
 cat > "$xdg/kb/config.toml" <<EOF
 [domain.devel]

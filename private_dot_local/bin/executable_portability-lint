@@ -80,7 +80,7 @@ ERROR, WARN = "error", "warn"
 RULES = [
     (
         "sed-in-place", ERROR,
-        re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*-i\b"),
+        re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*i\b"),
         "There is NO portable spelling of sed's in-place flag. GNU takes `-i` with no "
         "argument; BSD requires a backup suffix, so `sed -i 's/a/b/' f` consumes the "
         "EXPRESSION as the suffix and then treats f as the script -- silently destructive. "
@@ -99,8 +99,21 @@ RULES = [
         None,
     ),
     (
+        "sed-newline-replacement", ERROR,
+        re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*'[^']*\\n[^']*'"),
+        "BSD/macOS sed does not interpret \\n in a REPLACEMENT as a newline -- it emits a literal "
+        "backslash-n. `printf 'a;b' | sed -E 's/;/\\n/g'` gives two lines on GNU and one on BSD. "
+        "Anything that then iterates the result line-by-line silently sees a single line; this "
+        "defeated the segment splitting in a secret-leak guard, so it allowed on macOS what it "
+        "denied on Linux. (Same family as sed-bracket-tab: BSD sed does not expand \\-escapes where "
+        "GNU does.)",
+        "Use awk: awk '{gsub(/PATTERN/, \"\\n\"); print}'. awk means a newline on both userlands, "
+        "and its line-at-a-time processing splits embedded newlines for free.",
+        None,
+    ),
+    (
         "stat-c", ERROR,
-        re.compile(r"(?<![\w-])stat\s+(?:-[A-Za-z-]+\s+)*-c\b"),
+        re.compile(r"(?<![\w-])stat\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*c\b"),
         "BSD stat has no -c; it exits non-zero printing nothing, so a `2>/dev/null` caller "
         "silently receives an empty string.",
         "Two-spelling helper: stat -c %Y \"$1\" 2>/dev/null || stat -f %m \"$1\" 2>/dev/null",
@@ -108,7 +121,7 @@ RULES = [
     ),
     (
         "date-d", ERROR,
-        re.compile(r"(?<![\w-])date\s+(?:-[A-Za-z-]+\s+)*-d\b"),
+        re.compile(r"(?<![\w-])date\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*d\b"),
         "BSD date has no -d. Note this one is NOT merely a spelling difference: GNU -d takes "
         "free-form input and BSD `-j -f` demands the format up front, with no free-form mode "
         "at all, so the BSD branch must enumerate the shapes it accepts.",
@@ -119,14 +132,14 @@ RULES = [
     ),
     (
         "base64-w", ERROR,
-        re.compile(r"(?<![\w-])base64\s+(?:-[A-Za-z-]+\s+)*-w"),
+        re.compile(r"(?<![\w-])base64\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*w"),
         "BSD base64 has no -w; it does not wrap by default.",
         "Use plain `base64` and, where GNU wrapping must be undone, pipe through `tr -d '\\n'`.",
         re.compile(r"\|\|[^|]*\bbase64\b"),   # the two-spelling idiom is the FIX, never a finding
     ),
     (
         "grep-P", ERROR,
-        re.compile(r"(?<![\w-])grep\s+(?:-[A-Za-z-]+\s+)*-P\b"),
+        re.compile(r"(?<![\w-])grep\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*P\b"),
         "BSD grep has no -P (no PCRE).",
         "Rewrite the pattern as an ERE and use grep -E, or shell out to perl -ne.",
         re.compile(r"\|\|[^|]*\bgrep\s+-E\b"),   # the two-spelling idiom is the FIX, never a finding
@@ -136,6 +149,17 @@ RULES = [
         re.compile(r"(?<![\w-])find\b[^\n]*?\s-printf\b"),
         "BSD find has no -printf.",
         "Use -exec with stat, or -print0 piped into a loop.",
+        None,
+    ),
+    (
+        "realpath-m", ERROR,
+        re.compile(r"(?<![\w-])realpath\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*m\b"),
+        "macOS HAS realpath but NOT its -m flag (normalize without requiring existence); it exits "
+        "with 'illegal option'. A caller written as `realpath -m x || printf %s x` therefore falls "
+        "back to the UNNORMALIZED path on darwin, which is silent and worse than failing -- it "
+        "defeated a `..`-traversal check in an rm guard, allowing on macOS what was denied on Linux.",
+        "Normalize lexically in shell (split on / and collapse . and ..), then resolve symlinks for "
+        "the deepest EXISTING ancestor with cd + pwd -P. Do not rely on the || fallback.",
         None,
     ),
     (
