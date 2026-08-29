@@ -125,4 +125,24 @@ KB_ROOT="$d2" kb index --check --if-present >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: half-generated index should be drift even with --if-present, got ${rc:-0}"; exit 1; }
 echo "ok:   --if-present still red on a half-generated index"
 
+# Edge targets must survive frontmatter trimming EXACTLY, including a name ending in `t`
+# and a list written with padding. This is a darwin regression guard: BSD sed does not read
+# \t as a tab inside a bracket expression, so a `[ \t]` trim strips a literal trailing `t`
+# and `ghost` silently becomes `ghos`. It reached backlinks generation, not just a message,
+# which is why the assertion here is on the generated INDEX rather than on any error text.
+# It cannot fail on Linux -- which is the point: it is only meaningful when the suite is run
+# on both machines, and it went unobserved until the first macOS run on 2026-08-29.
+d3=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d" "$d2" "$d3"' EXIT
+KB_ROOT="$d3" KB_DATE=2026-07-15 kb new context ghost >/dev/null
+KB_ROOT="$d3" KB_DATE=2026-07-15 kb new context holder >/dev/null
+hf=$(grep -rl '^name: holder$' "$d3" | head -1)
+sed 's/^depends-on: .*/depends-on: [ ghost ]/' "$hf" > "$hf.t" && mv "$hf.t" "$hf"
+KB_ROOT="$d3" kb index >/dev/null
+grep -qx '## ghost' "$d3/index/backlinks.md" \
+  || { echo "FAIL: edge target 'ghost' was mangled (BSD bracket-tab trim?); backlinks has:"; \
+       grep '^## ' "$d3/index/backlinks.md"; exit 1; }
+grep -qx '## ghos' "$d3/index/backlinks.md" \
+  && { echo "FAIL: edge target truncated to 'ghos'"; exit 1; }
+echo "ok:   padded edge target ending in 't' survives trimming exactly"
+
 echo "PASS"

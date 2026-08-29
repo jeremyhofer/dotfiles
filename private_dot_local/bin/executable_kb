@@ -251,7 +251,13 @@ kb_fm_list() {
     \[*\])
       _inner=${_v#\[}
       _inner=${_inner%\]}
-      printf '%s' "$_inner" | tr ',' '\n' | sed 's/^[ \t]*//; s/[ \t]*$//' | grep -v '^$' || true
+      # [[:blank:]] rather than [ \t]: inside a BRACKET EXPRESSION, BSD/macOS sed does not
+      # interpret \t as a tab -- it reads the set as {space, backslash, t}. So the trailing
+      # trim stripped a literal 't', and an edge target named e.g. `ghost` silently became
+      # `ghos` on darwin. Silently WRONG, not an error, and it reached lint messages,
+      # backlinks generation and rename alike. Caught 2026-08-29, the first time this suite
+      # was ever run on the Mac. POSIX classes mean the same thing on both userlands.
+      printf '%s' "$_inner" | tr ',' '\n' | sed 's/^[[:blank:]]*//; s/[[:blank:]]*$//' | grep -v '^$' || true
       ;;
     *) : ;;
   esac
