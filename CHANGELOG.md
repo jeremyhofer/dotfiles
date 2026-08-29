@@ -26,6 +26,28 @@ Entries are newest first.
 
 ---
 
+## 2026-08-29
+
+**ACTION (KB repos only) — `kb install-hooks` now writes a wider hook; re-run it to pick that up.**
+`kb` 0.3.0 adds `kb index --check`, the missing sibling of the existing `kb project --check`, and
+the generated pre-commit now runs all three checks (`lint`, `project --check --if-present`,
+`index --check --if-present`) instead of `lint` alone. An already-installed hook is NOT rewritten
+by pulling the base — it is a file in each repo's `.git/hooks`, which chezmoi does not manage — so
+a machine keeps the old lint-only hook until you re-run `kb install-hooks` in that repo. Nothing
+breaks if you don't; you simply keep the old, narrower gate.
+
+Why it exists: a KB has two derived outputs, and only one of them was checkable. Between
+2026-08-17 and 2026-08-29 a KB on this fleet left `index/sources-of-truth.md` unregenerated —
+missing an entry for a topic adopted in that window, plus four superseded descriptions — while
+every projection stayed correct. The fresh layer is what hid the stale one.
+
+`--check` remains STRICT by default (a KB with content and no generated output is drift).
+`--if-present` downgrades "never generated" to a pass, and exists for the generic hook, which has
+to work in a KB that has deliberately published nothing yet. A repo that always publishes should
+gate with the strict form, which additionally catches a DELETED output.
+
+---
+
 ## 2026-08-15
 
 - **`chezmoi-overlay` is now a real script**, not a zsh function (`~/.local/bin/chezmoi-overlay`).
