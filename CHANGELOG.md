@@ -41,6 +41,23 @@ Why it exists: a KB has two derived outputs, and only one of them was checkable.
 missing an entry for a topic adopted in that window, plus four superseded descriptions — while
 every projection stayed correct. The fresh layer is what hid the stale one.
 
+**Nothing ran the test suite — now something does.** The base ships 20 suites and had no
+runner, no CI and no hook; they were run by hand, one file at a time, when someone remembered.
+Added `tests/run-all.sh` (`sh tests/run-all.sh [filter]`, ~10s for all of them), and the git-hooks
+installer now also writes a `pre-commit` into the source repo that runs it when anything under
+`private_dot_local/bin/`, `setup/` or `tests/` is staged. Docs- and config-only commits are not
+taxed. Escape hatch for a deliberate WIP commit: `SKIP_BASE_TESTS=1 git commit …`.
+
+Judge suites by EXIT CODE, not by grepping for a `PASS` line — the suites do not share one
+convention (`test-git-snapshot.sh` ends in `passed 13, failed 0`), and an ad-hoc grep-based runner
+reports it as failing while it is green. That misreport happened on the first whole-suite run.
+
+**Fixed: a tracked symlink in the base had been dangling since the `naming-build-tasks` skill moved
+to the private layer.** The move was deliberate; the base's pointer at it was simply not removed
+with it. The only symptom was `chezmoi: stat …: no such file or directory` on stdout from
+`chezmoi execute-template` / `chezmoi diff`, which silently corrupts the output of anything
+capturing them. New `tests/test-repo-hygiene.sh` fails on any dangling TRACKED symlink.
+
 `--check` remains STRICT by default (a KB with content and no generated output is drift).
 `--if-present` downgrades "never generated" to a pass, and exists for the generic hook, which has
 to work in a KB that has deliberately published nothing yet. A repo that always publishes should
