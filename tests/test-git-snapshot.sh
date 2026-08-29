@@ -22,6 +22,10 @@ newrepo() {
   echo "$r"
 }
 refs() { git -C "$1" for-each-ref --format='%(refname)' refs/git-snapshot/; }
+# nrefs REPO -- count refs. NOT `wc -l` compared to a bare number: BSD/macOS wc PADS its
+# output with leading spaces, so "0" != "       0" and the assertion fails on the Mac
+# while passing on Linux. tr strips it on both.
+nrefs() { refs "$1" | wc -l | tr -d "[:space:]"; }
 
 echo "== tracked changes survive a real discard =="
 r=$(newrepo)
@@ -49,7 +53,7 @@ r=$(newrepo)
 out=$(bash "$SNAP" -C "$r" --untracked 2>&1); rc=$?
 eq "exit 0" "$rc" "0"
 eq "no output" "$out" ""
-eq "no ref created" "$(refs "$r" | wc -l)" "0"
+eq "no ref created" "$(nrefs "$r")" "0"
 rm -rf "$r"
 
 echo "== untracked files survive git clean -fd =="
@@ -73,14 +77,14 @@ echo "== two snapshots in the same second do not overwrite each other =="
 r=$(newrepo)
 printf 'first\n' > "$r/a.txt";  bash "$SNAP" -C "$r" >/dev/null 2>&1
 printf 'second\n' > "$r/a.txt"; bash "$SNAP" -C "$r" >/dev/null 2>&1
-eq "two distinct refs" "$(refs "$r" | wc -l)" "2"
+eq "two distinct refs" "$(nrefs "$r")" "2"
 rm -rf "$r"
 
 echo "== escape hatch and non-repo =="
 r=$(newrepo)
 printf 'dirty\n' > "$r/a.txt"
 GIT_SNAPSHOT_SKIP=1 bash "$SNAP" -C "$r" >/dev/null 2>&1
-eq "GIT_SNAPSHOT_SKIP=1 makes no ref" "$(refs "$r" | wc -l)" "0"
+eq "GIT_SNAPSHOT_SKIP=1 makes no ref" "$(nrefs "$r")" "0"
 rm -rf "$r"
 d=$(mktemp -d)
 bash "$SNAP" -C "$d" >/dev/null 2>&1

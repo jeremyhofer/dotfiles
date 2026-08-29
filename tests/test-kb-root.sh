@@ -8,7 +8,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 
-d=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
+# macOS sets TMPDIR WITH a trailing slash, so the naive "${TMPDIR:-/tmp}/kb.XXXXXX" yields a
+# path containing "//". That is harmless for file I/O and fatal here: this suite compares
+# kb's resolved root against $d TEXTUALLY, and kb returns the normalized form. Strip it.
+_tmp=${TMPDIR:-/tmp}; _tmp=${_tmp%/}
+d=$(mktemp -d "$_tmp/kb.XXXXXX"); trap 'rm -rf "$d"' EXIT
 # Empty XDG config so the config layer is skipped unless a case sets it explicitly.
 emptyxdg="$d/empty-xdg"; mkdir -p "$emptyxdg"
 kb() { XDG_CONFIG_HOME="$emptyxdg" sh "$KB" "$@"; }

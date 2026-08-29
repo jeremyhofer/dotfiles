@@ -7,6 +7,12 @@
 #   (e) a `sensitivity: restricted` record not under an encrypted (.age) path
 # and exits 0 on a clean KB. Run directly: `sh tests/test-kb-lint.sh`.
 set -eu
+# sedi EXPR FILE -- in-place edit, portably. Deliberately NOT the GNU in-place flag: on
+# BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file
+# as the script, which is silently destructive rather than merely failing. Temp-file + mv
+# behaves identically on both userlands.
+sedi() { _e=$1; _f=$2; sed "$_e" "$_f" > "$_f.sedi.$$" && mv "$_f.sedi.$$" "$_f"; }
+
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
@@ -28,7 +34,7 @@ KB_ROOT="$d" kb lint 2>&1 | grep -q 'ghost' || { echo "FAIL: reason should name 
 echo "ok:   dangling edge caught, target named"
 
 # fix the edge -> clean (exit 0)
-sed -i 's/\[ghost\]/[]/' "$d/context/a.md"
+sedi 's/\[ghost\]/[]/' "$d/context/a.md"
 KB_ROOT="$d" kb lint >/dev/null 2>&1 || { echo "FAIL: valid KB should lint clean"; exit 1; }
 echo "ok:   valid KB lints clean"
 
@@ -38,7 +44,7 @@ KB_ROOT="$d" kb lint >/dev/null 2>&1 || { echo "FAIL: resolvable edge should lin
 echo "ok:   resolvable edge lints clean"
 
 # (a) invalid enum -> exit 1
-d=$(newkb); emit "$d/context/a.md" a 'related: []'; sed -i 's/^type: context$/type: bogus/' "$d/context/a.md"
+d=$(newkb); emit "$d/context/a.md" a 'related: []'; sedi 's/^type: context$/type: bogus/' "$d/context/a.md"
 KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: invalid enum should exit 1, got ${rc:-0}"; exit 1; }
 echo "ok:   invalid enum caught"
@@ -65,7 +71,7 @@ echo "ok:   duplicate name caught"
 
 # (e) restricted in a plaintext .md -> exit 1 (must be encrypted at rest). Once it is
 #     encrypted (.md.age ciphertext) it is opaque to lint and skipped.
-d=$(newkb); emit "$d/context/a.md" a 'related: []'; sed -i 's/^sensitivity: internal$/sensitivity: restricted/' "$d/context/a.md"
+d=$(newkb); emit "$d/context/a.md" a 'related: []'; sedi 's/^sensitivity: internal$/sensitivity: restricted/' "$d/context/a.md"
 KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: restricted in plaintext .md should exit 1, got ${rc:-0}"; exit 1; }
 KB_ROOT="$d" kb lint 2>&1 | grep -qi 'restricted' || { echo "FAIL: reason should mention 'restricted'"; exit 1; }
@@ -77,13 +83,13 @@ echo "ok:   restricted-path rule enforced (plaintext flagged; ciphertext skipped
 # contains the substring ".age" (suffix check, not substring).
 base=$(mktemp -d "${TMPDIR:-/tmp}/kb.XXXXXX"); trap 'rm -rf "$base"' EXIT
 root="$base/notes.agenda"; mkdir -p "$root/context"
-emit "$root/context/a.md" a 'related: []'; sed -i 's/^sensitivity: internal$/sensitivity: restricted/' "$root/context/a.md"
+emit "$root/context/a.md" a 'related: []'; sedi 's/^sensitivity: internal$/sensitivity: restricted/' "$root/context/a.md"
 KB_ROOT="$root" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: restricted plaintext under a '.age'-substring dir should still be flagged, got ${rc:-0}"; exit 1; }
 echo "ok:   restricted check is a .md.age suffix, not a substring"
 
 # (f) a non-kebab-case name (here with an underscore + uppercase) is flagged
-d=$(newkb); emit "$d/context/a.md" a 'related: []'; sed -i 's/^name: a$/name: Bad_Name/' "$d/context/a.md"
+d=$(newkb); emit "$d/context/a.md" a 'related: []'; sedi 's/^name: a$/name: Bad_Name/' "$d/context/a.md"
 KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL: non-kebab name should exit 1, got ${rc:-0}"; exit 1; }
 KB_ROOT="$d" kb lint 2>&1 | grep -qi 'name' || { echo "FAIL: reason should mention the invalid name"; exit 1; }
