@@ -36,15 +36,21 @@ borders fall back to nothing.
 
 ## Probe when something looks off
 
-A CSS token typo **falls through silently** — no error, no warning, just a missing border. One
-probe reveals it instantly:
+A CSS token typo **falls through silently** — no error, no warning, just a missing border:
 
 ```sh
-ui-shot <url> --probe '.suspect-element'      # prints computed borderTop, color, display, …
+ui-shot <url> --probe '.suspect' --token '--groove-color-border-default'
 ```
 
-A wrong token reads as `borderTop: "0px none rgb(0, 0, 0)"`. That is the signature. The bug above
-took a minute to find once anyone bothered to look at computed styles.
+**The computed border alone is NOT diagnostic, and an earlier version of this skill said it was.**
+A typo'd token and an element that is *correctly borderless* both compute to
+`borderTop: "0px none rgb(...)"` — byte-identical. Borderless is the overwhelmingly common case,
+so reading that as "wrong token" produces a false positive on exactly the layout primitives a
+reviewer probes first. Measured against a real stylesheet by finmodel-canonical, 2026-08-30.
+
+**`--token` is the check that discriminates**: an undefined custom property resolves to empty
+(`UNDEFINED`), a defined one to its value. Use `--probe` to see what the element actually rendered,
+and `--token` to decide whether the property it names exists at all.
 
 ## What to actually look for
 
@@ -78,3 +84,19 @@ do and get a yes first.
 
 Prefer `use: { headless: true }` in the project's `playwright.config.*` so a stray CLI flag cannot
 override the default silently.
+
+## Other things the tool does, that reviews keep needing
+
+- `--color-scheme dark|light` — renders the media condition. A theme whose dark arm is a
+  `@media (prefers-color-scheme: dark)` query is otherwise **untestable**, and a light-pin that
+  exists to defend against it cannot be verified without rendering the case it defends against.
+- `--wait-for '.sel'` — `networkidle` is the wrong primitive for anything polling or holding a
+  socket; it resolves early or never. Wait on the thing you are reviewing instead.
+- `--width` / `--height` — `--width 390` gives the mobile layout. Output pixels are
+  `--width × --scale`.
+- **Heed the `WARNING` about crop size.** Selecting a page-level wrapper produces a "crop" the size
+  of the page, which silently loses the entire native-scale benefit — and a wrapper class is the
+  easiest selector to reach for.
+- **A `--selector` that matches nothing exits non-zero.** It used to exit 0, which meant a typo
+  left you holding only the scaled-down full page while the run reported success — failing back
+  into precisely the bug this skill exists to prevent.

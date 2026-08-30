@@ -26,27 +26,50 @@
 #
 #   --selector  capture this element alone, at native scale. Repeatable. This is the capture a
 #               reviewer should actually look at; the full-page one is for layout regressions.
-#   --probe     print computed styles for the first match. Repeatable. A CSS token typo falls
-#               through silently and one probe reveals it -- that is how the originating bug was
-#               found, in a minute, after a redesign had already been declared done.
+#   --color-scheme dark|light   render under that `prefers-color-scheme`. Not cosmetic: a theme
+#               whose dark arm is a media query is otherwise UNTESTABLE, and a light-pin that
+#               exists to defend against it cannot be verified without rendering the condition.
+#   --wait-for CSS   wait for this selector to be visible before capturing (networkidle only
+#               otherwise, which does not cover deferred or lazily-revealed content).
+#   --height N  viewport height (default 900). Mostly moot under fullPage, but it is what makes
+#               "what is above the fold" askable.
+#   --probe     print computed styles for the first match. Repeatable.
+#   --token --name   resolve a CSS custom property and say whether it is DEFINED. Repeatable.
+#
+# THE COMPUTED BORDER ALONE IS NOT DIAGNOSTIC, and an earlier version of this help claimed it was.
+# A typo'd token and an element that is CORRECTLY borderless both compute to
+# `borderTop: "0px none rgb(...)"` -- byte-identical. Since borderless is the overwhelmingly
+# common case, reading that as "wrong token" invites a false positive on exactly the layout
+# primitives a reviewer probes first. Measured by finmodel-canonical against its real stylesheet,
+# 2026-08-30. `--token` is the check that actually discriminates: an undefined custom property
+# resolves to empty, a defined one to its value. Use both together.
+#
+#   --out DIR   where captures go (default: a fresh mktemp dir, printed).
+#   --scale N   deviceScaleFactor, default 2. Output pixels are --width x --scale.
+#   --width N   viewport width in CSS pixels, default 1280.
 set -eu
 
-url=""; out=""; scale=2; width=1280; sels=""; probes=""
+url=""; out=""; scale=2; width=1280; height=900; sels=""; probes=""; scheme=""; waitfor=""; tokens=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --selector) sels="$sels$2
 "; shift 2 ;;
     --probe)    probes="$probes$2
 "; shift 2 ;;
+    --token)    tokens="$tokens$2
+"; shift 2 ;;
     --out)      out=$2; shift 2 ;;
     --scale)    scale=$2; shift 2 ;;
     --width)    width=$2; shift 2 ;;
-    --headed|--ui|--debug)
+    --height)   height=$2; shift 2 ;;
+    --color-scheme) scheme=$2; shift 2 ;;
+    --wait-for) waitfor=$2; shift 2 ;;
+    --headed|--ui|--debug|--trace|--trace=*)
       printf '%s\n' "ui-shot: $1 is deliberately not supported." >&2
       printf '%s\n' "  A visible window interrupts whoever is at the keyboard, at a time they did not choose." >&2
       printf '%s\n' "  Ask first, then run the project's playwright directly if it is really needed." >&2
       exit 2 ;;
-    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
     -*) printf 'ui-shot: unknown option %s\n' "$1" >&2; exit 2 ;;
     *)  [ -z "$url" ] || { printf 'ui-shot: more than one URL given\n' >&2; exit 2; }
         url=$1; shift ;;
@@ -75,24 +98,32 @@ script=$(mktemp "${TMPDIR:-/tmp}/ui-shot.XXXXXX.cjs")
 trap 'rm -f "$script"' EXIT INT TERM
 cat > "$script" <<'NODE'
 const { chromium } = require('playwright');
-const [url, out, scale, width, selsRaw, probesRaw] = process.argv.slice(2);
+const [url, out, scale, width, selsRaw, probesRaw, scheme, height, waitFor, tokensRaw] = process.argv.slice(2);
 const split = s => s.split('\n').map(x => x.trim()).filter(Boolean);
 (async () => {
   const browser = await chromium.launch();              // headless: the default, and not overridable here
   const page = await browser.newPage({
-    viewport: { width: Number(width), height: 900 },
+    viewport: { width: Number(width), height: Number(height) },
     deviceScaleFactor: Number(scale),                   // native scale, so 1px detail survives
+    ...(scheme ? { colorScheme: scheme } : {}),         // render the media condition, not just the default
   });
   await page.goto(url, { waitUntil: 'networkidle' });
+  if (waitFor) await page.locator(waitFor).first().waitFor({ state: 'visible', timeout: 15000 });
   await page.screenshot({ path: `${out}/full.png`, fullPage: true });
   console.log(`full      ${out}/full.png`);
-  let i = 0;
+  let i = 0, missed = 0;
   for (const sel of split(selsRaw)) {
     const el = page.locator(sel).first();
-    if (await el.count() === 0) { console.log(`MISSING   selector matched nothing: ${sel}`); continue; }
+    if (await el.count() === 0) { console.log(`MISSING   selector matched nothing: ${sel}`); missed++; continue; }
     const p = `${out}/crop-${++i}.png`;
     await el.screenshot({ path: p });
+    const box = await el.boundingBox();
+    const doc = await page.evaluate(() => ({ w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight }));
+    const frac = box && doc.w && doc.h ? (box.width * box.height) / (doc.w * doc.h) : 0;
     console.log(`crop      ${p}   (${sel})`);
+    // Selecting a page-level wrapper produces a "crop" the size of the page, which loses the
+    // native-scale benefit silently -- and a wrapper class is the easiest selector to reach for.
+    if (frac > 0.5) console.log(`WARNING   that crop is ${Math.round(frac*100)}% of the page: it will be scaled down like the full shot. Select a smaller element.`);
   }
   for (const sel of split(probesRaw)) {
     const got = await page.evaluate(s => {
@@ -103,8 +134,21 @@ const split = s => s.split('\n').map(x => x.trim()).filter(Boolean);
     }, sel);
     console.log(`probe     ${sel}\n${got ? JSON.stringify(got, null, 2).split('\n').map(l=>'          '+l).join('\n') : '          (no match)'}`);
   }
+  for (const tok of split(tokensRaw)) {
+    const v = await page.evaluate(t => {
+      const e = document.querySelector(':root');
+      return getComputedStyle(e).getPropertyValue(t);
+    }, tok);
+    console.log(`token     ${tok} -> ${v && v.trim() ? v.trim() : 'UNDEFINED (this is the typo signature)'}`);
+  }
   await browser.close();
+  // A --selector that matches nothing is a FAILURE, not a note. The crop is the entire product:
+  // a selector typo is the likeliest single mistake here, and on exit 0 it leaves the reviewer
+  // holding only the full-page shot -- which is the scaled-down false confidence this tool exists
+  // to remove. It would fail back INTO the original bug, quietly, reporting success.
+  // Found by russ-canonical, 2026-08-30, validating against real pages.
+  if (missed > 0) { console.error(`ui-shot: ${missed} selector(s) matched nothing -- no crop was produced`); process.exit(1); }
 })().catch(e => { console.error('ui-shot: ' + e.message); process.exit(1); });
 NODE
 
-NODE_PATH="$nm" node "$script" "$url" "$out" "$scale" "$width" "$sels" "$probes"
+NODE_PATH="$nm" node "$script" "$url" "$out" "$scale" "$width" "$sels" "$probes" "$scheme" "$height" "$waitfor" "$tokens"

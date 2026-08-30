@@ -43,4 +43,33 @@ echo "ok:   still captures at native scale (deviceScaleFactor)"; pass=$((pass+1)
 
 # Count what actually ran. A harness that reports a number it did not derive is the same defect
 # class as everything this suite is guarding against.
+# ---------- a selector that matches nothing must FAIL ----------
+# The crop is the entire product. A selector typo is the likeliest single mistake here, and on
+# exit 0 it leaves the reviewer holding only the full-page shot -- which is the scaled-down false
+# confidence this tool exists to remove. It would fail back INTO the original bug, quietly,
+# reporting success. Found by russ-canonical validating against real pages, 2026-08-30.
+grep -q 'missed > 0' "$TOOL" \
+  || { echo "FAIL: a no-match selector no longer fails the run"; exit 1; }
+echo "ok:   a --selector matching nothing is a failure, not a note"; pass=$((pass+1))
+
+grep -q 'colorScheme' "$TOOL" \
+  || { echo "FAIL: no prefers-color-scheme emulation"; exit 1; }
+echo "ok:   can render under a prefers-color-scheme condition"; pass=$((pass+1))
+
+# Functional, when a project Playwright is reachable. Source greps above cannot show that the
+# exit code actually changes; this can. Skipped rather than faked where nothing is installed.
+pw=$(find "$HOME/Devel" -maxdepth 6 -type d -path '*/node_modules/playwright' 2>/dev/null | head -1)
+if [ -n "$pw" ]; then
+  proj=${pw%/node_modules/playwright}
+  printf '<html><body><div id="row" style="border-top:1px solid #ddd">r</div></body></html>' > "$d/p.html"
+  ( cd "$proj" && sh "$TOOL" "file://$d/p.html" --selector '#row'  --out "$d/o1" >/dev/null 2>&1 ) \
+    && { echo "ok:   a matching selector still exits 0"; pass=$((pass+1)); } \
+    || { echo "FAIL: over-corrected -- a VALID selector now fails"; exit 1; }
+  ( cd "$proj" && sh "$TOOL" "file://$d/p.html" --selector '#nope' --out "$d/o2" >/dev/null 2>&1 ) \
+    && { echo "FAIL: a no-match selector still exits 0 -- the crop silently absent"; exit 1; } \
+    || { echo "ok:   a no-match selector exits non-zero (functional)"; pass=$((pass+1)); }
+else
+  echo "skip: no project Playwright reachable; functional selector checks not run"
+fi
+
 printf '\n%d passed\n' "$pass"
