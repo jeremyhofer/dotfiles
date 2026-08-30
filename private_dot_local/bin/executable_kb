@@ -276,6 +276,19 @@ kb_body() {
   ' "$1"
 }
 
+# The body with CODE removed -- fenced blocks and inline code spans. The no-wikilinks-in-prose
+# rule is about PROSE: a `[[` inside code is a regex, a shell glob, or a doubled test bracket,
+# none of which is a relationship claim and none of which belongs in frontmatter edges. Checking
+# the raw body rejected a Tier-0 commit whose only offence was quoting a character class while
+# DESCRIBING the wikilink convention -- i.e. the rule fired on documentation OF itself, which is
+# the one place the construct has to be writable.
+kb_prose() {
+  kb_body "$1" | awk '
+    /^[[:space:]]*```/ { infence = !infence; next }
+    !infence
+  ' | sed 's/`[^`]*`//g'
+}
+
 # Record zones (a record's type maps to one of these dirs; see kb_zone_for_type). Records
 # only ever live in a zone, so anything else under the root (README, generated index/,
 # .templates/, kb.toml) is not a record.
@@ -362,8 +375,9 @@ kb_lint_file() {
     _frc=1
   fi
 
-  # prose must be self-contained: no `[[` wikilinks in the body
-  if kb_body "$_f" | grep -q '\[\['; then
+  # prose must be self-contained: no `[[` wikilinks in the body (code spans/fences exempt --
+  # see kb_prose; inside code a `[[` is a regex or a shell test, not a relationship claim)
+  if kb_prose "$_f" | grep -q '\[\['; then
     echo "$_f: '[[' wikilink in prose (relationships belong in typed frontmatter edges)" >&2
     _frc=1
   fi
