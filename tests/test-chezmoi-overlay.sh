@@ -36,4 +36,30 @@ if grep -qE '^[[:space:]]*chezmoi-overlay\(\)' "$zshrc"; then
 fi
 echo "ok:   zshrc defines no shadowing function"
 
+# 4. It must not depend on an inherited PATH to find chezmoi ITSELF.
+#    This script exists because a shell FUNCTION was unreachable over ssh -- then ran a bare
+#    `exec chezmoi`, leaving its DEPENDENCY with the identical problem one level down. On a
+#    Homebrew machine chezmoi lives in /opt/homebrew/bin, which .zshenv does not add to a
+#    non-interactive PATH, so `ssh <host> chezmoi-overlay diff` died 127 on stderr while stdout
+#    stayed empty -- and a caller filtering stdout for diff headers read that as "in sync".
+#    Measured 2026-08-30 on the darwin node: reported nothing pending while 3 commits behind.
+grep -q 'command -v chezmoi' "$co" \
+  || { echo "FAIL: chezmoi-overlay does not resolve the chezmoi binary; a bare exec depends on PATH"; exit 1; }
+grep -q '/opt/homebrew/bin/chezmoi' "$co" \
+  || { echo "FAIL: no Homebrew prefix in the fallback search; that is the machine that breaks"; exit 1; }
+grep -qE 'exec "\$CHEZMOI"' "$co" \
+  || { echo "FAIL: still exec'ing chezmoi by bare name rather than the resolved path"; exit 1; }
+echo "ok:   resolves the chezmoi binary rather than trusting inherited PATH"
+
+#    ...and when it genuinely cannot find one, it must fail LOUDLY rather than return a silent 0.
+ctl="$(mktemp -d)"
+sed 's#/opt/homebrew/bin/chezmoi /usr/local/bin/chezmoi "$HOME/.local/bin/chezmoi" /usr/bin/chezmoi#/nope/a /nope/b#' "$co" > "$ctl/co"
+mkdir -p "$ctl/emptybin"
+# Capture status WITHOUT letting `set -e` abort on the very non-zero exit being asserted.
+if out=$(env -i HOME="$HOME" PATH="$ctl/emptybin" /bin/sh "$ctl/co" diff 2>&1); then rc=0; else rc=$?; fi
+rm -rf "$ctl"
+[ "$rc" -eq 127 ] || { echo "FAIL: chezmoi absent everywhere gave exit $rc, not a loud 127"; exit 1; }
+case "$out" in *"not on PATH"*) ;; *) echo "FAIL: silent failure; said: $out"; exit 1 ;; esac
+echo "ok:   fails loudly (127, naming the PATH) when chezmoi cannot be found at all"
+
 echo "PASS"
