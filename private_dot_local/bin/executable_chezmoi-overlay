@@ -36,7 +36,30 @@ if [ ! -f "$cfgdir/chezmoi.toml" ] || [ ! -d "$src" ]; then
   exit 1
 fi
 
-exec chezmoi \
+# Resolving chezmoi ITSELF, rather than trusting an inherited PATH, is the other half of the
+# non-interactive story above -- and it was missed the first time. Making the WRAPPER reachable
+# over ssh did not make its DEPENDENCY reachable: on a Homebrew machine chezmoi lives in
+# /opt/homebrew/bin, which .zshenv does not add, so `ssh <host> chezmoi-overlay diff` reached this
+# script and then died on a bare `exec chezmoi` with 127.
+#
+# The quiet shape of that failure is the reason this is worth code rather than a note. A caller
+# that filters the output -- grepping for diff headers to see what is pending -- gets an empty
+# result and reads it as "nothing pending, machine in sync", which is the exact inverse of the
+# truth. Measured on the darwin CI node 2026-08-30: the overlay was three commits behind and
+# reported no pending changes. Fail loudly with 127 instead, and say what was searched.
+CHEZMOI=$(command -v chezmoi 2>/dev/null) || CHEZMOI=""
+if [ -z "$CHEZMOI" ]; then
+  for c in /opt/homebrew/bin/chezmoi /usr/local/bin/chezmoi "$HOME/.local/bin/chezmoi" /usr/bin/chezmoi; do
+    if [ -x "$c" ]; then CHEZMOI=$c; break; fi
+  done
+fi
+if [ -z "$CHEZMOI" ]; then
+  printf '%s\n' "chezmoi-overlay: the chezmoi binary is not on PATH and is not in the usual prefixes" >&2
+  printf '%s\n' "  PATH=$PATH" >&2
+  exit 127
+fi
+
+exec "$CHEZMOI" \
   --config "$cfgdir/chezmoi.toml" \
   --source "$src" \
   --persistent-state "$cfgdir/chezmoistate.boltdb" \
