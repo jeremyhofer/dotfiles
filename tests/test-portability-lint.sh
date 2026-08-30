@@ -138,4 +138,41 @@ lint --errors-only "$here/../private_dot_local/bin" "$here/../setup" >"$d/out" 2
   || { echo "FAIL: the base's own shipped tools have portability ERRORS:"; cat "$d/out"; exit 1; }
 echo "ok:   the base's shipped tools are free of portability errors"
 
+# ---------- empty-array-nounset: the rule's precision IS the rule ----------
+# bash 3.2 (still /bin/bash on macOS) aborts on "${arr[@]}" when arr is EMPTY and `set -u` is on;
+# bash 4.4+ expands it to nothing. The defect this was written for -- a git hook that built an
+# optional-flag array -- therefore passed every Linux run and denied every discarding git op on
+# the Mac, with the abort producing no stderr, so the hook reported only "Details: none".
+#
+# The first draft of this rule matched the DECLARATION (arr=()) and fired on 5 things, 4 of them
+# not defects: three zsh scripts (zsh has no such quirk) and one bash script that correctly tests
+# ${#arr[@]} first -- the COUNT of an empty array is fine on 3.2, only the value expansion is not.
+# An ERROR wrong four times in five gets suppressed wholesale, so the negative cases below are as
+# load-bearing as the positive one and must stay.
+d2="$d/eanu"; mkdir -p "$d2"
+
+printf '#!/usr/bin/env bash\nset -eu\ne=()\n[ -n "${1:-}" ] && e=(--x)\nprintf "%%s" "${e[@]}"\n' > "$d2/unguarded.sh"
+lint "$d2/unguarded.sh" >"$d/out" 2>&1 || true   # lint exits non-zero ON a finding; `set -e` would abort here
+grep -q '\[empty-array-nounset\]' "$d/out" \
+  || { echo "FAIL: an unguarded empty-array expansion in bash under set -u was NOT flagged"; cat "$d/out"; exit 1; }
+echo "ok:   flags an unguarded empty-array expansion (bash + set -u)"
+
+printf '#!/usr/bin/env bash\nset -eu\ne=()\n[ "${#e[@]}" -gt 0 ] || exit 0\nprintf "%%s" "${e[@]}"\n' > "$d2/guarded.sh"
+lint "$d2/guarded.sh" >"$d/out" 2>&1 || true
+grep -q '\[empty-array-nounset\]' "$d/out" \
+  && { echo "FAIL: a ${#arr[@]}-guarded expansion was flagged; the count IS safe on bash 3.2"; cat "$d/out"; exit 1; }
+echo "ok:   does not flag an expansion already guarded by a count test"
+
+printf '#!/bin/zsh\nset -eu\ne=()\nprintf "%%s" "${e[@]}"\n' > "$d2/z.sh"
+lint "$d2/z.sh" >"$d/out" 2>&1 || true
+grep -q '\[empty-array-nounset\]' "$d/out" \
+  && { echo "FAIL: a zsh script was flagged; zsh has no empty-array nounset quirk"; cat "$d/out"; exit 1; }
+echo "ok:   does not flag zsh"
+
+printf '#!/usr/bin/env bash\ne=()\nprintf "%%s" "${e[@]}"\n' > "$d2/nounset-off.sh"
+lint "$d2/nounset-off.sh" >"$d/out" 2>&1 || true
+grep -q '\[empty-array-nounset\]' "$d/out" \
+  && { echo "FAIL: a bash script WITHOUT set -u was flagged"; cat "$d/out"; exit 1; }
+echo "ok:   does not flag bash without set -u"
+
 echo "PASS"

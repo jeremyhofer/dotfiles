@@ -77,7 +77,50 @@ ERROR, WARN = "error", "warn"
 #
 # `pattern` matches a LINE. Keep patterns narrow: a noisy linter gets ignored, and then it
 # guards nothing.
+# Some defects are only real given a property of the WHOLE file -- an interpreter, a shell option
+# set at the top, or a guard twenty lines away -- which a line-local regex cannot see. A rule may
+# carry an optional 7th field: a predicate over (full text, the line's match object). It is
+# optional, so the existing rules stay 6-tuples.
+def unguarded_empty_array(text, m):
+    """True for "${v[@]}" that can legitimately be EMPTY in a bash script under `set -u`.
+
+    Three conditions, and every one of them removed a real false positive when this rule was
+    written (2026-08-30: 6 raw matches across this fleet, exactly 1 real defect):
+
+      * bash, not zsh -- zsh expands an empty array under `set -u` without complaining.
+      * `set -u` actually enabled -- without it bash 3.2 is equally happy.
+      * the array is declared EMPTY somewhere (v=()) and the expansion is NOT already guarded by
+        a `${#v[@]}` count test. bash 3.2 evaluates the COUNT of an empty array fine; only the
+        VALUE expansion aborts. A script that checks the count first is correct as written, and
+        flagging it would train everyone to ignore the rule.
+    """
+    first = text.split("\n", 1)[0]
+    if "zsh" in first or not re.search(r"\bbash\b", first):
+        return False
+    if not re.search(r"^set\s+-[A-Za-z]*u", text, re.M):
+        return False
+    v = re.escape(m.group(1))
+    if not re.search(r"(?:^|\s)(?:local\s+|declare\s+(?:-[A-Za-z]+\s+)*)?" + v + r"=\(\s*\)", text, re.M):
+        return False                       # never declared empty; assume always populated
+    return re.search(r"\$\{#" + v + r"\[[@*]\]\}", text) is None
+
+
 RULES = [
+    (
+        "empty-array-nounset", ERROR,
+        re.compile(r"\"\$\{([A-Za-z_]\w*)\[[@*]\]\}\""),
+        "bash 3.2 -- still /bin/bash on macOS -- treats \"${arr[@]}\" on an EMPTY array as an "
+        "UNBOUND VARIABLE under `set -u` and aborts the shell. bash 4.4+ expands it to nothing. "
+        "So an optional-flag array built up conditionally works on Linux and kills the script on "
+        "darwin the moment the condition is false -- i.e. on the COMMON path, not an edge case. "
+        "Inside $(...) the abort can emit nothing at all, leaving the caller an empty result and "
+        "no error to notice. Flagged only where the array is declared empty AND the expansion is "
+        "not already guarded by a ${#arr[@]} count test, which IS safe on 3.2.",
+        "Prefer a plain string for optional flags carrying no whitespace (extra=; ... "
+        "extra=--flag; cmd $extra); or guard with [ \"${#arr[@]}\" -gt 0 ]; or write "
+        "cmd ${arr[@]+\"${arr[@]}\"}",
+        None, unguarded_empty_array,
+    ),
     (
         "sed-in-place", ERROR,
         re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*i\b"),
@@ -238,6 +281,7 @@ def scan(path):
     if any(DISABLE_FILE.search(ln) for ln in lines):
         return []
 
+    text = "\n".join(lines)   # whole-file view, for rules with a file-level precondition
     findings = []
     WINDOW = 6   # lines either side searched for a BSD counterpart
     for n, line in enumerate(lines, 1):
@@ -251,11 +295,17 @@ def scan(path):
             suppressed = {r.strip() for r in named.replace(",", " ").split()} if named else None
         else:
             suppressed = set()            # empty set == nothing suppressed here
-        for rid, sev, pat, why, fix, exempt in RULES:
+        for rule in RULES:
+            rid, sev, pat, why, fix, exempt = rule[:6]
+            filereq = rule[6] if len(rule) > 6 else None
             if suppressed is None or rid in suppressed:
                 continue
-            if pat.search(line) and not (exempt and exempt.search(near)):
-                findings.append((path, n, rid, sev, line.strip(), why, fix))
+            m2 = pat.search(line)
+            if not m2 or (exempt and exempt.search(near)):
+                continue
+            if filereq is not None and not filereq(text, m2):
+                continue
+            findings.append((path, n, rid, sev, line.strip(), why, fix))
     return findings
 
 
@@ -272,7 +322,7 @@ def main():
         sys.stdout.write(__doc__)
         return 0
     if args.list:
-        for rid, sev, _, why, fix, _ex in RULES:
+        for rid, sev, _, why, fix, _ex in (r[:6] for r in RULES):
             print("%-18s %-5s %s" % (rid, sev, why.split(".")[0] + "."))
             print("%-24s fix: %s\n" % ("", fix))
         return 0
