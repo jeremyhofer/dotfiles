@@ -192,12 +192,41 @@ zero local expansion, and `-ls` / `-s` read the script from stdin.
 SSH*. If something works when typed by hand but reports `command not found` remotely, that is why —
 it needs to be a real script on `PATH`, not a function.
 
+## 8. SILENT — a recursive search skips whatever the repo ignores, and `rg` does NOT fix it
+
+`rg` and the `grep` shim installed here are **both gitignore-aware by default**. So a plain
+recursive search inside an ignored tree — `node_modules/`, build output, a vendored or preserved
+directory, a `.superpowers/` checkout — reports **zero matches, by design, with no warning and exit
+status 0**. Nothing distinguishes that from "the string genuinely is not there."
+
+Measured from a repo root, one string living only inside a gitignored `node_modules/`:
+
+| command | hits |
+| --- | --- |
+| `grep -rl PATTERN .` (the shim) | 1 |
+| `rg -l PATTERN` | 1 |
+| `rg -uu -l PATTERN` | **2** |
+| `command grep -rl PATTERN .` | **2** |
+
+**"Prefer `rg`" is not a mitigation for this** — that is the trap. `rg` is preferred here for speed,
+and its gitignore-awareness is genuinely useful when searching *source*; but the two tools share
+this blind spot exactly, so swapping one for the other changes nothing and feels like it should.
+
+**What to do:** when the tree you are searching is or may be ignored, pass `rg -uu` (or
+`--no-ignore`), or use `command grep -r`. Check `git check-ignore -v <path>` if unsure.
+
+**And treat the result as a claim, not a finding:** "the search found nothing" inside an ignored
+tree is *unverified*, not clean. This is the §1 failure in a different costume — the command
+succeeded, the conclusion is wrong, and an audit that concludes "absent" from it is an audit
+conducted with a tool blind to its own subject.
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
 - **`bad option: -`** — `print`/`echo` ate your leading dash (§5).
 - **A search returned nothing, and you are about to report "not present"** — check the argument
-  count first (§1). This is the failure that corrupts conclusions rather than commands.
+  count first (§1), then check whether the tree is gitignored (§8). This is the failure that
+  corrupts conclusions rather than commands.
 - **A check passed that you expected to fail** — suspect the pipeline exit status (§3) before
   believing it. A gate that cannot fail proves nothing.
 - **`command not found` only over SSH** — you are calling a shell function in a non-interactive
