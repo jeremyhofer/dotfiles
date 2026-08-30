@@ -220,6 +220,33 @@ tree is *unverified*, not clean. This is the §1 failure in a different costume 
 succeeded, the conclusion is wrong, and an audit that concludes "absent" from it is an audit
 conducted with a tool blind to its own subject.
 
+## 9. SILENT — `$var:something` eats the next letter (history modifiers), and QUOTES DON'T HELP
+
+zsh applies **history modifiers** to an unbraced parameter expansion. `$ref:t` means "the tail of
+`$ref`" — so writing a colon-separated argument built from a variable silently loses a character:
+
+```
+ref=22cc96be
+echo "$ref:tests/foo.sh"     # -> 22cc96beests/foo.sh    the `t` is GONE
+echo "${ref}:tests/foo.sh"   # -> 22cc96be:tests/foo.sh  correct
+```
+
+**Two things make this worse than it looks:**
+
+- **Double quotes do NOT protect you.** This is the opposite of the usual instinct, and it is why
+  the bug survives review — the line already looks quoted-and-safe.
+- **It is not only `:t`.** `:h` `:r` `:e` `:a` and others are all modifiers, so `$ref:hooks/…`,
+  `$ref:README`, `$ref:etc/…` and `$ref:api/…` break the same way, each eating its first letter.
+
+**Where it actually bites:** `git` refspecs, which are colon-separated by design.
+`git show "$ref:tests/x"` reads a path that does not exist; `git show` then fails with a message
+about the mangled path, which reads like the file is missing rather than like a quoting bug.
+`HEAD:tests/x` is fine because it is a literal — the trap needs a VARIABLE on the left.
+
+**Rule: brace any parameter followed by a colon.** `"${ref}:path"`, always. If you are writing a
+refspec, a `host:path` scp target, or anything else colon-delimited from a variable, the braces are
+not optional style.
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
@@ -227,6 +254,8 @@ conducted with a tool blind to its own subject.
 - **A search returned nothing, and you are about to report "not present"** — check the argument
   count first (§1), then check whether the tree is gitignored (§8). This is the failure that
   corrupts conclusions rather than commands.
+- **A path or ref in an error message is missing exactly one letter** (`…ests/`, `…ooks/`) — a
+  colon after an unbraced variable ate it (§9).
 - **A check passed that you expected to fail** — suspect the pipeline exit status (§3) before
   believing it. A gate that cannot fail proves nothing.
 - **`command not found` only over SSH** — you are calling a shell function in a non-interactive
