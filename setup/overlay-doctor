@@ -7,8 +7,9 @@
 #
 # Tiers: A generic (from the base, auto-propagated) · B private-vocab (authored per-domain
 # from THAT domain's own vault — never copied from another domain) · C domain-specific ·
-# H leak-guard (OPTIONAL, home-only by design). Only required A/B/C pieces gate the exit;
-# Tier H is reported, never enforced.
+# H leak-guard (OPTIONAL, home-only by design) · V signing-verification material
+# (ADVISORY). Only required A/B/C pieces gate the exit; Tiers H and V are reported, never
+# enforced -- signing is legitimately disabled where an agent sandbox cannot reach ~/.ssh.
 set -eu
 
 # macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
@@ -110,6 +111,36 @@ if [ -d "$_skdir" ]; then
         miss "public base skills carry this domain's private vocabulary (above) — move that content into an overlay fragment; the base is world-readable"
       fi
     fi
+  fi
+fi
+
+# --- Tier V: signing verification material (ADVISORY, never gating) ---
+#
+# `allowed_signers` is a shared, overlay-managed asset: every signing repo on this machine points
+# `gpg.ssh.allowedSignersFile` at the same file, so one bad or absent copy degrades signature
+# VERIFICATION everywhere at once, silently -- git reports an unverified signature much the same
+# way it reports a missing signer file.
+#
+# REPORTED, NEVER ENFORCED, and that is a deliberate constraint rather than laziness: signing is
+# legitimately disabled in some environments. On Jeremy's work machine the agent sandbox cannot
+# reach ~/.ssh at all, even for a signing key, so requiring signers there would turn a correct
+# setup into a hard failure -- exactly the cry-wolf failure the `require` helper above already
+# documents for templated files. An advisory line is useful; a gate here would be wrong.
+_as=$(git config --get gpg.ssh.allowedSignersFile 2>/dev/null || true)
+case "$_as" in "~/"*) _as="$HOME/${_as#\~/}" ;; esac
+if [ -z "$_as" ]; then
+  note "info        Tier V: no allowedSignersFile configured (signature verification is off here)"
+elif [ ! -f "$_as" ]; then
+  note "advisory    Tier V: allowedSignersFile points at a missing file: $_as"
+  note "            signature verification cannot succeed; not gating (signing may be off by design)"
+else
+  # A principal line is "<principal> [namespaces=...] <keytype> <key>". Comment and blank lines
+  # do not count -- a file containing only comments looks populated and verifies nothing.
+  _n=$(grep -cE '^[^#[:space:]]+[[:space:]]+.*(ssh-|sk-ssh-)' "$_as" 2>/dev/null || true)
+  if [ "${_n:-0}" -eq 0 ]; then
+    note "advisory    Tier V: allowedSignersFile has no principal lines: $_as"
+  else
+    note "OK          Tier V: allowedSignersFile present, $_n principal(s)"
   fi
 fi
 
