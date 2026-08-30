@@ -1,0 +1,110 @@
+#!/bin/sh
+# ui-shot — render a page headless and capture it the way a visual review actually needs.
+#
+# WHY THIS EXISTS AS TOOLING RATHER THAN AS INSTRUCTIONS. Every agent that needs to look at a UI
+# change re-derives the same Playwright boilerplate, and gets it subtly wrong in the same two ways:
+#
+#   1. It takes ONE full-page screenshot. Rendered into a chat transcript that image is scaled
+#      down, so a 1px border or a subtle divider is simply not present in what the reviewer sees.
+#      "I looked at it" is then false confidence rather than a lie. The fix is a SECOND capture:
+#      the changed region only, at native scale, which is what this tool always produces.
+#   2. It reaches for a global or freshly-installed Playwright. The project's own version is the
+#      one whose browsers are downloaded and whose behaviour matches its tests, so this resolves
+#      the PROJECT's install and fails loudly rather than falling back.
+#
+# HEADLESS IS NOT A FLAG HERE. There is deliberately no --headed: a visible window is an
+# unrequested interruption of whoever is at the keyboard, and the one time it happened it was six
+# windows at bedtime. If you genuinely need a headed run, ask first and run Playwright directly.
+#
+# Layouts differ per repo and that is the whole resolution problem: playwright lives at
+# node_modules/ in one project, frontend/node_modules/ in another, main/node_modules/ in a
+# worktree-style monorepo. Searching down from the repo root and taking the shallowest hit covers
+# all three without per-project config.
+#
+# Usage:
+#   ui-shot <url> [--selector CSS]... [--probe CSS]... [--out DIR] [--scale N] [--width N]
+#
+#   --selector  capture this element alone, at native scale. Repeatable. This is the capture a
+#               reviewer should actually look at; the full-page one is for layout regressions.
+#   --probe     print computed styles for the first match. Repeatable. A CSS token typo falls
+#               through silently and one probe reveals it -- that is how the originating bug was
+#               found, in a minute, after a redesign had already been declared done.
+set -eu
+
+url=""; out=""; scale=2; width=1280; sels=""; probes=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --selector) sels="$sels$2
+"; shift 2 ;;
+    --probe)    probes="$probes$2
+"; shift 2 ;;
+    --out)      out=$2; shift 2 ;;
+    --scale)    scale=$2; shift 2 ;;
+    --width)    width=$2; shift 2 ;;
+    --headed|--ui|--debug)
+      printf '%s\n' "ui-shot: $1 is deliberately not supported." >&2
+      printf '%s\n' "  A visible window interrupts whoever is at the keyboard, at a time they did not choose." >&2
+      printf '%s\n' "  Ask first, then run the project's playwright directly if it is really needed." >&2
+      exit 2 ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) printf 'ui-shot: unknown option %s\n' "$1" >&2; exit 2 ;;
+    *)  [ -z "$url" ] || { printf 'ui-shot: more than one URL given\n' >&2; exit 2; }
+        url=$1; shift ;;
+  esac
+done
+[ -n "$url" ] || { printf 'ui-shot: no URL. usage: ui-shot <url> [--selector CSS] [--probe CSS]\n' >&2; exit 2; }
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# Shallowest wins: a monorepo root may have a stub node_modules while the real install is one
+# level down, and vice versa. Sorting by path depth is stable across all three layouts in use.
+pw=$(find "$root" -maxdepth 6 -type d -name playwright -path '*/node_modules/playwright' 2>/dev/null \
+     | awk '{print gsub("/","/"), $0}' | sort -n | head -1 | cut -d' ' -f2-)
+[ -n "$pw" ] || {
+  printf '%s\n' "ui-shot: no project-local Playwright under $root" >&2
+  printf '%s\n' "  Install it in the project (npm i -D playwright) rather than globally: the project's" >&2
+  printf '%s\n' "  version is the one whose browsers are downloaded and whose behaviour matches its tests." >&2
+  exit 1
+}
+nm=${pw%/playwright}
+
+[ -n "$out" ] || out=$(mktemp -d "${TMPDIR:-/tmp}/ui-shot.XXXXXX")
+mkdir -p "$out"
+
+script=$(mktemp "${TMPDIR:-/tmp}/ui-shot.XXXXXX.cjs")
+trap 'rm -f "$script"' EXIT INT TERM
+cat > "$script" <<'NODE'
+const { chromium } = require('playwright');
+const [url, out, scale, width, selsRaw, probesRaw] = process.argv.slice(2);
+const split = s => s.split('\n').map(x => x.trim()).filter(Boolean);
+(async () => {
+  const browser = await chromium.launch();              // headless: the default, and not overridable here
+  const page = await browser.newPage({
+    viewport: { width: Number(width), height: 900 },
+    deviceScaleFactor: Number(scale),                   // native scale, so 1px detail survives
+  });
+  await page.goto(url, { waitUntil: 'networkidle' });
+  await page.screenshot({ path: `${out}/full.png`, fullPage: true });
+  console.log(`full      ${out}/full.png`);
+  let i = 0;
+  for (const sel of split(selsRaw)) {
+    const el = page.locator(sel).first();
+    if (await el.count() === 0) { console.log(`MISSING   selector matched nothing: ${sel}`); continue; }
+    const p = `${out}/crop-${++i}.png`;
+    await el.screenshot({ path: p });
+    console.log(`crop      ${p}   (${sel})`);
+  }
+  for (const sel of split(probesRaw)) {
+    const got = await page.evaluate(s => {
+      const e = document.querySelector(s); if (!e) return null;
+      const c = getComputedStyle(e); const o = {};
+      for (const k of ['color','backgroundColor','borderTop','borderBottom','fontSize','fontWeight','padding','margin','display','visibility','opacity']) o[k] = c[k];
+      return o;
+    }, sel);
+    console.log(`probe     ${sel}\n${got ? JSON.stringify(got, null, 2).split('\n').map(l=>'          '+l).join('\n') : '          (no match)'}`);
+  }
+  await browser.close();
+})().catch(e => { console.error('ui-shot: ' + e.message); process.exit(1); });
+NODE
+
+NODE_PATH="$nm" node "$script" "$url" "$out" "$scale" "$width" "$sels" "$probes"
