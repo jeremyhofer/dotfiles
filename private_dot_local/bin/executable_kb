@@ -879,6 +879,32 @@ kb_render_claude() {
 
 # cmd_project -- kb project [--out DIR]. Generates the Tier-0 projection artifacts. Output is
 # derived/disposable; default --out is a staging dir under the generated index/.
+# kb_file_bytes FILE -- size in bytes, on either userland (GNU -c, BSD -f).
+kb_file_bytes() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
+
+# kb_projection_budget ROOT -- the always-on ceiling in BYTES, from this KB's own kb.toml, or empty.
+#
+# WHY A BUDGET AT ALL. The Tier-0 projection is loaded into EVERY session at startup, so its size is
+# a tax paid per session forever, not a one-off. It only ever grows: every amendment adds and none
+# subtracts, and no single addition ever looks like the one that made it expensive. Measured
+# 2026-08-29: the projection had reached ~24k tokens, 78% of the entire always-on context, having
+# been specified as "bounded/shrinking" and never bounded.
+#
+# WHY BYTES, NOT TOKENS. Bytes are exact and free to measure; a token count is an estimate that
+# varies by tokenizer. A budget that is precise about the wrong unit invites arguing with it.
+#
+# WHY IN kb.toml AND NOT HERE. This CLI is public; the ceiling is a property of one person's KB. The
+# number belongs with the records it governs, which is also what lets separate instances (personal,
+# work) carry different ceilings.
+#
+# THE POINT IS NOT THE NUMBER, IT IS THE FORCED CHOICE. Set at roughly current size, so adding a
+# rule means deciding what leaves. Ratchet it DOWN as content moves to on-demand skills; never up
+# without a deliberate decision that says why.
+kb_projection_budget() {
+  [ -f "$1/kb.toml" ] || return 0
+  sed -n 's/^[[:space:]]*projection_max_bytes[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/kb.toml" 2>/dev/null | head -1
+}
+
 cmd_project() {
   _outflag=""
   _check=""
@@ -940,6 +966,20 @@ cmd_project() {
     kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_tmp"
     cmp -s "$_tmp" "$_out/AGENTS.md" 2>/dev/null || { echo "kb: projection drift: $_out/AGENTS.md" >&2; _drift=1; }
     cmp -s "$_tmp" "$_out/GEMINI.md" 2>/dev/null || { echo "kb: projection drift: $_out/GEMINI.md" >&2; _drift=1; }
+    # Budget check runs against the FRESHLY RENDERED projection, before $_tmp is reused below --
+    # not against the committed file. Checking the committed one would pass a change that pushes it
+    # over, since the committed file is by definition the pre-change size.
+    _budget=$(kb_projection_budget "$_root")
+    if [ -n "$_budget" ]; then
+      _psize=$(kb_file_bytes "$_tmp")
+      if [ -n "$_psize" ] && [ "$_psize" -gt "$_budget" ] 2>/dev/null; then
+        echo "kb: projection OVER BUDGET: $_psize bytes > $_budget (over by $((_psize - _budget)))" >&2
+        echo "kb: this file loads into EVERY session at startup, so its size is a per-session tax." >&2
+        echo "kb: adding here means deciding what leaves. Move situational procedure to an on-demand" >&2
+        echo "kb: skill and keep a stub, or trim an existing topic -- then re-run \`kb project\`." >&2
+        _drift=1
+      fi
+    fi
     kb_render_claude > "$_tmp"
     cmp -s "$_tmp" "$_out/CLAUDE.md" 2>/dev/null || { echo "kb: projection drift: $_out/CLAUDE.md" >&2; _drift=1; }
     rm -f "$_tmp"
@@ -951,6 +991,12 @@ cmd_project() {
   kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_out/AGENTS.md.kbtmp.$$" && mv "$_out/AGENTS.md.kbtmp.$$" "$_out/AGENTS.md"
   kb_render_claude                                                    > "$_out/CLAUDE.md.kbtmp.$$" && mv "$_out/CLAUDE.md.kbtmp.$$" "$_out/CLAUDE.md"
   kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_out/GEMINI.md.kbtmp.$$" && mv "$_out/GEMINI.md.kbtmp.$$" "$_out/GEMINI.md"
+  _budget=$(kb_projection_budget "$_root")
+  if [ -n "$_budget" ]; then
+    _psize=$(kb_file_bytes "$_out/AGENTS.md")
+    printf 'kb: projection %s / %s bytes (%s%% of budget)\n' \
+      "$_psize" "$_budget" "$(( _psize * 100 / _budget ))" >&2
+  fi
   printf '%s\n' "$_out"
 }
 
