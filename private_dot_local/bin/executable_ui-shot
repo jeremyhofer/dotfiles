@@ -1,6 +1,23 @@
 #!/bin/sh
 # ui-shot — render a page headless and capture it the way a visual review actually needs.
 #
+# ══ FROZEN 2026-08-30 — DO NOT ADD FLAGS ═════════════════════════════════════════════════════
+# This is INTERIM. Visual-review tooling belongs in a shared package that
+# projects depend on, with its guiding skill riding along -- not developed globally here.
+#
+# The evidence came from validating THIS script: two projects, independently, asked for
+# authentication, and auth is irreducibly project-specific (Cloudflare Access vs server-side
+# session cookies). Without it, one could only reach its dev-only styleguide. A global tool
+# cannot hold per-project auth, route matrices or viewport sets -- and this one grew five flags in
+# a single sitting driven by two consumers' needs, which is a product acquiring a roadmap rather
+# than a dotfile.
+#
+# Keep using it: it works, it was validated against real pages in two projects, and it serves
+# styleguide-level review fine. But if you are about to ADD A CAPABILITY, that capability belongs
+# in the package instead. Known gaps left for it to inherit: authentication, per-project
+# route/viewport matrices, forced-colors emulation, and a combined index across runs.
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#
 # WHY THIS EXISTS AS TOOLING RATHER THAN AS INSTRUCTIONS. Every agent that needs to look at a UI
 # change re-derives the same Playwright boilerplate, and gets it subtly wrong in the same two ways:
 #
