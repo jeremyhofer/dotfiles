@@ -122,4 +122,32 @@ KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
 [ "${rc:-0}" -eq 0 ] || { echo "FAIL: '#### Amended' under Provenance must stay legal, got ${rc:-0}"; exit 1; }
 echo "ok:   amendment subsections under Provenance stay legal"
 
+# (c2) [[ inside CODE is not a prose wikilink.
+# The rule exists because a relationship claim belongs in a typed frontmatter edge. Inside a code
+# span or fence, `[[` is a regex character class or a shell test bracket -- no claim at all.
+# Checking the raw body rejected a real Tier-0 commit whose only offence was quoting a character
+# class while DESCRIBING the wikilink convention: the rule fired on documentation OF itself, which
+# is the one place the construct has to be writable.
+#
+# The last case keeps the fix honest. Exempting code must not exempt the LINE, or a real wikilink
+# hides behind any code span beside it -- the rule has to get more precise, not quieter. (c) above
+# already guards the plain true positive.
+d=$(newkb); emit "$d/context/a.md" a 'related: []'
+printf '%s\n' 'it matched `[[a-z0-9-]*]]` so underscores were skipped' >> "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: [[ in an inline code span flagged as prose, got ${rc:-0}"; exit 1; }
+echo "ok:   [[ inside an inline code span is not a prose wikilink"
+
+d=$(newkb); emit "$d/context/a.md" a 'related: []'
+printf '%s\n' '```sh' 'if [[ -n "$x" ]]; then :; fi' '```' >> "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: [[ in a fenced code block flagged as prose, got ${rc:-0}"; exit 1; }
+echo "ok:   [[ inside a fenced code block is not a prose wikilink"
+
+d=$(newkb); emit "$d/context/a.md" a 'related: []'
+printf '%s\n' 'fine in `[[code]]`, but [[actual-link]] on the same line is not' >> "$d/context/a.md"
+KB_ROOT="$d" kb lint >/dev/null 2>&1 && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL: a code span exempted the whole LINE, hiding a real wikilink, got ${rc:-0}"; exit 1; }
+echo "ok:   a code span does not exempt the rest of its line"
+
 echo "PASS"
