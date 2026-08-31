@@ -191,3 +191,27 @@ eval "$(fnm env --use-on-cd --version-file-strategy recursive --shell zsh)"
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 
 [ -f "$HOME/.dotlocal/zshrc" ] && source "$HOME/.dotlocal/zshrc"
+
+# --- Machine tag at the head of the prompt ----------------------------------------------------
+# A short marker so the machine a terminal is on is identifiable at a glance. This costs nothing
+# for SSH: a remote shell's prompt is rendered on the REMOTE host, so it tags itself correctly
+# with no forwarding or client-side logic.
+#
+# A bracketed LETTER rather than a colour, deliberately. Colour is not a channel to depend on --
+# it does not survive a monochrome terminal, a screenshot, a recording, or a theme change, and it
+# is the first thing to fail a reader with any colour-vision or single-eye depth difference. The
+# colour here is decoration on top of a cue that already works without it.
+#
+# The hostname -> letter mapping is personal, so it is NOT in this file. The private layer sourced
+# on the line above may set FLEET_TAG; all this provides is the mechanism plus a generic fallback
+# (first character of the short hostname), which keeps machine names out of the published base.
+: ${FLEET_TAG:=${${HOST%%.*}[1]}}
+
+# A local shell on a host and an SSH session INTO that host are otherwise indistinguishable --
+# same hostname, same tag -- so the remote case is spelled out rather than shortened. It is longer
+# exactly when the reminder is worth having.
+if [[ -n ${SSH_CONNECTION:-} ]]; then
+  PROMPT="%F{yellow}[ssh:${FLEET_TAG}]%f ${PROMPT}"
+else
+  PROMPT="%F{cyan}[${FLEET_TAG}]%f ${PROMPT}"
+fi
