@@ -26,6 +26,97 @@ Entries are newest first.
 
 ---
 
+## 2026-08-31
+
+**The zsh prompt now carries a one-character machine tag** — `[<tag>]` normally, `[ssh:<tag>]`
+when the shell is an SSH session. Not an ACTION: the base ships the mechanism plus a generic fallback (the
+first character of the short hostname), so it works with no overlay change.
+
+**Optional overlay input:** the hostname → letter mapping is personal, so it is not in the published
+base. Your private layer may set `FLEET_TAG` before the prompt is built to choose the letter.
+
+Two things about the shape, so nobody "improves" them back: it is a bracketed LETTER rather than a
+colour, because colour does not survive a monochrome terminal, a screenshot, a recording or a theme
+change, and it is the first cue to fail a reader with a colour-vision or single-eye difference — the
+colour here is decoration on top of a cue that already works without it. And SSH costs nothing: a
+remote shell renders its prompt on the REMOTE host, so it tags itself correctly with no forwarding
+and no client-side logic.
+
+---
+
+## 2026-08-30
+
+**BREAKING IF YOU DO NOT PULL — the nvim `snacks` fork pin moved off sourcehut, and there is a
+date on it.** sourcehut's terms now prohibit LLM-produced content and that forge is being vacated on
+**2026-09-10**. This pin was the only thing in these dotfiles that would actually break: lazy.nvim
+clones it on every machine, so left alone it fails on the next plugin install or on any fresh
+machine — and it presents as *"Neovim is broken"* rather than as a forge shutting down, which is why
+it earns a loud entry rather than a quiet fix.
+
+It points at **github** rather than the self-hosted forge deliberately: this is cloned on a work
+laptop where no personal account can be logged in, so the URL has to resolve as an anonymous,
+unauthenticated HTTPS clone. That is the same constraint that already puts the public base there.
+The `pending-upstream` branch was pushed to the github fork first — swapping the URL alone would
+have failed on a missing branch, or, with the branch line dropped, silently fallen back to plain
+upstream and reintroduced the image bug with nothing on screen to say why.
+
+**Also nvim: the puppeteer browser-resolution block was deleted by accident and restored in the same
+window.** If you pulled between those two commits, pull again. Without that block, puppeteer
+downloads its own vendored Chrome (~150 MB) outside package management instead of using an
+already-installed browser for mermaid rendering.
+
+**ACTION (any machine you drive non-interactively — macOS especially) — `chezmoi-overlay` now
+resolves the chezmoi binary itself, and an earlier "nothing pending" reading may have been false.**
+It used to `exec chezmoi` bare. Over ssh on a Homebrew machine `/opt/homebrew/bin` is not on the
+PATH that `.zshenv` builds, so the wrapper was reachable and its dependency was not: exit 127.
+
+The quiet shape of that failure is why this is code rather than a note. A caller that FILTERS the
+output — grepping for diff headers to see what is pending — gets an empty result and reads it as
+"nothing pending, machine in sync", which is the exact inverse of the truth. Measured on the darwin
+CI node: the overlay was three commits behind and reported no pending changes. It now resolves via
+`command -v`, falls back to the usual prefixes, and exits 127 naming the PATH it searched.
+
+*What to do:* re-run `chezmoi-overlay diff` and trust that reading rather than an earlier one taken
+from a non-interactive shell.
+
+**New: `ui-shot` and the `visual-review` skill — and `ui-shot` is already FROZEN.** It renders a page
+headless and always produces TWO captures: the whole page, and the changed region at native scale.
+The second is the entire point — a full-page screenshot rendered into a transcript is scaled down,
+so a 1px border or a subtle divider is simply not present in what the reviewer sees, and "I looked
+at it" becomes false confidence rather than a lie.
+
+**Pulling this downloads nothing.** It resolves the PROJECT's playwright (shallowest `node_modules`
+searching down from the repo root, which covers the three layouts in use) and fails loudly rather
+than installing or falling back to a global one — so on a machine with no project playwright it is
+simply inert. There is deliberately no `--headed`: a visible window is an unrequested interruption
+of whoever is at the keyboard.
+
+FROZEN on the day it landed, and the freeze is in the script's own header: **do not add flags.**
+Visual-review tooling belongs in a shipped package that projects depend on, with its guiding skill
+riding along, not developed globally here. What settled it: two projects independently asked for
+authentication, and auth is irreducibly project-specific — a global tool cannot hold per-project
+auth, route matrices or viewport sets. Keep using it; it works and was validated against real pages.
+But a new capability belongs in the package. Known gaps left for it to inherit: authentication,
+per-project route/viewport matrices, forced-colors emulation, and a combined index across runs.
+
+**`overlay-doctor` gained a Tier V advisory check for `allowedSignersFile`, and it NEVER gates.**
+`allowed_signers` is a shared asset — every signing repo on a machine points at the same file, so
+one absent or empty copy degrades signature VERIFICATION everywhere at once, silently.
+
+Advisory rather than required, deliberately: signing is legitimately disabled where an agent sandbox
+cannot reach `~/.ssh` at all, and requiring signers there would turn a correct setup into a hard
+failure — the cry-wolf outcome this doctor already avoids elsewhere. Three outcomes: no
+`allowedSignersFile` configured reports `info`; a value pointing at a missing file reports
+`advisory`; a file present but with no principal lines also reports `advisory`, because a
+comments-only file looks populated and verifies nothing. **On a machine where signing is off by
+design, a line here is the expected output, not something to fix.**
+
+**`portability-lint` gained a bash 3.2 rule.** `empty-array-nounset` — under `set -u`, bash 3.2
+aborts on `"${arr[@]}"` when the array is empty. macOS ships bash 3.2, so this is a macOS-only abort
+that a Linux run cannot reproduce and a reviewer cannot see.
+
+---
+
 ## 2026-08-29
 
 **ACTION (KB repos only) — `kb install-hooks` now writes a wider hook; re-run it to pick that up.**
@@ -43,8 +134,9 @@ every projection stayed correct. The fresh layer is what hid the stale one.
 
 **New: `portability-lint`** — finds GNU-only shell spellings that break on BSD/macOS. Run it in
 any repo (`portability-lint`, or `portability-lint PATH...`); `--list` prints the rule table,
-`--strict` fails on warnings too. Ten rules, each probed against a real macOS userland rather than
-recalled: the in-place sed flag (no portable spelling exists — use temp-file + mv), `\t` inside a
+`--strict` fails on warnings too. Ten rules at the time of writing, each probed against a real macOS userland rather
+than recalled — the table has GROWN since, and `portability-lint --list` is the live source
+rather than this list: the in-place sed flag (no portable spelling exists — use temp-file + mv), `\t` inside a
 sed/grep bracket expression, `stat -c`, `date -d`, `base64 -w`, `grep -P`, `find -printf`,
 `timeout`, the `${TMPDIR:-/tmp}` trailing-slash trap, and a quoted `wc -l` compared as a string.
 
@@ -81,6 +173,29 @@ capturing them. New `tests/test-repo-hygiene.sh` fails on any dangling TRACKED s
 `--if-present` downgrades "never generated" to a pass, and exists for the generic hook, which has
 to work in a KB that has deliberately published nothing yet. A repo that always publishes should
 gate with the strict form, which additionally catches a DELETED output.
+
+**New: `kb` enforces a size budget on the Tier-0 projection — opt-in, and per KB.** Set
+`projection_max_bytes` in that KB's own `kb.toml`. No key means no check, so nothing changes for a
+KB that does not set one — and separate instances (personal, work) can carry different ceilings.
+`kb project` prints usage as a percentage; `kb project --check` treats over-budget as drift, so a
+generated pre-commit refuses the commit that pushes it over.
+
+It checks the **freshly rendered** projection, not the committed file. Checking the committed one
+would pass the very change that pushes it over, since the committed file is by definition the
+pre-change size.
+
+Bytes rather than tokens, deliberately: bytes are exact and free to measure, while a token count is
+an estimate that varies by tokenizer — and a budget that is precise about the wrong unit invites
+arguing with it. Why it exists at all: the projection loads into EVERY session at startup, so its
+size is a tax paid per session forever, and it only ever grows because every amendment adds and none
+subtracts. The point is not the number, it is the forced choice — adding a rule means deciding what
+leaves.
+
+**The git-hooks installer now clears inherited `GIT_*` variables before running the suite.** Git
+exports `GIT_DIR`, `GIT_INDEX_FILE` and friends into a hook, and everything the hook runs inherits
+them — `GIT_DIR` in particular makes ANY directory look like a repo, so a test asserting "this is
+not a repo" fails. Measured: a suite reported failing during a real commit while passing standalone.
+A gate that cries wolf gets disabled, so they are cleared.
 
 ---
 
