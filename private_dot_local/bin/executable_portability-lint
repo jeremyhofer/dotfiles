@@ -100,6 +100,23 @@ def unguarded_empty_array(text, m):
     if not re.search(r"^set\s+-[A-Za-z]*u", text, re.M):
         return False
     v = re.escape(m.group(1))
+
+    # The alternate form `${v[@]+"${v[@]}"}` CONTAINS the exact literal this rule matches, so its
+    # INNER expansion trips the pattern -- and that form is one of the three fixes this very rule
+    # tells you to apply. A linter that rejects its own prescribed remedy teaches people to
+    # suppress it, which costs more than the rule earns.
+    #
+    # It is genuinely safe: the `+` alternate is only substituted when the array is set and
+    # non-empty, so the inner word is never evaluated in the case that aborts bash 3.2.
+    #
+    # Checked against the text immediately LEFT of this occurrence, not the whole file, so one
+    # guarded use cannot exempt an unguarded one elsewhere in the same script. (The `${#v[@]}`
+    # exemption below is file-wide and does have that weakness; it is left as-is here because
+    # narrowing it would newly flag working code across every consumer at once.)
+    before = m.string[: m.start()]
+    if re.search(r"\$\{" + v + r"\[[@*]\]:?\+\s*$", before):
+        return False
+
     if not re.search(r"(?:^|\s)(?:local\s+|declare\s+(?:-[A-Za-z]+\s+)*)?" + v + r"=\(\s*\)", text, re.M):
         return False                       # never declared empty; assume always populated
     return re.search(r"\$\{#" + v + r"\[[@*]\]\}", text) is None

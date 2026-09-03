@@ -169,6 +169,26 @@ grep -q '\[empty-array-nounset\]' "$d/out" \
   && { echo "FAIL: a zsh script was flagged; zsh has no empty-array nounset quirk"; cat "$d/out"; exit 1; }
 echo "ok:   does not flag zsh"
 
+# The `${v[@]+"${v[@]}"}` form is one of the three fixes this rule's own text prescribes, and it
+# CONTAINS the literal the rule matches -- so the inner expansion tripped it and the linter rejected
+# its own remedy. Safe because the `+` alternate is substituted only when the array is non-empty, so
+# the inner word is never evaluated in the case that aborts bash 3.2.
+printf '#!/usr/bin/env bash\nset -eu\ne=()\nprintf "%%s" ${e[@]+"${e[@]}"}\n' > "$d2/plus-guarded.sh"
+lint "$d2/plus-guarded.sh" >"$d/out" 2>&1 || true
+grep -q '\[empty-array-nounset\]' "$d/out" \
+  && { echo "FAIL: flagged the guarded + form, which the rule's own fix text recommends"; cat "$d/out"; exit 1; }
+echo "ok:   does not flag the guarded \${arr[@]+...} form it prescribes"
+
+# GRANULARITY. That exemption is per-OCCURRENCE, not per-file: a script that guards one expansion
+# and leaves another bare must still be flagged for the bare one. Asserting only the negative case
+# above would pass under a file-wide exemption, which would silently blind the rule to every
+# unguarded use in any file that happened to contain one guarded use.
+printf '#!/usr/bin/env bash\nset -eu\ne=()\nprintf "%%s" ${e[@]+"${e[@]}"}\nprintf "%%s" "${e[@]}"\n' > "$d2/mixed.sh"
+lint "$d2/mixed.sh" >"$d/out" 2>&1 || true
+grep -q '\[empty-array-nounset\]' "$d/out" \
+  || { echo "FAIL: a bare expansion went unflagged because a guarded one appeared earlier"; cat "$d/out"; exit 1; }
+echo "ok:   still flags a bare expansion in a file that also has a guarded one"
+
 printf '#!/usr/bin/env bash\ne=()\nprintf "%%s" "${e[@]}"\n' > "$d2/nounset-off.sh"
 lint "$d2/nounset-off.sh" >"$d/out" 2>&1 || true
 grep -q '\[empty-array-nounset\]' "$d/out" \
