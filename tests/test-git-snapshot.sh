@@ -9,6 +9,17 @@
 set -uo pipefail
 
 SNAP="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_git-snapshot"
+
+# Isolate the state dir the tool archives into. Without this the suite wrote untracked-file
+# archives into the REAL $HOME/.local/state/git-snapshot of whoever ran it -- a test mutating the
+# machine it is testing on, and the only suite here that did. It also made the result depend on
+# ambient write access to $HOME rather than on the tool: under a sandbox that does not grant that
+# path, `mkdir -p` failed, the archive was never written, and the suite reported a defect in
+# git-snapshot that did not exist.
+XDG_STATE_HOME=$(mktemp -d)
+export XDG_STATE_HOME
+trap 'rm -rf "$XDG_STATE_HOME"' EXIT
+
 pass=0; fail=0
 ok() { printf '  ok    %s\n' "$1"; pass=$((pass+1)); }
 no() { printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); }
