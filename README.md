@@ -20,7 +20,6 @@ Installed to `~/.local/bin`.
   sets have to stay disjoint.
 - `git-clone-worktree` clones a repository as a bare repo with worktrees as sibling directories, so
   several branches can be checked out at the same time.
-- `git-nb` adds a worktree for a branch, creating the branch first when it does not exist yet.
 - `git-merge-diff` shows the diff a merge would introduce, computed from the merge base rather than
   from the branch tips. Commits that landed on the base branch since you forked do not show up as
   part of your change.

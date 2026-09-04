@@ -119,4 +119,9 @@ fi
 
 printf 'git-clone-worktree: %s ready (default branch: %s)\n' "$target" "$default"
 
-run_post_worktree_create_hook "$target/$default"
+# ABSOLUTISE before handing the path over. $target comes from the caller and is routinely relative,
+# and a hook that receives a relative path resolves it against whatever directory it happens to run
+# in -- so it would inspect the wrong tree, or none, and report confidently either way. Caught by
+# the suite's path assertion rather than by review. `cd`+`pwd` rather than `realpath`, which is not
+# present on both userlands.
+run_post_worktree_create_hook "$(cd "$target/$default" 2>/dev/null && pwd)"
