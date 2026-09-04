@@ -1,3 +1,10 @@
 # Deprecated targets to ensure absent fleet-wide (chezmoi removes these on apply).
 # ssh-auth-sock.conf was folded into session-env.conf (rendered from the session-env SSOT).
 .config/environment.d/ssh-auth-sock.conf
+
+# git-nb retired 2026-09-04: `wt switch --create` does that job. Deleting a script from the source
+# tree does NOT remove it from a machine -- chezmoi simply stops managing it, and the deployed copy
+# lingers on PATH indefinitely, still runnable and now unmaintained. Verified on the workstation
+# after the retiring apply: `chezmoi managed` no longer listed it and ~/.local/bin/git-nb was still
+# there. Retiring a tool therefore takes TWO edits, and this file is the second one.
+.local/bin/git-nb
