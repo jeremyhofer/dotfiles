@@ -95,6 +95,22 @@ if [ -n "$expected_wt" ] && [ "$expected_wt" != "$default" ]; then
   printf '                    Creating %s. Update the manifest path, or that path will not resolve.\n' "$default" >&2
 fi
 
+
+# --- post-worktree-create extension point --------------------------------------------------------
+# A new worktree is the moment a per-worktree defect is BORN and the cheapest moment to catch it:
+# whoever is here is about to run an install anyway. This base repo is public and must not depend on
+# any private tooling, so it does not name a checker -- it offers a documented hook and runs it if
+# something has been installed there. That is the base-provides-the-mechanism split.
+#
+# CONTRACT: ~/.dotlocal/hooks/post-worktree-create <absolute-worktree-path>
+# ADVISORY ONLY. Its exit status is deliberately discarded -- a reporting hook must never be able to
+# fail a worktree creation, and a guard people route around is worse than no guard at all.
+run_post_worktree_create_hook() {
+  hook="$HOME/.dotlocal/hooks/post-worktree-create"
+  [ -x "$hook" ] || return 0
+  "$hook" "$1" || true
+}
+
 if [ -d "$target/$default" ]; then
   printf 'git-clone-worktree: worktree %s/%s already present\n' "$target" "$default"
 else
@@ -102,3 +118,5 @@ else
 fi
 
 printf 'git-clone-worktree: %s ready (default branch: %s)\n' "$target" "$default"
+
+run_post_worktree_create_hook "$target/$default"
