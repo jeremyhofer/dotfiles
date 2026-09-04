@@ -99,3 +99,16 @@ skips silently on a machine that has none.
 **Adopting a machine that already has config** (stow, hand-placed, or a managed install) has its own
 guarded flow — audit what would be overwritten, back it up, diff, confirm. See
 [`setup/README.md`](setup/README.md); start there rather than applying straight onto existing files.
+
+## `dot_claude/tooling.md` — the always-on tooling inventory
+
+Shipped into `~/.claude/tooling.md` and imported by a machine's Claude config. It exists because a
+session that knows the wrong *binary name* concludes a tool is absent and reasons on from there:
+on 2026-09-04 an agent searched for a binary called `worktrunk`, found none, and twice reported the
+tool missing — including as a blocker to a change. It ships as `wt`. Hence the name-mismatch table.
+
+Two layers, so the split survives a machine that has only this repo: this file lists what the base
+installs and never names a private tool; the private overlay ships its own fragment and imports
+both. `tests/test-tooling-inventory.sh` fails when a tool here is undocumented, and warns when the
+document names one this repo no longer ships — a stale inventory is worse than none, because it is
+believed.
