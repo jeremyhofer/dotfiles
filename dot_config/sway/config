@@ -73,10 +73,18 @@ exec uwsm finalize
 # Wrapped in `uwsm app` so it's scoped as a proper systemd user unit under the session.
 exec uwsm app -- lxqt-policykit-agent
 
-# Idle + lock manager: lock the screen (hyprlock) after 30 min idle (matches i3's
-# `xset s 1800`) and before the system sleeps. `-w` waits for the locker to map before
-# the sleep completes. Wrapped in `uwsm app` for proper session-unit scoping.
-exec uwsm app -- swayidle -w timeout 1800 'hyprlock' before-sleep 'hyprlock'
+# Idle + lock manager: hypridle locks the screen (hyprlock) after 30 min idle (matches
+# i3's `xset s 1800`) and before the system sleeps. Config: ~/.config/hypr/hypridle.conf,
+# which carries the full rationale. Wrapped in `uwsm app` for proper session-unit scoping.
+#
+# THIS WAS swayidle, AND THE COMMENT HERE WAS WRONG IN A LOAD-BEARING WAY. It claimed
+# "`-w` waits for the locker to map before the sleep completes". It does not: `-w` waits
+# for the command to EXIT. swayidle(1) pairs it with `swaylock -f` precisely because `-f`
+# forks once the lock is up, making exit mean map. hyprlock has no fork flag, so it never
+# exited until unlock -- the inhibitor always blew past InhibitDelayMaxSec and the system
+# suspended mid-fingerprint-claim, and the unfinished locker survived the wake and got a
+# second one stacked on it. Do not reintroduce swayidle here without a forking locker.
+exec uwsm app -- hypridle
 
 # XDG autostart (.desktop → EasyEffects, blueman, …) is handled natively
 # by uwsm's systemd-xdg-autostart generator under graphical-session.target — each app gets its
@@ -128,9 +136,12 @@ input type:touchpad {
     bindsym XF86AudioPrev exec playerctl previous
     bindsym XF86AudioNext exec playerctl next
 
-    # Lock the screen on demand with hyprlock (parity with i3's $mod+Ctrl+l → i3lock).
-    # hyprlock gives fingerprint + password unlock; swayidle also calls it on idle/before-sleep.
-    bindsym $mod+Ctrl+l exec hyprlock
+    # Lock the screen on demand (parity with i3's $mod+Ctrl+l → i3lock).
+    # Goes through `loginctl lock-session` rather than launching hyprlock directly, so the
+    # hotkey, the idle timeout and the pre-sleep hook all funnel through hypridle's single
+    # lock_cmd. Spawning the locker here directly would reintroduce the second lock owner
+    # that stacking bug came from.
+    bindsym $mod+Ctrl+l exec loginctl lock-session
 
     # Brightness (light writes sysfs, so it works under Wayland). --locked = also on the lock screen.
     bindsym --locked XF86MonBrightnessDown exec light -U 5
