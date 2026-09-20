@@ -10,6 +10,7 @@ prompted the name table: this repo's README.)
 | --- | --- | --- | --- |
 
 **Installed by this repo:** `chezmoi-overlay` (runs the private second chezmoi instance) ·
+`comment-lint` (fails a source comment that depends on context the file cannot carry) ·
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
