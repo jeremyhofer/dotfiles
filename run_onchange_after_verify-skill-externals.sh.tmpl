@@ -1,0 +1,73 @@
+#!/bin/sh
+# Verify that each pinned third-party skill external actually landed correctly.
+#
+# WHY THIS EXISTS. A skill external is fetched with `include` and `stripComponents`, which are
+# POSITIONAL ASSUMPTIONS ABOUT SOMEONE ELSE'S REPOSITORY LAYOUT. Pinning to a tag stops the
+# content changing underneath you, but it does nothing for the moment you bump the pin: if
+# upstream has repackaged, the include glob matches nothing and the strip count is wrong, and
+# chezmoi is content to create an empty or mis-nested directory and say nothing. The skill then
+# silently stops existing -- the agent simply never offers it, which looks like normal behaviour.
+#
+# WHAT IT CHECKS, per skill: the directory exists and is not empty; SKILL.md is at its ROOT
+# (which is what a wrong strip count breaks); the licence came along (its archive path embeds the
+# version, so it is the piece most likely to be forgotten in a bump); the frontmatter declares a
+# `name` (without it the skill is not discoverable); and the frontmatter `version` EQUALS the
+# pinned version (which catches a stale cache, a moved tag, or the wrong subtree extracted).
+#
+# WHAT IT CANNOT CHECK: whether the skill's CONTENT is still good, or still says what it said when
+# it was reviewed. A version match proves provenance, not quality. Re-reading is a human job.
+#
+# This is a `run_onchange_` script and the pinned versions are rendered into it, so bumping a pin
+# re-runs the verification automatically. That coupling is the point: a cheap bump cannot quietly
+# leave a broken install behind.
+set -eu
+
+fail=0
+
+check_skill() {
+    name="$1"; want_version="$2"
+    dir="$HOME/.claude/skills/$name"
+
+    if [ ! -d "$dir" ]; then
+        printf 'skill-external: %s: directory missing at %s\n' "$name" "$dir" >&2
+        fail=1; return 0
+    fi
+    if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+        printf 'skill-external: %s: directory is EMPTY -- the include glob matched nothing, which usually means upstream repackaged\n' "$name" >&2
+        fail=1; return 0
+    fi
+    if [ ! -f "$dir/SKILL.md" ]; then
+        printf 'skill-external: %s: no SKILL.md at the root of %s -- stripComponents is wrong for this layout\n' "$name" "$dir" >&2
+        printf 'skill-external: %s: what did land: %s\n' "$name" "$(ls -A "$dir" | tr '\n' ' ')" >&2
+        fail=1; return 0
+    fi
+    if [ ! -f "$dir/LICENSE" ]; then
+        printf 'skill-external: %s: LICENSE missing -- the archive-file path embeds the version and was probably not bumped with the URL\n' "$name" >&2
+        fail=1
+    fi
+
+    got_name=$(awk -F'[[:space:]]*:[[:space:]]*' '/^name:/{print $2; exit}' "$dir/SKILL.md" 2>/dev/null || true)
+    [ -n "$got_name" ] || {
+        printf 'skill-external: %s: SKILL.md has no `name:` in its frontmatter -- it will not be discoverable\n' "$name" >&2
+        fail=1
+    }
+
+    got_version=$(awk -F'[[:space:]]*:[[:space:]]*' '/^version:/{print $2; exit}' "$dir/SKILL.md" 2>/dev/null || true)
+    got_version=$(printf '%s' "$got_version" | tr -d '"'"'"' ')
+    if [ -z "$got_version" ]; then
+        printf 'skill-external: %s: SKILL.md declares no version; cannot confirm the pin landed (expected %s)\n' "$name" "$want_version" >&2
+        fail=1
+    elif [ "$got_version" != "$want_version" ]; then
+        printf 'skill-external: %s: VERSION MISMATCH -- pinned %s, installed %s\n' "$name" "$want_version" "$got_version" >&2
+        fail=1
+    fi
+}
+
+{{ range .skill_externals }}check_skill {{ .name | quote }} {{ .version | quote }}
+{{ end }}
+if [ "$fail" -ne 0 ]; then
+    printf '\n%s\n' "skill-external: one or more pinned skills did not install correctly." >&2
+    printf '%s\n' "  These are positional assumptions about an upstream layout; a repackage breaks them silently." >&2
+    printf '%s\n' "  Check the upstream tag's tree, then update 'subtree'/'version' in .chezmoidata.yaml and re-apply." >&2
+    exit 1
+fi

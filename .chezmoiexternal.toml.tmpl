@@ -28,27 +28,34 @@
     stripComponents = 1
     refreshPeriod = "168h"
 
-# avoid-ai-writing — a third-party prose lint, PINNED to a release tag rather than tracking a
-# branch like the externals above. Those deliver shell code that is already trusted; this
-# delivers INSTRUCTIONS AN AGENT OBEYS, so an unattended refresh could change what a session is
-# told without anyone reviewing it. Pinning makes an upgrade a one-line bump that can be diffed.
-# Measured at adoption: the default branch was 56 commits and 300 changed files ahead of the
-# newest tag, and this skill's own body differed by ~46% between the two -- so "latest" and
-# "released" are not close together in this project.
-#
-# `include` patterns match the member paths AS THEY APPEAR IN THE ARCHIVE, before
-# stripComponents is applied; stripComponents then removes the leading 5 components so
-# SKILL.md lands at the root of the target directory. Verified by extracting the archive.
-[".claude/skills/avoid-ai-writing"]
-    type = "archive"
-    url = "https://github.com/conorbronsdon/avoid-ai-writing/archive/refs/tags/v3.35.0.tar.gz"
-    exact = true
-    stripComponents = 5
-    include = ["*/plugins/avoid-ai-writing/skills/avoid-ai-writing/**"]
+{{/* Pinned third-party skills, generated from .chezmoidata.yaml `skill_externals`.
 
-# The licence is at the archive root, outside the subtree above, and MIT requires the notice
-# travel with the copy. `archive-file` extracts a single member, named by `path`.
-[".claude/skills/avoid-ai-writing/LICENSE"]
+     PINNED TO A TAG, deliberately unlike every external above. Those deliver shell code that is
+     already trusted; a skill delivers INSTRUCTIONS AN AGENT OBEYS, so an unattended refresh could
+     change what a session is told with nobody reviewing it. A default branch routinely runs well
+     ahead of its newest release, so tracking one deploys content that no release ever contained.
+
+     stripComponents and the include glob are DERIVED from `subtree` rather than hand-written:
+     the archive root is one component, so stripping (1 + depth of subtree) lands SKILL.md at the
+     root of the target. `include` matches member paths AS THEY APPEAR IN THE ARCHIVE, before any
+     stripping -- verified by extraction, not assumed. A companion verifier script asserts what
+     actually landed, because these are positional assumptions about someone else's layout and a
+     repackage upstream would otherwise install an empty or mis-nested directory in silence. */}}
+{{ range .skill_externals -}}
+{{ $root := printf "%s-%s" (base .repo) .version -}}
+{{ $strip := add 1 (len (splitList "/" .subtree)) -}}
+[".claude/skills/{{ .name }}"]
+    type = "archive"
+    url = "https://github.com/{{ .repo }}/archive/refs/tags/v{{ .version }}.tar.gz"
+    exact = true
+    stripComponents = {{ $strip }}
+    include = ["*/{{ .subtree }}/**"]
+
+{{/* The licence sits at the archive root, outside the subtree, and MIT requires the notice
+     travel with the copy. Its `path` embeds the version, which is exactly the kind of string
+     that gets forgotten in a bump -- hence templated from the same single source. */}}
+[".claude/skills/{{ .name }}/LICENSE"]
     type = "archive-file"
-    url = "https://github.com/conorbronsdon/avoid-ai-writing/archive/refs/tags/v3.35.0.tar.gz"
-    path = "avoid-ai-writing-3.35.0/LICENSE"
+    url = "https://github.com/{{ .repo }}/archive/refs/tags/v{{ .version }}.tar.gz"
+    path = "{{ $root }}/LICENSE"
+{{ end -}}
