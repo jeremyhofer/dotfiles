@@ -5,3 +5,17 @@
 session_env:
   - { name: SSH_AUTH_SOCK, value: "${XDG_RUNTIME_DIR}/ssh-agent.socket" }
   - { name: SSH_ASKPASS_REQUIRE, value: "never" }
+
+# Pinned third-party SKILL externals. Stated once here and consumed by BOTH
+# .chezmoiexternal.toml.tmpl (which builds the download) and the verifier script (which checks
+# what actually landed). Only these four fields are hand-maintained: the archive root, the
+# include glob and stripComponents are DERIVED, because each hand-copied positional number is a
+# way for a version bump to desync and install something subtly wrong.
+#
+# `subtree` is the path INSIDE the upstream repo that holds SKILL.md. If upstream repackages,
+# that is the field that changes -- and the verifier is what tells you, loudly, that it did.
+skill_externals:
+  - name: avoid-ai-writing
+    repo: conorbronsdon/avoid-ai-writing
+    version: "3.35.0"
+    subtree: plugins/avoid-ai-writing/skills/avoid-ai-writing
