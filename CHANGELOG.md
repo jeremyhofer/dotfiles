@@ -26,6 +26,32 @@ Entries are newest first.
 
 ---
 
+## 2026-09-20
+
+**New tool: `comment-lint`** — fails a source comment that depends on context the file cannot carry:
+a record id from a tracker that lives elsewhere, a numbered unit of a plan the file does not contain,
+a path under one user's home, prose that only resolves for whoever was in the room. Not an ACTION on
+its own; nothing changes until a repository chooses to call it.
+
+**Why it is installed rather than copied into each repository.** It is one file, on purpose. A
+repository that gates on it calls it by name, so a rule tuned once takes effect everywhere at the
+next apply. The alternative — a copy per repo — was tried first for two repos and abandoned: the
+failure mode is silent, a category tuned in one copy and stale in another, with both copies still
+passing their own tests.
+
+**The trade-off, stated because it is real.** The gate now depends on a machine-level install rather
+than travelling inside the repository. A checkout on a machine without this base has no gate, so any
+caller must FAIL when the tool is absent rather than skip — a check that quietly does not run is
+worse than no check.
+
+**It carries no vocabulary.** The record ids it looks for are supplied per repository, through
+`--markers`, `$COMMENT_LINT_MARKERS`, or `.comment-lint-markers` at the repository root. A built-in
+list would be un-shippable in a public repo and would make the tool un-installable in precisely the
+places that need it. With nothing configured, that one category reports itself INACTIVE on stderr
+rather than passing in silence.
+
+---
+
 ## 2026-08-31
 
 **The zsh prompt now carries a one-character machine tag** — `[<tag>]` normally, `[ssh:<tag>]`

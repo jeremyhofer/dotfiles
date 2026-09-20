@@ -1,0 +1,740 @@
+#!/usr/bin/env python3
+"""comment-lint — block a source comment from depending on context the file cannot carry.
+
+WHY THIS EXISTS
+    A comment is the only artifact with no reader-facing surface. A document is read by
+    someone who wanted it and can notice it is wrong; a comment is read by whoever is
+    already editing that line, who is looking at the code and not auditing the prose
+    beside it. So a comment that has gone stale produces no complaint from anybody, ever.
+    The drift is invisible by construction rather than by neglect — which makes it a gate
+    problem and not a care problem.
+
+    The second-order cost is the one that bites later. A comment naming a record from the
+    tracker it was written under, or citing a count taken on the day it was typed, does
+    not merely age badly: it BINDS the file to the repository it was written in. A tool
+    built to be copied elsewhere cannot be, and nobody finds out until the copy is
+    attempted.
+
+WHAT IT CHECKS
+    program-marker   a record id, tracker key or private tree name, BARE in commentary.
+                     The vocabulary is CONFIGURED, never built in — see VOCABULARY below.
+    plan-identifier  a reference to a numbered unit of a plan ("Task 8", "Phase 2"). The
+                     plan is not in the file, is often not in the repository, and is
+                     discarded once the work lands, so the pointer dies where it stands.
+    session-deixis   prose that only resolves for whoever was in the room — "this task",
+                     "as requested", "at the time of writing".
+    personal-path    an absolute path under a named user's home directory.
+    stale-hedge      a sentence that announces its own expiry date ("as of this writing").
+    stale-count      ADVISORY. A census in prose — "N entries", "as of <date>". A real
+                     defect when it is a measurement, and ordinary content when it
+                     describes a fixture the file itself defines. See BLOCKING vs ADVISORY.
+
+WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets over-trusted
+    * Whether a comment explains WHY rather than restating WHAT. That is the primary
+      standard and it is a judgement; no pattern sees it.
+    * Whether prose is relevant to the project it sits in. Also a judgement, and the
+      reason the sibling standard for documentation is enforced by review instead.
+    * A record id in a vocabulary nobody configured. With no vocabulary the category is
+      INACTIVE, and says so on stderr rather than passing silently.
+    * A stale claim with no number in it — "the parser handles both forms" after a third
+      form was added. Every word still resolves and the sentence is false.
+    * Whether a permitted historical note is TRUE. Provenance is exempted by shape, not
+      verified.
+
+MENTION vs USE — the calibration that decides whether this gate survives
+    Some files legitimately name the very tokens this checks for, because matching them is
+    what the file DOES: a linter resolving a record id, a test asserting on one, a status
+    line preferring one path spelling over another. Those strings are behaviour, not prose,
+    and removing them breaks the tool.
+
+    The discriminator is quoting. A token wholly inside a backtick span or a double-quoted
+    span is being NAMED — it is a literal under discussion. Bare in the sentence, it is
+    being RELIED ON. Single quotes are deliberately not span delimiters: an apostrophe in
+    ordinary prose would pair with the next one and silently swallow a real finding.
+
+    Without this, every file that implements the standard is a finding against itself.
+
+WHAT IS DELIBERATELY PERMITTED
+    * Provenance. "On <date> this broke, which is why this check exists" cannot go stale:
+      the event happened. "As of <date> there are N" will. The test is one question —
+      could an edit made somewhere else, by someone else, later make this sentence false?
+    * TODO, FIXME and friends. They are an industry convention with tooling behind them,
+      and a standard that fought its own ecosystem would simply be ignored.
+    * Step numbering that the file itself defines. "Step 1: ... Step 2: ..." describing an
+      algorithm in the function below is self-contained. This was measured, not assumed:
+      on the corpus this was built against, that spelling was mostly self-contained prose
+      and external-standard citation, so the word is absent from the plan vocabulary. The
+      measurement lives in the decision record, not here.
+
+VOCABULARY
+    The marker vocabulary is one extended regular expression, read from the first
+    non-comment line of a file named by --markers, by $COMMENT_LINT_MARKERS, or
+    `.comment-lint-markers` at the repository root, in that order.
+
+    It is configuration rather than a built-in list for a reason that is easy to get
+    backwards: a tracker's id scheme is itself private in most of the places this tool is
+    meant to run, so a built-in list would make the tool un-installable in exactly the
+    repositories that need it, and would be the leak it exists to prevent. The engine
+    travels; the vocabulary stays home.
+
+BLOCKING vs ADVISORY
+    Decided by precision measured against a real corpus, not by how serious a defect
+    sounds. `stale-count` advises rather than blocks: a number beside a noun is a rotting
+    census in a module header and an accurate description of its own fixture in a test, and
+    no pattern separates those. The rest block.
+
+    Precision is a property of a corpus, so re-measure before changing this split. The
+    measurement lives in the decision record — a number pasted into a comment is stale the
+    next time anyone edits a file, which is the defect this tool exists to catch.
+
+RATCHET
+    `--added-only` reads each file's STAGED BLOB and reports only findings on lines the
+    commit ADDS. A blocking gate introduced over a corpus that already violates it would
+    refuse edits to long-lived files over defects the committer did not write, and would be
+    switched off, after which it guards nothing. Inherited findings surface in a full run
+    and are cleaned up deliberately. Reading the staged blob also means a partial `git add`
+    cannot slip a defect past this check.
+
+HOW A COMMENT IS FOUND
+    Every check over comments needs the same hard part first: deciding which bytes of a
+    source file are prose and which are code. A naive grep for a comment marker reads a
+    URL, a hash inside a string literal and a here-document body as commentary, and each
+    of those is a false positive on content nobody wrote as prose.
+
+    So this is a character scanner with per-language string and comment rules, not a
+    parser. It is wrong on genuinely ambiguous syntax — a regex literal containing a
+    comment marker is the known case — and right on the shapes that actually occur. A
+    file whose language is not in the table yields nothing, so an unknown extension is a
+    silent no-op rather than a stream of garbage. Python is handled by the language's own
+    tokenizer, plus its syntax tree for docstrings, because a docstring is documentation
+    by position and guessing at that is exactly what this avoids.
+
+    Machine-written files are skipped wholesale. A generator's banner is a generator's
+    words; flagging it teaches nobody anything and trains the reader to ignore the tool.
+
+USAGE
+    comment-lint.py [--blocking-only] [--added-only] [--stats] [--markers FILE] [PATH ...]
+
+    No PATH arguments lints every tracked source file. Exit 1 if any BLOCKING finding.
+    Output format matches the repo's other linters: `[category] path:line: message`.
+"""
+import ast
+import io
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tokenize
+
+# --- language table ---------------------------------------------------------------
+# Each flavour names its line-comment tokens, block-comment pairs, and string delimiters.
+# A string delimiter carries whether a backslash escapes inside it, because a shell
+# single-quoted string has no escapes and a C-like one does — getting that backwards
+# swallows the rest of a file at the first apostrophe.
+HASH = {
+    "line": ["#"],
+    "block": [],
+    "strings": [("'", "'", False), ('"', '"', True)],
+    "heredoc": True,
+}
+SLASH = {
+    "line": ["//"],
+    "block": [("/*", "*/")],
+    "strings": [("'", "'", True), ('"', '"', True), ("`", "`", True)],
+    "heredoc": False,
+}
+BLOCK_ONLY = {
+    "line": [],
+    "block": [("/*", "*/")],
+    "strings": [('"', '"', True), ("'", "'", True)],
+    "heredoc": False,
+}
+MARKUP = {
+    "line": [],
+    "block": [("<!--", "-->")],
+    "strings": [],
+    "heredoc": False,
+}
+DASH = {
+    "line": ["--"],
+    "block": [],
+    "strings": [("'", "'", False), ('"', '"', True)],
+    "heredoc": False,
+}
+
+FLAVOURS = {}
+for _ext in (
+    "py pyi sh bash zsh ksh rb pl pm yaml yml toml just tf tfvars cfg conf ini "
+    "service timer socket mount network automount nix ps1 r jl"
+).split():
+    FLAVOURS[_ext] = HASH
+for _ext in (
+    "js mjs cjs jsx ts mts cts tsx c h cc cpp hpp rs go java kt kts swift scala "
+    "php dart groovy rn proto"
+).split():
+    FLAVOURS[_ext] = SLASH
+for _ext in "css".split():
+    FLAVOURS[_ext] = BLOCK_ONLY
+for _ext in "scss sass less".split():
+    FLAVOURS[_ext] = SLASH
+for _ext in "html htm xml svg xsl".split():
+    FLAVOURS[_ext] = MARKUP
+for _ext in "sql lua hs elm".split():
+    FLAVOURS[_ext] = DASH
+
+# Extensionless files whose name is the convention. A shebang is checked first, so this
+# only has to carry names that are not scripts.
+BY_NAME = {
+    "justfile": HASH,
+    "Justfile": HASH,
+    "Makefile": HASH,
+    "makefile": HASH,
+    "Dockerfile": HASH,
+    "Brewfile": HASH,
+    "PKGBUILD": HASH,
+    ".gitconfig": HASH,
+    ".zshrc": HASH,
+    ".bashrc": HASH,
+    ".profile": HASH,
+}
+
+SHEBANG = re.compile(r"^#!.*\b(sh|bash|zsh|python[0-9.]*|ruby|perl)\b")
+HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+# Skipped wholesale: machine-written files, where a "comment" is a generator's banner and
+# no human chose its words. Flagging those teaches nobody anything and trains the reader
+# to ignore the tool.
+GENERATED = re.compile(
+    r"(^|/)(node_modules|vendor|third[-_]party|dist|build|\.venv|venv)/"
+    r"|\.min\.(js|css)$"
+    r"|(^|/)[^/]*\.generated\.[^/]+$"
+    r"|(^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|uv\.lock|Cargo\.lock|poetry\.lock)$"
+)
+
+# A generator's own banner, wherever it lands. Same reasoning as GENERATED, for a file
+# that is checked in beside hand-written ones rather than living in a generated tree.
+GENERATED_BANNER = re.compile(
+    r"(do not edit|don't edit|auto[- ]?generated|automatically generated|generated by)",
+    re.IGNORECASE,
+)
+
+
+def flavour_for(path: str, first_line: str = "") -> dict | None:
+    """The scanner rules for this file, or None when the language is unknown."""
+    if GENERATED.search(path):
+        return None
+    name = path.rsplit("/", 1)[-1]
+    if name in BY_NAME:
+        return BY_NAME[name]
+    if "." in name:
+        ext = name.rsplit(".", 1)[-1]
+        if ext in FLAVOURS:
+            return FLAVOURS[ext]
+    if SHEBANG.match(first_line):
+        return HASH
+    return None
+
+
+def _scan(text: str, fl: dict) -> list[tuple[int, str]]:
+    """Character scanner. Returns (line number, comment text) per line of commentary."""
+    out: list[tuple[int, str]] = []
+    lines = text.splitlines()
+    in_block: tuple[str, str] | None = None
+    heredoc_end: str | None = None
+
+    for n, raw in enumerate(lines, 1):
+        i = 0
+        line = raw
+
+        if heredoc_end is not None:
+            if line.strip() == heredoc_end:
+                heredoc_end = None
+            continue
+
+        # Continue an open block comment: the whole line is prose until the closer.
+        if in_block is not None:
+            close = in_block[1]
+            idx = line.find(close)
+            if idx == -1:
+                out.append((n, line.strip()))
+                continue
+            out.append((n, line[:idx].strip()))
+            i = idx + len(close)
+            in_block = None
+
+        in_string: tuple[str, bool] | None = None
+        started: int | None = None
+        while i < len(line):
+            ch = line[i]
+            if in_string is not None:
+                close, escapes = in_string
+                if escapes and ch == "\\":
+                    i += 2
+                    continue
+                if line.startswith(close, i):
+                    in_string = None
+                    i += len(close)
+                    continue
+                i += 1
+                continue
+
+            opened = False
+            for op, cl, escapes in fl["strings"]:
+                if line.startswith(op, i):
+                    in_string = (cl, escapes)
+                    i += len(op)
+                    opened = True
+                    break
+            if opened:
+                continue
+
+            for op, cl in fl["block"]:
+                if line.startswith(op, i):
+                    rest = line[i + len(op) :]
+                    idx = rest.find(cl)
+                    if idx == -1:
+                        out.append((n, rest.strip()))
+                        in_block = (op, cl)
+                        i = len(line)
+                    else:
+                        out.append((n, rest[:idx].strip()))
+                        i = i + len(op) + idx + len(cl)
+                    break
+            else:
+                hit = None
+                for tok in fl["line"]:
+                    if not line.startswith(tok, i):
+                        continue
+                    # `://` is a URL, not a comment, and it is the single largest false
+                    # positive for a slash-flavoured scanner.
+                    if tok == "//" and i > 0 and line[i - 1] == ":":
+                        continue
+                    # A hash starts a comment only at a token boundary. Without this,
+                    # `${var#prefix}` and a fragment in a bare URL both read as prose.
+                    if tok == "#" and i > 0 and not line[i - 1].isspace():
+                        continue
+                    hit = tok
+                    break
+                if hit is not None:
+                    started = i + len(hit)
+                    break
+                i += 1
+
+        if started is not None:
+            out.append((n, line[started:].strip()))
+            continue
+
+        if fl.get("heredoc"):
+            m = HEREDOC_OPEN.search(line)
+            if m:
+                heredoc_end = m.group(2)
+
+    return [(n, t) for n, t in out if t]
+
+
+def _python(text: str) -> list[tuple[int, str]]:
+    """Python: comments from the tokenizer, docstrings from the syntax tree.
+
+    The tokenizer is used rather than the scanner above because it is the language's own
+    answer to which hashes are prose, and it costs nothing to ask. Docstrings need the
+    tree: a string is only documentation in certain positions, and telling those apart by
+    eye is exactly the kind of guess this module avoids.
+    """
+    out: list[tuple[int, str]] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                out.append((tok.start[0], tok.string.lstrip("#").strip()))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return _scan(text, HASH)
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return sorted(set(out))
+
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if not (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            continue
+        start = first.value.lineno
+        for offset, line in enumerate(first.value.value.splitlines()):
+            if line.strip():
+                out.append((start + offset, line.strip()))
+
+    return sorted(set(out))
+
+
+def extract(text: str, path: str) -> list[tuple[int, str]]:
+    """Every line of commentary in `text`, as (line number, prose)."""
+    first = text.split("\n", 1)[0] if text else ""
+    fl = flavour_for(path, first)
+    if fl is None:
+        return []
+    name = path.rsplit("/", 1)[-1]
+    if name.endswith((".py", ".pyi")):
+        found = _python(text)
+    else:
+        found = _scan(text, fl)
+    if any(GENERATED_BANNER.search(t) for _, t in found[:5]):
+        return []
+    return found
+
+# A numbered unit of a plan. `Step` is absent by measurement, not by oversight — see
+# WHAT IS DELIBERATELY PERMITTED.
+PLAN_ID = re.compile(
+    r"\b(Task|Phase|Wave|Sprint|Milestone|Iteration|Batch)\s+\d+(?:\.\d+)*[a-z]?\b",
+)
+
+# Deixis that resolves only for whoever was present. `this session`, `this pass` and
+# `currently` are absent deliberately: they are domain vocabulary in session tooling and
+# in code describing runtime state, and flagging them there is how a gate loses its
+# reader.
+DEIXIS = re.compile(
+    r"\bthis (task|sitting|conversation|exchange)\b"
+    # `as requested` must end its clause. Without that, `one entry per requested
+    # strategy` and `as requested by the caller` — ordinary API prose — read as deixis.
+    r"|\bas (requested|discussed)(?=\s*[,.;:)]|\s*$)"
+    r"|\bper (your|our) (request|conversation|discussion)\b"
+    r"|\bthe user (asked|wants|said|requested)\b"
+    r"|\byou asked\b|\bwe discussed\b|\bearlier today\b"
+    r"|\b(the|this) (task|plan)'s (brief|scope)\b",
+    re.IGNORECASE,
+)
+
+# An absolute path under a named user's home. The leading boundary is what keeps a
+# repo-relative `routes/home/...` out of it.
+PERSONAL_PATH = re.compile(r"(?<![\w.-])/(home|Users)/[a-z][\w.-]*/")
+
+# A sentence that announces its own expiry.
+STALE_HEDGE = re.compile(
+    r"\bat (the time of|this) writing\b|\bas of (this writing|today|now)\b",
+    re.IGNORECASE,
+)
+
+# ADVISORY. A census in prose. Bounded so a threshold or a limit does not read as one.
+CENSUS = re.compile(
+    r"(?<![\w.-])(?:~|about |roughly |approximately )?\d+\s+"
+    r"(rows|files|findings|violations|entries|packages|projects|posts|URLs|repos|"
+    r"machines|hits|gaps|skills|agents|topics|commits|tests|cases)\b",
+    re.IGNORECASE,
+)
+CENSUS_NOT = re.compile(
+    r"\b(last|first|up to|beyond|at most|at least|fewer than|more than|per)\s+$"
+    r"|[<>≥≤]=?\s*$"
+)
+ASOF_DATE = re.compile(
+    r"\bas of\s+(20\d\d|[A-Z][a-z]+ 20\d\d|\d\d?/\d\d?/\d\d)", re.IGNORECASE
+)
+
+BACKTICK = re.compile(r"`[^`]*`")
+DQUOTE = re.compile(r'"[^"]*"')
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+ADVISORY = {"stale-count"}
+
+
+def git(*args: str, cwd: pathlib.Path) -> str:
+    # Decoded with replacement rather than strictly: a caller may hand this every staged
+    # path, including a binary one, and a blocking gate must not die on an image.
+    out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True).stdout
+    return out.decode("utf-8", errors="replace")
+
+
+def repo_root(start: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(git("rev-parse", "--show-toplevel", cwd=start).strip())
+
+
+def quoted_spans(text: str) -> list[tuple[int, int]]:
+    return [m.span() for m in BACKTICK.finditer(text)] + [
+        m.span() for m in DQUOTE.finditer(text)
+    ]
+
+
+def is_mention(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    return any(a <= span[0] and span[1] <= b for a, b in spans)
+
+
+def load_markers(root: pathlib.Path, explicit: str | None) -> re.Pattern | None:
+    """The configured marker vocabulary, or None when nothing configured one."""
+    candidates = [
+        explicit,
+        os.environ.get("COMMENT_LINT_MARKERS"),
+        str(root / ".comment-lint-markers"),
+    ]
+    for c in candidates:
+        if not c:
+            continue
+        p = pathlib.Path(c)
+        if not p.is_file():
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#"):
+                try:
+                    return re.compile(s)
+                except re.error as e:
+                    print(f"comment-lint: {p}: unusable pattern: {e}", file=sys.stderr)
+                    return None
+    return None
+
+
+def check_comments(
+    comments: list[tuple[int, str]], rel: str, markers: re.Pattern | None
+) -> list[tuple[str, str, int, str]]:
+    findings = []
+    for n, text in comments:
+        spans = quoted_spans(text)
+
+        if markers is not None:
+            for m in markers.finditer(text):
+                if is_mention(m.span(), spans):
+                    continue
+                findings.append(
+                    (
+                        "program-marker",
+                        rel,
+                        n,
+                        f"`{m.group(0)}` in commentary — a record id resolves only where "
+                        "that tracker lives, so it dies the moment this file is copied "
+                        "or the record is retired. Describe the thing in its own terms; "
+                        "let the record point at the code, not the code at the record. "
+                        "(A token inside backticks or double quotes is read as a named "
+                        "literal and is not reported.)",
+                    )
+                )
+
+        for m in PLAN_ID.finditer(text):
+            if is_mention(m.span(), spans):
+                continue
+            findings.append(
+                (
+                    "plan-identifier",
+                    rel,
+                    n,
+                    f"`{m.group(0)}` — a numbered unit of a plan that is not in this "
+                    "file, is usually not in this repository, and is discarded once the "
+                    "work lands. State what the code does and why; a reader who never "
+                    "saw the plan is the only reader this comment will ever have.",
+                )
+            )
+
+        for m in DEIXIS.finditer(text):
+            if is_mention(m.span(), spans):
+                continue
+            findings.append(
+                (
+                    "session-deixis",
+                    rel,
+                    n,
+                    f"`{m.group(0)}` — resolves only for whoever was present when this "
+                    "was written. Name the thing: which behaviour, which constraint, "
+                    "which defect.",
+                )
+            )
+
+        for m in PERSONAL_PATH.finditer(text):
+            if is_mention(m.span(), spans):
+                continue
+            findings.append(
+                (
+                    "personal-path",
+                    rel,
+                    n,
+                    f"`{m.group(0)}` — an absolute path under one user's home, on one "
+                    "machine. Use the environment variable, a repo-relative path, or "
+                    "describe where the file belongs.",
+                )
+            )
+
+        for m in STALE_HEDGE.finditer(text):
+            if is_mention(m.span(), spans):
+                continue
+            findings.append(
+                (
+                    "stale-hedge",
+                    rel,
+                    n,
+                    f"`{m.group(0)}` — the sentence dates itself and nothing will "
+                    "re-date it. Either the claim is durable, in which case drop the "
+                    "hedge, or it is a measurement, in which case it belongs where "
+                    "measurements are kept.",
+                )
+            )
+
+        for m in ASOF_DATE.finditer(text):
+            if is_mention(m.span(), spans):
+                continue
+            findings.append(
+                (
+                    "stale-count",
+                    rel,
+                    n,
+                    f"`{m.group(0)}` — a claim pinned to a date. Provenance for an event "
+                    "is fine; a state that has since changed is not.",
+                )
+            )
+        for m in CENSUS.finditer(text):
+            if is_mention(m.span(), spans):
+                continue
+            if CENSUS_NOT.search(text[: m.start()]):
+                continue
+            findings.append(
+                (
+                    "stale-count",
+                    rel,
+                    n,
+                    f"`{m.group(0).strip()}` — a census in prose. If it counts something "
+                    "this file defines, it is fine; if it counts something elsewhere, an "
+                    "edit somewhere else makes it false and nothing will notice.",
+                )
+            )
+    return findings
+
+
+def added_lines(root: pathlib.Path, rel: str) -> set[int]:
+    out = git("diff", "--cached", "-U0", "--", rel, cwd=root)
+    added: set[int] = set()
+    for line in out.splitlines():
+        m = HUNK.match(line)
+        if m:
+            start = int(m.group(1))
+            count = 1 if m.group(2) is None else int(m.group(2))
+            added.update(range(start, start + count))
+    return added
+
+
+REMEDY = """
+  What to write instead — and what NOT to write instead, which is the failure a first
+  repair usually walks into:
+    * Replace the pointer with the SUBSTANCE it pointed at. A comment that said which
+      record required a behaviour should say what the behaviour is and why it is required.
+    * Do NOT swap it for a restatement of the code. "Loop over the items" is a worse
+      comment than the one you removed, and it will never be flagged by anything.
+    * Do NOT swap a marker for a vaguer gesture at the same absent thing — "per the plan",
+      "as decided elsewhere". That is the same dangling pointer with the evidence removed.
+    * Do NOT delete a comment carrying real provenance to reach green. "On <date> this
+      broke, which is why this check exists" is permitted and is usually the most valuable
+      sentence in the file.
+"""
+
+
+def main(argv: list[str]) -> int:
+    blocking_only = "--blocking-only" in argv
+    added_only = "--added-only" in argv
+    stats = "--stats" in argv
+    markers_file = None
+    rest = []
+    it = iter(argv)
+    for a in it:
+        if a == "--markers":
+            markers_file = next(it, None)
+        elif a in ("--blocking-only", "--added-only", "--stats"):
+            continue
+        else:
+            rest.append(a)
+
+    start = pathlib.Path.cwd()
+    root = repo_root(start)
+    markers = load_markers(root, markers_file)
+    if markers is None:
+        print(
+            "comment-lint: no marker vocabulary configured — the program-marker category "
+            "is INACTIVE. Point --markers or $COMMENT_LINT_MARKERS at a file whose first "
+            "non-comment line is an extended regular expression, or add "
+            ".comment-lint-markers at the repository root.",
+            file=sys.stderr,
+        )
+
+    tracked = {p for p in git("ls-files", cwd=root).splitlines() if p}
+    if rest:
+        targets = []
+        for a in rest:
+            rel = str((start / pathlib.Path(a)).resolve().relative_to(root))
+            if rel in tracked:
+                targets.append(rel)
+    else:
+        targets = sorted(tracked)
+
+    findings = []
+    n_files = n_comments = 0
+    for rel in targets:
+        if added_only:
+            try:
+                text = git("show", f":{rel}", cwd=root)
+            except subprocess.CalledProcessError:
+                continue
+        else:
+            f = root / rel
+            if not f.is_file():
+                continue
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+        first = text.split("\n", 1)[0] if text else ""
+        if flavour_for(rel, first) is None:
+            continue
+        comments = extract(text, rel)
+        if not comments:
+            continue
+        n_files += 1
+        n_comments += len(comments)
+        hits = check_comments(comments, rel, markers)
+        if added_only:
+            keep = added_lines(root, rel)
+            hits = [h for h in hits if h[2] in keep]
+        findings.extend(hits)
+
+    # One line naming the same token twice is one defect to fix, not two. Sorted on the
+    # WHOLE record, not on a prefix of it: a set iterates in hash order, so a partial key
+    # leaves two findings that share a file, a line and a category to be ordered at
+    # random -- and Python salts string hashing per process, so the output changes
+    # between runs of the same tool over the same tree. Caught by diffing one version
+    # against another and finding the diff was the tool disagreeing with itself.
+    findings = sorted(set(findings), key=lambda f: (f[1], f[2], f[0], f[3]))
+
+    if blocking_only:
+        findings = [f for f in findings if f[0] not in ADVISORY]
+    blocking = [f for f in findings if f[0] not in ADVISORY]
+
+    for cat, rel, n, msg in findings:
+        print(f"[{cat}] {rel}:{n}: {msg}")
+
+    if stats:
+        counts: dict[str, int] = {}
+        for cat, *_ in findings:
+            counts[cat] = counts.get(cat, 0) + 1
+        print(
+            f"\ndenominator: {n_comments} comment lines in {n_files} source files",
+            file=sys.stderr,
+        )
+        for cat in sorted(counts):
+            mark = " (advisory)" if cat in ADVISORY else ""
+            print(f"  {cat}: {counts[cat]}{mark}", file=sys.stderr)
+
+    if findings:
+        print(REMEDY, file=sys.stderr)
+        print(
+            f"{len(blocking)} blocking, {len(findings) - len(blocking)} advisory. "
+            "What this gate CANNOT check is listed in its module docstring; a green run "
+            "is not a comment-quality guarantee.",
+            file=sys.stderr,
+        )
+    return 1 if blocking else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
