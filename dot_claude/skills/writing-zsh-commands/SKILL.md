@@ -196,7 +196,7 @@ it needs to be a real script on `PATH`, not a function.
 
 `rg` and the `grep` shim installed here are **both gitignore-aware by default**. So a plain
 recursive search inside an ignored tree — `node_modules/`, build output, a vendored or preserved
-directory, a `.superpowers/` checkout — reports **zero matches, by design, with no warning and exit
+directory, an agent tool's state checkout — reports **zero matches, by design, with no warning and exit
 status 0**. Nothing distinguishes that from "the string genuinely is not there."
 
 Measured from a repo root, one string living only inside a gitignored `node_modules/`:
