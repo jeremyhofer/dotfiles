@@ -4,6 +4,20 @@
 # Path to your oh-my-zsh installation.
 export ZSH="$HOME/.oh-my-zsh"
 
+# Keep oh-my-zsh's RUNTIME SCRATCH out of $ZSH. That tree is a chezmoi `exact` archive external,
+# so anything written into it at shell startup reads as drift: on the next apply chezmoi asks
+# whether to overwrite files "changed since chezmoi last wrote", removes them, and the next shell
+# writes them straight back. The prompts are a loop, not a one-off, and answering them fixes
+# nothing. The plugins that trigger it write completion functions and per-plugin caches.
+#
+# Upstream supports exactly this: oh-my-zsh.sh honours ZSH_CACHE_DIR when set, creates
+# $ZSH_CACHE_DIR/completions itself, and prepends it to fpath -- so no mkdir or fpath handling is
+# needed here. The path below is also oh-my-zsh's OWN fallback for an unwritable cache dir, so
+# this only makes explicit what it would otherwise pick.
+#
+# To revert, delete these two lines: the cache returns to $ZSH/cache and so do the prompts.
+export ZSH_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/oh-my-zsh"
+
 # Set name of the theme to load --- if set to "random", it will
 # load a random theme each time oh-my-zsh is loaded, in which case,
 # to know which specific one was loaded, run: echo $RANDOM_THEME
