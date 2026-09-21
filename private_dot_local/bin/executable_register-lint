@@ -100,7 +100,15 @@ SENTINELS = {
     "ALIGNMENT REQUIRED": "align", # writing one would decide something undecided
     "TRIAGE REQUIRED": "triage",   # inherited without one and not yet examined
 }
-SENTINEL_RE = re.compile(r"^\s*(%s)\b" % "|".join(SENTINELS), re.M)
+# Leading markdown decoration is STRIPPED before matching, and this is load-bearing rather than
+# generous. A careful author writing `**ALIGNMENT REQUIRED.**` at the head of a paragraph is using
+# the most natural emphasis markdown offers -- and an anchored `^\s*` match walks straight past the
+# asterisks, finds no sentinel, and the entry then reads as holding a REAL closure condition.
+# Measured: four entries, two characters, every surface green and "a decision is owed" silently
+# converted to "settled". That is the TODO-passes-clean failure this tool exists to stop, wearing
+# the tool's own vocabulary. Fail loudly or not at all; never fail into the reassuring state.
+SENTINEL_RE = re.compile(
+    r"^[\s>\-*_`]*(%s)(?![A-Za-z0-9])" % "|".join(SENTINELS), re.M)
 
 # Prose that ASSERTS an absence rather than stating a condition.
 #
