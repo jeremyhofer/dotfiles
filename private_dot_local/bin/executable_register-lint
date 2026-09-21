@@ -31,6 +31,11 @@ WHAT IT CHECKS — blocking
                        sentinel on an entry that is not at `idea`.
     conditional-field  a field present on a status that forbids it, or absent on one that
                        requires it. A stray gate is a lie about why something is stuck.
+    empty-field        a key present with an empty value. The contract says to omit it instead;
+                       writing it blank makes "absent" and "empty" indistinguishable, and it is
+                       how a stray conditional field evades every check that asks whether it is set.
+    yaml-truncation    an unquoted `#` in a list value, which YAML reads as a comment so the value
+                       silently truncates.
     status-vocabulary  a status outside the vocabulary below.
     location           a closed entry outside the closed directory, or an open one inside.
     resolution         a closed entry with an empty resolution. Closing is a claim.
@@ -135,6 +140,7 @@ class Entry:
         self.path = path
         self.in_closed_dir = closed_dir in path.parts
         self.text = path.read_text(encoding="utf-8", errors="replace")
+        self.raw_front = ""
         self.meta = self._frontmatter()
 
     def _frontmatter(self):
@@ -142,11 +148,13 @@ class Entry:
         # and depending on a parser would make this tool uninstallable wherever that
         # parser is not, for no gain over the shape the contract already guarantees.
         meta = {}
+        self.raw_front = ""
         if not self.text.startswith("---"):
             return meta
         end = self.text.find("\n---", 3)
         if end == -1:
             return meta
+        self.raw_front = self.text[3:end]
         for line in self.text[3:end].splitlines():
             if not line.strip() or line.startswith((" ", "\t", "-", "#")):
                 continue
@@ -240,6 +248,46 @@ def check(entries, closed_dir):
             fail("id-integrity", e, "duplicate id, also in %s" % pathlib.Path(seen[e.id]).name)
         else:
             seen[e.id] = str(e.path)
+
+        # The contract says to OMIT a key that does not apply rather than writing it blank. A
+        # register that does both makes "absent" and "empty" mean the same thing, and nothing can
+        # tell them apart afterwards. This also catches the case the conditional-field checks
+        # below cannot see: a key present with an empty value is falsy, so a stray blank `gate:`
+        # on a status that forbids one slipped through every check that asked whether it was set.
+        front_lines = e.raw_front.splitlines()
+        for idx, line in enumerate(front_lines):
+            if not line.strip() or line.startswith((" ", "\t", "-", "#")):
+                continue
+            key, sep, value = line.partition(":")
+            if not sep or value.strip():
+                continue
+            # A key with no value ON ITS LINE is not empty if a block value follows -- an indented
+            # line or a list item. Reading the key line in isolation reports every `artifacts:`
+            # with a list beneath it, which is correct YAML and is what the contract's own template
+            # shows. Found by running this check against two real registers that were already clean.
+            has_block = False
+            for nxt in front_lines[idx + 1:]:
+                if not nxt.strip():
+                    continue
+                has_block = nxt.startswith((" ", "\t", "-"))
+                break
+            if not has_block:
+                fail("empty-field", e,
+                     "%r is present but empty -- omit the key instead, or 'absent' and 'empty' "
+                     "become the same thing" % key.strip())
+
+        # A `#` in an unquoted YAML scalar starts a comment, so the value silently truncates.
+        # The parser above deliberately skips list items, which is exactly why this reads the RAW
+        # frontmatter: the rule applies to the values that parser never sees.
+        for line in e.raw_front.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("- "):
+                continue
+            value = stripped[2:].strip()
+            if "#" in value and not (value.startswith(("'", '"')) and value.endswith(("'", '"'))):
+                fail("yaml-truncation", e,
+                     "list value %r contains an unquoted '#', which YAML reads as a comment -- the "
+                     "value silently truncates. Quote it." % value)
 
         if e.id and not e.path.name.startswith("%s-" % e.id):
             fail("filename", e, "filename does not begin with its id %r" % e.id)
