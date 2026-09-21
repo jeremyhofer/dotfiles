@@ -109,6 +109,19 @@ assert_lacks "a DECLARED absence does not block" "[closure-condition]" "$out"
 assert_lacks "a declared absence is not also an undeclared one" "[undeclared-absence]" "$out"
 assert_has "a declared absence is counted as debt" "[triage-debt]" "$out"
 
+# A sentinel wrapped in markdown emphasis must still be a sentinel. An anchored match walks past
+# the asterisks, finds nothing, and the entry reads as holding a REAL condition -- so two characters
+# silently convert "a decision is owed" into "settled", with every surface green. Found by the third
+# migration, whose four entries all used the bolded form because it is the natural markdown.
+for form in '**ALIGNMENT REQUIRED.**' '_ALIGNMENT REQUIRED_' '> ALIGNMENT REQUIRED' '`ALIGNMENT REQUIRED`'; do
+  r="$tmp/emph$(printf '%s' "$form" | cksum | tr -d ' ')"; mkdir -p "$r/closed"
+  entry "$r" "ABC-01" "scoped" "" "$form
+The remainder needs a decision nobody has made."
+  out=$(run "$r")
+  assert_has "decorated sentinel still counts: $form" "[alignment-owed]" "$out"
+  assert_lacks "and does not read as a written condition: $form" "[closure-condition]" "$out"
+done
+
 # PARTIAL recovery: a real condition, then a sentinel for the remainder. The rule is that
 # the entry KEEPS the recovered half, so this must not be read as an absence.
 r="$tmp/partial"; mkdir -p "$r/closed"
