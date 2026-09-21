@@ -14,7 +14,7 @@ prompted the name table: this repo's README.)
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
-typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) ·
+typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review).
 
 **Assumed third-party:** `chezmoi` (two instances) · `wt` (worktree lifecycle; `wt switch --create`
