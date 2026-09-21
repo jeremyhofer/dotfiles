@@ -28,6 +28,31 @@ Entries are newest first.
 
 ## 2026-09-20
 
+**New tool: `register-lint`** — checks a work register's entries against the contract its own README
+states: the status vocabulary and which fields each status requires or forbids, where closed entries
+live, that a closed entry carries a resolution and an open one a next action, and above all that a
+closure condition is either written or its ABSENCE is declared in a fixed vocabulary. Not an ACTION on
+its own; nothing changes until a repository chooses to call it.
+
+**Why the absence needs a vocabulary at all, since this is the part that looks like ceremony.** A
+checker cannot tell a real closure condition from a sentence explaining there isn't one — both are
+just prose. Measured in one store before this existed: a checker written specifically to enforce "no
+entry past `idea` without a closure condition" tested that the heading had some text beneath it, so
+the literal string `TODO` passed it clean. A green run was fully compatible with the state the check
+existed to prevent. Giving the absence a fixed spelling is what makes the check three-state — written,
+declared absent, or unrecorded — and only the third can fail.
+
+**It also reports a register whose finished entries sit in a directory named `archive/`.** Build
+tooling commonly skips any path containing that word, because an archived tree is frozen and exempt
+from checking, while a closed register entry is an ordinary document that must keep being checked.
+The legacy directory is still READ, so a register can be linted before it is renamed — but the
+fallback reports, so it can never be mistaken for a permitted spelling.
+
+**What to do on an already-adopted machine:** nothing, until a repository you work in starts calling
+it. When one does, that repository's commit hook will need this tool present — so apply the base
+before pulling a repo that has wired it, or the hook fails on a machine that looks fine otherwise.
+
+
 **New tool: `comment-lint`** — fails a source comment that depends on context the file cannot carry:
 a record id from a tracker that lives elsewhere, a numbered unit of a plan the file does not contain,
 a path under one user's home, prose that only resolves for whoever was in the room. Not an ACTION on

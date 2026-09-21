@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+"""register-lint — enforce the contract a work register states about itself.
+
+WHY THIS EXISTS
+    A work register is a directory of one-file-per-entry markdown documents that answers
+    three questions mechanically: is this done, what parts are done, what is still open.
+    Every one of those answers depends on a section that a human writes by hand, and the
+    failure mode is not a missing section — it is a section containing prose that SAYS
+    there is nothing to say. That reads as filled in to any check asking "is there text
+    here?", so the register reports clean while holding none of the thing it exists for.
+
+    Measured in one store before this tool existed: a checker written specifically to
+    enforce "no entry past `idea` without a closure condition" tested that the heading had
+    some text beneath it. Writing the literal string TODO passed it clean. A green run was
+    fully compatible with the state the check existed to prevent.
+
+    The fix is not a smarter reader. A checker cannot tell a real closure condition from a
+    sentence explaining there isn't one, because both are just prose. So the ABSENCE gets
+    a fixed vocabulary — a sentinel — and the check becomes three-state rather than two:
+    written, declared absent, or unrecorded. Only the third fails.
+
+WHAT IT CHECKS — blocking
+    closure-condition  an open entry past `idea` whose closure-condition section holds
+                       neither a real condition nor a recognised sentinel.
+    undeclared-absence prose that reads as an absence ("not recorded", "TBD", "TODO") with
+                       no sentinel. A HEURISTIC, and the only check here that guesses at
+                       meaning -- it exists because the spellings already in the wild all
+                       count as written, so without it every migrated register reports
+                       clean while holding no condition at all.
+    sentinel-mismatch  a sentinel contradicting the frontmatter, e.g. the exempt-at-`idea`
+                       sentinel on an entry that is not at `idea`.
+    conditional-field  a field present on a status that forbids it, or absent on one that
+                       requires it. A stray gate is a lie about why something is stuck.
+    status-vocabulary  a status outside the vocabulary below.
+    location           a closed entry outside the closed directory, or an open one inside.
+    resolution         a closed entry with an empty resolution. Closing is a claim.
+    next-action        an open entry with no next action. It is finished or abandoned.
+    filename           a file whose name does not begin with its own id.
+    id-integrity       a duplicate id, or one that does not match the register's prefix.
+    required-field     a missing required frontmatter field.
+    date-format        a date field that is not YYYY-MM-DD.
+    standing-stale     a no-terminus entry last verified longer ago than its own declared
+                       cadence. This is the only thing making that status an obligation
+                       rather than an exemption.
+    not-renamed        the register keeps finished entries in a directory named `archive/`.
+                       Build tooling commonly skips any path containing that word, because
+                       an archived tree is frozen and exempt from checking; a closed entry
+                       is an ordinary document that happens to be finished and must keep
+                       being checked. Measured in one workspace: a prose gate covered three
+                       fewer documents under the archived name, staying green throughout.
+
+WHAT IT REPORTS — advisory, never blocking
+    triage-debt        entries declared absent pending examination. Visible, counted debt
+                       with a named owner, which an empty section is not.
+    alignment-owed     entries whose condition cannot be written without deciding something
+                       undecided. These need a person, not an edit.
+
+WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets over-trusted
+    * Whether a written closure condition is a good one, or even a condition. Any prose
+      that is not a sentinel and does not trip the absence heuristic counts as written.
+      The sentinel vocabulary moves the line from "is there text" to "is the absence
+      declared"; it cannot judge what is there. The heuristic narrows the gap for the
+      spellings seen so far and will not catch a new one.
+    * Whether a task checklist reflects the work. An entry may carry one stale task.
+    * Whether an entry should exist at all, or who filed it. Authorship is a stated rule
+      with no mechanism behind it; nothing here distinguishes one author from another.
+    * A closed entry's closure condition. Closed entries are judged by their resolution,
+      deliberately: a closed entry that never carried a condition cannot be given one now,
+      so flagging it would be permanent red with no action attached.
+    * Whether a register that does not exist should. An absent directory is not an error.
+
+THE PREFIX IS DERIVED, NEVER CONFIGURED
+    The register's identifier prefix is read from the entries themselves and must be
+    uniform. A configured prefix is a second place for the answer to live, and the two
+    drift; a derived one cannot disagree with the store it describes. A store holding two
+    prefixes is reported rather than guessed at.
+"""
+
+import argparse
+import datetime
+import pathlib
+import re
+import sys
+
+STATUSES = ("idea", "scoped", "ready", "active", "blocked", "held", "standing", "done", "dropped")
+CLOSED_STATUSES = ("done", "dropped")
+GATED_STATUSES = ("blocked", "held")
+REQUIRED_FIELDS = ("id", "title", "status", "owner", "verified")
+
+# A sentinel declares WHICH KIND of absence this is, and each kind names a different owner
+# of the next move. They are matched on their own line so a condition may precede one --
+# recovery is frequently partial, and the recovered half is the valuable half.
+SENTINELS = {
+    "NONE REQUIRED": "exempt",     # nothing is owed; the entry has not been committed to
+    "ALIGNMENT REQUIRED": "align", # writing one would decide something undecided
+    "TRIAGE REQUIRED": "triage",   # inherited without one and not yet examined
+}
+SENTINEL_RE = re.compile(r"^\s*(%s)\b" % "|".join(SENTINELS), re.M)
+
+# Prose that ASSERTS an absence rather than stating a condition. This is a heuristic and is
+# declared as one: the tool cannot read prose, so it cannot tell a real condition from a
+# sentence explaining there is none -- which is the whole reason the sentinel vocabulary
+# exists. What it CAN do is recognise the spellings that mean "nothing here", and require
+# them to be said in the vocabulary a checker can count. Every phrase below was found in a
+# real register, or is a placeholder that defeated a real checker.
+ABSENCE_RE = re.compile(
+    r"\b(not\s+recorded|not\s+(?:been\s+)?invented|deliberately\s+absent|deliberately\s+not"
+    r"|none\s+recorded|no\s+closure\s+condition|not\s+(?:yet\s+)?(?:written|defined|stated)"
+    r"|unknown|to\s+be\s+(?:determined|decided)|TBD|TODO|FIXME|n/a)\b",
+    re.I,
+)
+
+CADENCE_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
+
+ID_RE = re.compile(r"^([A-Z][A-Z0-9]*)-([0-9]+)$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+CLOSURE_HEADING = "Definition of done"
+
+ADVISORY = ("triage-debt", "alignment-owed")
+
+
+class Entry:
+    def __init__(self, path, closed_dir):
+        self.path = path
+        self.in_closed_dir = closed_dir in path.parts
+        self.text = path.read_text(encoding="utf-8", errors="replace")
+        self.meta = self._frontmatter()
+
+    def _frontmatter(self):
+        # Deliberately not a YAML parse. The frontmatter here is flat scalars by contract,
+        # and depending on a parser would make this tool uninstallable wherever that
+        # parser is not, for no gain over the shape the contract already guarantees.
+        meta = {}
+        if not self.text.startswith("---"):
+            return meta
+        end = self.text.find("\n---", 3)
+        if end == -1:
+            return meta
+        for line in self.text[3:end].splitlines():
+            if not line.strip() or line.startswith((" ", "\t", "-", "#")):
+                continue
+            key, sep, value = line.partition(":")
+            if sep:
+                meta[key.strip()] = value.strip()
+        return meta
+
+    @property
+    def id(self):
+        return self.meta.get("id", "")
+
+    @property
+    def status(self):
+        return self.meta.get("status", "")
+
+    def section(self, heading):
+        """Body text under a heading, to the next heading of ANY level.
+
+        Bounding at the same level would swallow a following shallower section, and
+        bounding at a fixed level stops early at a deeper one. Both produce a clean-looking
+        result with the wrong contents, which is worse than an error.
+        """
+        pattern = re.compile(
+            r"^#{1,6}\s+%s\s*$(.*?)(?=^#{1,6}\s|\Z)" % re.escape(heading),
+            re.M | re.S,
+        )
+        found = pattern.search(self.text)
+        if not found:
+            return None
+        body = found.group(1)
+        # An HTML comment is a template placeholder, not content. Counting one as a written
+        # condition would make every freshly-copied template report clean.
+        body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+        return body.strip() or None
+
+
+def resolve_closed_dir(root):
+    """(directory name, finding) -- `closed/`, falling back to the legacy name.
+
+    The fallback reads the legacy directory so a register can be linted BEFORE it is
+    renamed, and reports the rename as a blocking finding so the fallback can never be
+    mistaken for a permitted spelling.
+    """
+    if (root / "closed").is_dir():
+        return "closed", None
+    if (root / "archive").is_dir():
+        return "archive", (
+            "not-renamed", str(root),
+            "finished entries are in `archive/`; the register contract names `closed/`. "
+            "Rename it, and change every tool that enumerates or counts it IN THE SAME "
+            "COMMIT -- one still looking for the old name reports zero closed entries, "
+            "which is indistinguishable from health."
+        )
+    return "closed", None
+
+
+def load(root, closed_dir):
+    paths = sorted(root.glob("*.md")) + sorted((root / closed_dir).glob("*.md"))
+    return [Entry(p, closed_dir) for p in paths if p.name.lower() != "readme.md"]
+
+
+def check(entries, closed_dir):
+    findings = []
+
+    def fail(kind, entry, msg):
+        findings.append((kind, str(entry.path), msg))
+
+    prefixes = set()
+    for e in entries:
+        matched = ID_RE.match(e.id)
+        if matched:
+            prefixes.add(matched.group(1))
+    if len(prefixes) > 1:
+        findings.append((
+            "id-integrity", "(store)",
+            "entries carry more than one prefix (%s); a register has exactly one, and a "
+            "renamed one keeps its numbers rather than mixing schemes"
+            % ", ".join(sorted(prefixes)),
+        ))
+
+    seen = {}
+    for e in entries:
+        for field in REQUIRED_FIELDS:
+            if not e.meta.get(field):
+                fail("required-field", e, "missing required field %r" % field)
+
+        if not ID_RE.match(e.id):
+            fail("id-integrity", e, "id %r is not <PREFIX>-NN" % e.id)
+        elif e.id in seen:
+            fail("id-integrity", e, "duplicate id, also in %s" % pathlib.Path(seen[e.id]).name)
+        else:
+            seen[e.id] = str(e.path)
+
+        if e.id and not e.path.name.startswith("%s-" % e.id):
+            fail("filename", e, "filename does not begin with its id %r" % e.id)
+
+        status = e.status
+        if status and status not in STATUSES:
+            fail("status-vocabulary", e, "status %r is not in the vocabulary" % status)
+            continue
+
+        for field in ("verified", "closed"):
+            value = e.meta.get(field)
+            if value and not DATE_RE.match(value):
+                fail("date-format", e, "%s %r is not YYYY-MM-DD" % (field, value))
+
+        gated = status in GATED_STATUSES
+        if gated and not e.meta.get("gate"):
+            fail("conditional-field", e, "status %r requires a 'gate'" % status)
+        if not gated and e.meta.get("gate"):
+            fail("conditional-field", e, "status %r must not carry a 'gate'" % status)
+
+        standing = status == "standing"
+        cadence = e.meta.get("cadence", "").strip().lower()
+        if standing and not cadence:
+            fail("conditional-field", e,
+                 "status 'standing' requires a 'cadence' -- without one it is 'active' "
+                 "wearing a label, which is the exemption this status exists instead of")
+        if not standing and cadence:
+            fail("conditional-field", e, "status %r must not carry a 'cadence'" % status)
+        if standing and cadence:
+            if cadence not in CADENCE_DAYS:
+                fail("conditional-field", e,
+                     "cadence %r is not one of: %s" % (cadence, ", ".join(CADENCE_DAYS)))
+            else:
+                verified = e.meta.get("verified", "")
+                if DATE_RE.match(verified):
+                    age = (datetime.date.today() - datetime.date.fromisoformat(verified)).days
+                    if age > CADENCE_DAYS[cadence]:
+                        fail("standing-stale", e,
+                             "last verified %s is %dd old against a %s cadence (%dd) -- "
+                             "re-verify it, or it is no longer standing"
+                             % (verified, age, cadence, CADENCE_DAYS[cadence]))
+
+        closed = status in CLOSED_STATUSES
+        if closed != e.in_closed_dir:
+            where = closed_dir + "/" if e.in_closed_dir else "the register directory"
+            fail("location", e, "status %r does not belong in %s" % (status, where))
+        if closed and not e.meta.get("closed"):
+            fail("conditional-field", e, "closed entry has no 'closed' date")
+        if not closed and e.meta.get("closed"):
+            fail("conditional-field", e, "status %r must not carry a 'closed' date" % status)
+
+        if closed and not e.section("Resolution"):
+            fail("resolution", e,
+                 "closed entry has an empty resolution -- closing is a claim, and a claim "
+                 "needs a referent")
+        if not closed and not e.section("Next action"):
+            fail("next-action", e,
+                 "open entry has no next action -- it is either finished or abandoned, and "
+                 "both should be said out loud")
+
+        # The three-state closure condition. Closed entries are out of scope on purpose;
+        # see the module docstring.
+        if not closed:
+            body = e.section(CLOSURE_HEADING)
+            declared = SENTINEL_RE.search(body) if body else None
+            kind = SENTINELS[declared.group(1)] if declared else None
+            if kind == "exempt" and status != "idea":
+                fail("sentinel-mismatch", e,
+                     "the exempt sentinel is on an entry at %r; it means no condition is "
+                     "owed, which is only true at 'idea'" % status)
+            if status != "idea" and not declared:
+                if body is None:
+                    fail("closure-condition", e,
+                         "status %r has neither a closure condition nor a sentinel "
+                         "declaring which kind of absence this is -- an unrecorded absence "
+                         "and a declared one look identical to a reader and to this check"
+                         % status)
+                elif ABSENCE_RE.search(body):
+                    fail("undeclared-absence", e,
+                         "the closure-condition section reads as an ABSENCE but carries no "
+                         "sentinel, so it counts as written and the register reports clean "
+                         "while holding no condition. If it is an absence, declare which "
+                         "kind with one of: %s. If it is a condition, reword it -- this is "
+                         "a phrase heuristic and it can be wrong."
+                         % ", ".join(sorted(SENTINELS)))
+            if kind == "triage":
+                findings.append(("triage-debt", str(e.path),
+                                 "declared absent pending examination"))
+            elif kind == "align":
+                findings.append(("alignment-owed", str(e.path),
+                                 "a closure condition here would decide something undecided"))
+
+    return findings
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description="Lint a work register against its contract.")
+    parser.add_argument("root", nargs="?", default="docs/register",
+                        help="the register directory (default: docs/register)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="print findings only, no census")
+    args = parser.parse_args(argv)
+
+    root = pathlib.Path(args.root)
+    if not root.is_dir():
+        print("register-lint: no register at %s -- nothing checked." % root, file=sys.stderr)
+        return 0
+
+    closed_dir, rename_finding = resolve_closed_dir(root)
+    entries = load(root, closed_dir)
+    if not entries:
+        print("register-lint: %s holds no entries -- nothing checked." % root, file=sys.stderr)
+        return 0
+
+    findings = check(entries, closed_dir)
+    if rename_finding:
+        findings.insert(0, rename_finding)
+
+    blocking = [f for f in findings if f[0] not in ADVISORY]
+    advisory = [f for f in findings if f[0] in ADVISORY]
+
+    for kind, where, msg in blocking:
+        print("[%s] %s: %s" % (kind, where, msg))
+    for kind, where, msg in advisory:
+        print("[%s] %s: %s" % (kind, where, msg))
+
+    if not args.quiet:
+        open_entries = [e for e in entries if e.status not in CLOSED_STATUSES]
+        print("\nregister-lint: %d entries (%d open, %d closed) in %s"
+              % (len(entries), len(open_entries), len(entries) - len(open_entries), root),
+              file=sys.stderr)
+        print("register-lint: %d blocking, %d advisory. What this gate CANNOT check is in "
+              "its module docstring; a green run is not a contract guarantee."
+              % (len(blocking), len(advisory)), file=sys.stderr)
+
+    return 1 if blocking else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
