@@ -97,14 +97,25 @@ SENTINELS = {
 }
 SENTINEL_RE = re.compile(r"^\s*(%s)\b" % "|".join(SENTINELS), re.M)
 
-# Prose that ASSERTS an absence rather than stating a condition. This is a heuristic and is
+# Prose that ASSERTS an absence rather than stating a condition.
+#
+# A PHRASE HERE MUST NOT COLLIDE WITH THE VOCABULARY THE CONTRACT ITSELF USES. This list once
+# carried "not invented", which reads as an absence in isolation and is the opposite in the
+# idiom the contract actually teaches -- "recovered from what is known, not invented here"
+# AFFIRMS the condition is real. The result was a seat rewording a correct entry to get past
+# the lint, which is the worst outcome available: the gate did not catch a defect, it
+# manufactured one and then degraded the prose. The branch was also not load-bearing, since
+# the migrated absences it was meant to catch all say "not recorded" as well.
+#
+# So the test for adding a phrase is not "does this sound like an absence" but "can this
+# appear in a sentence that AFFIRMS a condition". If it can, leave it out. This is a heuristic and is
 # declared as one: the tool cannot read prose, so it cannot tell a real condition from a
 # sentence explaining there is none -- which is the whole reason the sentinel vocabulary
 # exists. What it CAN do is recognise the spellings that mean "nothing here", and require
 # them to be said in the vocabulary a checker can count. Every phrase below was found in a
 # real register, or is a placeholder that defeated a real checker.
 ABSENCE_RE = re.compile(
-    r"\b(not\s+recorded|not\s+(?:been\s+)?invented|deliberately\s+absent|deliberately\s+not"
+    r"\b(not\s+recorded|deliberately\s+absent|deliberately\s+not"
     r"|none\s+recorded|no\s+closure\s+condition|not\s+(?:yet\s+)?(?:written|defined|stated)"
     r"|unknown|to\s+be\s+(?:determined|decided)|TBD|TODO|FIXME|n/a)\b",
     re.I,

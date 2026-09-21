@@ -134,6 +134,21 @@ r="$tmp/placeholder"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "" "<!-- One statement of the closure condition. -->"
 assert_has "an unfilled template comment is not a condition" "[closure-condition]" "$(run "$r")"
 
+# REGRESSION GUARD, and it is the reason the heuristic is allowed to exist at all: a phrase in
+# it must never appear in a sentence that AFFIRMS a condition. The contract's own idiom is
+# "recovered from what is known, not invented here" -- an earlier pattern matched "not invented"
+# and fired on exactly that, so a correct entry had to be reworded to get past the gate. A lint
+# that degrades the prose it governs is worse than no lint.
+r="$tmp/idiom"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "Recovered from decisions already recorded, not invented here: the
+runtime is in genuine daily use."
+assert_lacks "the contract's own idiom does not trip the heuristic" "[undeclared-absence]" "$(run "$r")"
+
+# The other half of that guard: dropping the branch must not have lost the case it was added for.
+r="$tmp/migrated"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "*Not recorded in the source register, and deliberately not invented here.*"
+assert_has "the real migrated-absence prose is still caught" "[undeclared-absence]" "$(run "$r")"
+
 # --- conditional fields ---------------------------------------------------------------
 r="$tmp/gate-missing"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "blocked" "" "The thing is finished."
