@@ -162,6 +162,35 @@ r="$tmp/migrated"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "" "*Not recorded in the source register, and deliberately not invented here.*"
 assert_has "the real migrated-absence prose is still caught" "[undeclared-absence]" "$(run "$r")"
 
+# A register must be able to carry an auxiliary document — a mapping table, a cookbook, a charter.
+# Excluding only README by name made every other file an entry, so each was linted as malformed and
+# counted in the census. An entry is identified by frontmatter carrying an id, not by its filename.
+r="$tmp/auxdoc"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+printf '# Migration map\n\n| old | new |\n| --- | --- |\n| OLD-04 | ABC-13 |\n' > "$r/MIGRATION-MAP.md"
+out=$(run "$r")
+assert_lacks "an auxiliary document is not linted as an entry" "MIGRATION-MAP" "$out"
+python3 "$lint" "$r" 2>&1 | grep -q '1 entries' \
+  && ok "and is not counted in the census" || bad "and is not counted in the census"
+
+# But a genuine entry with a WRONG filename must still be caught — which is why the discriminator
+# is content and not a filename pattern. A pattern would have skipped this silently.
+r="$tmp/auxmisnamed"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+mv "$r/ABC-01-a-tracked-thing.md" "$r/notes-about-the-thing.md"
+assert_has "a misnamed real entry is still caught" "[filename]" "$(run "$r")"
+
+# TODO and FIXME are absence vocabulary AND ordinary code tokens. An entry whose SUBJECT is those
+# markers holds a genuine condition; inline code is MENTION, not use.
+r="$tmp/codeident"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" 'Every `it.todo` placeholder is replaced with a real assertion.'
+assert_lacks "a code identifier is not read as an absence" "[undeclared-absence]" "$(run "$r")"
+
+# ...but the bare word still is.
+r="$tmp/bareword"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "TODO"
+assert_has "the bare placeholder is still caught" "[undeclared-absence]" "$(run "$r")"
+
 # --- conditional fields ---------------------------------------------------------------
 r="$tmp/gate-missing"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "blocked" "" "The thing is finished."
