@@ -222,7 +222,20 @@ def resolve_closed_dir(root):
 
 def load(root, closed_dir):
     paths = sorted(root.glob("*.md")) + sorted((root / closed_dir).glob("*.md"))
-    return [Entry(p, closed_dir) for p in paths if p.name.lower() != "readme.md"]
+    entries, skipped = [], []
+    for p in paths:
+        e = Entry(p, closed_dir)
+        # An entry is identified by CONTENT -- frontmatter carrying an `id` -- and NOT by its
+        # filename. Excluding only README by name made every other document in the directory an
+        # entry, so a register could not carry a mapping table, a query cookbook or a charter
+        # without each being linted as a malformed entry and counted in the census. That is this
+        # tool's own §9 self-match trap, living inside the tool rather than in a documented query.
+        #
+        # Content is the right discriminator rather than a filename pattern, because a pattern
+        # would ALSO skip a genuine entry whose filename is wrong -- silently retiring the very
+        # check that exists to catch that.
+        (entries if e.meta.get("id") else skipped).append(e)
+    return entries, [p.name for p in (e.path for e in skipped)]
 
 
 def check(entries, closed_dir):
@@ -373,7 +386,17 @@ def check(entries, closed_dir):
                          "declaring which kind of absence this is -- an unrecorded absence "
                          "and a declared one look identical to a reader and to this check"
                          % status)
-                elif ABSENCE_RE.search(body):
+                    continue
+                # Inline code and fenced blocks are MENTION, not use -- the same discriminator
+                # the fleet's comment linter draws. `TODO` and `FIXME` are in the absence
+                # vocabulary AND are ordinary code tokens, so an entry whose SUBJECT is those
+                # markers ("every `it.todo` placeholder is replaced") was flagged while holding a
+                # genuine condition. Stripped for the HEURISTIC only: the is-there-text check
+                # above still reads the raw body, so a condition written entirely in code spans
+                # does not become an empty section.
+                prose = re.sub(r"```.*?```", " ", body, flags=re.S)
+                prose = re.sub(r"`[^`]*`", " ", prose)
+                if ABSENCE_RE.search(prose):
                     fail("undeclared-absence", e,
                          "the closure-condition section reads as an ABSENCE but carries no "
                          "sentinel, so it counts as written and the register reports clean "
@@ -405,7 +428,7 @@ def main(argv):
         return 0
 
     closed_dir, rename_finding = resolve_closed_dir(root)
-    entries = load(root, closed_dir)
+    entries, skipped = load(root, closed_dir)
     if not entries:
         print("register-lint: %s holds no entries -- nothing checked." % root, file=sys.stderr)
         return 0
@@ -424,8 +447,11 @@ def main(argv):
 
     if not args.quiet:
         open_entries = [e for e in entries if e.status not in CLOSED_STATUSES]
-        print("\nregister-lint: %d entries (%d open, %d closed) in %s"
-              % (len(entries), len(open_entries), len(entries) - len(open_entries), root),
+        note = ""
+        if skipped:
+            note = " -- %d non-entry document(s) skipped: %s" % (len(skipped), ", ".join(skipped))
+        print("\nregister-lint: %d entries (%d open, %d closed) in %s%s"
+              % (len(entries), len(open_entries), len(entries) - len(open_entries), root, note),
               file=sys.stderr)
         print("register-lint: %d blocking, %d advisory. What this gate CANNOT check is in "
               "its module docstring; a green run is not a contract guarantee."
