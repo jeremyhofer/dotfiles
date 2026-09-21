@@ -158,6 +158,35 @@ r="$tmp/gate-stray"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "gate: waiting on nothing" "The thing is finished."
 assert_has "a stray gate is reported" "[conditional-field]" "$(run "$r")"
 
+# The two rules the contract stated and the lint did not enforce, found by the second migration.
+# A stray BLANK conditional field is the case the checks above structurally cannot see: an empty
+# value is falsy, so every check that asked "is it set?" said no.
+r="$tmp/blankgate"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "gate:" "The thing is measurably finished."
+out=$(run "$r")
+assert_has "a present-but-EMPTY key is reported" "[empty-field]" "$out"
+assert_lacks "and it is not miscategorised as a stray value" "must not carry a 'gate'" "$out"
+
+# A '#' in an unquoted list value starts a YAML comment, so the value truncates silently. The
+# frontmatter parser skips list items by design, which is why this check reads the raw block.
+# The false positive this check shipped with for ten minutes: a key whose value is a BLOCK list
+# on the following lines reads as empty when the key line is looked at alone. That is correct YAML
+# and is what the contract's own template shows, so every real register tripped it.
+r="$tmp/blockvalue"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "artifacts:
+  - repo:somewhere" "The thing is measurably finished."
+assert_lacks "a key with a BLOCK value is not empty" "[empty-field]" "$(run "$r")"
+
+r="$tmp/hashartifact"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "artifacts:
+  - roadmap:#42" "The thing is measurably finished."
+assert_has "an unquoted # in a list value is reported" "[yaml-truncation]" "$(run "$r")"
+
+r="$tmp/hashquoted"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "artifacts:
+  - 'roadmap:#42'" "The thing is measurably finished."
+assert_lacks "a QUOTED # is accepted" "[yaml-truncation]" "$(run "$r")"
+
 # --- standing: an obligation, not an exemption ----------------------------------------
 r="$tmp/standing-nocadence"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "standing" "" "Re-verified continuously."
