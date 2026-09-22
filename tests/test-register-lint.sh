@@ -219,15 +219,83 @@ entry "$r" "ABC-01" "active" "artifacts:
   - repo:somewhere" "The thing is measurably finished."
 assert_lacks "a key with a BLOCK value is not empty" "[empty-field]" "$(run "$r")"
 
+# The rule is about the SEPARATOR, not the character. Verified against a real YAML parser
+# rather than from memory: `- roadmap:#42` loads as the literal string 'roadmap:#42' and is
+# perfectly safe, while `- roadmap: #42` loads as {'roadmap': None}. A check that flagged the
+# first was reporting a defect that does not exist -- and the cost of that is an author quoting
+# things to satisfy a lint, which is the same failure the absence heuristic was corrected for.
 r="$tmp/hashartifact"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "artifacts:
+  - roadmap: #42" "The thing is measurably finished."
+assert_has "an unquoted # after a space in a list value is reported" "[yaml-truncation]" "$(run "$r")"
+
+r="$tmp/hashnospace"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "artifacts:
   - roadmap:#42" "The thing is measurably finished."
-assert_has "an unquoted # in a list value is reported" "[yaml-truncation]" "$(run "$r")"
+assert_lacks "a # with no space before it is NOT reported" "[yaml-truncation]" "$(run "$r")"
 
 r="$tmp/hashquoted"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "artifacts:
-  - 'roadmap:#42'" "The thing is measurably finished."
+  - 'roadmap: #42'" "The thing is measurably finished."
 assert_lacks "a QUOTED # is accepted" "[yaml-truncation]" "$(run "$r")"
+
+# The case this check was extended for: a SCALAR field, where the file stays intact and valid
+# and the loss shows up only in whatever reads the value. Two real gate: fields truncated this
+# way and every entry check passed on them.
+r="$tmp/hashscalar"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "held" "gate: shakedown of the spare boxes (2012 minis / #6 PC) proves viable" "The thing is measurably finished."
+assert_has "an unquoted # in a SCALAR value is reported" "[yaml-truncation]" "$(run "$r")"
+
+r="$tmp/hashscalarquoted"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "held" "gate: 'shakedown of the spare boxes (2012 minis / #6 PC) proves viable'" "The thing is measurably finished."
+assert_lacks "a QUOTED scalar # is accepted" "[yaml-truncation]" "$(run "$r")"
+
+r="$tmp/hashcomment"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "# a real comment line is not a value" "The thing is measurably finished."
+assert_lacks "a comment LINE is not reported as a truncated value" "[yaml-truncation]" "$(run "$r")"
+
+
+# --- artifact pointers: path-shaped ones must resolve ---------------------------------
+# The repository root is found by walking up to `.git`, so these fixtures create one. Without
+# it the check is SKIPPED rather than run against a guessed root -- the last case asserts that,
+# because a check that silently resolves paths against the wrong base would report every
+# pointer in a register as broken.
+r="$tmp/repo/docs/register"; mkdir -p "$r/closed" "$tmp/repo/.git" "$tmp/repo/docs/adr"
+: > "$tmp/repo/docs/adr/0001-a-decision.md"
+entry "$r" "ABC-01" "active" "artifacts:
+  - adr:docs/adr/0001-a-decision.md" "The thing is measurably finished."
+assert_lacks "a resolving artifact path is accepted" "[artifact-path]" "$(run "$r")"
+
+entry "$r" "ABC-01" "active" "artifacts:
+  - adr:docs/adr/9999-not-here.md" "The thing is measurably finished."
+assert_has "a path-shaped artifact that does not resolve is reported" "[artifact-path]" "$(run "$r")"
+
+entry "$r" "ABC-01" "active" "artifacts:
+  - skill:register-standard" "The thing is measurably finished."
+assert_lacks "a bare token artifact is not treated as a path" "[artifact-path]" "$(run "$r")"
+
+r2="$tmp/norepo/docs/register"; mkdir -p "$r2/closed"
+entry "$r2" "ABC-01" "active" "artifacts:
+  - adr:docs/adr/9999-not-here.md" "The thing is measurably finished."
+assert_lacks "outside a repository the path check is SKIPPED, not failed" "[artifact-path]" "$(run "$r2")"
+
+# --- staleness: advisory, and it never blocks -----------------------------------------
+run_at() { python3 "$lint" "$1" --quiet --today "$2" 2>&1 || true; }
+
+r="$tmp/stale"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished." "2026-01-01"
+assert_has "an active entry past its budget is reported" "[stale-entry]" "$(run_at "$r" 2026-09-22)"
+python3 "$lint" "$r" --quiet --today 2026-09-22 >/dev/null 2>&1 \
+  && ok "a stale entry does NOT block" || bad "a stale entry does NOT block"
+
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished." "2026-09-15"
+assert_lacks "an active entry inside its budget is not reported" "[stale-entry]" "$(run_at "$r" 2026-09-22)"
+
+entry "$r" "ABC-01" "idea" "" "NONE REQUIRED" "2024-01-01"
+assert_lacks "an idea is exempt from staleness however old" "[stale-entry]" "$(run_at "$r" 2026-09-22)"
+
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished." "2027-01-01"
+assert_has "a verified date in the FUTURE is reported" "[stale-entry]" "$(run_at "$r" 2026-09-22)"
 
 # --- standing: an obligation, not an exemption ----------------------------------------
 r="$tmp/standing-nocadence"; mkdir -p "$r/closed"

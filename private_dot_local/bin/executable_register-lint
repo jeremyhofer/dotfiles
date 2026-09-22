@@ -34,8 +34,14 @@ WHAT IT CHECKS — blocking
     empty-field        a key present with an empty value. The contract says to omit it instead;
                        writing it blank makes "absent" and "empty" indistinguishable, and it is
                        how a stray conditional field evades every check that asks whether it is set.
-    yaml-truncation    an unquoted `#` in a list value, which YAML reads as a comment so the value
-                       silently truncates.
+    yaml-truncation    an unquoted `#` in a value, which YAML reads as a comment so the value
+                       silently truncates while the file still parses. Covers LIST items and
+                       SCALARS alike -- it checked lists only until a scalar field truncated in
+                       a real store and reached a generated index before anyone noticed.
+    artifact-path      a path-shaped artifact pointer that does not resolve from the repository
+                       root. A pointer the reader cannot follow is worse than no pointer,
+                       because it looks like it resolves. Skipped entirely when no repository
+                       root can be found, rather than reporting every pointer as broken.
     status-vocabulary  a status outside the vocabulary below.
     location           a closed entry outside the closed directory, or an open one inside.
     resolution         a closed entry with an empty resolution. Closing is a claim.
@@ -121,14 +127,21 @@ SENTINEL_RE = re.compile(
 # the migrated absences it was meant to catch all say "not recorded" as well.
 #
 # So the test for adding a phrase is not "does this sound like an absence" but "can this
-# appear in a sentence that AFFIRMS a condition". If it can, leave it out. This is a heuristic and is
+# appear in a sentence that AFFIRMS a condition". If it can, leave it out.
+#
+# `deliberately not` was removed for failing exactly that test. It matched "the redirect is
+# deliberately not forced today, so an untrusting machine degrades instead of failing" -- a
+# sentence stating a live design property inside a real condition. The absence spellings it was
+# meant to catch are `deliberately absent` and the `not recorded` family, both still listed, so
+# nothing was lost by dropping it. Same failure as the `not invented` case above and the same
+# cost: a correct entry reworded to satisfy the lint. This is a heuristic and is
 # declared as one: the tool cannot read prose, so it cannot tell a real condition from a
 # sentence explaining there is none -- which is the whole reason the sentinel vocabulary
 # exists. What it CAN do is recognise the spellings that mean "nothing here", and require
 # them to be said in the vocabulary a checker can count. Every phrase below was found in a
 # real register, or is a placeholder that defeated a real checker.
 ABSENCE_RE = re.compile(
-    r"\b(not\s+recorded|deliberately\s+absent|deliberately\s+not"
+    r"\b(not\s+recorded|deliberately\s+absent"
     r"|none\s+recorded|no\s+closure\s+condition|not\s+(?:yet\s+)?(?:written|defined|stated)"
     r"|unknown|to\s+be\s+(?:determined|decided)|TBD|TODO|FIXME|n/a)\b",
     re.I,
@@ -136,11 +149,34 @@ ABSENCE_RE = re.compile(
 
 CADENCE_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
 
+# How long an ACTIONABLE entry may go unverified before it is worth a second look. Advisory, and
+# absent statuses are exempt rather than generous: `idea` because an untouched idea is not stale
+# merely for being untouched, and the closed ones because they are history. `active` is tight --
+# an entry nobody re-verified in a month probably is not active -- while the parked statuses get a
+# slow heartbeat, because their gates can clear silently and nothing announces that.
+STALE_BUDGETS = {"active": 30, "ready": 90, "scoped": 90, "blocked": 90, "held": 90}
+
+
+def repo_root(start):
+    """The nearest ancestor holding `.git`, or None.
+
+    None means "do not check paths", never "check them against the wrong root". A register may
+    legitimately live outside a repository -- a fixture, a scratch copy -- and resolving its
+    pointers against a guessed root would report every one of them broken, which is a louder
+    wrong answer than the silence it replaced. `.git` may be a directory or a file; a worktree
+    checkout has the file form, and the fleet uses those.
+    """
+    for d in [start] + list(start.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
 ID_RE = re.compile(r"^([A-Z][A-Z0-9]*)-([0-9]+)$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLOSURE_HEADING = "Definition of done"
 
-ADVISORY = ("triage-debt", "alignment-owed")
+ADVISORY = ("triage-debt", "alignment-owed", "stale-entry")
 
 
 class Entry:
@@ -238,7 +274,7 @@ def load(root, closed_dir):
     return entries, [p.name for p in (e.path for e in skipped)]
 
 
-def check(entries, closed_dir):
+def check(entries, closed_dir, root=None, today=None):
     findings = []
 
     def fail(kind, entry, msg):
@@ -297,18 +333,37 @@ def check(entries, closed_dir):
                      "%r is present but empty -- omit the key instead, or 'absent' and 'empty' "
                      "become the same thing" % key.strip())
 
-        # A `#` in an unquoted YAML scalar starts a comment, so the value silently truncates.
-        # The parser above deliberately skips list items, which is exactly why this reads the RAW
-        # frontmatter: the rule applies to the values that parser never sees.
+        # A `#` in an unquoted YAML value starts a comment, so the value silently truncates
+        # while the file still parses. This reads the RAW frontmatter because the parser above
+        # skips list items entirely, and because it stores a scalar's value already split on the
+        # first colon -- neither view can see the defect.
+        #
+        # BOTH SHAPES, and the scalar one was missing until a real store hit it. Two `gate:`
+        # values ending "(2012 Mac minis / #6 PC)" truncated at the hash. The file was intact,
+        # every entry check passed, and the loss appeared only in a generated index -- so the
+        # tool reported clean on a store it was actively mis-reading.
+        #
+        # A leading `#` is a comment line, not a value, and is skipped. A `#` with no space
+        # before it does NOT start a comment in YAML (`a#b` is the literal string), which is why
+        # the test is for the separator rather than for the character alone.
         for line in e.raw_front.splitlines():
             stripped = line.strip()
-            if not stripped.startswith("- "):
+            if not stripped or stripped.startswith("#"):
                 continue
-            value = stripped[2:].strip()
-            if "#" in value and not (value.startswith(("'", '"')) and value.endswith(("'", '"'))):
+            if stripped.startswith("- "):
+                kind, value = "list", stripped[2:].strip()
+            else:
+                key, sep, rest = stripped.partition(":")
+                if not sep or not rest.strip():
+                    continue
+                kind, value = "scalar %r" % key.strip(), rest.strip()
+            if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) > 1:
+                continue
+            if re.search(r"(?:^|\s)#", value):
                 fail("yaml-truncation", e,
-                     "list value %r contains an unquoted '#', which YAML reads as a comment -- the "
-                     "value silently truncates. Quote it." % value)
+                     "%s value %r contains an unquoted '#', which YAML reads as a comment -- the "
+                     "value silently truncates while the file still parses. Quote it."
+                     % (kind, value))
 
         if e.id and not e.path.name.startswith("%s-" % e.id):
             fail("filename", e, "filename does not begin with its id %r" % e.id)
@@ -411,6 +466,53 @@ def check(entries, closed_dir):
                 findings.append(("alignment-owed", str(e.path),
                                  "a closure condition here would decide something undecided"))
 
+    # --- artifact pointers resolve, and staleness -----------------------------------------
+    #
+    # Both moved here from a register-specific lint that duplicated half of this tool's schema
+    # checks from a second definition. Two definitions of one contract drift; these two checks
+    # were the only part of that tool with no equivalent here, so they came across and the
+    # duplicate went away.
+    base = repo_root(root) if root is not None else None
+    today_d = None
+    if today:
+        try:
+            today_d = datetime.date.fromisoformat(today)
+        except ValueError:
+            today_d = None
+
+    for e in entries:
+        # A pointer is PATH-SHAPED if what follows the first colon contains a separator. A bare
+        # token -- an id, a skill name, a label -- is not checkable from here and is left alone
+        # rather than guessed at; that is the same line the module docstring draws elsewhere.
+        block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", e.raw_front, re.M | re.S)
+        if block and base is not None:
+            for value in re.findall(r"^\s*-\s*(.+?)\s*$", block.group(1), re.M):
+                value = value.strip().strip("'\"")
+                _, sep, rest = value.partition(":")
+                if not sep or "/" not in rest:
+                    continue
+                if not (base / rest).exists():
+                    fail("artifact-path", e,
+                         "artifact %r does not resolve from the repository root -- a pointer the "
+                         "reader cannot follow is worse than none, because it looks like it does"
+                         % rest)
+
+        if today_d is None:
+            continue
+        budget = STALE_BUDGETS.get(e.status)
+        raw = e.meta.get("verified", "").strip().strip("'\"")
+        if budget is None or not DATE_RE.match(raw):
+            continue                       # a malformed date is already a date-format finding
+        age = (today_d - datetime.date.fromisoformat(raw)).days
+        if age < 0:
+            fail("stale-entry", e,
+                 "verified %s is in the FUTURE, which no clock produces -- a typo, or a date "
+                 "written forward to postpone the check" % raw)
+        elif age > budget:
+            fail("stale-entry", e,
+                 "last verified %s, %dd ago, against a %dd budget for status %r"
+                 % (raw, age, budget, e.status))
+
     return findings
 
 
@@ -420,6 +522,8 @@ def main(argv):
                         help="the register directory (default: docs/register)")
     parser.add_argument("--quiet", action="store_true",
                         help="print findings only, no census")
+    parser.add_argument("--today", default=datetime.date.today().isoformat(),
+                        help="reference date for staleness (default: today)")
     args = parser.parse_args(argv)
 
     root = pathlib.Path(args.root)
@@ -433,7 +537,7 @@ def main(argv):
         print("register-lint: %s holds no entries -- nothing checked." % root, file=sys.stderr)
         return 0
 
-    findings = check(entries, closed_dir)
+    findings = check(entries, closed_dir, root, args.today)
     if rename_finding:
         findings.insert(0, rename_finding)
 
