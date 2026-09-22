@@ -9,7 +9,10 @@ prompted the name table: this repo's README.)
 | worktrunk → `wt` | ripgrep → `rg` | neovim → `nvim` | fd-find → `fd` |
 | --- | --- | --- | --- |
 
-**Installed by this repo:** `chezmoi-overlay` (runs the private second chezmoi instance) ·
+**Installed by this repo:** `adr-lint` (a directory of decision records against the shape it
+declares — reads both the bullet-header and frontmatter conventions and reports the split rather
+than normalising it; `--strict` for a repo that has adopted a status vocabulary) ·
+`chezmoi-overlay` (runs the private second chezmoi instance) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) ·
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·

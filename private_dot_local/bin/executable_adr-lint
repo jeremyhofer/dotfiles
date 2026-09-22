@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""adr-lint -- check a directory of decision records against the shape it declares.
+
+WHY THIS EXISTS
+    Four repositories in this fleet keep decision records. Exactly one of them had a lint.
+    Measured 2026-09-22: 78 records in one repo were checked on every commit, while 15 in a
+    second and 12 in a third were checked by nothing at all, and a fourth keeps 41 numbered
+    decisions in a single file that no per-record tool can see. A rule worth gating in one
+    place is worth gating everywhere it applies; a rule enforced in one repo only is a habit
+    with a script attached.
+
+TWO HEADER SHAPES, AND THIS TOOL READS BOTH -- deliberately, and it says so every run.
+    A record states its status, date and subject either as markdown bullets under the H1, or
+    as YAML frontmatter. 90 records use the first, 15 the second. Neither is wrong today and
+    nobody has chosen between them, so refusing one would red a whole repository over an
+    unmade decision.
+
+    But reading both SILENTLY would bless the divergence, and a tool that quietly normalises
+    two conventions is how a fleet ends up with three. So the minority shape is reported as an
+    advisory on every run, with its count. The drift stays visible and costs nothing until
+    somebody decides; when they do, this reader loses a branch.
+
+--strict PROMOTES THE ADVISORIES TO BLOCKING, and exists so leniency is a default rather than
+    a ceiling. A repository that has DECIDED its status vocabulary and its currency contract
+    should gate on them; one that has not should not be told its records are broken because
+    another repo made a choice. The default serves adoption, `--strict` serves the repo that
+    has already adopted. Same tool, same rules, one flag naming which regime you are in.
+
+STATUS VOCABULARY IS ADVISORY BY DEFAULT, not blocking, for the same reason. One repo writes
+    `Accepted — ordering superseded 2026-09-14 by [ADR-0012]`, which is a status plus a
+    qualification and is perfectly legible to a human. Blocking it would force a rewrite of
+    correct records to satisfy a lint -- the failure mode where a gate manufactures defects
+    rather than finding them.
+
+WHAT IS BLOCKING, and it is the narrow set that is wrong under ANY convention:
+    schema          a record with no recognisable header at all, or missing a required field.
+    id-integrity    two records sharing one number.
+    filename        a filename whose number disagrees with the record's own id.
+    index           a record absent from the directory's README index, where one exists.
+    tracking-drift  a record naming the entry that tracks it, where that entry does not cite
+                    the record back. Checked only when a register is supplied, and only for
+                    records at or above a floor, so an existing corpus is not retro-fitted.
+
+WHAT IT CANNOT CHECK, stated because a gate that hides its blind spots gets over-trusted:
+    * Whether a decision is a decision. Every rule here is structural. A record can satisfy
+      all of them and still be commentary with a heading.
+    * A single-file decision LOG. One repo keeps 41 numbered decisions in one document; this
+      tool reports that it found no records rather than reporting it clean, because those two
+      are not the same answer and only one of them is true.
+    * Whether the index's summary of a record matches the record.
+"""
+
+import argparse
+import collections
+import pathlib
+import datetime
+import re
+import sys
+
+BULLET_RE = re.compile(r"^- \*\*(Status|Date|Deciders|Tags):\*\*\s*(.+?)\s*$", re.M)
+H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
+NUM_IN_NAME = re.compile(r"(\d{4})")
+UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+STATUSES = ("Proposed", "Accepted", "Living", "Rejected", "Deferred", "Superseded", "Resolved")
+ADVISORY = ("header-shape", "status-vocabulary", "living-contract", "living-stale")
+
+CADENCE_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
+
+# What a record claiming MAINTAINED currency must actually carry. Without these it is an
+# ordinary decision wearing a label that promises freshness, which is strictly worse than no
+# label: a stale claim nobody checks is believed. Advisory rather than blocking, because a
+# repo may use the word for its own purposes and this tool cannot know that it means ours.
+LIVING_REQUIRED = (
+    (r"stable|volatile", "no stated stable/volatile split"),
+    (r"(?i)freshness|as-of|as of \d{4}-", "no freshness block naming what the evidence was measured against"),
+    (r"(?i)refresh trigger|triggers", "no refresh triggers"),
+    (r"(?i)refresh runbook|refresh procedure|runbook", "no named refresh procedure"),
+    (r"(?i)^## Amendment log", "no amendment log"),
+)
+
+
+def clean(s):
+    return re.sub(r"\s+", " ", re.sub(r"[*_`]", "", s or "")).strip()
+
+
+class Record:
+    """One decision record, read through whichever header shape it uses."""
+
+    def __init__(self, path):
+        self.path = path
+        self.text = path.read_text(encoding="utf-8", errors="replace")
+        self.shape = "frontmatter" if self.text.startswith("---") else "bullet"
+        self.fields = {}
+        if self.shape == "frontmatter":
+            end = self.text.find("\n---", 3)
+            head = self.text[3:end] if end != -1 else ""
+            for line in head.splitlines():
+                key, sep, value = line.partition(":")
+                if sep and not line.startswith((" ", "\t", "-")):
+                    self.fields[key.strip().lower()] = value.strip()
+        else:
+            for key, value in BULLET_RE.findall(self.text):
+                self.fields[key.lower()] = value.strip()
+            m = H1_RE.search(self.text)
+            if m:
+                self.fields["title"] = clean(m.group(1))
+
+    @property
+    def number(self):
+        """The record's number, from its own id where it states one, else its filename.
+
+        Filename is the FALLBACK rather than the source: a record that disagrees with its own
+        filename is a finding, and deriving from the filename first would make that
+        undetectable by construction.
+        """
+        ident = self.fields.get("id", "")
+        m = NUM_IN_NAME.search(ident) or NUM_IN_NAME.search(self.path.name)
+        return m.group(1) if m else None
+
+    @property
+    def status(self):
+        raw = clean(self.fields.get("status", ""))
+        return raw.split("(")[0].split("—")[0].split("--")[0].strip()
+
+
+def index_status(index_text, filename):
+    """The status an index table states for one record, found by COLUMN HEADER.
+
+    Position is not portable: one index in this fleet has ADR/Title/Status and another has
+    ADR/Title/Status/Date, so "the last cell" reads a status in one repo and a date in the
+    other. Locating the column by its header is the only form that survives both.
+    """
+    # Split on UNESCAPED pipes only. A title may legitimately contain `\|`, and splitting
+    # naively gives that row the wrong cell count -- which reads a neighbouring cell as the
+    # status and reports a correct index as drifted. Met on the first real run.
+    def cells(line):
+        return [c.strip() for c in UNESCAPED_PIPE.split(line.strip().strip("|"))]
+
+    col = None
+    for line in index_text.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        lowered = [c.lower() for c in cells(line)]
+        if "status" in lowered:
+            col = lowered.index("status")
+            continue
+        if col is not None and filename in line:
+            row = cells(line)
+            if col < len(row):
+                return clean(row[col])
+    return None
+
+
+def load(adr_dir, skip):
+    records = []
+    for f in sorted(adr_dir.glob("*.md")):
+        if f.name in skip:
+            continue
+        r = Record(f)
+        # A document with neither header shape is not a malformed record -- it is not a record.
+        # A directory may legitimately hold an index, a template or a generated view, and
+        # linting those as broken records is this class of tool's commonest false positive.
+        if r.fields.get("status"):
+            records.append(r)
+    return records
+
+
+def check(records, adr_dir, register, floor):
+    out = []
+    shapes = collections.Counter(r.shape for r in records)
+    if len(shapes) > 1:
+        minority = min(shapes, key=shapes.get)
+        out.append(("header-shape", str(adr_dir),
+                    "%d record(s) use the %s header and %d use the other -- both are read here, "
+                    "and neither is wrong until somebody chooses. Reported so the split stays "
+                    "visible rather than silently normalised."
+                    % (shapes[minority], minority, sum(shapes.values()) - shapes[minority])))
+
+    by_number = collections.defaultdict(list)
+    index_text = ""
+    index_path = adr_dir / "README.md"
+    if index_path.exists():
+        index_text = index_path.read_text(encoding="utf-8", errors="replace")
+
+    for r in records:
+        where = str(r.path)
+        required = ("id", "title", "status", "date") if r.shape == "frontmatter" \
+            else ("status", "date", "deciders", "tags")
+        for field in required:
+            if not r.fields.get(field):
+                out.append(("schema", where, "missing required header field %r" % field))
+        if r.shape == "bullet" and not H1_RE.search(r.text):
+            out.append(("schema", where, "no H1 heading"))
+
+        num = r.number
+        if num is None:
+            out.append(("schema", where, "no four-digit number in the record's id or filename"))
+        else:
+            by_number[num].append(r.path.name)
+            if NUM_IN_NAME.search(r.path.name) and NUM_IN_NAME.search(r.path.name).group(1) != num:
+                out.append(("filename", where,
+                            "filename says %s, the record says %s"
+                            % (NUM_IN_NAME.search(r.path.name).group(1), num)))
+
+        st = r.status
+        if st and not any(st.startswith(v) for v in STATUSES):
+            out.append(("status-vocabulary", where,
+                        "status %r is outside the vocabulary (%s)" % (st, ", ".join(STATUSES))))
+
+        if index_text and r.path.name not in index_text:
+            out.append(("index", where, "not listed in the README index"))
+        elif index_text:
+            stated = index_status(index_text, r.path.name)
+            # Compare the FIRST word only. An index legitimately qualifies a status
+            # ("Resolved (Phase 4.5c, 2026-06-12)") and demanding an exact match would report
+            # a correct index as drifted -- a gate manufacturing a defect.
+            if stated and st and stated.split()[0].rstrip(",;") != st.split()[0]:
+                out.append(("index-status", where,
+                            "index says %r, the record says %r" % (stated, st)))
+
+        if st == "Living":
+            for pat, msg in LIVING_REQUIRED:
+                if not re.search(pat, r.text, re.M):
+                    out.append(("living-contract", where, msg))
+            cad = re.search(r"(?i)\b(weekly|monthly|quarterly|biannual|annual)\b", r.text)
+            # Amendment entries are written BOTH ways across this corpus -- bold and heading.
+            # Reading only one silently skipped the cadence check on any record using the
+            # other, so the record made a freshness claim that nothing checked.
+            dates = re.findall(r"^(?:\*\*|#{2,4} )(\d{4}-\d{2}-\d{2})\s*[—-]", r.text, re.M)
+            if cad and dates:
+                limit = CADENCE_DAYS[cad.group(1).lower()]
+                last = max(datetime.date.fromisoformat(d) for d in dates)
+                age = (datetime.date.today() - last).days
+                if age > limit:
+                    out.append(("living-stale", where,
+                                "last amendment %s is %dd old against a %s cadence (%dd) -- "
+                                "refresh it or drop the claim" % (last, age, cad.group(1).lower(), limit)))
+
+    for num, names in sorted(by_number.items()):
+        if len(names) > 1:
+            out.append(("id-integrity", str(adr_dir),
+                        "number %s used by %d records: %s" % (num, len(names), ", ".join(names))))
+
+    if register is not None:
+        out.extend(check_tracking(records, register, floor))
+    return out
+
+
+def register_citations(register_dir):
+    """entry id -> the record numbers its ARTIFACTS field cites.
+
+    The artifacts field only. Prose routinely name-drops other records, and counting those would
+    make any entry that merely DISCUSSES a decision read as tracking it -- the confusion this
+    rule exists to eliminate.
+    """
+    if not register_dir.is_dir():
+        raise OSError(2, "No such directory", str(register_dir))
+    cites = {}
+    for f in sorted(register_dir.glob("*.md")) + sorted((register_dir / "closed").glob("*.md")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        if not text.startswith("---"):
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        head = parts[1]
+        ident = re.search(r"^id:\s*(\S+)\s*$", head, re.M)
+        if not ident:
+            continue
+        block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", head, re.M | re.S)
+        nums = set(re.findall(r"ADR-(\d{4})", block.group(1))) if block else set()
+        cites[ident.group(1)] = nums
+    return cites
+
+
+def check_tracking(records, register, floor):
+    """A record naming its tracking entry, and that entry citing the record back.
+
+    BOTH HALVES, because a one-way link is the failure that actually happens: the record looks
+    tracked while nothing enumerating entries can see the work. Ratcheted at a floor so an
+    existing corpus is not retro-fitted wholesale -- but any record carrying the sentence is
+    checked, whatever its number, so adding one opts that record in from that moment.
+    """
+    out = []
+    try:
+        cites = register_citations(register)
+    except OSError as exc:
+        # UNREADABLE IS A FINDING, NOT A SKIP. A tracking check that quietly passes when it
+        # cannot read the register is indistinguishable from one that verified something, and
+        # it goes dark the moment the register moves -- silently, on every commit, exactly when
+        # it matters. Measured: that happened in this fleet on 2026-09-22.
+        return [("tracking", str(register),
+                 "register unreadable (%s) -- tracking is UNVERIFIED, not clean" % exc.strerror)]
+    for r in records:
+        # SEARCH THE HEADER BLOCK, AND READ THE WHOLE SENTENCE.
+        #
+        # Two things break a naive match and both are the common case, not the edge. The
+        # declaration WRAPS -- real headers read "... Tracked by\n> ABC-01 (what it owns)" --
+        # so a pattern requiring the id on the same line matches nothing while reporting clean.
+        # Measured: against a live corpus of 78 records this check found zero, and the run said
+        # zero blocking. A check that cannot fire is worse than an absent one.
+        #
+        # And the bound is the SENTENCE, not the paragraph: ids in the next sentence name
+        # related work, not what tracks this record, and counting them would make any record
+        # that mentions a neighbour read as tracked by it.
+        header = r.text.split("\n## ", 1)[0]
+        decl = re.search(r"Tracked by\b(.*?)(?:\.\s|\.$|\n\n|\Z)", header, re.S)
+        num = r.number
+        entries = re.findall(r"\b([A-Z]{2,6}-\d+)\b", decl.group(1)) if decl else []
+        if decl and not entries:
+            out.append(("tracking", str(r.path),
+                        "a `Tracked by` declaration that names no entry"))
+            continue
+        if not decl:
+            if num and floor is not None and num >= floor and r.status in ("Accepted", "Living"):
+                out.append(("tracking", str(r.path),
+                            "at or above the %s floor and decided, but names no tracking entry"
+                            % floor))
+            continue
+        # Multiple entries in one sentence are legitimate ("Tracked by ABC-01 (the standard)
+        # and ABC-02 (the rollout)"), and EACH is checked for the reciprocal citation.
+        for entry in entries:
+            if entry not in cites:
+                out.append(("tracking-drift", str(r.path),
+                            "names %s as its tracker, and no such entry exists" % entry))
+            elif num and num not in cites[entry]:
+                out.append(("tracking-drift", str(r.path),
+                            "%s does not cite this record back in its artifacts -- the link is "
+                            "one-way, so a register-side sweep cannot see it" % entry))
+    return out
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Lint a directory of decision records.")
+    p.add_argument("adr_dir", nargs="?", default="docs/adr")
+    p.add_argument("--register", default=None,
+                   help="register directory, to check tracking reciprocity")
+    p.add_argument("--floor", default=None,
+                   help="four-digit number at or above which a decided record must name a tracker")
+    p.add_argument("--skip", default="README.md,template.md,SUBJECTS.md",
+                   help="comma-separated filenames that are not records")
+    p.add_argument("--strict", action="store_true",
+                   help="treat the advisories as blocking (for a repo that has adopted the "
+                        "status vocabulary and the currency contract)")
+    p.add_argument("--quiet", action="store_true", help="findings only, no census")
+    a = p.parse_args(argv)
+
+    adr_dir = pathlib.Path(a.adr_dir)
+    if not adr_dir.is_dir():
+        print("adr-lint: no decision directory at %s -- nothing checked." % adr_dir, file=sys.stderr)
+        return 0
+    records = load(adr_dir, set(s.strip() for s in a.skip.split(",") if s.strip()))
+    if not records:
+        # NOT "clean". A directory with no records this tool can read is a fact about the
+        # directory, and one repo in this fleet keeps its decisions in a single file that no
+        # per-record tool can see.
+        print("adr-lint: %s holds no records this tool can read -- nothing checked, which is "
+              "not the same as clean." % adr_dir, file=sys.stderr)
+        return 0
+
+    findings = check(records, adr_dir, pathlib.Path(a.register) if a.register else None, a.floor)
+    advisory_kinds = () if a.strict else ADVISORY
+    blocking = [f for f in findings if f[0] not in advisory_kinds]
+    advisory = [f for f in findings if f[0] in advisory_kinds]
+    for kind, where, msg in blocking + advisory:
+        print("[%s] %s: %s" % (kind, where, msg))
+    if not a.quiet:
+        shapes = collections.Counter(r.shape for r in records)
+        print("\nadr-lint: %d records in %s (%s)"
+              % (len(records), adr_dir, ", ".join("%d %s" % (n, s) for s, n in shapes.items())),
+              file=sys.stderr)
+        print("adr-lint: %d blocking, %d advisory. What this gate CANNOT check is in its module "
+              "docstring; a green run is not a quality signal." % (len(blocking), len(advisory)),
+              file=sys.stderr)
+    return 1 if blocking else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
