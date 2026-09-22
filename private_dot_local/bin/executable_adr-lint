@@ -220,9 +220,16 @@ def declared(text):
     labels it as one, and relations are read separately.
     """
     blob = lead_block(text)
-    if not blob:
+    # A relation declared as a header bullet -- `- **Extends:** ADR-0016` -- is read too, but
+    # only when its LABEL is a relation word. `- **Ties:**` and `- **Couples to:**` name
+    # neighbours, and reading them would invent relations the record does not assert.
+    header = text.split("\n## ", 1)[0]
+    bullets = [clean("%s %s" % (lab, rest)) for lab, rest in
+               re.findall(r"^- \*\*([A-Za-z ]+):\*\*\s*(.+)$", header, re.M)
+               if lab.strip().lower() in RELATION_WORDS]
+    if not blob and not bullets:
         return None, []
-    m = LEAD_DECIDES.search(blob)
+    m = LEAD_DECIDES.search(blob) if blob else None
     scope = None
     if m and m.group(1).strip():
         rest = m.group(1).strip()
@@ -231,7 +238,7 @@ def declared(text):
         if len(scope) > MAX_DECIDES:
             scope = scope[: MAX_DECIDES - 1].rsplit(" ", 1)[0] + "\u2026"
     rels, seen = [], set()
-    for sentence in re.split(r"(?<=[.])\s+", blob):
+    for sentence in re.split(r"(?<=[.])\s+", blob) + bullets:
         low = sentence.lower()
         verb = next((w for w in RELATION_WORDS if w in low), None)
         if not verb:
