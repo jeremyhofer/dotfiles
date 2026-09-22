@@ -11,7 +11,8 @@ prompted the name table: this repo's README.)
 
 **Installed by this repo:** `adr-lint` (a directory of decision records against the shape it
 declares — reads both the bullet-header and frontmatter conventions and reports the split rather
-than normalising it; `--strict` for a repo that has adopted a status vocabulary) ·
+than normalising it; `--strict` for a repo that has adopted a status vocabulary; `--subjects` renders a by-subject
+view on demand) ·
 `chezmoi-overlay` (runs the private second chezmoi instance) ·
 `register` (read a work register — list, stats, show, and render a browsable index on demand rather than committing one that can go stale) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) ·

@@ -46,6 +46,22 @@ WHAT IS BLOCKING, and it is the narrow set that is wrong under ANY convention:
                     the same defect seen from opposite ends, and a tool holding both
                     directories is the only place either can be checked.
 
+--subjects RENDERS A SUBJECT VIEW instead of linting, and renders it ON DEMAND.
+    Before writing a record, the question is which records already own the ground. An index by
+    number answers "which record is 0043" and not that. This groups by the tags records already
+    carry and shows what each one declares -- what it decides, and which records it supersedes,
+    refines or was split from.
+
+    It prints rather than committing a file, for the reason measured elsewhere in this fleet: a
+    committed generated view was 92,190 bytes to answer a question whose useful slice is about
+    245, and a derived file nobody regenerates is believed. `--subject <pattern>` narrows to the
+    tags you care about, which is how the question is actually asked.
+
+    TWO CAVEATS IT PRINTS ABOUT ITSELF, because both are load-bearing. Most tags are used once,
+    so a tag heading is weak grouping and the declared RELATIONS are the stronger signal. And a
+    record states its scope only if it opens with an explicit statement -- most do not, so a
+    blank means the record is SILENT, never that the ground is unclaimed.
+
 WHAT IT CANNOT CHECK, stated because a gate that hides its blind spots gets over-trusted:
     * Whether a decision is a decision. Every rule here is structural. A record can satisfy
       all of them and still be commentary with a heading.
@@ -154,6 +170,126 @@ def index_status(index_text, filename):
             if col < len(row):
                 return clean(row[col])
     return None
+
+
+LEAD_DECIDES = re.compile(r"What this decides\.?\s*(.*)", re.I | re.S)
+RELATION_WORDS = ("supersedes", "superseded", "refines", "extends", "complements",
+                  "split from", "split out of", "amends", "replaces", "builds on")
+ADR_REF = re.compile(r"ADR-(\d{4})")
+MAX_DECIDES = 240
+
+
+def lead_block(text):
+    """The `>` blockquote between the header and the first section."""
+    body = text.split("\n## ", 1)[0]
+    lines = [ln[1:].strip() for ln in body.split("\n") if ln.startswith(">")]
+    return clean(" ".join(lines)) if lines else ""
+
+
+def declared(text):
+    """(scope statement or None, [(relation, number)]) -- never merged.
+
+    A lead block is used for scope in a minority of records and for supersession notes,
+    glossaries, stubs and status updates in the rest. Reading it as a scope statement rendered
+    an acronym glossary as though it declared territory -- worse than a blank, because a
+    mislabelled answer is still an answer. So a scope statement counts only when the record
+    labels it as one, and relations are read separately.
+    """
+    blob = lead_block(text)
+    if not blob:
+        return None, []
+    m = LEAD_DECIDES.search(blob)
+    scope = None
+    if m and m.group(1).strip():
+        rest = m.group(1).strip()
+        bound = re.search(r"(?<=[.:])\s+(?=[A-Z(])", rest)
+        scope = rest[: bound.start()] if bound else rest
+        if len(scope) > MAX_DECIDES:
+            scope = scope[: MAX_DECIDES - 1].rsplit(" ", 1)[0] + "\u2026"
+    rels, seen = [], set()
+    for sentence in re.split(r"(?<=[.])\s+", blob):
+        low = sentence.lower()
+        verb = next((w for w in RELATION_WORDS if w in low), None)
+        if not verb:
+            continue
+        # Only the FIRST reference after the verb. "Split from ADR-0013 (one-decision-per-file,
+        # ADR-0002)" names a second record for an unrelated reason, and taking every match in
+        # the sentence invented a relation the corpus does not assert.
+        ref = ADR_REF.search(sentence[low.index(verb):])
+        if not ref:
+            continue
+        label = "superseded by" if verb == "superseded" else verb
+        if (label, ref.group(1)) not in seen:
+            seen.add((label, ref.group(1)))
+            rels.append((label, ref.group(1)))
+    return scope, rels
+
+
+def normalise_tag(tag):
+    """Fold spellings for DETECTION only -- the view still renders the tag as written, because
+    silently merging two spellings hides the drift this report exists to surface."""
+    n = clean(tag).lower().replace("_", "-").replace(" ", "-")
+    return n[:-1] if n.endswith("s") and len(n) > 3 else n
+
+
+def render_subjects(records, pattern):
+    by_tag = collections.defaultdict(list)
+    for r in records:
+        for tag in (c for c in (clean(x) for x in r.fields.get("tags", "").split(",")) if c):
+            by_tag[tag].append(r)
+    if not by_tag:
+        print("adr-lint: no record here carries tags, so there is nothing to group by -- which "
+              "is a fact about this corpus, not an empty subject index.", file=sys.stderr)
+        return 1
+
+    norm = collections.defaultdict(set)
+    for tag in by_tag:
+        norm[normalise_tag(tag)].add(tag)
+    collisions = {k: sorted(v) for k, v in norm.items() if len(v) > 1}
+    singles = sorted(t for t, rs in by_tag.items() if len(rs) == 1)
+    decl = {r.path.name: declared(r.text) for r in records}
+    silent = [r for r in records if not decl[r.path.name][0]]
+
+    shown = sorted(by_tag, key=lambda x: (-len(by_tag[x]), x.lower()))
+    if pattern:
+        pat = re.compile(pattern, re.I)
+        shown = [t for t in shown if pat.search(t)]
+        if not shown:
+            print("adr-lint: no tag matches %r" % pattern, file=sys.stderr)
+            return 1
+
+    print("# Decision records by subject\n")
+    print("**Two caveats, both measured.** %d of the %d tags are used exactly once, so a tag "
+          "heading is weak grouping -- the Relations column is the stronger statement of "
+          "ownership. And only %d of %d records state their own scope; a blank means the record "
+          "is SILENT, never that the ground is unclaimed.\n"
+          % (len(singles), len(by_tag), len(records) - len(silent), len(records)))
+    for tag in shown:
+        rs = sorted(by_tag[tag], key=lambda r: r.number or "")
+        print("## %s (%d)\n" % (tag, len(rs)))
+        print("| Record | Status | Title | Decides | Relations |")
+        print("| --- | --- | --- | --- | --- |")
+        for r in rs:
+            scope, rels = decl[r.path.name]
+            rel = " · ".join("%s %s" % (lbl, num) for lbl, num in rels)
+            title = clean(r.fields.get("title", r.path.stem))
+            title = re.sub(r"^[A-Z]+-ADR-\d+:\s*", "", re.sub(r"^ADR-\d+:\s*", "", title))
+            print("| %s | %s | %s | %s | %s |"
+                  % (r.number, r.status, title.replace("|", r"\|"),
+                     (scope or "").replace("|", r"\|"), rel))
+        print()
+    if not pattern:
+        if collisions:
+            print("## Near-duplicate tags\n")
+            print("Reported, never auto-merged: folding two spellings together hides the "
+                  "subject-splitting this view exists to surface.\n")
+            for k in sorted(collisions):
+                print("- " + " · ".join("`%s` (%d)" % (s, len(by_tag[s])) for s in collisions[k]))
+            print()
+        print("## Records that do not state what they decide (%d)\n" % len(silent))
+        for r in sorted(silent, key=lambda r: r.number or ""):
+            print("- %s — %s" % (r.number, clean(r.fields.get("title", r.path.stem))))
+    return 0
 
 
 def load(adr_dir, skip):
@@ -384,6 +520,10 @@ def main(argv=None):
     p.add_argument("--strict", action="store_true",
                    help="treat the advisories as blocking (for a repo that has adopted the "
                         "status vocabulary and the currency contract)")
+    p.add_argument("--subjects", action="store_true",
+                   help="render the subject view instead of linting")
+    p.add_argument("--subject", default=None,
+                   help="with --subjects, narrow to tags matching this pattern")
     p.add_argument("--quiet", action="store_true", help="findings only, no census")
     a = p.parse_args(argv)
 
@@ -399,6 +539,9 @@ def main(argv=None):
         print("adr-lint: %s holds no records this tool can read -- nothing checked, which is "
               "not the same as clean." % adr_dir, file=sys.stderr)
         return 0
+
+    if a.subjects or a.subject:
+        return render_subjects(records, a.subject)
 
     findings = check(records, adr_dir, pathlib.Path(a.register) if a.register else None, a.floor)
     advisory_kinds = () if a.strict else ADVISORY
