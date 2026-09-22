@@ -45,6 +45,9 @@ WHAT IS BLOCKING, and it is the narrow set that is wrong under ANY convention:
                     pointing at nothing, this catches an entry pointing at nothing. Both are
                     the same defect seen from opposite ends, and a tool holding both
                     directories is the only place either can be checked.
+    review          a decided record at or above --review-floor with no fresh-eyes Review
+                    section, or one missing a date or a dimension, or a dimension that says
+                    nothing. See REVIEW below.
 
 --subjects RENDERS A SUBJECT VIEW instead of linting, and renders it ON DEMAND.
     Before writing a record, the question is which records already own the ground. An index by
@@ -61,6 +64,27 @@ WHAT IS BLOCKING, and it is the narrow set that is wrong under ANY convention:
     so a tag heading is weak grouping and the declared RELATIONS are the stronger signal. And a
     record states its scope only if it opens with an explicit statement -- most do not, so a
     blank means the record is SILENT, never that the ground is unclaimed.
+
+REVIEW IS A PRESENCE CHECK, and that limit is the design, not a gap in it.
+    An author cannot review their own correlation: they are holding the record in mind, so it
+    reads as finished. Measured in this fleet: one record written in a day conflicted with nine
+    it never cited and seeded two duplicate work items; the author caught none of it, and three
+    fresh-eyes reviews caught all of it in about eight minutes. So a repo may require, from a
+    floor, that a decided record carries
+
+        ## Review
+
+        Fresh-eyes review, 2026-09-22:
+
+        - **correlation** -- what was compared, and what was found
+        - **self-containment** -- ...
+        - **conformance** -- ...
+
+    one dated section, one bullet per dimension (`--review-dimensions`, defaulting to those
+    three), each bullet saying something. The tool cannot tell whether the review was real. What
+    it does is make skipping one a deliberate act rather than an accident, which is the failure
+    that actually occurs. Ratcheted like tracking: below the floor nothing is owed, but a record
+    carrying a Review section is checked whatever its number.
 
 WHAT IT CANNOT CHECK, stated because a gate that hides its blind spots gets over-trusted:
     * Whether a decision is a decision. Every rule here is structural. A record can satisfy
@@ -306,7 +330,7 @@ def load(adr_dir, skip):
     return records
 
 
-def check(records, adr_dir, register, floor):
+def check(records, adr_dir, register, floor, review_floor=None, dimensions=()):
     out = []
     shapes = collections.Counter(r.shape for r in records)
     if len(shapes) > 1:
@@ -385,6 +409,7 @@ def check(records, adr_dir, register, floor):
     if register is not None:
         out.extend(check_tracking(records, register, floor))
         out.extend(check_artifact_records(records, register))
+    out.extend(check_review(records, review_floor, dimensions))
     return out
 
 
@@ -508,6 +533,44 @@ def check_tracking(records, register, floor):
     return out
 
 
+DEFAULT_DIMENSIONS = "correlation,self-containment,conformance"
+
+
+def review_section(text):
+    """The body of the `## Review` section, or None. Bounded by the next H2: a dimension named
+    in a LATER section is not part of the review, and counting it would let a Notes bullet
+    stand in for one."""
+    m = re.search(r"^## Review\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return m.group(1) if m else None
+
+
+def check_review(records, floor, dimensions):
+    out = []
+    for r in records:
+        body = review_section(r.text)
+        num = r.number
+        if body is None:
+            if num and floor is not None and num >= floor and r.status in ("Accepted", "Living"):
+                out.append(("review", str(r.path),
+                            "at or above the %s floor and decided, but carries no `## Review` "
+                            "section -- a fresh-eyes review is owed before acceptance" % floor))
+            continue
+        if not re.search(r"\b\d{4}-\d{2}-\d{2}\b", body):
+            out.append(("review", str(r.path), "the Review section carries no date"))
+        for dim in dimensions:
+            # Horizontal whitespace only: `\s` crosses the newline under re.M, so an empty bullet
+            # borrowed the NEXT bullet's text as its finding and read as complete.
+            # A BULLET naming the dimension, then something after the separator. A dimension
+            # named only in running prose ("all three fine") is the shape a skipped review takes.
+            m = re.search(r"^[-*] \*\*%s\*\*[ \t]*[—:-]*[ \t]*(.*)$" % re.escape(dim), body, re.M | re.I)
+            if not m:
+                out.append(("review", str(r.path), "the Review has no `**%s**` bullet" % dim))
+            elif not m.group(1).strip():
+                out.append(("review", str(r.path),
+                            "the Review's `%s` bullet records no finding" % dim))
+    return out
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Lint a directory of decision records.")
     p.add_argument("adr_dir", nargs="?", default="docs/adr")
@@ -515,6 +578,11 @@ def main(argv=None):
                    help="register directory, to check tracking reciprocity")
     p.add_argument("--floor", default=None,
                    help="four-digit number at or above which a decided record must name a tracker")
+    p.add_argument("--review-floor", default=None,
+                   help="four-digit number at or above which a decided record must carry a "
+                        "fresh-eyes `## Review` section")
+    p.add_argument("--review-dimensions", default=DEFAULT_DIMENSIONS,
+                   help="comma-separated dimensions the Review must name (default: %(default)s)")
     p.add_argument("--skip", default="README.md,template.md,SUBJECTS.md",
                    help="comma-separated filenames that are not records")
     p.add_argument("--strict", action="store_true",
@@ -543,7 +611,9 @@ def main(argv=None):
     if a.subjects or a.subject:
         return render_subjects(records, a.subject)
 
-    findings = check(records, adr_dir, pathlib.Path(a.register) if a.register else None, a.floor)
+    dims = [d.strip() for d in a.review_dimensions.split(",") if d.strip()]
+    findings = check(records, adr_dir, pathlib.Path(a.register) if a.register else None, a.floor,
+                     a.review_floor, dims)
     advisory_kinds = () if a.strict else ADVISORY
     blocking = [f for f in findings if f[0] not in advisory_kinds]
     advisory = [f for f in findings if f[0] in advisory_kinds]

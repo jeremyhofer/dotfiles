@@ -216,6 +216,56 @@ r="$tmp/strictclean"; bullet "$r" 0001 Accepted
 python3 "$lint" "$r" --quiet --strict >/dev/null 2>&1 && ok "--strict still passes a valid record" || bad "--strict still passes a valid record"
 
 
+# --- fresh-eyes review: a decided record at or above --review-floor carries a dated Review section
+# with one bullet per named dimension, each saying something. PRESENCE only -- the tool cannot tell
+# whether a review was real, and says so; it makes skipping one deliberate rather than accidental.
+#
+# $1 file  $2 date line ("" to omit)  $3.. bullets, verbatim
+review() {
+  f=$1; d=$2; shift 2
+  { echo ""; echo "## Review"; echo ""
+    [ -n "$d" ] && { echo "$d"; echo ""; }
+    for b in "$@"; do echo "$b"; done
+  } >> "$f"
+}
+C='- **correlation** — checked against the subject view; no conflicts.'
+S='- **self-containment** — every citation resolves.'
+K='- **conformance** — the seven drafting rules hold.'
+rf() { run "$1" --review-floor 0079; }
+
+r="$tmp/rv-full"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Fresh-eyes review, 2026-09-22:" "$C" "$S" "$K"
+assert_lacks "a complete review is clean" "[review]" "$(rf "$r")"
+r="$tmp/rv-none"; bullet "$r" 0079 Accepted
+assert_has "a decided record at the floor with no Review is refused" "[review]" "$(rf "$r")"
+python3 "$lint" "$r" --review-floor 0079 --quiet >/dev/null 2>&1 && bad "a missing review exits non-zero" || ok "a missing review exits non-zero"
+r="$tmp/rv-living"; bullet "$r" 0080 Living
+assert_has "Living counts as decided" "[review]" "$(rf "$r")"
+r="$tmp/rv-dim"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Fresh-eyes review, 2026-09-22:" "$C" "$K"
+out=$(rf "$r"); assert_has "ONE missing dimension is refused" "[review]" "$out"; assert_has "the missing dimension is named" "self-containment" "$out"
+r="$tmp/rv-empty"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Fresh-eyes review, 2026-09-22:" "$C" "- **self-containment** —" "$K"
+assert_has "a dimension with no finding is refused" "[review]" "$(rf "$r")"
+r="$tmp/rv-nodate"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "" "$C" "$S" "$K"
+assert_has "an undated review is refused" "[review]" "$(rf "$r")"
+r="$tmp/rv-prose"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Fresh-eyes review, 2026-09-22: correlation, self-containment and conformance all fine." 
+assert_has "dimensions named only in prose are not bullets" "[review]" "$(rf "$r")"
+r="$tmp/rv-later"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Fresh-eyes review, 2026-09-22:" "$C" "$K"
+printf '\n## Notes\n\n%s\n' "$S" >> "$r/0079-a-decision.md"
+assert_has "a dimension outside the Review section does not count" "[review]" "$(rf "$r")"
+# near-misses: the ratchet must not retro-fit
+r="$tmp/rv-proposed"; bullet "$r" 0079 Proposed
+assert_lacks "a Proposed record owes no review yet" "[review]" "$(rf "$r")"
+r="$tmp/rv-below"; bullet "$r" 0078 Accepted
+assert_lacks "a record below the floor owes no review" "[review]" "$(rf "$r")"
+r="$tmp/rv-nofloor"; bullet "$r" 0079 Accepted
+assert_lacks "no --review-floor, no review rule" "[review]" "$(run "$r")"
+# opt-in: a Review section anywhere is checked, whatever the number
+r="$tmp/rv-optin"; bullet "$r" 0010 Accepted; review "$r/0010-a-decision.md" "Fresh-eyes review, 2026-09-22:" "$C"
+assert_has "a Review below the floor is still checked once present" "[review]" "$(rf "$r")"
+# a repo may name its own dimensions
+r="$tmp/rv-custom"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Review 2026-09-22:" "- **security** — none found."
+assert_lacks "custom dimensions are honoured" "[review]" "$(run "$r" --review-floor 0079 --review-dimensions security)"
+
+
 echo ""
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]
