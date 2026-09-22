@@ -1,0 +1,128 @@
+#!/bin/sh
+# wt-bootstrap — install a freshly created git worktree's dependencies, deterministically.
+#
+# WHY THIS EXISTS. `git worktree add` gives a new worktree every tracked file in the
+# repository, but not the installed dependencies that go with them -- node_modules, a uv
+# virtualenv, and the rest are gitignored by design, so a brand-new worktree has none of
+# them. Left alone, a project is unusable in that worktree until someone remembers to
+# install by hand. worktrunk runs this script as a blocking `pre-start` hook so that never
+# happens: the worktree is ready for work the moment it opens.
+#
+# Detection is by LOCKFILE, never by asking or guessing. The lockfile already states which
+# package manager the project committed to, and every install below is a FROZEN install
+# (never a plain "install") -- a worktree bootstrap must reproduce exactly what is locked,
+# not resolve something new and possibly drift the lockfile that other worktrees share.
+#
+# For a project that uses husky, running its JavaScript package manager's install here also
+# runs the package's own `prepare` script, which is how husky wires git hooks into
+# .git/hooks. So for a husky repo this step doubles as hook setup too, with nothing extra to
+# remember or run separately.
+#
+# OPT-IN PER PROJECT, NOT GLOBAL. worktrunk's own hooks APPEND to whatever a project
+# configures rather than replacing it, so there is no single switch that turns this off for
+# one project while leaving it on for another. A project that wants this wires it into its
+# own worktrunk pre-start config; a project that does not, simply never calls it.
+#
+# USAGE: wt-bootstrap [-C <dir>]
+#   Operates on the current directory by default; -C <dir> targets a different one (the
+#   worktree's OWN root, not necessarily the repository's -- a worktree of a monorepo may
+#   lock dependencies at its own subdirectory). Prints nothing on success beyond one line per
+#   action, to stderr, each prefixed "wt-bootstrap: ". Never reads or writes .env files or
+#   any other secret material -- it only checks for lockfiles by name and runs the installer
+#   that matches.
+#
+# WHAT RUNS, KEYED BY LOCKFILE:
+#   pnpm-lock.yaml        -> pnpm install --frozen-lockfile
+#   package-lock.json     -> npm ci
+#   yarn.lock              -> yarn install --immutable
+#   bun.lock / bun.lockb  -> bun install --frozen-lockfile
+#   uv.lock                -> uv sync --frozen
+#   none of the above     -> nothing; exit 0
+#
+# At most ONE JavaScript package manager runs. Two JS lockfiles in the same directory (e.g.
+# a leftover package-lock.json beside an adopted pnpm-lock.yaml) is refused as ambiguous
+# rather than guessed -- picking the wrong one silently would be worse than stopping.
+# uv.lock is independent of all of that: a repository can commit to both a JS package
+# manager and uv at once, and when it does, both installs run, JavaScript first (since that
+# is also the one wiring git hooks, so it goes before anything else that might depend on
+# them being in place).
+
+set -eu
+
+dir="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -C) dir="${2:-.}"; shift 2 ;;
+    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) printf 'wt-bootstrap: unknown argument: %s\n' "$1" >&2; exit 1 ;;
+  esac
+done
+
+[ -d "$dir" ] || { printf 'wt-bootstrap: not a directory: %s\n' "$dir" >&2; exit 1; }
+cd "$dir"
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  printf 'wt-bootstrap: %s not found on PATH (needed for %s)\n' "$1" "$2" >&2
+  exit 1
+}
+
+# --- JavaScript: at most one lockfile may pick the package manager --------------------
+js_present=""
+js_lock=""
+js_manager=""
+note_js() { js_present="$js_present $1"; js_lock="$1"; js_manager="$2"; }
+
+[ -f pnpm-lock.yaml ]    && note_js pnpm-lock.yaml pnpm
+[ -f package-lock.json ] && note_js package-lock.json npm
+[ -f yarn.lock ]         && note_js yarn.lock yarn
+if [ -f bun.lock ]; then
+  note_js bun.lock bun
+elif [ -f bun.lockb ]; then
+  note_js bun.lockb bun
+fi
+
+# Deliberate word-splitting on a space-joined list, only to COUNT how many lockfiles were
+# found -- none of the names contain whitespace, so this is safe and simpler than an array
+# POSIX sh does not have.
+set -- $js_present
+js_count=$#
+
+if [ "$js_count" -gt 1 ]; then
+  printf 'wt-bootstrap: ambiguous: multiple JavaScript lockfiles present (%s) -- refusing to guess\n' "${js_present# }" >&2
+  exit 1
+fi
+
+if [ "$js_count" -eq 1 ]; then
+  case "$js_manager" in
+    pnpm)
+      require_cmd pnpm "$js_lock"
+      printf 'wt-bootstrap: pnpm install --frozen-lockfile\n' >&2
+      pnpm install --frozen-lockfile
+      ;;
+    npm)
+      require_cmd npm "$js_lock"
+      printf 'wt-bootstrap: npm ci\n' >&2
+      npm ci
+      ;;
+    yarn)
+      require_cmd yarn "$js_lock"
+      printf 'wt-bootstrap: yarn install --immutable\n' >&2
+      yarn install --immutable
+      ;;
+    bun)
+      require_cmd bun "$js_lock"
+      printf 'wt-bootstrap: bun install --frozen-lockfile\n' >&2
+      bun install --frozen-lockfile
+      ;;
+  esac
+fi
+
+# --- Python (uv): independent of the JavaScript branch above, runs after it -----------
+if [ -f uv.lock ]; then
+  require_cmd uv uv.lock
+  printf 'wt-bootstrap: uv sync --frozen\n' >&2
+  uv sync --frozen
+fi
+
+exit 0

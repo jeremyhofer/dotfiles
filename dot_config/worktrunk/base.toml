@@ -1,0 +1,40 @@
+# worktrunk -- generic user settings (the public layer).
+#
+# This is NOT worktrunk's config file. worktrunk reads ~/.config/worktrunk/config.toml, which
+# `wt-config-gen` GENERATES from this file, an optional private fragment, and the per-repo
+# `worktrunk:` blocks in a mani manifest. Edit this file (in the dotfiles source) and re-run
+# wt-config-gen; applying the dotfiles does that for you.
+#
+# RULES FOR THIS FILE, because the generator concatenates it with other sources:
+#   * it is the ONLY source that may hold top-level keys;
+#   * it holds no hooks, no project entries and no host names -- those belong to the layers that
+#     know them.
+#
+# ---------------------------------------------------------------------------
+# The default worktree location: NESTED inside the repository
+# ---------------------------------------------------------------------------
+# Two repo shapes need different paths, because {{ repo_path }} resolves differently in each:
+#
+#   ORDINARY CHECKOUT -- repo_path is the repo root, so worktrees nest inside it:
+#       <repo>/.worktrees/<branch>
+#
+#   BARE CONTAINER (.bare + sibling worktrees) -- repo_path is the bare directory, so ".." is
+#   already the container and the worktree is just the branch:
+#       <container>/<branch>
+#     A repository in this shape declares `layout: bare` in the manifest; this default does not
+#     apply to it.
+#
+# WHY NESTED RATHER THAN A SIBLING. The obvious alternative, {{ repo_path }}/../{{ repo }}.{{ branch }},
+# puts the worktree next to the repositories themselves, so anything that enumerates a directory of
+# repositories (mani, for one) meets something repo-shaped that is not a repo. Nesting keeps that
+# directory meaning one thing, and makes a worktree die with the repository that owns it.
+#
+# THE COST: a nested worktree lives inside a working tree, so `.worktrees/` must be ignored --
+# globally, not per repo -- and tools that walk the tree (prettier, eslint, rg, nx) each need their
+# own ignore entry. A repository that converts to a bare container stops having this problem.
+worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
+
+# Pin the JSON output schema. Without this, every `wt config show` prints a migration advisory
+# warning that a future release changes the default.
+[list]
+json-schema = 2

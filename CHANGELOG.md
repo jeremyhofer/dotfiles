@@ -26,6 +26,26 @@ Entries are newest first.
 
 ---
 
+## 2026-09-22
+
+### worktrunk's user config is now GENERATED, from three layers — ACTION on a machine with a private layer
+
+`~/.config/worktrunk/config.toml` is written by `wt-config-gen`, not deployed by any dotfiles layer.
+Its sources: `~/.config/worktrunk/base.toml` (shipped here — generic settings only), an optional
+private fragment at `~/.dotlocal/worktrunk.toml`, and a `worktrunk:` block on each project in the
+repo manifest (`~/Devel/mani.yaml`, or `$FLEET_RECORD`). Applying this base runs the generator.
+
+- **ACTION, if a private layer used to deploy `config.toml` itself:** it must stop, or the two will
+  overwrite each other. Global private policy moves to the fragment; per-repo entries move to the
+  manifest.
+- **A machine with a manifest you edit by hand:** run `wt-config-gen` after editing it.
+- **New tools here:** `wt-config-gen`, `wt-bootstrap` (dependency install for a new worktree, opt-in
+  per repo with `worktrunk.bootstrap: true`), and `fleet-decl`, the manifest reader, which moved here
+  from a private layer so a machine with only this base can read its own manifest. It needs the
+  mikefarah `yq`, already required by this base.
+
+---
+
 ## 2026-09-20
 
 **New tool: `register-lint`** — checks a work register's entries against the contract its own README

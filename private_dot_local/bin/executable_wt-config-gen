@@ -1,0 +1,148 @@
+#!/bin/sh
+# wt-config-gen -- write worktrunk's user config from its layered sources.
+#
+#   usage: wt-config-gen
+#
+# WHY THIS EXISTS. worktrunk reads exactly one user config file and has no include directive, but the
+# content comes from three places with different owners:
+#   1. base.toml            generic settings, shipped by this public repo;
+#   2. an optional fragment  private global policy from a private layer (~/.dotlocal/worktrunk.toml);
+#   3. the repo manifest     per-repo conventions, declared as a `worktrunk:` block on each project
+#                            in a mani.yaml and read through fleet-decl.
+# So the file is generated rather than managed: neither dotfiles layer owns it, and hand edits to it
+# are overwritten on the next run.
+#
+# THE MANIFEST FORMAT (per project):
+#     url: <the primary remote>          worktrunk keys projects by <host>/<owner>/<repo> from this
+#     worktrunk:
+#       layout: bare | nested            bare: worktrees beside the container's branch dirs;
+#                                        nested: under <repo>/.worktrees/
+#       bootstrap: true | false          true: run wt-bootstrap as a BLOCKING pre-start hook, so a new
+#                                        worktree has its dependencies -- and any install-time git
+#                                        hooks -- before anyone uses it
+# A project without a `worktrunk:` block gets worktrunk's global defaults.
+#
+# FAILURE LEAVES THE OLD FILE. The generated file is worktrunk's only user config, so a bad run would
+# not degrade one setting, it would remove all of them. Every refusal below exits before the live
+# file is touched, the result is parsed by worktrunk itself before it replaces the old one, and the
+# replacement is a rename. An UNREADABLE manifest is a refusal, never "no projects": reading it as
+# empty would silently drop every per-repo setting at once.
+#
+# TWO RULES MAKE CONCATENATION SAFE, and both are checked rather than trusted. Only base.toml may
+# hold top-level keys -- a key placed after another source's table would silently land INSIDE that
+# table. And no two sources may open the same table -- TOML forbids it, and the error would name a
+# line in a file nobody edits.
+#
+# Environment (for tests and unusual layouts): WT_GEN_BASE, WT_GEN_FRAGMENT, WT_GEN_OUT, and
+# fleet-decl's own FLEET_RECORD / FLEET_DEVEL_ROOT.
+set -eu
+
+conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/worktrunk"
+base="${WT_GEN_BASE:-$conf_dir/base.toml}"
+frag="${WT_GEN_FRAGMENT:-$HOME/.dotlocal/worktrunk.toml}"
+out="${WT_GEN_OUT:-$conf_dir/config.toml}"
+record="${FLEET_RECORD:-$HOME/Devel/mani.yaml}"
+
+die() { printf 'wt-config-gen: %s -- the existing config is unchanged\n' "$1" >&2; exit 1; }
+
+[ -f "$base" ] || die "no base config at $base"
+command -v wt >/dev/null 2>&1 || die "wt is not installed, so the result cannot be validated"
+
+work=$(mktemp -d) || die "cannot make a temp directory"
+trap 'rm -rf "$work"' EXIT
+
+# Tables a source opens, one header per line, whitespace and trailing comments removed. `[[x]]`
+# (arrays of tables) may legitimately repeat, so only single-bracket headers are collected.
+headers() { sed -n 's/[[:space:]]*#.*$//; s/[[:space:]]//g; /^\[[^[]/p' "$1"; }
+
+# A source other than base must open with a table before it holds any key.
+starts_with_table() {
+  first=$(sed -n 's/[[:space:]]*#.*$//; /^[[:space:]]*$/d; p' "$1" | head -n 1)
+  case "$first" in ''|\[*) return 0 ;; *) return 1 ;; esac
+}
+
+# <host>/<owner>/<repo> from a remote URL: ssh:// and https:// (with optional user and port), and
+# scp-style user@host:path. Anything else prints nothing, and the caller reports it.
+url_to_id() {
+  printf '%s\n' "$1" | sed -E \
+    -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
+    -e 's#^[^@/]*@##' \
+    -e 's#^([^/:]+):[0-9]+/#\1/#' \
+    -e 's#^([^/:]+):#\1/#' \
+    -e 's#\.git/?$##' \
+    -e 's#/+$##' | grep -E '^[^/]+/.+' || true
+}
+
+# --- 1. per-repo conventions from the manifest --------------------------------------------------
+projects_toml="$work/projects.toml"
+: > "$projects_toml"
+if [ ! -f "$record" ]; then
+  printf 'wt-config-gen: no manifest at %s -- per-repo conventions skipped\n' "$record" >&2
+else
+  # fleet-decl validates every worktrunk key and value. Only THOSE findings refuse here: the rest of
+  # its check enforces other tools' declarations (a leak-guard policy on every project, for one),
+  # and a manifest on a machine that runs no leak guard would never declare them.
+  command -v fleet-decl >/dev/null 2>&1 || die "fleet-decl is not installed, so the manifest cannot be read"
+  wt_findings=$(fleet-decl --check 2>&1 | grep '^\[worktrunk-' || true)
+  [ -z "$wt_findings" ] || die "the manifest's worktrunk declarations are invalid:
+$wt_findings"
+  set +e; names=$(fleet-decl --projects-with worktrunk 2>"$work/decl.err"); rc=$?; set -e
+  case "$rc" in
+    0) ;;
+    1) names="" ;;
+    *) die "cannot read the manifest at $record: $(cat "$work/decl.err")" ;;
+  esac
+  for name in $names; do
+    url=$(fleet-decl --entry "$name" url 2>/dev/null) || url=""
+    id=$(url_to_id "$url")
+    [ -n "$id" ] || die "project $name declares worktrunk settings but has no usable url ('$url')"
+    layout=$(fleet-decl --entry "$name" worktrunk.layout 2>/dev/null) || layout=""
+    bootstrap=$(fleet-decl --entry "$name" worktrunk.bootstrap 2>/dev/null) || bootstrap=""
+    {
+      printf '\n[projects."%s"]   # from the manifest: %s\n' "$id" "$name"
+      case "$layout" in
+        bare)   printf 'worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"\n' ;;
+        nested) printf 'worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"\n' ;;
+      esac
+      if [ "$bootstrap" = true ]; then printf 'pre-start.bootstrap = "wt-bootstrap"\n'; fi
+    } >> "$projects_toml"
+  done
+fi
+
+# --- 2. structural rules, before anything is joined ------------------------------------------------
+if [ -f "$frag" ] && ! starts_with_table "$frag"; then
+  die "$frag holds a key before its first table; only base.toml may hold top-level keys"
+fi
+: > "$work/headers"
+for src in "$base" "$frag" "$projects_toml"; do
+  [ -f "$src" ] || continue
+  headers "$src" | while IFS= read -r h; do printf '%s\t%s\n' "$h" "$src"; done >> "$work/headers"
+done
+dups=$(cut -f1 "$work/headers" | sort | uniq -d)
+if [ -n "$dups" ]; then
+  where=$(for d in $dups; do grep -F "$d	" "$work/headers" | cut -f2 | tr '\n' ' '; done)
+  die "table(s) opened by more than one source: $(printf '%s' "$dups" | tr '\n' ' ')(in: $where)"
+fi
+
+# --- 3. join, validate with worktrunk itself, replace atomically -----------------------------------
+new="$work/config.toml"
+{
+  printf '# GENERATED by wt-config-gen -- do not edit; edits are overwritten on the next run.\n'
+  printf '# Sources: %s' "$base"
+  [ -f "$frag" ] && printf ', %s' "$frag"
+  [ -f "$record" ] && printf ', and the worktrunk: blocks in %s' "$record"
+  printf '.\n# After editing the manifest by hand, run wt-config-gen again.\n\n'
+  cat "$base"
+  [ -f "$frag" ] && { printf '\n'; cat "$frag"; }
+  cat "$projects_toml"
+} > "$new"
+
+# `wt config show` parses with worktrunk's own parser and exits 1 on a parse error. It is run from /
+# so the current directory's project config cannot make a valid user config look invalid.
+if ! (cd / && wt --config "$new" config show) >/dev/null 2>"$work/wt.err"; then
+  die "worktrunk cannot parse the result: $(head -n 8 "$work/wt.err")"
+fi
+
+mkdir -p "$(dirname "$out")"
+cp "$new" "$out.tmp.$$" && mv -f "$out.tmp.$$" "$out"
+printf 'wt-config-gen: wrote %s\n' "$out" >&2

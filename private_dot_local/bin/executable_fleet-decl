@@ -1,0 +1,280 @@
+#!/bin/sh
+# fleet-decl -- read one fleet DECLARATION about a repo from the per-repo record.
+#
+#   usage: fleet-decl <repo-path> <key>
+#          fleet-decl --project <repo-path>      # print the record key for that repo
+#          fleet-decl --fleet <key>              # a FLEET-level (non per-repo) declaration
+#          fleet-decl --fleet-keys <key>         # the keys of a fleet-level map, one per line
+#          fleet-decl --fleet-list <key>         # the items of a fleet-level sequence, one per line
+#          fleet-decl --canonicals               # every declared canonical name, one per line
+#          fleet-decl --canonical <name> <key>    # a key on the project declaring that canonical
+#          fleet-decl --canonical-list <name> <key>  # ...when that key holds a sequence
+#          fleet-decl --projects-with <key>      # every project that declares <key>, one per line
+#          fleet-decl --entry <project> <key>    # a key on the project named <project>
+#          fleet-decl --check                    # validate the record; print findings
+#
+#   exit 0  value printed on stdout (empty output means the key is declared empty)
+#   exit 1  no declaration -- either the path is not a known repo, or the key is absent
+#   exit 2  THE RECORD IS UNUSABLE. A caller enforcing anything MUST FAIL CLOSED on this.
+#
+# WHY THIS IS A SEPARATE PROGRAM RATHER THAN A FUNCTION IN EACH CALLER. Two tools need the same
+# answer -- the commit-time publish guard and the hook auditor -- and they are written in
+# different shells. Copying the resolution into both is how the two drift into disagreeing about
+# which repo a path belongs to, which is worse than either being wrong alone: the auditor would
+# then certify a repo the guard is treating as something else. One implementation, one test suite.
+#
+# WHY EXIT 2 EXISTS AND IS NOT FOLDED INTO EXIT 1. "This repo declares nothing" and "I cannot read
+# the record" are opposite situations wearing the same empty output. The first is ordinary -- most
+# repos on a machine are not fleet repos. The second means every answer this program gives is
+# unfounded, and a guard that treats it as "nothing declared" silently downgrades itself to the
+# default for every repo at once, on every commit, with nothing to see. The caller decides what to
+# do; this program's job is to make the two distinguishable.
+#
+# THE READER IS PINNED BY BEHAVIOUR, NOT BY NAME. Two different programs in common package repos
+# install a `yq`, and their query syntaxes are incompatible -- one is a Go implementation, the
+# other a Python wrapper around jq. A machine with the wrong one would not error in an obvious
+# way; it would fail to parse and look like an empty record. So the version probe below checks the
+# implementation and exit 2 covers the mismatch.
+set -eu
+
+RECORD="${FLEET_RECORD:-$HOME/Devel/mani.yaml}"
+DEVEL_ROOT="${FLEET_DEVEL_ROOT:-$HOME/Devel}"
+
+die_unusable() { printf 'fleet-decl: %s\n' "$1" >&2; exit 2; }
+
+command -v yq >/dev/null 2>&1 || die_unusable "yq is not installed; the per-repo record cannot be read"
+# Identify the implementation rather than trusting the command name.
+yq --version 2>&1 | grep -q 'mikefarah' \
+  || die_unusable "the 'yq' on PATH is not the mikefarah implementation; its query syntax differs"
+[ -f "$RECORD" ] || die_unusable "no record at $RECORD"
+yq -e '.projects' "$RECORD" >/dev/null 2>&1 \
+  || die_unusable "record at $RECORD does not parse, or has no .projects"
+
+# Resolve a repo path to its record key by LONGEST declared scope that prefixes it.
+#
+# Longest-match, not first-match: scopes nest. A repo living inside another repo's tree would
+# match both, and first-match would hand it whichever the record happened to list first -- a
+# silent, order-dependent answer. Longest wins is the only reading that is stable under reordering
+# the record, which somebody will do.
+#
+# The scope is a path PREFIX rather than a regex. The values it replaces were regexes, and they
+# did not need to be: every one of them was a literal path fragment. A prefix cannot
+# accidentally match an unrelated repo the way an unanchored expression can.
+# Normalise a path so a prefix comparison means what it looks like.
+#
+# NEEDED BECAUSE A SCOPE MAY POINT OUTSIDE THE TREE. The record's paths are relative to the
+# manifest's own directory, and two managed repos legitimately sit outside it -- reached as
+# `../.local/share/...`. Joined naively that yields `<root>/../.local/share/...`, which is the
+# correct location and the WRONG STRING: it shares no prefix with the resolved path the caller
+# passes in, so the repo silently resolves to nothing and falls to the default. Comparing paths
+# textually without normalising them is the whole bug.
+#
+# `cd` + `pwd -P` rather than `realpath -m` or `readlink -f`: both of those are GNU-only spellings
+# that ERROR on BSD, which would take this out on the Mac only -- the hardest failure to notice
+# from the workstation. A scope that does not exist on this machine yields nothing and is skipped,
+# which is correct: the caller's path does exist, so it cannot be under a directory that does not.
+norm_path() { (CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P) || true; }
+
+project_for() {
+  _rp=$(norm_path "$1")
+  [ -n "$_rp" ] || return 0
+  # shellcheck disable=SC2016
+  yq -r '.projects | to_entries[] | select(.value.scope != null) | .key + "\t" + .value.scope' \
+     "$RECORD" 2>/dev/null | while IFS="$(printf '\t')" read -r _k _scope; do
+    [ -n "$_k" ] && [ -n "$_scope" ] || continue
+    _abs=$(norm_path "$DEVEL_ROOT/$_scope")
+    [ -n "$_abs" ] || continue
+    case "$_rp/" in
+      "$_abs"/*) printf '%s\t%s\n' "${#_abs}" "$_k" ;;
+    esac
+  done | sort -rn | head -n1 | cut -f2
+}
+
+# Fleet-level reads. Three verbs rather than one that guesses from the value's type: a caller in
+# shell has to know whether it is about to get one line or many BEFORE it reads, and a reader that
+# returns a scalar for a one-element list and a list otherwise produces code that works until the
+# list has one entry. The shape is part of the question, so the caller states it.
+# Which project declares a canonical -- and AMBIGUITY IS A REFUSAL, not a tie-break.
+#
+# The record makes one hazard possible that the mechanism it replaced could not express the other
+# way round: two PROJECTS declaring the same canonical name. The old discovery had the mirror
+# problem (two kickoff scripts claiming one name, resolved by locale collation, with the loser
+# often the live checkout) and refused rather than guessing. Same answer here, for the same reason:
+# a launcher that picks one would start a session in whichever project sorted first.
+#
+# Exit 2, not 1: this is "the record cannot answer", which is a defect in the record, not an
+# ordinary absence.
+canonical_project() {
+  _hits=$(yq -e -r ".projects | to_entries[] | select(.value.canonical == \"$1\") | .key" \
+          "$RECORD" 2>/dev/null) || return 1
+  [ -n "$_hits" ] || return 1
+  _n=$(printf '%s\n' "$_hits" | grep -c .)
+  if [ "$_n" -gt 1 ]; then
+    printf 'fleet-decl: canonical %s is declared by %s projects (%s) and this is not tie-broken\n' \
+      "$1" "$_n" "$(printf '%s' "$_hits" | tr '\n' ' ')" >&2
+    return 2
+  fi
+  printf '%s' "$_hits"
+}
+
+valid_key() {
+  case "$1" in
+    ""|*[!A-Za-z0-9_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$1" >&2; exit 2 ;;
+  esac
+}
+
+# CANONICAL-KEYED LOOKUPS. Everywhere else this program answers "what does the record say about
+# this PATH"; a launcher needs the inverse -- "which project declares this canonical" -- and that
+# reverse index belongs here rather than in the caller, for the same reason the forward one does:
+# two readers of the same record disagreeing about which project a name belongs to is a worse
+# failure than either being wrong alone.
+#
+# Deliberately NOT filtered by machine. Which canonicals a given host should run is policy the
+# launcher owns, and a reader that silently hid rows would make "declared but not for here"
+# indistinguishable from "not declared" -- the exact collapse this program's exit codes exist to
+# prevent everywhere else.
+case "${1:-}" in
+  --canonicals)
+    yq -e -r '.projects | to_entries[] | select(.value.canonical != null) | .value.canonical' \
+       "$RECORD" 2>/dev/null || exit 1
+    exit 0 ;;
+  --canonical-list)
+    # The list form, for the same reason the fleet-level read has one: a shell caller must know
+    # whether it is getting one line or many before it reads, and a reader that returned a scalar
+    # for a one-element sequence would produce code that works until the sequence has one entry --
+    # which for a per-machine roster is the common case, not the edge.
+    [ $# -eq 3 ] || { printf 'usage: fleet-decl --canonical-list <name> <key>\n' >&2; exit 2; }
+    valid_key "$3"
+    _proj=$(canonical_project "$2") || exit $?
+    yq -e -r ".projects.\"$_proj\".$3 | .[]" "$RECORD" 2>/dev/null || exit 1
+    exit 0 ;;
+  --canonical)
+    [ $# -eq 3 ] || { printf 'usage: fleet-decl --canonical <name> <key>\n' >&2; exit 2; }
+    valid_key "$3"
+    _proj=$(canonical_project "$2") || exit $?
+    _out=$(yq -e -r ".projects.\"$_proj\".$3" "$RECORD" 2>/dev/null) || exit 1
+    [ "$_out" = "null" ] && exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
+  --fleet)
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --fleet <key>\n' >&2; exit 2; }
+    valid_key "$2"
+    _out=$(yq -e -r ".$2" "$RECORD" 2>/dev/null) || exit 1
+    [ "$_out" = "null" ] && exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
+  --fleet-keys)
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --fleet-keys <key>\n' >&2; exit 2; }
+    valid_key "$2"
+    yq -e -r ".$2 | keys | .[]" "$RECORD" 2>/dev/null || exit 1
+    exit 0 ;;
+  --fleet-list)
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --fleet-list <key>\n' >&2; exit 2; }
+    valid_key "$2"
+    yq -e -r ".$2 | .[]" "$RECORD" 2>/dev/null || exit 1
+    exit 0 ;;
+  --projects-with)
+    # The ENUMERATION a generator needs: every project that declares a key. Exit 1 when none do,
+    # 2 when the record is unusable -- the same distinction every other mode keeps, because a
+    # generator that read "none" from a broken record would write a config with nothing in it.
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --projects-with <key>\n' >&2; exit 2; }
+    valid_key "$2"
+    yq -e -r ".projects | to_entries[] | select(.value.$2 != null) | .key" "$RECORD" 2>/dev/null || exit 1
+    exit 0 ;;
+  --entry)
+    # By project NAME rather than by path. A project name is interpolated into the query, so it is
+    # held to the characters a manifest key actually uses; anything else could escape the quoting.
+    [ $# -eq 3 ] || { printf 'usage: fleet-decl --entry <project> <key>\n' >&2; exit 2; }
+    case "$2" in
+      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+    esac
+    valid_key "$3"
+    _out=$(yq -e -r ".projects.\"$2\".$3" "$RECORD" 2>/dev/null) || exit 1
+    [ "$_out" = "null" ] && exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
+  --check)
+    rc=0
+    # Every project must declare a policy. An ABSENT key is the failure this check exists for:
+    # the record tolerates unknown and missing keys silently, so a typo'd or forgotten policy
+    # reads exactly like a repo that was never meant to have one, and the guard quietly uses its
+    # default. Absence has to be loud here or the declaration is not really required.
+    # Upstream clones are excluded: they are somebody else's repositories, mirrored here and not
+    # authored, so a policy declaration about them would be asserting something we do not decide.
+    # The tag is the fleet's existing exclusion and is used by every other reader of this record.
+    missing=$(yq -r '.projects | to_entries[]
+                     | select([(.value.tags // [])[] | select(. == "upstream")] | length == 0)
+                     | select(.value.leakPolicy == null) | .key' "$RECORD" 2>/dev/null || true)
+    for p in $missing; do printf '[policy-missing] %s: no leakPolicy declared\n' "$p"; rc=1; done
+    # A near-miss key name is silently ignored by the record's own reader, so it cannot be left
+    # to a human to spot. Only the spellings we own are checked; unknown keys in general are
+    # legitimate, because other tools read this file too.
+    for p in $(yq -r '.projects | keys | .[]' "$RECORD" 2>/dev/null || true); do
+      for k in $(yq -r ".projects.\"$p\" | keys | .[]" "$RECORD" 2>/dev/null || true); do
+        case "$k" in
+          scope|leakPrefix|leakPolicy|leakDisable) ;;
+          canonical|canonicalIdentity|canonicalLaunchDir|canonicalLaunchModel|canonicalMachines) ;;
+          worktrunk) ;;
+          leak*|canonical*)
+            printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
+        esac
+      done
+    done
+    # The worktrunk block is read by a generator that writes worktrunk's config. A value it does not
+    # understand has to be refused somewhere every caller passes through, and this is that place --
+    # otherwise the generator either guesses or silently drops the setting.
+    for p in $(yq -r '.projects | to_entries[] | select(.value.worktrunk != null) | .key' "$RECORD" 2>/dev/null || true); do
+      for k in $(yq -r ".projects.\"$p\".worktrunk | keys | .[]" "$RECORD" 2>/dev/null || true); do
+        v=$(yq -r ".projects.\"$p\".worktrunk.$k" "$RECORD" 2>/dev/null)
+        case "$k=$v" in
+          layout=bare|layout=nested|bootstrap=true|bootstrap=false) ;;
+          layout=*|bootstrap=*)
+            printf '[worktrunk-value] %s: worktrunk.%s = %s is not a value this fleet reads\n' "$p" "$k" "$v"; rc=1 ;;
+          *)
+            printf '[worktrunk-key] %s: worktrunk.%s is not a key this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
+        esac
+      done
+    done
+    # Two projects claiming one canonical name. Nothing else would notice: each entry is
+    # individually well formed, and the collision only shows up as a launcher refusing later.
+    dupes=$(yq -r '.projects | to_entries[] | select(.value.canonical != null) | .value.canonical' "$RECORD" 2>/dev/null \
+            | sort | uniq -d)
+    for d in $dupes; do printf '[canonical-duplicate] %s: declared by more than one project\n' "$d"; rc=1; done
+    # A canonical needs its companions or the launcher cannot start it, and would discover that
+    # only at launch time.
+    for p in $(yq -r '.projects | to_entries[] | select(.value.canonical != null) | .key' "$RECORD" 2>/dev/null || true); do
+      for k in canonicalIdentity canonicalLaunchDir canonicalLaunchModel canonicalMachines; do
+        yq -e ".projects.\"$p\".$k" "$RECORD" >/dev/null 2>&1 \
+          || { printf '[canonical-incomplete] %s: declares a canonical but no %s\n' "$p" "$k"; rc=1; }
+      done
+    done
+    [ "$rc" -eq 0 ] && printf 'fleet-decl: record is clean.\n'
+    exit "$rc" ;;
+  --project)
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --project <repo-path>\n' >&2; exit 2; }
+    proj=$(project_for "$2")
+    [ -n "$proj" ] || exit 1
+    printf '%s\n' "$proj"; exit 0 ;;
+esac
+
+[ $# -eq 2 ] || { printf 'usage: fleet-decl <repo-path> <key>\n' >&2; exit 2; }
+# A dotted key reaches a nested declaration (env.MIRROR_URL). The key is interpolated into a query
+# unquoted so its dots act as path separators, so it is constrained to identifier characters --
+# an unconstrained key would be an injection point into the query language.
+case "$2" in
+  *[!A-Za-z0-9_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$2" >&2; exit 2 ;;
+esac
+proj=$(project_for "$1")
+[ -n "$proj" ] || exit 1
+# `// ""` is deliberately NOT used: it would turn an absent key into an empty string, erasing the
+# difference between "declared empty" and "not declared" that this program's exit codes exist to
+# preserve.
+#
+# STDOUT MUST STAY EMPTY ON THE NOT-DECLARED PATH. The reader prints the literal string `null` for
+# an absent key even while signalling absence through its exit status, so passing its output
+# straight through hands a caller a four-character value that looks declared. Every caller would
+# then have to know to check the status AND filter a magic word, and the ones that only do the
+# first get "null" written into a config. Capture, then decide.
+_out=$(yq -e -r ".projects.\"$proj\".$2" "$RECORD" 2>/dev/null) || exit 1
+[ "$_out" = "null" ] && exit 1
+printf '%s\n' "$_out"

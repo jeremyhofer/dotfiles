@@ -20,7 +20,10 @@ view on demand) ·
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
-`spell-capture` · `ui-shot` (headless render for visual review).
+`spell-capture` · `ui-shot` (headless render for visual review) ·
+`fleet-decl` (reads one declaration from the per-repo record, a mani.yaml; exit 2 means the record is unreadable, never "not declared") ·
+`wt-bootstrap` (installs a fresh worktree's dependencies from whichever lockfile it finds, frozen; wired in as worktrunk's `pre-start` hook) ·
+`wt-config-gen` (generates worktrunk's user config from `base.toml`, an optional private fragment, and each repo's `worktrunk:` block in the manifest).
 
 **Assumed third-party:** `chezmoi` (two instances) · `wt` (worktree lifecycle; `wt switch --create`
 makes one) · `mani` (multi-repo sync/fan-out) · `just` · `git` with SSH-signed commits · `zsh` ·
