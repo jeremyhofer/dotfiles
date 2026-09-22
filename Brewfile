@@ -34,6 +34,14 @@ brew "tree"              # directory tree listing
 brew "just"              # task runner
 brew "age"               # file encryption (generic)
 brew "jq"                # JSON processor (scripts / CLI)
+brew "yq"                # YAML processor. REQUIRED, not optional: the publish-boundary git hook
+                         # reads the fleet repo manifest through it on every commit and fails
+                         # CLOSED when it is absent, so a machine without it cannot commit at all.
+                         # Homebrew's `yq` is mikefarah's Go implementation, which is the dialect
+                         # that hook expects. On Arch the equivalent package is `go-yq`; the
+                         # similarly-named `yq` there is a different program with incompatible
+                         # syntax, so the two platforms declare different package NAMES for the
+                         # same tool.
 brew "watch"             # periodic command re-runner (not shipped on macOS)
 brew "findutils"         # GNU find/xargs (gfind/gxargs; macOS ships only BSD find)
 
