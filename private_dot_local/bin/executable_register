@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""register -- read a work register: list it, show one entry, render an index, count it.
+
+WHY A COMMAND RATHER THAN A COMMITTED FILE
+    A register directory answers "what is the state of everything" only if you open every
+    entry. The obvious fix is to generate an index file and commit it -- and that is the shape
+    this replaces, for two measured reasons.
+
+    It cannot go stale. A committed index is a derived artifact, and a derived artifact that
+    nobody regenerates is worse than none because it is believed. Every drift incident in this
+    fleet has that shape.
+
+    And it is far cheaper to consume. Measured on a 218-entry register: the committed index was
+    48,840 bytes, the list of open entries 1,409, the status counts 134. For an agent session
+    reading into a bounded context that is the difference between twelve thousand tokens and
+    three hundred, to answer the same question.
+
+    `index` still exists, because a browsable artifact is a real thing to want -- somebody
+    reading the repository on a web UI cannot run a command. It writes on demand rather than
+    being a file the repo must keep fresh, and every register renders it the same way instead
+    of each one growing its own generator.
+
+THE PREFIX IS DERIVED, NEVER CONFIGURED -- the same rule the register's lint follows. A
+    configured prefix is a second place for the answer to live, and the two drift; a derived
+    one cannot disagree with the store it describes.
+
+WHAT THIS DOES NOT DO
+    It does not WRITE entries. Creating, editing and closing them is hand work against a
+    contract each register states in its own README, and a tool that generated entries would
+    be generating the closure conditions and resolutions that are the whole point of writing
+    them by hand.
+"""
+
+import argparse
+import collections
+import pathlib
+import re
+import sys
+
+CLOSED_STATUSES = ("done", "dropped")
+ORDER = ("active", "ready", "blocked", "held", "standing", "scoped", "idea", "done", "dropped")
+
+
+class Entry:
+    def __init__(self, path, closed):
+        self.path = path
+        self.closed = closed
+        self.text = path.read_text(encoding="utf-8", errors="replace")
+        self.meta = {}
+        if self.text.startswith("---"):
+            end = self.text.find("\n---", 3)
+            if end != -1:
+                for line in self.text[3:end].splitlines():
+                    if line.strip() and not line.startswith((" ", "\t", "-", "#")):
+                        key, sep, value = line.partition(":")
+                        if sep:
+                            self.meta[key.strip()] = value.strip().strip("'\"")
+
+    def get(self, key, default=""):
+        return self.meta.get(key, default)
+
+    @property
+    def id(self):
+        return self.get("id")
+
+    @property
+    def num(self):
+        m = re.search(r"(\d+)$", self.id)
+        return int(m.group(1)) if m else 0
+
+    def section(self, heading):
+        m = re.search(r"^#{1,6}\s+%s\s*$(.*?)(?=^#{1,6}\s|\Z)" % re.escape(heading),
+                      self.text, re.M | re.S)
+        return " ".join(m.group(1).split()) if m else ""
+
+
+def load(root):
+    """Every entry, actionable and closed. An entry is identified by CONTENT -- frontmatter
+    carrying an id -- not by filename, so a register may hold a README, a mapping table or a
+    charter without each being counted as a malformed entry."""
+    out = []
+    for sub, closed in ((root, False), (root / "closed", True)):
+        if not sub.is_dir():
+            continue
+        for f in sorted(sub.glob("*.md")):
+            e = Entry(f, closed)
+            if e.id:
+                out.append(e)
+    out.sort(key=lambda e: e.num)
+    return out
+
+
+def select(entries, args):
+    if args.status:
+        wanted = {s.strip() for s in args.status.split(",")}
+        entries = [e for e in entries if e.get("status") in wanted]
+    if args.open:
+        entries = [e for e in entries if e.get("status") not in CLOSED_STATUSES]
+    if args.closed:
+        entries = [e for e in entries if e.get("status") in CLOSED_STATUSES]
+    if args.match:
+        pat = re.compile(args.match, re.I)
+        entries = [e for e in entries if pat.search(e.get("title")) or pat.search(e.id)]
+    return entries
+
+
+def cmd_list(entries, args):
+    if not entries:
+        print("no entries match", file=sys.stderr)
+        return 0
+    width = max(len(e.id) for e in entries)
+    for e in entries:
+        line = "%-*s  %-9s  %s" % (width, e.id, e.get("status"), e.get("title"))
+        if args.long and e.get("gate"):
+            line += "\n%s  gate: %s" % (" " * width, e.get("gate"))
+        print(line)
+    return 0
+
+
+def cmd_stats(entries, args):
+    by = collections.Counter(e.get("status") for e in entries)
+    total = sum(by.values())
+    for status in ORDER:
+        if by.get(status):
+            print("%-9s %4d" % (status, by[status]))
+    for status in sorted(set(by) - set(ORDER)):
+        print("%-9s %4d  (outside the vocabulary)" % (status, by[status]))
+    print("%-9s %4d" % ("total", total))
+    return 0
+
+
+def cmd_show(entries, args):
+    hits = [e for e in entries if e.id == args.id]
+    if not hits:
+        print("no entry with id %r" % args.id, file=sys.stderr)
+        return 1
+    sys.stdout.write(hits[0].text)
+    return 0
+
+
+def cmd_index(entries, args):
+    """Render the browsable table. Written on demand, never a file the repo must keep fresh."""
+    rows = ["<!-- GENERATED by `register index` — do not hand-edit. This file is a CONVENIENCE,",
+            "     not a source: the entries are, and this can be regenerated at any time. -->",
+            "# Register index",
+            "",
+            "One row per entry. Full detail is the linked entry.",
+            "",
+            "| ID | Status | Title | Gate |",
+            "| --- | --- | --- | --- |"]
+    for e in entries:
+        rel = e.path.name if not e.closed else "closed/" + e.path.name
+        title = e.get("title").replace("|", r"\|")
+        gate = e.get("gate", "").replace("|", r"\|") or "—"
+        rows.append("| [%s](%s%s) | %s | %s | %s |"
+                    % (e.id, args.link_base, rel, e.get("status"), title, gate))
+    text = "\n".join(rows) + "\n"
+    if args.write:
+        pathlib.Path(args.write).write_text(text, encoding="utf-8")
+        print("wrote %s (%d entries)" % (args.write, len(entries)), file=sys.stderr)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Read a work register.")
+    p.add_argument("command", choices=("list", "stats", "show", "index"))
+    p.add_argument("id", nargs="?", help="entry id, for `show`")
+    p.add_argument("--root", default="docs/register", help="the register directory")
+    p.add_argument("--status", help="comma-separated statuses to include")
+    p.add_argument("--open", action="store_true", help="actionable entries only")
+    p.add_argument("--closed", action="store_true", help="finished entries only")
+    p.add_argument("--match", help="regex over id and title")
+    p.add_argument("--long", action="store_true", help="include the gate, for `list`")
+    p.add_argument("--write", help="write to this path, for `index`")
+    p.add_argument("--link-base", default="", help="path prefix for links, for `index`")
+    a = p.parse_args(argv)
+
+    root = pathlib.Path(a.root)
+    if not root.is_dir():
+        print("register: no register at %s" % root, file=sys.stderr)
+        return 1
+    entries = load(root)
+    if not entries:
+        # NOT an empty list quietly returned. A directory holding no readable entries is a fact
+        # about the directory, and reporting it as "nothing matched" would hide a wrong --root.
+        print("register: %s holds no entries -- check --root" % root, file=sys.stderr)
+        return 1
+    if a.command == "show":
+        if not a.id:
+            print("register show needs an id", file=sys.stderr)
+            return 1
+        return cmd_show(entries, a)
+    return {"list": cmd_list, "stats": cmd_stats, "index": cmd_index}[a.command](
+        select(entries, a), a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
