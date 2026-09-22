@@ -40,6 +40,11 @@ WHAT IS BLOCKING, and it is the narrow set that is wrong under ANY convention:
     tracking-drift  a record naming the entry that tracks it, where that entry does not cite
                     the record back. Checked only when a register is supplied, and only for
                     records at or above a floor, so an existing corpus is not retro-fitted.
+    artifact-record an `adr:` pointer in a register entry naming a record that does not exist.
+                    The OTHER direction of the same link: tracking-drift catches a record
+                    pointing at nothing, this catches an entry pointing at nothing. Both are
+                    the same defect seen from opposite ends, and a tool holding both
+                    directories is the only place either can be checked.
 
 WHAT IT CANNOT CHECK, stated because a gate that hides its blind spots gets over-trusted:
     * Whether a decision is a decision. Every rule here is structural. A record can satisfy
@@ -243,6 +248,43 @@ def check(records, adr_dir, register, floor):
 
     if register is not None:
         out.extend(check_tracking(records, register, floor))
+        out.extend(check_artifact_records(records, register))
+    return out
+
+
+def check_artifact_records(records, register):
+    """Every `adr:` pointer in the register names a record that exists.
+
+    Measured before this shipped: 220 such pointers in one register and 10 in another, so it
+    has two consumers rather than one, which is what makes it belong in a fleet tool instead of
+    beside a single repo's aggregate.
+
+    Only the `adr:` key. A register cites specs, plans and runbooks the same way, and those
+    resolve as PATHS from the repository root -- a rule that belongs to whatever checks the
+    register, not here, because this tool is only given the decision directory.
+    """
+    out = []
+    have = {r.number for r in records if r.number}
+    try:
+        entries = sorted(register.glob("*.md")) + sorted((register / "closed").glob("*.md"))
+    except OSError:
+        return out
+    for f in entries:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        if not text.startswith("---"):
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", parts[1], re.M | re.S)
+        if not block:
+            continue
+        for value in re.findall(r"^\s*-\s*adr:(.+?)\s*$", block.group(1), re.M):
+            m = re.search(r"ADR-(\d{4})", value.strip().strip("\'\""))
+            if m and m.group(1) not in have:
+                out.append(("artifact-record", str(f),
+                            "cites %s, and no such record exists in the decision directory"
+                            % m.group(0)))
     return out
 
 
