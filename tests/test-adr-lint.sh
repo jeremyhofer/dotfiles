@@ -149,6 +149,27 @@ assert_lacks "an id in the next sentence is not read as a tracker" "ABC-99" "$(r
 r="$tmp/tracknone"; bullet "$r" 0079 Accepted "Tracked by the usual people."
 assert_has "a Tracked by naming no entry is reported" "names no entry" "$(run "$r" --register "$reg")"
 
+# --- the OTHER direction of the tracking link: an entry citing a record that does not exist.
+# tracking-drift catches a record pointing at nothing; this catches an entry pointing at
+# nothing. Same defect from opposite ends, and only a tool holding both directories sees either.
+reg2="$tmp/reg2/docs/register"; mkdir -p "$reg2/closed"
+{ echo "---"; echo "id: ABC-02"; echo "title: t"; echo "status: active"; echo "owner: j"
+  echo "verified: 2026-09-22"; echo "artifacts:"; echo "  - adr:ABC-ADR-9999"; echo "---"
+} > "$reg2/ABC-02-t.md"
+r="$tmp/artrec"; bullet "$r" 0001 Accepted
+assert_has "an entry citing a record that does not exist is reported" "[artifact-record]" "$(run "$r" --register "$reg2")"
+
+{ echo "---"; echo "id: ABC-03"; echo "title: t"; echo "status: active"; echo "owner: j"
+  echo "verified: 2026-09-22"; echo "artifacts:"; echo "  - adr:ABC-ADR-0001"
+  echo "  - spec:docs/specs/something.md"; echo "---"
+} > "$reg2/ABC-03-t.md"
+out=$(run "$r" --register "$reg2")
+assert_lacks "an entry citing a record that DOES exist is accepted" "ABC-ADR-0001" "$out"
+# A spec or plan pointer resolves as a PATH from the repository root, which is a rule for
+# whatever checks the register -- this tool is handed only the decision directory and must not
+# pretend to judge it.
+assert_lacks "a non-adr artifact pointer is not judged here" "docs/specs/something.md" "$out"
+
 # --- a directory with nothing readable is NOT reported as clean
 r="$tmp/empty"; mkdir -p "$r"; echo "# just a note" > "$r/notes.md"
 assert_has "a directory with no readable records says so" "not the same as clean" "$(python3 "$lint" "$r" 2>&1)"
