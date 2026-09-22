@@ -195,6 +195,19 @@ assert_has "a declared relation is extracted" "refines 0016" "$out"
 # reason. Taking every match in the sentence invented a relation the corpus does not assert.
 assert_lacks "a record cited for the RULE is not read as a relation" "refines 0002" "$out"
 assert_has "records with no scope statement are listed" "do not state what they decide" "$out"
+# A relation can also be declared as a HEADER BULLET rather than in the lead blockquote --
+# `- **Extends:** ADR-0016`. Read only when the label IS a relation word: a `- **Ties:**` or
+# `- **Couples to:**` bullet names neighbours, not a relation the vocabulary defines.
+{ echo "# ADR-0040: Passkeys"
+  echo "- **Status:** Accepted"; echo "- **Date:** 2026-09-22"
+  echo "- **Deciders:** Jeremy"; echo "- **Tags:** secrets"
+  echo "- **Extends:** ADR-0016 (the key tiers)"
+  echo "- **Ties:** ADR-0002"; echo ""
+  echo "## Context"; echo "x"
+} > "$r/0040-passkeys.md"
+out=$(python3 "$lint" "$r" --subjects 2>&1)
+assert_has "a header-bullet relation is extracted" "extends 0016" "$out"
+assert_lacks "a non-relation header bullet is not read as a relation" "ties 0002" "$out"
 out=$(python3 "$lint" "$r" --subject security 2>&1)
 assert_has "--subject narrows to matching tags" "## security" "$out"
 assert_lacks "--subject omits the others" "## secrets" "$out"
