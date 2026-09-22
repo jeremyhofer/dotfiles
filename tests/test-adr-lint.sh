@@ -170,6 +170,40 @@ assert_lacks "an entry citing a record that DOES exist is accepted" "ABC-ADR-000
 # pretend to judge it.
 assert_lacks "a non-adr artifact pointer is not judged here" "docs/specs/something.md" "$out"
 
+# --- the subject view. It renders instead of linting, and prints on demand rather than
+# committing a file: the committed version of this was 92,190 bytes to answer a question whose
+# useful slice is about 245.
+r="$tmp/subj"; mkdir -p "$r"
+{ echo "# ADR-0016: Secrets and key management"
+  echo "- **Status:** Accepted"; echo "- **Date:** 2026-09-22"
+  echo "- **Deciders:** Jeremy"; echo "- **Tags:** secrets, security"; echo ""
+  echo "> **What this decides.** Where every secret lives. A second sentence is not taken."
+  echo ""; echo "## Context"; echo "x"
+} > "$r/0016-secrets.md"
+{ echo "# ADR-0028: SSH keys"
+  echo "- **Status:** Accepted"; echo "- **Date:** 2026-09-22"
+  echo "- **Deciders:** Jeremy"; echo "- **Tags:** secrets"; echo ""
+  echo "> Refines ADR-0016 (one-decision-per-file, ADR-0002) by deciding agent strategy."
+  echo ""; echo "## Context"; echo "x"
+} > "$r/0028-ssh.md"
+out=$(python3 "$lint" "$r" --subjects 2>&1)
+assert_has "the subject view groups by tag" "## secrets (2)" "$out"
+assert_has "a labelled scope statement is shown" "Where every secret lives." "$out"
+assert_lacks "only the FIRST sentence of a scope statement is taken" "A second sentence" "$out"
+assert_has "a declared relation is extracted" "refines 0016" "$out"
+# "Refines ADR-0016 (one-decision-per-file, ADR-0002)" names a second record for an unrelated
+# reason. Taking every match in the sentence invented a relation the corpus does not assert.
+assert_lacks "a record cited for the RULE is not read as a relation" "refines 0002" "$out"
+assert_has "records with no scope statement are listed" "do not state what they decide" "$out"
+out=$(python3 "$lint" "$r" --subject security 2>&1)
+assert_has "--subject narrows to matching tags" "## security" "$out"
+assert_lacks "--subject omits the others" "## secrets" "$out"
+python3 "$lint" "$r" --subject nosuchtag >/dev/null 2>&1 && bad "an unmatched --subject exits non-zero" || ok "an unmatched --subject exits non-zero"
+# A corpus with no tags has nothing to group by, and saying so beats printing an empty view.
+r="$tmp/notags"; front "$r" 0001 Accepted
+python3 "$lint" "$r" --subjects >/dev/null 2>&1 && bad "a tagless corpus exits non-zero" || ok "a tagless corpus exits non-zero"
+assert_has "a tagless corpus says why" "nothing to group by" "$(python3 "$lint" "$r" --subjects 2>&1)"
+
 # --- a directory with nothing readable is NOT reported as clean
 r="$tmp/empty"; mkdir -p "$r"; echo "# just a note" > "$r/notes.md"
 assert_has "a directory with no readable records says so" "not the same as clean" "$(python3 "$lint" "$r" 2>&1)"
