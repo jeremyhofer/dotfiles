@@ -34,7 +34,7 @@ set_field "$d/context/some-detail.md" tier 2
 set_field "$d/standards/draft-rule.md" tier 0                 # tier 0 but status stays draft
 printf 'Draft-only guidance.\n' >> "$d/standards/draft-rule.md"
 
-# --- Task 1: AGENTS.md base ---
+# --- the AGENTS.md base carries only active tier-0 records ---
 KB_ROOT="$d" kb project >/dev/null
 a="$d/index/projections/AGENTS.md"
 [ -f "$a" ] || { echo "FAIL: AGENTS.md not generated at $a"; exit 1; }
@@ -45,7 +45,7 @@ grep -q 'draft-rule' "$a"  && { echo "FAIL: draft tier-0 record leaked into AGEN
 grep -qi 'do not edit' "$a" || { echo "FAIL: AGENTS.md missing do-not-edit banner"; exit 1; }
 echo "ok:   kb project emits AGENTS.md with only active tier-0 records"
 
-# --- Task 2: per-harness derivations ---
+# --- per-harness derivations: CLAUDE.md imports AGENTS.md, GEMINI.md inlines it ---
 c="$d/index/projections/CLAUDE.md"; g="$d/index/projections/GEMINI.md"
 [ -f "$c" ] && [ -f "$g" ] || { echo "FAIL: CLAUDE.md/GEMINI.md not generated"; exit 1; }
 grep -qx '@AGENTS.md' "$c" || { echo "FAIL: CLAUDE.md missing '@AGENTS.md' import"; exit 1; }
@@ -55,7 +55,7 @@ grep -q 'Always do the universal thing.' "$g" || { echo "FAIL: GEMINI.md missing
 grep -q 'some-detail' "$g" && { echo "FAIL: tier-2 leaked into GEMINI.md"; exit 1; }
 echo "ok:   CLAUDE.md is a thin @AGENTS import; GEMINI.md inlines tier-0"
 
-# --- Task 3: idempotence + --check drift guard ---
+# --- idempotence, and the --check drift guard ---
 KB_ROOT="$d" kb project >/dev/null
 for base in AGENTS.md CLAUDE.md GEMINI.md; do cp "$d/index/projections/$base" "$d/$base.1"; done
 KB_ROOT="$d" kb project >/dev/null
