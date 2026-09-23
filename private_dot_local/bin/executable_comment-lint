@@ -171,7 +171,7 @@ for _ext in (
     FLAVOURS[_ext] = HASH
 for _ext in (
     "js mjs cjs jsx ts mts cts tsx c h cc cpp hpp rs go java kt kts swift scala "
-    "php dart groovy rn proto"
+    "php dart groovy rn proto typ"
 ).split():
     FLAVOURS[_ext] = SLASH
 for _ext in "css".split():
@@ -194,6 +194,7 @@ BY_NAME = {
     "Brewfile": HASH,
     "PKGBUILD": HASH,
     ".gitconfig": HASH,
+    ".gitignore": HASH,
     ".zshrc": HASH,
     ".bashrc": HASH,
     ".profile": HASH,

@@ -80,9 +80,19 @@ cat <<'INNER'
 INNER
 SH
 
+# Two file types whose comments were silently skipped until 2026-09-23: Typst, where `#` opens
+# CODE and `//` a comment, and .gitignore, found by name. An unrecognised extension is a quiet
+# no-op, which is correct for the tool and invisible in a gate, so each type gets a case.
+printf '// Task 3 decides the layout\n#set page(width: 10cm)\n' > doc.typ
+printf '# Task 4 added this\nbuild/\n' > .gitignore
+
 git add -A
 
 out=$(python3 "$lint" planted.py clean.sh 2>&1 || true)
+typ=$(python3 "$lint" doc.typ .gitignore 2>&1 || true)
+assert_has "a Typst // comment is linted" "[plan-identifier] doc.typ:1" "$typ"
+assert_lacks "a Typst # line is code, not a comment" "doc.typ:2" "$typ"
+assert_has "a .gitignore comment is linted" "[plan-identifier] .gitignore:1" "$typ"
 
 assert_has "program-marker fires on a bare record id" "[program-marker] planted.py:3" "$out"
 assert_has "program-marker fires on a bare private tree name" "private/tree" "$out"
