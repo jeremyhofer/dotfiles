@@ -69,7 +69,9 @@ WHAT IS DELIBERATELY PERMITTED
 VOCABULARY
     The marker vocabulary is one extended regular expression, read from the first
     non-comment line of a file named by --markers, by $COMMENT_LINT_MARKERS, or
-    `.comment-lint-markers` at the repository root, in that order.
+    `.comment-lint-markers` at the repository root, in that order. A comment line is `#`
+    followed by a space (or a bare `#`), so a pattern may itself start with `#`. The first
+    of those files that exists is used; one holding no pattern is reported, not skipped.
 
     It is configuration rather than a built-in list for a reason that is easy to get
     backwards: a tracker's id scheme is itself private in most of the places this tool is
@@ -481,14 +483,22 @@ def load_markers(root: pathlib.Path, explicit: str | None) -> re.Pattern | None:
         p = pathlib.Path(c)
         if not p.is_file():
             continue
+        # A COMMENT is `#` followed by whitespace, or a bare `#`. A pattern may itself begin with
+        # `#` (`#[0-9]+` for numbered references), and reading every `#`-line as a comment
+        # discarded such a pattern silently. The first file that EXISTS is authoritative: one
+        # holding no pattern is reported, never skipped in favour of the next candidate, because
+        # a vocabulary that quietly came from somewhere else reads exactly like the intended one.
         for line in p.read_text(encoding="utf-8").splitlines():
             s = line.strip()
-            if s and not s.startswith("#"):
+            if s and not re.match(r"#(\s|$)", s):
                 try:
                     return re.compile(s)
                 except re.error as e:
                     print(f"comment-lint: {p}: unusable pattern: {e}", file=sys.stderr)
                     return None
+        print(f"comment-lint: {p} holds no pattern (only comments); the program-marker "
+              "category is INACTIVE", file=sys.stderr)
+        return None
     return None
 
 
