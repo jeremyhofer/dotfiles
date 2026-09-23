@@ -40,6 +40,13 @@ CONFIG
         frozen: path/ other/      path prefixes exempt from the reference-form checks
                                   (bare-adr, bare-adr-decision, id-shorthand): frozen
                                   snapshots record what was written at the time.
+        ledger-sections: Name     heading texts (one word each, matched case-insensitively
+                                  as the heading's first word) whose sections are LEDGERS of
+                                  which memories were absorbed. There a memory slug is an
+                                  identifier other sessions match against, not a claim resting
+                                  on the memory, so `memory-ptr` is not reported inside them.
+                                  The section runs to the next heading at its own level or
+                                  higher, sub-headings included.
 
     WHY CONFIGURED, NOT BUILT IN: a private tree name or a tracker's id scheme is itself the
     kind of token a publish guard blocks, so a built-in list would make this tool
@@ -98,6 +105,7 @@ MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
 PLACEHOLDER = re.compile(r"[<>*?{}]|\bNN\b|\bnn\b|\bN\b|\bXX\b|\bYY\b")
 LINE_SUFFIX = re.compile(r":\d+$")
 FENCE = re.compile(r"^\s*(```|~~~)")
+HEADING = re.compile(r"^(#{1,6})\s+(\S+)")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 ADVISORY = {"dangling-path", "id-shorthand"}
 
@@ -116,6 +124,7 @@ class Config:
                 r"(?:\s*(?:/|,|\band\b|&)\s*(?!(?:%s)-)\d{1,4}\b(?![-\d]))+" % (alt, alt)
             )
         self.frozen = tuple(raw.get("frozen", "").split())
+        self.ledgers = {w.lower() for w in raw.get("ledger-sections", "").split()}
 
 
 def load_config(root: pathlib.Path, explicit: str | None) -> tuple[Config, str | None]:
@@ -188,12 +197,20 @@ def check_file(text, rel, files, dirs, tops, cfg: Config):
     in_fence = False
     frozen = bool(cfg.frozen) and rel.startswith(cfg.frozen)
     owners = ", ".join("`%s-ADR-`" % o for o in cfg.adr_owners)
+    ledger_level = 0  # >0 while inside a ledger section opened by a heading of that level
     for n, raw in enumerate(text.splitlines(), 1):
         if FENCE.match(raw):
             in_fence = not in_fence
             continue
         if in_fence:
             continue
+        h = HEADING.match(raw)
+        if h:
+            level = len(h.group(1))
+            if ledger_level and level <= ledger_level:
+                ledger_level = 0
+            if not ledger_level and h.group(2).lower().rstrip(":") in cfg.ledgers:
+                ledger_level = level
         spans = code_spans(raw)
         masked = mask_code(raw)
 
@@ -214,7 +231,7 @@ def check_file(text, rel, files, dirs, tops, cfg: Config):
 
         # Reads the RAW line: the live form puts backticks INSIDE the parens, so masking would
         # blank the slug. A match wholly inside one code span is a quotation, not a use.
-        for pat in (MEMORY_PTR, MEMORY_BARE):
+        for pat in (() if ledger_level else (MEMORY_PTR, MEMORY_BARE)):
             for m in pat.finditer(raw):
                 if inside_one_span(m.span(), spans):
                     continue
