@@ -293,6 +293,25 @@ def check(entries, closed_dir, root=None, today=None):
             % ", ".join(sorted(prefixes)),
         ))
 
+    # ONE WIDTH PER REGISTER. A register whose ids are mixed width (`X-9` beside `X-100`) sorts
+    # 99 above 100 as text, and a session reading the highest id off a listing allocates one that
+    # already exists -- that happened twice in this fleet before the ids were padded. Any single
+    # width passes; mixing them does not. `register next` warns on the same condition, but only
+    # when someone allocates, so without this a mis-padded entry could sit until then.
+    widths = {}
+    for e in entries:
+        matched = ID_RE.match(e.id)
+        if matched:
+            widths.setdefault(len(matched.group(2)), []).append(e.id)
+    if len(widths) > 1:
+        common = max(widths, key=lambda w: len(widths[w]))
+        odd = sorted(i for w, ids in widths.items() if w != common for i in ids)
+        findings.append((
+            "id-integrity", "(store)",
+            "ids are mixed width (%s digits); pad to one width -- odd ones out: %s"
+            % (", ".join(map(str, sorted(widths))), ", ".join(odd[:8]) + (" ..." if len(odd) > 8 else "")),
+        ))
+
     seen = {}
     for e in entries:
         for field in REQUIRED_FIELDS:

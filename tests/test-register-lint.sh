@@ -335,6 +335,17 @@ entry "$r" "ABC-01" "active" "" "The thing is finished."
 entry "$r" "XYZ-02" "active" "" "The other thing is finished."
 assert_has "two prefixes in one register are reported" "[id-integrity]" "$(run "$r")"
 
+r="$tmp/widths"; mkdir -p "$r/closed"
+entry "$r" "ABC-0001" "active" "" "The thing is finished."
+entry "$r/closed" "ABC-12" "done" "closed: $(date +%Y-%m-%d)" "The thing is finished."
+out=$(run "$r")
+assert_has "mixed id widths are reported" "mixed width" "$out"
+assert_has "mixed width names the odd one out" "ABC-12" "$out"
+r="$tmp/onewidth"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is finished."
+entry "$r" "ABC-02" "active" "" "The thing is finished."
+assert_lacks "a register of one (short) width is not reported" "mixed width" "$(run "$r")"
+
 r="$tmp/badstatus"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "nearly-done" "" "The thing is finished."
 assert_has "a status outside the vocabulary is reported" "[status-vocabulary]" "$(run "$r")"
