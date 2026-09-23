@@ -58,6 +58,8 @@ WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets o
     * References into other repositories: this process cannot resolve another repo's index.
     * A single-token memory name: `memory-ptr` requires a hyphen in the slug, because the
       bare parenthesised word is ordinary English prose.
+    * A memory pointer that WRAPS across a line break (`memory` at the end of one line, the
+      slug on the next): the check reads one line at a time.
     * A decision record cited by bare number with no decision after it (`0073 states
       that...`), or a bare `D4` whose owning record is not on the line.
     * Prose that is self-contained in form and incomprehensible in substance.
@@ -97,6 +99,16 @@ MEMORY_PTR = re.compile(r"\(memory\s+`?([a-z0-9]+(?:-[a-z0-9]+)+)`?\s*\)")
 # The bare form, "memory `some-slug`": backticks required, because "memory" followed by a
 # plain word is ordinary prose.
 MEMORY_BARE = re.compile(r"(?<!\()\b[Mm]emor(?:y|ies)\b:?\s+`([a-z0-9]+(?:-[a-z0-9]+)+)`")
+# The forms the two patterns above missed, found by a hand scan after a clean lint run:
+# `(memory: \`slug\`)`, `**Memories:** \`slug\``, and every item AFTER the first in a list
+# (`memories \`a\`, \`b\` and \`c\``). One pattern opens at the keyword in any of those dresses;
+# LIST_ITEM then walks the list that follows it.
+# A closing `**` counts only when a `**` also opens AT the keyword (the `**Memories:**` label).
+# Otherwise "…rather than a memory:** `tool-name`" — the word ending a bold phrase — read as one.
+MEMORY_OPEN = re.compile(
+    r"(?:\*\*[Mm]emor(?:y|ies):?\*\*|\b[Mm]emor(?:y|ies)\b:?)\s+`([a-z0-9]+(?:-[a-z0-9]+)+)`"
+)
+LIST_ITEM = re.compile(r"(?:\s*\([^)]*\))?\s*(?:,|\band\b|/|&|\+)\s*`([a-z0-9]+(?:-[a-z0-9]+)+)`")
 BARE_ADR = re.compile(r"(?<![A-Za-z0-9-])ADR[- ](\d{4})\b")
 BARE_ADR_DECISION = re.compile(r"(?<![\w/.#-])(0\d{3})(?=(?:'s|’s)?\s+D\d)")
 # A CommonMark code span: a run of N backticks, content, and a closing run of exactly N.
@@ -234,12 +246,24 @@ def check_file(text, rel, files, dirs, tops, cfg: Config):
 
         # Reads the RAW line: the live form puts backticks INSIDE the parens, so masking would
         # blank the slug. A match wholly inside one code span is a quotation, not a use.
-        for pat in (() if ledger_level else (MEMORY_PTR, MEMORY_BARE)):
-            for m in pat.finditer(raw):
-                if inside_one_span(m.span(), spans):
-                    continue
+        if not ledger_level:
+            slugs: dict[str, None] = {}
+            for pat in (MEMORY_PTR, MEMORY_BARE, MEMORY_OPEN):
+                for m in pat.finditer(raw):
+                    if inside_one_span(m.span(), spans):
+                        continue
+                    slugs[m.group(1)] = None
+                    if pat is MEMORY_OPEN:
+                        pos = m.end()
+                        while True:
+                            nxt = LIST_ITEM.match(raw, pos)
+                            if not nxt:
+                                break
+                            slugs[nxt.group(1)] = None
+                            pos = nxt.end()
+            for slug in slugs:
                 findings.append(("memory-ptr", rel, n,
-                    f"memory pointer to `{m.group(1)}` — the memory store is not "
+                    f"memory pointer to `{slug}` — the memory store is not "
                     "version-controlled and is not readable by a cold reader"))
 
         if cfg.adr_owners and not frozen:
