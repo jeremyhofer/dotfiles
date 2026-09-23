@@ -81,6 +81,18 @@ assert_has "a bare configured session path is reported" "[session-path]" "$(run 
 put "$r" "Run \`ls /agent-state/some-machine-slug\` to see it."
 assert_lacks "a code-formatted session path is an operand, not a defect" "[session-path]" "$(run "$r")"
 
+# --- ledger sections: a memory named in a ledger of absorbed memories is an identifier ------
+r=$(repo ledger)
+printf 'ledger-sections: Provenance\n' > "$r/.doc-lint"
+put "$r" "$(printf '## Rule\n\nBody text.\n\n### Provenance\n\nAbsorbs: memory `some-old-slug`.\n\n#### Sub\n\nAlso memory `another-slug`.\n\n### After\n\nSee memory `later-slug`.')"
+out=$(run "$r")
+assert_lacks "a memory named in a ledger section is not reported" "some-old-slug" "$out"
+assert_lacks "a ledger's sub-heading stays inside the ledger" "another-slug" "$out"
+assert_has "the ledger ends at the next heading of its level" "later-slug" "$out"
+r=$(repo noledger)
+put "$r" "$(printf '### Provenance\n\nAbsorbs: memory `some-old-slug`.')"
+assert_has "without ledger-sections the same line is reported" "some-old-slug" "$(run "$r")"
+
 # --- the ratchet: only added lines block ---------------------------------------------------
 r=$(repo ratchet)
 printf 'adr-owners: ABC\n' > "$r/.doc-lint"
