@@ -160,6 +160,17 @@ assert_has "an unconfigured vocabulary says so" "INACTIVE" "$noVocab"
 assert_lacks "an unconfigured vocabulary reports no marker" "[program-marker]" "$noVocab"
 assert_has "the other categories still run without a vocabulary" "plan-identifier" "$noVocab"
 
+# A pattern may begin with `#`: reading every `#`-line as a comment once discarded such a
+# pattern silently and fell through to the next config source.
+printf '# numbered references\n#[0-9]+\n' > hashvocab
+printf '# see #12 for the reason\nx = 1\n' > hashref.py
+git add -A
+hashOut=$(python3 "$lint" --markers hashvocab hashref.py 2>&1 || true)
+assert_has "a pattern starting with # is read as a pattern" "[program-marker] hashref.py:1" "$hashOut"
+printf '# only a comment here\n' > emptyvocab
+emptyOut=$(python3 "$lint" --markers emptyvocab hashref.py 2>&1 || true)
+assert_has "a vocabulary file with no pattern says so" "holds no pattern" "$emptyOut"
+
 # --- the same tree twice must produce the same bytes -----------------------------------
 # Not a nicety. Findings are de-duplicated through a set, and a set iterates in hash order,
 # which Python salts per process -- so an ordering key that does not cover the whole record
