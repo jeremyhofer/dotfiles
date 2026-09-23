@@ -46,6 +46,12 @@ put "$r" "Read \`docs/missing.md\` next."
 assert_has "an untracked path in a tracked directory is reported" "[dangling-path]" "$(run "$r")"
 put "$r" "Read \`docs/real.md\` next."
 assert_lacks "a tracked path is not reported" "[dangling-path]" "$(run "$r")"
+put "$r" "See \`docs/real.md:32-37\` for the range."
+assert_lacks "a line-range suffix is not part of the path" "[dangling-path]" "$(run "$r")"
+put "$r" "Run \`docs/real.md check\` to verify."
+assert_lacks "a command argument in the span is not part of the path" "[dangling-path]" "$(run "$r")"
+put "$r" "Run \`docs/missing.md check\` to verify."
+assert_has "a missing path followed by an argument is still reported" "[dangling-path]" "$(run "$r")"
 assert_has "no config is SAID, not implied to be full coverage" "no config found" "$(run "$r")"
 
 # --- the owner-prefix checks are config-gated --------------------------------------------
