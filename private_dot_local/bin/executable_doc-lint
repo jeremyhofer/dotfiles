@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""doc-lint — block references a cold reader cannot resolve from committed markdown.
+
+WHY THIS EXISTS
+    A committed document has to read cold, for a reader holding none of the session context
+    that produced it. A reference that resolves only inside the authoring session's private
+    state is not a weak reference, it is an unresolvable one — and it is invisible to whoever
+    wrote it, because for them it resolves. That asymmetry is why this needs a gate rather
+    than care. Its sibling `comment-lint` covers source commentary; this covers prose.
+
+WHAT IT CHECKS
+    wikilink        `[[slug]]` — memory-store link syntax, which resolves inside a memory
+                    store and nowhere else, so in a repository it points at nothing.
+    memory-ptr      a `(memory some-slug)` or ``memory `some-slug` `` pointer — the prose form
+                    of the same defect.
+    dangling-path   a repo-relative path cited in backticks or a markdown link that this
+                    repository does not track. ADVISORY (low precision; see below).
+    Enabled by the repository's config (CONFIG below), because each needs a vocabulary that
+    is itself private or repo-specific:
+    session-path    a concrete per-machine agent-state path, BARE in running prose.
+    bare-adr        `ADR-0009` / `ADR 0009` with no owner prefix, where the repository cites
+                    decision records from more than one log and the bare form is ambiguous.
+    bare-adr-decision
+                    `0067 D1` — a decision record cited by number alone.
+    id-shorthand    `ABC-11/12/13` — later ids elided, so grep misses them. ADVISORY.
+
+CONFIG
+    `key: value` lines, `#` comments, read from --config FILE, then $DOC_LINT_CONFIG, then
+    `.doc-lint` at the repository root. Every key is optional; with none, only the universal
+    checks above run, and the tool says so on stderr rather than implying full coverage.
+
+        session-path: <regex>     a per-machine agent-state path. Group 1, if present, is
+                                  reported as the concrete slug.
+        adr-owners: A B C         prefixes that own decision logs cited here (`A-ADR-0012`).
+                                  Setting it declares that a BARE form is ambiguous in this
+                                  repository and enables bare-adr and bare-adr-decision. A
+                                  repository citing only its OWN log should not set it: there
+                                  the bare form is correct.
+        id-prefixes: A B C        work-item prefixes whose slash/comma shorthand is reported.
+        frozen: path/ other/      path prefixes exempt from the reference-form checks
+                                  (bare-adr, bare-adr-decision, id-shorthand): frozen
+                                  snapshots record what was written at the time.
+
+    WHY CONFIGURED, NOT BUILT IN: a private tree name or a tracker's id scheme is itself the
+    kind of token a publish guard blocks, so a built-in list would make this tool
+    uninstallable in exactly the places it is meant to guard.
+
+WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets over-trusted
+    * Semantic drift: a document restating a count or a status that has since changed.
+    * An undefined taxonomy: a naming scheme used consistently and defined nowhere.
+    * References into other repositories: this process cannot resolve another repo's index.
+    * A single-token memory name: `memory-ptr` requires a hyphen in the slug, because the
+      bare parenthesised word is ordinary English prose.
+    * A decision record cited by bare number with no decision after it (`0073 states
+      that...`), or a bare `D4` whose owning record is not on the line.
+    * Prose that is self-contained in form and incomprehensible in substance.
+    * A file the git index does not hold: an explicitly named untracked path is SKIPPED, and
+      says so on stderr, because silence there once read as a clean result.
+
+MENTION vs USE
+    A document ABOUT these forms necessarily names them. Inline code and fenced blocks are
+    MENTION; a placeholder path is MENTION, a concrete slug is USE. `session-path` fires only
+    on a path BARE in prose: a code-formatted path is an operand or a named subject, and
+    blocking it would push an editor to delete a runbook's own operands to reach green.
+
+BLOCKING vs ADVISORY
+    Decided by measured precision, not by how serious the defect sounds. `dangling-path`
+    cannot separate this repo's path from a foreign one sharing a generic top-level segment;
+    `id-shorthand`'s comma form also matches ordinary prose after an id. Both advise.
+
+RATCHET
+    `--added-only` reads each file's STAGED BLOB and reports only findings on lines the
+    commit ADDS, so a gate introduced over a corpus that already violates it refuses only new
+    defects. A rewritten line counts as added, so touching an old line surfaces its old
+    defects too; fix them in the same commit.
+
+USAGE
+    doc-lint [--blocking-only] [--added-only] [--config FILE] [PATH ...]
+    No PATH lints every tracked markdown file. Exit 1 if any BLOCKING finding.
+    Output: `[category] path:line: message`.
+"""
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+WIKILINK = re.compile(r"\[\[([a-z0-9][a-z0-9._/-]*)\]\]")
+MEMORY_PTR = re.compile(r"\(memory\s+`?([a-z0-9]+(?:-[a-z0-9]+)+)`?\s*\)")
+# The bare form, "memory `some-slug`": backticks required, because "memory" followed by a
+# plain word is ordinary prose.
+MEMORY_BARE = re.compile(r"(?<!\()\b[Mm]emor(?:y|ies)\b:?\s+`([a-z0-9]+(?:-[a-z0-9]+)+)`")
+BARE_ADR = re.compile(r"(?<![A-Za-z0-9-])ADR[- ](\d{4})\b")
+BARE_ADR_DECISION = re.compile(r"(?<![\w/.#-])(0\d{3})(?=(?:'s|’s)?\s+D\d)")
+# A CommonMark code span: a run of N backticks, content, and a closing run of exactly N.
+INLINE_CODE = re.compile(r"(?<!`)(?P<fence>`+)(?!`)(?P<body>.+?)(?<!`)(?P=fence)(?!`)")
+MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
+PLACEHOLDER = re.compile(r"[<>*?{}]|\bNN\b|\bnn\b|\bN\b|\bXX\b|\bYY\b")
+LINE_SUFFIX = re.compile(r":\d+$")
+FENCE = re.compile(r"^\s*(```|~~~)")
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+ADVISORY = {"dangling-path", "id-shorthand"}
+
+
+class Config:
+    def __init__(self, raw: dict[str, str]):
+        sp = raw.get("session-path", "").strip()
+        self.session_path = re.compile(sp) if sp else None
+        self.adr_owners = raw.get("adr-owners", "").split()
+        prefixes = raw.get("id-prefixes", "").split()
+        self.id_shorthand = None
+        if prefixes:
+            alt = "|".join(re.escape(p) for p in prefixes)
+            self.id_shorthand = re.compile(
+                r"\b(?:%s)-(?:ADR-)?\d+"
+                r"(?:\s*(?:/|,|\band\b|&)\s*(?!(?:%s)-)\d{1,4}\b(?![-\d]))+" % (alt, alt)
+            )
+        self.frozen = tuple(raw.get("frozen", "").split())
+
+
+def load_config(root: pathlib.Path, explicit: str | None) -> tuple[Config, str | None]:
+    for candidate in (explicit, os.environ.get("DOC_LINT_CONFIG"), str(root / ".doc-lint")):
+        if candidate and pathlib.Path(candidate).is_file():
+            raw = {}
+            for line in pathlib.Path(candidate).read_text(encoding="utf-8").splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                key, sep, value = line.partition(":")
+                if sep:
+                    raw[key.strip()] = value.strip()
+            return Config(raw), candidate
+        if candidate == explicit and explicit:
+            sys.exit("doc-lint: --config %s is not a file" % explicit)
+    return Config({}), None
+
+
+def code_spans(line: str) -> list[tuple[int, int]]:
+    return [m.span() for m in INLINE_CODE.finditer(line)]
+
+
+def inside_one_span(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    return any(a <= span[0] and span[1] <= b for a, b in spans)
+
+
+def mask_code(line: str) -> str:
+    """Blank out inline-code spans, preserving length so columns stay truthful."""
+    return INLINE_CODE.sub(lambda m: " " * len(m.group(0)), line)
+
+
+def git(*args: str, cwd: pathlib.Path) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+
+
+def tracked(root: pathlib.Path) -> tuple[set[str], set[str], set[str]]:
+    """(every tracked path, every tracked directory prefix, every top-level entry)."""
+    files = {p for p in git("ls-files", cwd=root).splitlines() if p}
+    dirs: set[str] = set()
+    for f in files:
+        parts = f.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+    # Dot-prefixed top-level entries are EXCLUDED as path roots: a directory like `.claude/`
+    # exists in many repos and in $HOME, so naming one refers to a convention, not a file here.
+    tops = {f.split("/")[0] for f in files if "/" in f and not f.startswith(".")}
+    return files, dirs, tops
+
+
+def added_lines(root: pathlib.Path, rel: str) -> set[int]:
+    out = git("diff", "--cached", "-U0", "--", rel, cwd=root)
+    added: set[int] = set()
+    for line in out.splitlines():
+        m = HUNK.match(line)
+        if m:
+            start = int(m.group(1))
+            count = 1 if m.group(2) is None else int(m.group(2))
+            added.update(range(start, start + count))
+    return added
+
+
+def path_candidates(line: str) -> list[str]:
+    out = [m.group("body").strip() for m in INLINE_CODE.finditer(line)]
+    out += [m.group(1).strip() for m in MD_LINK.finditer(line)]
+    return out
+
+
+def check_file(text, rel, files, dirs, tops, cfg: Config):
+    findings = []
+    in_fence = False
+    frozen = bool(cfg.frozen) and rel.startswith(cfg.frozen)
+    owners = ", ".join("`%s-ADR-`" % o for o in cfg.adr_owners)
+    for n, raw in enumerate(text.splitlines(), 1):
+        if FENCE.match(raw):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        spans = code_spans(raw)
+        masked = mask_code(raw)
+
+        if cfg.session_path is not None:
+            for m in cfg.session_path.finditer(raw):
+                if inside_one_span(m.span(), spans):
+                    continue
+                slug = m.group(1) if m.groups() else m.group(0)
+                findings.append(("session-path", rel, n,
+                    f"concrete per-machine agent-state path `{slug}` BARE in prose — it cannot "
+                    "be followed by any other reader; describe what it held, or cite a committed "
+                    "artifact. (Code-formatted paths are operands or named subjects, not reported.)"))
+
+        for m in WIKILINK.finditer(masked):
+            findings.append(("wikilink", rel, n,
+                f"memory-store wikilink `[[{m.group(1)}]]` in a committed doc — resolves only "
+                "inside a memory store; state the claim, or cite the committed record that owns it"))
+
+        # Reads the RAW line: the live form puts backticks INSIDE the parens, so masking would
+        # blank the slug. A match wholly inside one code span is a quotation, not a use.
+        for pat in (MEMORY_PTR, MEMORY_BARE):
+            for m in pat.finditer(raw):
+                if inside_one_span(m.span(), spans):
+                    continue
+                findings.append(("memory-ptr", rel, n,
+                    f"memory pointer to `{m.group(1)}` — the memory store is not "
+                    "version-controlled and is not readable by a cold reader"))
+
+        if cfg.adr_owners and not frozen:
+            for m in BARE_ADR.finditer(masked):
+                findings.append(("bare-adr", rel, n,
+                    f"`{m.group(0)}` carries no owner — cite it with its log's prefix ({owners})"))
+            for m in BARE_ADR_DECISION.finditer(masked):
+                findings.append(("bare-adr-decision", rel, n,
+                    f"`{m.group(1)}` cites a decision record by number alone — cite it with its "
+                    f"log's prefix ({owners})"))
+        if cfg.id_shorthand is not None and not frozen:
+            for m in cfg.id_shorthand.finditer(masked):
+                findings.append(("id-shorthand", rel, n,
+                    f"`{m.group(0)}` elides the prefix on later ids, so grep for them misses "
+                    "this line — spell each id in full"))
+
+        for cand in path_candidates(raw):
+            c = LINE_SUFFIX.sub("", cand.split("#")[0]).rstrip("/.,;:")
+            if not c or PLACEHOLDER.search(c) or "/" not in c:
+                continue
+            if c.startswith(("http://", "https://", "/", "~", "./", "../")):
+                continue
+            if c.split("/")[0] not in tops or c in files or c in dirs:
+                continue
+            # The PARENT directory must be tracked here, which keeps the check inside this
+            # repository without a hand-kept exclusion list: a path cited from another repo
+            # usually shares only a generic top-level segment, and its parent does not exist here.
+            if c.rsplit("/", 1)[0] not in dirs:
+                continue
+            findings.append(("dangling-path", rel, n,
+                f"`{c}` is rooted in this repo but is not tracked here — a reader who clones "
+                "this repo cannot follow it (checked against the git index, not the filesystem)"))
+    return findings
+
+
+def main(argv: list[str]) -> int:
+    blocking_only = "--blocking-only" in argv
+    added_only = "--added-only" in argv
+    explicit = None
+    rest = []
+    it = iter(argv)
+    for a in it:
+        if a == "--config":
+            explicit = next(it, None)
+        elif a not in ("--blocking-only", "--added-only"):
+            rest.append(a)
+    start = pathlib.Path.cwd()
+    root = pathlib.Path(git("rev-parse", "--show-toplevel", cwd=start).strip())
+    cfg, source = load_config(root, explicit)
+    if source is None:
+        print("doc-lint: no config found — only the universal checks ran (see CONFIG in the "
+              "module docstring). This is not full coverage.", file=sys.stderr)
+    files, dirs, tops = tracked(root)
+
+    if rest:
+        targets = []
+        for a in rest:
+            rel = str((start / a).resolve().relative_to(root))
+            if rel in files and rel.endswith(".md"):
+                targets.append(rel)
+            else:
+                print(f"doc-lint: SKIPPED {rel} — not a tracked .md path, so nothing was checked. "
+                      "Stage it (git add) and re-run; this is not a clean result.", file=sys.stderr)
+    else:
+        targets = sorted(f for f in files if f.endswith(".md"))
+
+    findings = []
+    for rel in targets:
+        if added_only:
+            text = git("show", f":{rel}", cwd=root)
+        else:
+            f = root / rel
+            if not f.exists():
+                continue
+            text = f.read_text(encoding="utf-8", errors="replace")
+        hits = check_file(text, rel, files, dirs, tops, cfg)
+        if added_only:
+            keep = added_lines(root, rel)
+            hits = [h for h in hits if h[2] in keep]
+        findings.extend(hits)
+
+    if blocking_only:
+        findings = [f for f in findings if f[0] not in ADVISORY]
+    blocking = [f for f in findings if f[0] not in ADVISORY]
+    for cat, rel, n, msg in findings:
+        print(f"[{cat}] {rel}:{n}: {msg}")
+    if findings:
+        print(f"\n{len(blocking)} blocking, {len(findings) - len(blocking)} advisory. What this "
+              "gate CANNOT check is listed in its module docstring; a green run is not a "
+              "self-containment guarantee.", file=sys.stderr)
+    return 1 if blocking else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
