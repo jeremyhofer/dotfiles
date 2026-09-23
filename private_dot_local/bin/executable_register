@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""register -- read a work register: list it, show one entry, render an index, count it.
+"""register -- read a work register: list it, show one entry, render an index, count it, and
+name the next free id.
 
 WHY A COMMAND RATHER THAN A COMMITTED FILE
     A register directory answers "what is the state of everything" only if you open every
@@ -25,6 +26,14 @@ THE PREFIX IS DERIVED, NEVER CONFIGURED -- the same rule the register's lint fol
     one cannot disagree with the store it describes.
 
 WHAT THIS DOES NOT DO
+NEXT ID IS READ NUMERICALLY, OVER EVERY ENTRY -- closed ones included, because an id is never
+    reused. Reading the highest id off a directory listing is the trap this verb replaces: a
+    register whose ids are mixed width sorts `X-99` after `X-100` as text, and two sessions
+    trusting a lexical listing have allocated the same id in this fleet. The width is derived
+    from the widest existing id, like the prefix, so a register padded to four digits keeps
+    getting four-digit ids. Mixed widths are reported on stderr, since they are exactly the
+    condition under which any other listing of the register gives the wrong answer.
+
     It does not WRITE entries. Creating, editing and closing them is hand work against a
     contract each register states in its own README, and a tool that generated entries would
     be generating the closure conditions and resolutions that are the whole point of writing
@@ -163,9 +172,39 @@ def cmd_index(entries, args):
     return 0
 
 
+ID_SHAPE = re.compile(r"^(.*?)(\d+)$")
+
+
+def cmd_next(entries, args):
+    """Print the next free id. Only the id goes to stdout, so it can be captured by a script."""
+    shapes = [ID_SHAPE.match(e.id) for e in entries]
+    bad = [e.id for e, m in zip(entries, shapes) if not m]
+    if bad:
+        print("register: ids without a trailing number: %s" % ", ".join(bad), file=sys.stderr)
+        return 1
+    prefixes = sorted({m.group(1) for m in shapes})
+    if len(prefixes) != 1:
+        # Derived, never configured: two prefixes means the store does not say which is its own.
+        print("register: more than one id prefix (%s) -- cannot tell which is this register's"
+              % ", ".join(prefixes), file=sys.stderr)
+        return 1
+    widths = sorted({len(m.group(2)) for m in shapes})
+    width = widths[-1]
+    nxt = max(int(m.group(2)) for m in shapes) + 1
+    if len(widths) > 1:
+        print("register: ids here are mixed width (%s digits) -- a lexical listing of this "
+              "register reports the wrong highest id; pad them to one width"
+              % ", ".join(map(str, widths)), file=sys.stderr)
+    if len(str(nxt)) > width:
+        print("register: the next id is wider than every existing id -- from here a lexical "
+              "listing disagrees with a numeric one; pad the register", file=sys.stderr)
+    print("%s%0*d" % (prefixes[0], width, nxt))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Read a work register.")
-    p.add_argument("command", choices=("list", "stats", "show", "index"))
+    p.add_argument("command", choices=("list", "stats", "show", "index", "next"))
     p.add_argument("id", nargs="?", help="entry id, for `show`")
     p.add_argument("--root", default="docs/register", help="the register directory")
     p.add_argument("--status", help="comma-separated statuses to include")
@@ -192,6 +231,9 @@ def main(argv=None):
             print("register show needs an id", file=sys.stderr)
             return 1
         return cmd_show(entries, a)
+    if a.command == "next":
+        # Over EVERY entry: filters would hide the closed ids that must never be reused.
+        return cmd_next(entries, a)
     return {"list": cmd_list, "stats": cmd_stats, "index": cmd_index}[a.command](
         select(entries, a), a)
 

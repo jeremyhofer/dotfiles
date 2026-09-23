@@ -88,6 +88,26 @@ rm "$r/ABC-12-slug.md"
 run index --write "$tmp/out.md" >/dev/null
 [ -s "$tmp/out.md" ] && ok "--write produces a file" || bad "--write produces a file"
 
+# --- next
+# The fixture is mixed width on purpose (ABC-01 .. ABC-10): as text, ABC-03 in closed/ and ABC-10
+# both sort after ABC-02, and only a numeric read over closed/ too gives the true next id.
+assert_has "next reads the highest id numerically" "ABC-11" "$(python3 "$reg" next --root "$r" 2>/dev/null)"
+entry "$r/closed" "ABC-40" "done" "A closed high id" ""
+assert_has "next counts closed entries -- an id is never reused" "ABC-41" "$(python3 "$reg" next --root "$r" 2>/dev/null)"
+rm "$r/closed/ABC-40-slug.md"
+out=$(python3 "$reg" next --root "$r" 2>/dev/null)
+[ "$out" = "ABC-11" ] && ok "next prints only the id on stdout" || bad "next prints only the id on stdout (got: $out)"
+m="$tmp/mixed"; mkdir -p "$m"
+entry "$m" "ABC-9" "idea" "narrow" ""; entry "$m" "ABC-100" "idea" "wide" ""
+assert_has "next on a mixed-width register takes the numeric max" "ABC-101" "$(python3 "$reg" next --root "$m" 2>/dev/null)"
+assert_has "mixed widths are reported" "mixed width" "$(python3 "$reg" next --root "$m" 2>&1 >/dev/null)"
+p4="$tmp/padded"; mkdir -p "$p4"; entry "$p4" "ABC-0007" "idea" "padded" ""
+assert_has "the width is kept from the existing ids" "ABC-0008" "$(python3 "$reg" next --root "$p4" 2>/dev/null)"
+w="$tmp/wrap"; mkdir -p "$w"; entry "$w" "ABC-99" "idea" "edge" ""
+assert_has "outgrowing the width is reported" "wider than every existing id" "$(python3 "$reg" next --root "$w" 2>&1 >/dev/null)"
+two="$tmp/two"; mkdir -p "$two"; entry "$two" "ABC-1" "idea" "a" ""; entry "$two" "XYZ-2" "idea" "b" ""
+python3 "$reg" next --root "$two" >/dev/null 2>&1 && bad "two prefixes is an error" || ok "two prefixes is an error"
+
 # --- a wrong root is an ERROR, not an empty answer. Those look identical and only one is true.
 python3 "$reg" list --root "$tmp/nope" >/dev/null 2>&1 && bad "a missing root exits non-zero" || ok "a missing root exits non-zero"
 mkdir -p "$tmp/hollow"; echo "# nothing" > "$tmp/hollow/notes.md"

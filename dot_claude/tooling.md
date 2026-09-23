@@ -14,7 +14,7 @@ declares — reads both the bullet-header and frontmatter conventions and report
 than normalising it; `--strict` for a repo that has adopted a status vocabulary; `--subjects` renders a by-subject
 view on demand) ·
 `chezmoi-overlay` (runs the private second chezmoi instance) ·
-`register` (read a work register — list, stats, show, and render a browsable index on demand rather than committing one that can go stale) ·
+`register` (read a work register — list, stats, show, the next free id, and render a browsable index on demand rather than committing one that can go stale) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) ·
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
