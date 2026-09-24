@@ -5,6 +5,13 @@
 
 typeset -U path fpath
 path=($path "$HOME/.local/bin" "$HOME/go/bin")
+{{ if eq .chezmoi.os "darwin" -}}
+# Homebrew ahead of the system dirs, so its tools win over the older copies macOS ships (git
+# especially: the base Brewfile declares it so every machine runs the same current version).
+# Login shells lose this to /etc/zprofile's path_helper, which runs after this file and moves the
+# system dirs back to the front, so ~/.zprofile prepends again. `typeset -U` keeps the first copy.
+[ -d /opt/homebrew/bin ] && path=(/opt/homebrew/bin /opt/homebrew/sbin $path)
+{{ end -}}
 # User completions dir, prepended so it's on fpath before omz runs compinit (zshenv precedes zshrc).
 # Holds generated tool completions (e.g. _mani) that aren't shipped as omz plugins.
 fpath=("$HOME/.local/share/zsh/completions" $fpath)
