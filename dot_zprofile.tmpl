@@ -2,6 +2,11 @@
 # ~/.zprofile — login shells only (after .zshenv, before .zshrc). Login ACTIONS only;
 # PATH and env vars live in ~/.zshenv so every context (incl. non-interactive/ssh/GUI) gets them.
 
+{{ if eq .chezmoi.os "darwin" -}}
+# Re-assert Homebrew ahead of the system dirs: /etc/zprofile's path_helper ran after ~/.zshenv and
+# put /usr/bin first again (see ~/.zshenv). Needs `typeset -U path`, set there, to drop the old copy.
+[ -d /opt/homebrew/bin ] && path=(/opt/homebrew/bin /opt/homebrew/sbin $path)
+{{ end -}}
 [ -f "$HOME/.dotlocal/zprofile" ] && source "$HOME/.dotlocal/zprofile"
 {{- if eq .chezmoi.os "linux" }}
 {{ includeTemplate "zprofile.linux" . -}}

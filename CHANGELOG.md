@@ -26,6 +26,20 @@ Entries are newest first.
 
 ---
 
+## 2026-09-23
+
+**macOS shells now put Homebrew ahead of the system directories.** `~/.zshenv` prepends
+`/opt/homebrew/bin` and `/opt/homebrew/sbin` on macOS, and `~/.zprofile` prepends them again,
+because `/etc/zprofile`'s `path_helper` runs between the two in a login shell and moves `/usr/bin`
+back to the front. Before this, neither file added Homebrew at all, so a Mac where Homebrew reached
+`PATH` some other way could still run Apple's older copy of a tool the base Brewfile declares.
+Measured on one Mac: `which -a git` listed `/usr/bin/git` (Apple git 2.50.1) ahead of Homebrew's
+2.55.0.
+
+*What changes for you:* every Homebrew formula now wins over a same-named system tool in zsh. GUI
+apps and launchd jobs do not read these files and still see `/usr/bin` first. To check a Mac after
+applying, open a new login shell and run `which -a git`; Homebrew's copy should be listed first.
+
 ## 2026-09-22
 
 ### worktrunk's user config is now GENERATED, from three layers — ACTION on a machine with a private layer
