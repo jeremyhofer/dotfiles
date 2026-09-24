@@ -1,0 +1,63 @@
+#!/bin/sh
+# check-required-brew-tools -- refuse (non-zero) if a Brewfile formula marked REQUIRED is not on
+# PATH. OS-neutral script, standalone-runnable; the darwin-gated run_before_ template execs it
+# during `chezmoi apply`.
+#
+# WHY THIS EXISTS. A Brewfile can gain a REQUIRED line (a formula something else fails closed
+# without -- see the Brewfile header for the marker convention) and nothing on this machine ever
+# runs `brew bundle` again after the pull. The absence then surfaces later, deep inside whatever
+# unrelated script first needed the missing tool, with no hint that a Brewfile line was the cause.
+# This check runs BEFORE apply and names the actual problem.
+#
+# Deliberately cheap: no `brew` subprocess (brew bundle check/list shell out and are slow) --
+# `command -v`, plus a fixed prefix search, is enough and stays silent when everything is present.
+#
+# PATH CAVEAT: a chezmoi run_before_ script's PATH is not guaranteed to include Homebrew's bin dir
+# (chezmoi does not source ~/.zshenv to run it), so a plain `command -v` alone can false-alarm on a
+# machine where the tool is genuinely installed. Resolved the same way chezmoi-overlay resolves the
+# chezmoi binary itself: PATH first, then the known install prefixes.
+#
+# Usage: check-required-brew-tools [BREWFILE]
+#   BREWFILE defaults to the Brewfile next to this script's parent directory (the base repo root).
+#   BREW_PREFIXES overrides the colon-separated prefix list searched after PATH -- set by tests to
+#   point at a fixture directory instead of the real Homebrew locations.
+set -eu
+
+BREWFILE=${1:-"$(cd "$(dirname "$0")/.." && pwd)/Brewfile"}
+
+if [ ! -f "$BREWFILE" ]; then
+  printf 'check-required-brew-tools: no Brewfile at %s\n' "$BREWFILE" >&2
+  exit 2
+fi
+
+: "${BREW_PREFIXES:=/opt/homebrew/bin:/usr/local/bin:${HOME:-}/.local/bin}"
+
+have() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  _oldifs=$IFS
+  IFS=:
+  for _prefix in $BREW_PREFIXES; do
+    IFS=$_oldifs
+    [ -n "$_prefix" ] && [ -x "$_prefix/$1" ] && return 0
+    IFS=:
+  done
+  IFS=$_oldifs
+  return 1
+}
+
+# A REQUIRED line is `brew "formula"` whose trailing comment contains the whole word REQUIRED
+# (see the Brewfile header). `-w` is supported by GNU, BSD/macOS and busybox grep alike.
+formulas=$(grep '^brew "' "$BREWFILE" | grep -w REQUIRED | sed -E 's/^brew "([^"]+)".*/\1/')
+
+missing=""
+for formula in $formulas; do
+  have "$formula" || missing="$missing $formula"
+done
+
+if [ -n "$missing" ]; then
+  printf '%s\n' "chezmoi apply: refusing -- required tool(s) not on PATH:$missing" >&2
+  printf '%s\n' "  fix: brew bundle --file \"\$(chezmoi source-path)/Brewfile\", then re-run: chezmoi apply" >&2
+  exit 1
+fi
+
+exit 0

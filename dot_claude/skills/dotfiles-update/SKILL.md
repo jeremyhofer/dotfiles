@@ -34,16 +34,24 @@ git -C ~/.local/share/chezmoi-overlay pull --ff-only     # if this machine has a
 chezmoi diff
 chezmoi-overlay diff
 
-# 5. Apply
+# 5. On macOS, if the diff touches the Brewfile: install what it now declares BEFORE applying
+brew bundle --file "$(chezmoi source-path)/Brewfile"
+
+# 6. Apply
 chezmoi apply
 chezmoi-overlay apply
 
-# 6. Confirm the overlay still satisfies the current standard
+# 7. Confirm the overlay still satisfies the current standard
 sh ~/.local/share/chezmoi/setup/overlay-doctor
 ```
 
-Step 6 is the one people skip, and it is the one that catches the asymmetry above. `overlay-doctor`
+Step 7 is the one people skip, and it is the one that catches the asymmetry above. `overlay-doctor`
 is read-only, so running it is always safe.
+
+Step 5 has its own backstop now: a `run_before_` script checks, on macOS only, that every Brewfile
+formula marked `REQUIRED` (its header explains the marker) is on PATH, and refuses the apply by name
+if one is not — so a skipped `brew bundle` fails at step 6 with one clear message instead of
+somewhere unrelated, later. If you see that refusal, it means exactly step 5 above was skipped.
 
 ## Things that will bite
 
