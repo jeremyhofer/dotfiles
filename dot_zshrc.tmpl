@@ -57,8 +57,10 @@ zstyle ':omz:update' mode disabled  # disable automatic updates
 # Uncomment the following line to disable auto-setting terminal title.
 # DISABLE_AUTO_TITLE="true"
 
-# Uncomment the following line to enable command auto-correction.
-ENABLE_CORRECTION="true"
+# Command auto-correction stays OFF (Jeremy, 2026-09-24: "more of a PITA ... than it hasn't").
+# oh-my-zsh's ENABLE_CORRECTION sets correct_all, which offers to "correct" ARGUMENTS too -- it
+# proposed `git config` -> `git .config` whenever a ~/.config existed nearby.
+# ENABLE_CORRECTION="true"
 
 # Uncomment the following line to display red dots whilst waiting for completion.
 # You can also set it to another string to have that shown instead of the default red dots.
@@ -190,14 +192,13 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias vim='nvim'
 alias ovim='NVIM_APPNAME=nvim-old nvim'
-nx() { nocorrect npx nx "$@"; }
+nx() { npx nx "$@"; }   # the repo-local nx, via npx
 
 # chezmoi-overlay moved to a real script: ~/.local/bin/chezmoi-overlay (2026-08-15).
 # It was a function here, so it did not exist in non-interactive shells — `ssh <host> 'zsh -ls'`
 # got "command not found", which is how fleet automation and agents drive a remote machine.
 # It only execs, so nothing was lost by moving it; see the script's header for the full reasoning.
-# (Contrast wt() and nx() below/above, which must stay functions: one changes directory, the
-# other relies on zsh's nocorrect.)
+# (Contrast wt() below, which must stay a function because it changes directory.)
 
 eval "$(direnv hook zsh)"
 eval "$(fnm env --use-on-cd --version-file-strategy recursive --shell zsh)"

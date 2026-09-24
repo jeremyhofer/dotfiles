@@ -14,8 +14,7 @@
 # both invite drift or prompt noise. A script on PATH works identically in every context.
 #
 # It is safe to move because this wrapper only execs; it never mutates the calling shell. The
-# neighbouring zshrc functions that stayed functions did not qualify: `wt()` changes directory,
-# and `nx()` relies on zsh's `nocorrect`.
+# neighbouring zshrc function `wt()` did not qualify: it changes directory.
 #
 # PATH: $HOME/.local/bin is added by the base .zshenv, which zsh sources for non-interactive
 # shells too -- that is what makes this reachable over ssh.
