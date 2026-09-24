@@ -46,3 +46,6 @@ apply (never a raw `chezmoi apply`). A Claude session helping with a work/new-ma
 ## Verify
 `chezmoi diff` before `chezmoi apply` · `chezmoi target-path <source>` for a deploy path · `chezmoi ignored`
 for per-machine exclusions.
+
+## Prose voice
+`technical` -- pass `--voice technical` when cleaning prose here with the `avoid-ai-writing` skill.
