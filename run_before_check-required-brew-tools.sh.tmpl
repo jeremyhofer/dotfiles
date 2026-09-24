@@ -1,0 +1,14 @@
+#!/bin/sh
+{{- if eq .chezmoi.os "darwin" }}
+# Aborts `chezmoi apply` on macOS when a Brewfile formula marked REQUIRED is not on PATH -- see
+# setup/check-required-brew-tools for what "REQUIRED" means and why this exists. A non-zero
+# run_before_ script aborts the apply, which is the point: fail here, with one clear message,
+# instead of failing later inside whatever script first needed the missing tool.
+set -eu
+checker="{{ .chezmoi.sourceDir }}/setup/check-required-brew-tools"
+if [ -x "$checker" ]; then
+  "$checker"
+else
+  echo "check-required-brew-tools: not found at $checker -- skipping the required-tool check" >&2
+fi
+{{- end }}

@@ -40,6 +40,19 @@ Measured on one Mac: `which -a git` listed `/usr/bin/git` (Apple git 2.50.1) ahe
 apps and launchd jobs do not read these files and still see `/usr/bin` first. To check a Mac after
 applying, open a new login shell and run `which -a git`; Homebrew's copy should be listed first.
 
+**`chezmoi apply` now refuses early on a Mac missing a REQUIRED Brewfile formula — ACTION if you
+have never run `brew bundle` against a Brewfile that gained one.** A new `run_before_` script (macOS
+only; a no-op elsewhere) reads the base `Brewfile`, finds every `brew "..."` line whose comment
+carries the marker word `REQUIRED` (currently only `yq`), and aborts the apply with one message
+naming the missing tool and the fix — rather than letting the failure surface later, unexplained,
+deep inside whatever script first needed it. It checks with `command -v` plus a fixed prefix search
+(`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`), never `brew` itself, so it stays fast and
+silent when nothing is missing.
+
+*What changes for you:* if an apply now refuses on this, run
+`brew bundle --file "$(chezmoi source-path)/Brewfile"`, then re-run `chezmoi apply`. See the
+Brewfile's own header for the `REQUIRED` marker convention if you are adding a new one.
+
 ## 2026-09-22
 
 ### worktrunk's user config is now GENERATED, from three layers — ACTION on a machine with a private layer

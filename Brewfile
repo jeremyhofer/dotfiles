@@ -9,6 +9,14 @@
 # reason the base is the standalone standard.
 #
 # node is installed PER-PROJECT via fnm, NOT as a brew formula — do not add `brew "node"`.
+#
+# REQUIRED marker: a `brew "formula"` line whose trailing comment contains the whole word
+# REQUIRED means apply itself, or a hook that runs on every commit, fails closed without it —
+# not merely "useful". `run_before_check-required-brew-tools.sh.tmpl` greps for this marker and
+# refuses `chezmoi apply` on a Mac where a REQUIRED formula is missing, naming the fix
+# (`brew bundle --file Brewfile`) instead of letting the failure surface later, unexplained,
+# inside whatever script first needed the tool. Mark a formula this way only when its absence
+# actually breaks something that way — most tools here are merely useful, not REQUIRED.
 
 # --- CLI dev core ---
 brew "chezmoi"
