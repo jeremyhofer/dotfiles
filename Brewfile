@@ -13,8 +13,8 @@
 # --- CLI dev core ---
 brew "chezmoi"
 brew "git"               # Homebrew's git, not Apple's bundled one, which lags by several releases: every
-                         # machine runs the same current git (Arch gets it from pacman). Needs brew's bin
-                         # ahead of /usr/bin on PATH, which `brew shellenv` arranges for shells only.
+                         # machine runs the same current git (Arch gets it from pacman). ~/.zshenv and
+                         # ~/.zprofile put brew's bin ahead of /usr/bin; GUI apps and launchd jobs still see Apple's.
 brew "gh"
 brew "git-delta"         # git diff/pager syntax highlighting (gitconfig [core] pager + [interactive] diffFilter)
 brew "lazygit"           # git TUI (LazyVim/snacks integration)
