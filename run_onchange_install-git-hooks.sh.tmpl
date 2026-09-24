@@ -16,7 +16,7 @@ cat > "$hook" <<'HOOK'
 #!/bin/sh
 # Generic pre-push floor for a public-base-only clone (no overlay). The FULL
 # publish-boundary guard (markers + sensitive terms) is provided by the overlay's
-# global core.hooksPath hook when present; this is only the fallback for a bare clone.
+# global git hooks when present; this is only the fallback for a bare clone.
 KEY_RE='-----BEGIN[ A-Z]*PRIVATE KEY-----'
 OVERLAY='{{ .overlayRepo }}'
 zero=0000000000000000000000000000000000000000
