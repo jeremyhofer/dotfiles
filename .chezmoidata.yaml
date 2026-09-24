@@ -17,5 +17,5 @@ session_env:
 skill_externals:
   - name: avoid-ai-writing
     repo: conorbronsdon/avoid-ai-writing
-    version: "3.35.0"
+    version: "3.36.0"
     subtree: plugins/avoid-ai-writing/skills/avoid-ai-writing
