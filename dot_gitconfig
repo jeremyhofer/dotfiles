@@ -35,6 +35,12 @@
 	sort = -committerdate
 [rerere]
 	enabled = true
+[hook "ai-coauthor"]
+    # Adds a Claude co-author trailer to commits made from a Claude Code session, and leaves
+    # hand-typed commits alone. Opt a repository out with `git config ai-coauthor.enabled false`.
+    # Configured hooks need git 2.54+; older versions ignore this block silently.
+    command = sh "$HOME/.local/bin/git-ai-coauthor"
+    event = prepare-commit-msg
 [gpg]
 	format = ssh
 # NOTE: commit.gpgsign is set per-domain in the overlay gitconfig (~/.dotlocal/gitconfig),
