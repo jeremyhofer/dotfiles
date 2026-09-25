@@ -1,0 +1,35 @@
+#!/bin/sh
+# git-ai-coauthor — add a Claude co-author trailer to commits made from a Claude Code session.
+#
+# WHY. Attribution of AI-assisted commits should be honest and consistent. Left to the agent,
+# the `Co-Authored-By` trailer is prose it types into the message, so it appears only when that
+# session was told to add it AND remembered to. Measured before this existed: the trailer came
+# and went between sessions in both directions, with nothing in any configuration explaining it.
+# A convention that depends on remembering decays, so this makes it mechanical.
+#
+# HOW IT IS WIRED. A git configured hook on the prepare-commit-msg event (see ~/.gitconfig,
+# `hook.ai-coauthor.*`). Git appends the hook arguments: $1 = the message file, $2 = its source
+# (message, template, merge, squash, commit), $3 = a commit id. Configured hooks need git 2.54 or
+# later; an older git ignores the `hook.*` keys silently and commits simply go unattributed.
+#
+# WHAT IT LEAVES ALONE:
+#   - a commit made outside Claude Code: CLAUDECODE is set only inside its sessions, including
+#     the shells its subagents run, so a commit typed by hand is never marked;
+#   - a message that already has an Anthropic co-author trailer: a session that names its model
+#     in its own trailer is more specific than this one, and an amend must not add a second;
+#   - an empty message, so aborting an editor commit still aborts it instead of committing a
+#     message that is nothing but the trailer;
+#   - a repository that opts out: `git config ai-coauthor.enabled false`.
+set -eu
+
+msg=${1:-}
+[ -n "$msg" ] && [ -f "$msg" ] || exit 0
+[ -n "${CLAUDECODE:-}" ] || exit 0
+
+enabled=$(git config --type=bool --get ai-coauthor.enabled 2>/dev/null || echo true)
+[ "$enabled" = "false" ] && exit 0
+
+grep -qiE '^co-authored-by:.*<noreply@anthropic\.com>' "$msg" && exit 0
+grep -v '^#' "$msg" | grep -q '[^[:space:]]' || exit 0
+
+git interpret-trailers --in-place --trailer 'Co-Authored-By: Claude <noreply@anthropic.com>' "$msg"

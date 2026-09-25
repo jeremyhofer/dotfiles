@@ -26,6 +26,20 @@ Entries are newest first.
 
 ---
 
+## 2026-09-25
+
+**Commits made from a Claude Code session now get a Claude co-author trailer automatically.**
+`~/.gitconfig` gains a configured hook, `hook.ai-coauthor`, on `prepare-commit-msg`, which runs the
+new `~/.local/bin/git-ai-coauthor`. When `CLAUDECODE` is set (Claude Code sets it in its sessions and
+in the shells its subagents run), the hook appends `Co-Authored-By: Claude <noreply@anthropic.com>`
+unless the message already carries an Anthropic co-author trailer. Commits typed outside a session
+are untouched.
+
+*What changes for you:* nothing to do on a machine with git 2.54 or later. On an older git the
+`hook.*` keys are ignored silently and commits stay unattributed; `git --version` tells you which
+you have. To keep the trailer out of one repository, run `git config ai-coauthor.enabled false`
+inside it.
+
 ## 2026-09-23
 
 **macOS shells now put Homebrew ahead of the system directories.** `~/.zshenv` prepends

@@ -16,6 +16,7 @@ view on demand) ·
 `chezmoi-overlay` (runs the private second chezmoi instance) ·
 `register` (read a work register — list, stats, show, the next free id, and render a browsable index on demand rather than committing one that can go stale) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·
+`git-ai-coauthor` (prepare-commit-msg hook: adds a Claude co-author trailer to commits made from a Claude Code session; wired in `~/.gitconfig`, per-repo opt-out `ai-coauthor.enabled false`) ·
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
