@@ -97,6 +97,18 @@ matches=(*.nope(N))
 (( ${#matches} )) || { echo "no matches"; return 1 }
 ```
 
+**In Claude Code's Bash tool, bare glob qualifiers are OFF** (`nobareglobqual`), although plain zsh
+and the interactive shell have them on. So `*(N)`, `*(/)` and `*(.)` do not act as qualifiers there:
+they fail with `no matches found` or `bad pattern`. Measured 2026-09-26. Forms that do work in the
+tool, each seen returning an empty match cleanly:
+
+```zsh
+(setopt nullglob; matches=(*.nope); print ${#matches})     # a subshell keeps the option local
+(setopt extendedglob; matches=(*.nope(#qN)); print ${#matches})
+```
+
+Or list with `fd`, which has no glob semantics to trip over.
+
 ## 3. SILENT — `$?` after a pipeline is the LAST command's status
 
 ```zsh
