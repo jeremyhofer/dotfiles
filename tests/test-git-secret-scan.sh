@@ -31,10 +31,14 @@ no() { printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); }
 
 command -v gitleaks >/dev/null 2>&1 || { no "gitleaks is on PATH (every other case needs it)"; echo "passed: $pass   failed: $fail"; exit 1; }
 
+# The floor is read from $HOME/.config, where the dotfiles deploy it, whatever XDG_CONFIG_HOME says:
+# a session that points XDG_CONFIG_HOME at a scratch directory for some other tool must still get
+# its commits scanned. So HOME is the stand-in here, and XDG_CONFIG_HOME deliberately points at a
+# directory holding no floor at all.
 cfg=$(mktemp -d)
-mkdir -p "$cfg/gitleaks"
-cp "$FLOOR" "$cfg/gitleaks/floor.toml"
-export XDG_CONFIG_HOME="$cfg"
+mkdir -p "$cfg/.config/gitleaks"
+cp "$FLOOR" "$cfg/.config/gitleaks/floor.toml"
+export HOME="$cfg" XDG_CONFIG_HOME="$cfg/scratch-xdg"
 trap 'rm -rf "$cfg"' EXIT
 
 newrepo() {
@@ -133,10 +137,10 @@ out=$(PATH="$bin" "$bin/git" -C "$r" commit -q -m probe 2>&1)
 refused "gitleaks missing: the commit is refused" "$r" "$b"
 case "$out" in *gitleaks*) ok "the refusal says gitleaks is missing" ;; *) no "the refusal says gitleaks is missing (got: $out)" ;; esac
 rm -rf "$bin"
-mv "$cfg/gitleaks/floor.toml" "$cfg/gitleaks/floor.toml.off"
+mv "$cfg/.config/gitleaks/floor.toml" "$cfg/.config/gitleaks/floor.toml.off"
 try "$r" c.txt "nothing secret" >/dev/null
 refused "floor config missing: the commit is refused" "$r" "$b"
-mv "$cfg/gitleaks/floor.toml.off" "$cfg/gitleaks/floor.toml"
+mv "$cfg/.config/gitleaks/floor.toml.off" "$cfg/.config/gitleaks/floor.toml"
 rm -rf "$r"
 
 echo
