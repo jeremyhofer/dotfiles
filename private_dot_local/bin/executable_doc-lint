@@ -23,6 +23,14 @@ WHAT IT CHECKS
     bare-adr-decision
                     `0067 D1` — a decision record cited by number alone.
     id-shorthand    `ABC-11/12/13` — later ids elided, so grep misses them. ADVISORY.
+    spec-decisions  a spec or plan with no `## Decisions` section, or an entry whose home is
+                    missing, fits no accepted form, or does not resolve here. Enabled by
+                    spec-dirs: (see SPECS below).
+    spec-status     a spec or plan with no status line before its first `## ` heading.
+    spec-pending    a `pending` home in a spec that is finished, or is being moved out of
+                    spec-dirs or deleted.
+    spec-undated    a file in spec-dirs whose name does not begin with a date, so it is not
+                    checked. ADVISORY.
 
 CONFIG
     `key: value` lines, `#` comments, read from --config FILE, then $DOC_LINT_CONFIG, then
@@ -47,6 +55,35 @@ CONFIG
                                   on the memory, so `memory-ptr` is not reported inside them.
                                   The section runs to the next heading at its own level or
                                   higher, sub-headings included.
+
+        spec-dirs: a/ b/          directories holding specs and plans (searched recursively).
+                                  Enables the spec check; without it doc-lint says the check
+                                  is off. A mistyped `spec…` key is reported, not ignored.
+        spec-cutover: YYYY-MM-DD  only documents whose name begins with a date on or after
+                                  this are checked. It is the spec check's ratchet.
+        own-prefix: ABC           the prefix of this repository's own register and ADR log.
+        adr-dir: docs/adr         where this repository's ADRs live, matched by number.
+        register-dir: docs/register
+                                  where this repository's register entries live.
+
+SPECS
+    A decision made in a spec or plan must reach a durable home before the document is called
+    done, because specs are scaffolding that gets archived. Each covered document carries:
+        Status: <word> ...        before the first `## `, in any markup (`- **Status:**`,
+                                  `> **Status (date):**`, `**Status**:`). The first word of
+                                  letters after the colon being `executed`, `superseded` or
+                                  `abandoned` marks the document finished.
+        ## Decisions              one `- <decision> — <home>` line per decision; the home is
+                                  the text after the last ` — `, optionally in backticks:
+                                  a tracked path (never another spec), `<repo>:<path>`, an ADR
+                                  id (`ADR-0007` or `ABC-ADR-0007`), a register id
+                                  (`ABC-0012`), `pending` or `dropped`. A spec deciding
+                                  nothing says `None.` and nothing else.
+    A finished document may hold no `pending` home, and neither may one being moved out of
+    spec-dirs or deleted (found from the staged changes under --added-only). The whole
+    document is read even under --added-only, because finishing a spec can leave its
+    decisions untouched. Ids with another owner's prefix, and `<repo>:<path>` homes, are
+    accepted by their form: another repository's index is not visible from here.
 
     WHY CONFIGURED, NOT BUILT IN: a private tree name or a tracker's id scheme is itself the
     kind of token a publish guard blocks, so a built-in list would make this tool
@@ -121,7 +158,20 @@ LINE_SUFFIX = re.compile(r":\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 HEADING = re.compile(r"^(#{1,6})\s+(\S+)")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-ADVISORY = {"dangling-path", "id-shorthand"}
+ADVISORY = {"dangling-path", "id-shorthand", "spec-undated"}
+SPEC_KEYS = {"spec-dirs", "spec-cutover"}
+SPEC_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+# A status line once list markers, blockquote marks and emphasis are stripped from its start:
+# `- **Status:**`, `> **Status (date):**`, `**Status**:` and plain `Status:` all read the same.
+STATUS_LEAD = re.compile(r"^(?:\s|[-*+>]\s|>|\*\*|__|\*|_)+")
+STATUS_LINE = re.compile(r"^status(?:\s*\([^)]*\))?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
+FINISHED = {"executed", "superseded", "abandoned"}
+OWNED_ADR = re.compile(r"^(?:([A-Z][A-Z0-9]*)-)?ADR-(\d{1,4})$")
+REGISTER_ID = re.compile(r"^([A-Z][A-Z0-9]*)-(\d{1,4})$")
+OTHER_REPO = re.compile(r"^[A-Za-z0-9._-]+:[^\s:]+$")
+SPEC_FORMAT = ("the section is `## Decisions`; each entry is `- <decision> — <home>`, the home "
+               "being a tracked path, `<repo>:<path>`, an ADR or register id, `pending` or "
+               "`dropped`; a spec deciding nothing says `None.`")
 
 
 class Config:
@@ -139,6 +189,13 @@ class Config:
             )
         self.frozen = tuple(raw.get("frozen", "").split())
         self.ledgers = {w.lower() for w in raw.get("ledger-sections", "").split()}
+        self.spec_dirs = tuple(d.rstrip("/") + "/" for d in raw.get("spec-dirs", "").split())
+        self.spec_cutover = raw.get("spec-cutover", "").strip()
+        self.own_prefix = raw.get("own-prefix", "").strip()
+        self.adr_dir = raw.get("adr-dir", "").strip().rstrip("/")
+        self.register_dir = raw.get("register-dir", "").strip().rstrip("/")
+        # A mistyped key is otherwise ignored in silence, and for this check silence means "off".
+        self.unknown_spec_keys = sorted(k for k in raw if k.startswith("spec") and k not in SPEC_KEYS)
 
 
 def load_config(root: pathlib.Path, explicit: str | None) -> tuple[Config, str | None]:
@@ -300,6 +357,126 @@ def check_file(text, rel, files, dirs, tops, cfg: Config):
     return findings
 
 
+def in_spec_dirs(rel: str, cfg: Config) -> bool:
+    return any(rel.startswith(d) for d in cfg.spec_dirs)
+
+
+def spec_status(lines: list[str]) -> tuple[int, str] | None:
+    """(line number, first word of the status) from the header block, or None if it has none."""
+    for n, line in enumerate(lines, 1):
+        if line.startswith("## "):
+            return None
+        m = STATUS_LINE.match(STATUS_LEAD.sub("", line))
+        if m:
+            word = re.search(r"[A-Za-z]+", m.group(1))
+            return n, (word.group(0).lower() if word else "")
+    return None
+
+
+def home_problem(home: str, files: set[str], dirs: set[str], cfg: Config) -> str | None:
+    """Why HOME is not an acceptable durable home, or None when it is."""
+    if home in ("pending", "dropped"):
+        return None
+    m = OWNED_ADR.match(home)
+    if m:
+        if m.group(1) and m.group(1) != cfg.own_prefix:
+            return None  # another owner's log: not visible from here, accepted by its form
+        if not cfg.adr_dir:
+            return f"`{home}` names this repository's own ADR, but no adr-dir: is configured"
+        num = re.compile(r"(?:^|-)0*%d[-_.]" % int(m.group(2)))
+        if any(f.startswith(cfg.adr_dir + "/") and num.search(f.rsplit("/", 1)[-1]) for f in files):
+            return None
+        return f"`{home}` does not resolve to a record under {cfg.adr_dir}/"
+    m = REGISTER_ID.match(home)
+    if m:
+        if m.group(1) != cfg.own_prefix:
+            return None
+        if not cfg.register_dir:
+            return f"`{home}` names this repository's register, but no register-dir: is configured"
+        if any(f.startswith(cfg.register_dir + "/") and
+               (f.rsplit("/", 1)[-1].startswith(home + "-") or f.endswith("/" + home + ".md"))
+               for f in files):
+            return None
+        return f"`{home}` does not resolve to an entry under {cfg.register_dir}/"
+    if OTHER_REPO.match(home):
+        return None  # a file in another repository, named explicitly: accepted by its form
+    if " " not in home and ("/" in home or "." in home):
+        if in_spec_dirs(home, cfg) or any(home.rstrip("/") + "/" == d for d in cfg.spec_dirs):
+            return f"`{home}` is a spec or plan, which is never a decision's durable home"
+        if home in files or home.rstrip("/") in dirs:
+            return None
+        return f"`{home}` is not tracked in this repository"
+    return f"`{home}` is not a home: " + SPEC_FORMAT
+
+
+def check_spec(text: str, rel: str, files: set[str], dirs: set[str], cfg: Config,
+               leaving: bool = False) -> list[tuple[str, str, int, str]]:
+    """The spec-decision contract for one document in spec-dirs. LEAVING: it is being moved out
+    of spec-dirs or deleted, which finishes it."""
+    name = rel.rsplit("/", 1)[-1]
+    dated = SPEC_DATE.match(name)
+    if not dated:
+        return [("spec-undated", rel, 1, "an undated file in spec-dirs is not checked; a spec or "
+                 "plan's name begins with its YYYY-MM-DD date")]
+    if cfg.spec_cutover and dated.group(1) < cfg.spec_cutover:
+        return []
+    lines = text.splitlines()
+    out = []
+    status = spec_status(lines)
+    if status is None:
+        out.append(("spec-status", rel, 1, "no status line before the first `## ` heading; a "
+                    "spec or plan states `Status: <word> ...`, and `executed`, `superseded` or "
+                    "`abandoned` as that word marks it finished"))
+    finished = leaving or (status is not None and status[1] in FINISHED)
+    start = next((n for n, l in enumerate(lines, 1) if re.match(r"^## Decisions\s*$", l)), None)
+    if start is None:
+        out.append(("spec-decisions", rel, 1, "no `## Decisions` section: " + SPEC_FORMAT))
+        return out
+    body = []
+    for n in range(start, len(lines)):
+        line = lines[n]
+        if re.match(r"^#{1,2} ", line):
+            break
+        if line.strip():
+            body.append((n + 1, line))
+    entries = [(n, l) for n, l in body if l.startswith("- ")]
+    has_none = any(l.strip() == "None." for _, l in body)
+    if has_none and entries:
+        out.append(("spec-decisions", rel, start, "`None.` alongside entries; say `None.` only "
+                    "when the spec decides nothing"))
+    if not has_none and not entries:
+        out.append(("spec-decisions", rel, start, "the Decisions section is empty: " + SPEC_FORMAT))
+    for n, line in entries:
+        if " — " not in line:
+            out.append(("spec-decisions", rel, n, "an entry with no home: " + SPEC_FORMAT))
+            continue
+        home = line.rsplit(" — ", 1)[1].strip()
+        if len(home) > 1 and home[0] == "`" and home[-1] == "`":
+            home = home[1:-1]
+        problem = home_problem(home, files, dirs, cfg)
+        if problem:
+            out.append(("spec-decisions", rel, n, problem))
+        elif home == "pending" and finished:
+            why = "moved out of spec-dirs or deleted" if leaving else "marked finished"
+            out.append(("spec-pending", rel, n, f"a decision is still `pending` in a spec {why}; "
+                        "promote it to its durable home, or mark it `dropped`"))
+    return out
+
+
+def leaving_specs(root: pathlib.Path, cfg: Config) -> list[tuple[str, str]]:
+    """(source path, content before the change) for staged renames out of, and deletions from,
+    spec-dirs. The commit hooks pass added and modified files only, so these are found here."""
+    out = []
+    status = git("diff", "--cached", "--name-status", "-M", "--diff-filter=DR", cwd=root)
+    for line in status.splitlines():
+        parts = line.split("\t")
+        src = parts[1] if len(parts) > 1 else ""
+        dst = parts[2] if len(parts) > 2 else ""
+        if in_spec_dirs(src, cfg) and not in_spec_dirs(dst, cfg) and src.endswith(".md"):
+            out.append((src, git("show", f"HEAD:{src}", cwd=root)))
+    return out
+
+
 def main(argv: list[str]) -> int:
     blocking_only = "--blocking-only" in argv
     added_only = "--added-only" in argv
@@ -317,6 +494,12 @@ def main(argv: list[str]) -> int:
     if source is None:
         print("doc-lint: no config found — only the universal checks ran (see CONFIG in the "
               "module docstring). This is not full coverage.", file=sys.stderr)
+    if not cfg.spec_dirs:
+        print("doc-lint: the spec check is off (no spec-dirs: in config).", file=sys.stderr)
+    for key in cfg.unknown_spec_keys:
+        print(f"doc-lint: unknown config key {key}: — did you mean one of "
+              f"{', '.join(sorted(SPEC_KEYS))}? Until it is spelled right the spec check "
+              "ignores it.", file=sys.stderr)
     files, dirs, tops = tracked(root)
 
     if rest:
@@ -345,6 +528,13 @@ def main(argv: list[str]) -> int:
             keep = added_lines(root, rel)
             hits = [h for h in hits if h[2] in keep]
         findings.extend(hits)
+        # The spec check reads the whole document even under --added-only: a status change can
+        # finish a spec without touching its decisions. Its cutover date is its ratchet.
+        if cfg.spec_dirs and in_spec_dirs(rel, cfg):
+            findings.extend(check_spec(text, rel, files, dirs, cfg))
+    if cfg.spec_dirs and added_only:
+        for src, text in leaving_specs(root, cfg):
+            findings.extend(check_spec(text, src, files, dirs, cfg, leaving=True))
 
     if blocking_only:
         findings = [f for f in findings if f[0] not in ADVISORY]

@@ -128,6 +128,103 @@ assert_has "--added-only reports a defect on an added line" "ADR-0002" "$out"
 (cd "$r" && python3 "$lint" --added-only --blocking-only docs/t.md >/dev/null 2>&1) \
   && bad "a blocking finding exits non-zero" || ok "a blocking finding exits non-zero"
 
+# --- spec decisions: a spec or plan names a durable home for each decision ----------------
+# Enabled by spec-dirs:. Covers documents dated on or after spec-cutover:, reads the WHOLE staged
+# document (a status change can finish a spec without touching its decisions), and treats a
+# document moved out of spec-dirs, or deleted, as finished.
+r=$(repo specs)
+mkdir -p "$r/docs/specs" "$r/docs/adr" "$r/docs/register"
+printf 'spec-dirs: docs/specs/\nspec-cutover: 2026-10-01\nown-prefix: ABC\nadr-dir: docs/adr/\nregister-dir: docs/register/\n' > "$r/.doc-lint"
+echo "# A decision" > "$r/docs/adr/0007-a-decision.md"
+echo "# A thing" > "$r/docs/register/ABC-0012-a-thing.md"
+echo "# Guide" > "$r/docs/guide.md"
+git -C "$r" add -A
+git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m base
+spec() {  # $1 filename  $2 content -> write docs/specs/$1, stage it, run the staged check on it
+  printf '%s\n' "$2" > "$r/docs/specs/$1"; git -C "$r" add -A
+  (cd "$r" && python3 "$lint" --added-only --blocking-only "docs/specs/$1" 2>&1) || true
+}
+unstage() { git -C "$r" rm -q --cached -r docs/specs >/dev/null 2>&1 || true; rm -rf "$r/docs/specs"; mkdir -p "$r/docs/specs"; }
+body() {  # $1 status line  $2 decisions section body
+  printf '# A spec\n\n%s\n\n## Goal\n\nText.\n\n## Decisions\n\n%s\n' "$1" "$2"
+}
+GOOD='- Use the own log — ADR-0007
+- Cite another owner — XYZ-ADR-0003
+- Track it — ABC-0012
+- Write it down — docs/guide.md
+- Share a helper — other:lib/x.sh
+- Not yet placed — pending
+- Not taken — dropped'
+
+out=$(spec 2026-10-02-a.md "$(printf '# A spec\n\nStatus: draft\n\n## Goal\n\nText.\n')")
+assert_has "a spec with no Decisions section is refused" "[spec-decisions]" "$out"
+out=$(spec 2026-10-02-a.md "$(printf '# A spec\n\n## Decisions\n\nNone.\n')")
+assert_has "a spec with no status line is refused" "[spec-status]" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' "$GOOD")")
+assert_lacks "every home form is accepted in an open spec" "[spec-" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' '- Own log, missing — ADR-0099')")
+assert_has "an own ADR id that does not resolve is refused" "ADR-0099" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' '- Own register, missing — ABC-0099')")
+assert_has "an own register id that does not resolve is refused" "ABC-0099" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' '- A path, missing — docs/nope.md')")
+assert_has "a path home that is not tracked is refused" "docs/nope.md" "$out"
+echo "# other" > "$r/docs/specs/2026-10-03-other.md"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' '- Another spec — docs/specs/2026-10-03-other.md')")
+assert_has "a spec cannot be a decision's home" "[spec-decisions]" "$out"
+unstage
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' '- Decided somewhere — TBD')")
+assert_has "a home that fits no form is refused" "TBD" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' '- A decision with no home at all')")
+assert_has "an entry with no home is refused" "[spec-decisions]" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' 'None.')")
+assert_lacks "a section holding only None. is accepted" "[spec-" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: draft' "$(printf 'None.\n- But also this — dropped')")")
+assert_has "None. alongside an entry is refused" "[spec-decisions]" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: executed 2026-10-04' "$GOOD")")
+assert_has "a finished spec holding pending is refused" "[spec-pending]" "$out"
+out=$(spec 2026-10-02-a.md "$(body 'Status: executed 2026-10-04' '- Not taken — dropped')")
+assert_lacks "a finished spec with no pending home is accepted" "[spec-" "$out"
+for st in '- **Status:** Executed, merged' '**Status**: abandoned' '> **Status (2026-10-05):** superseded' 'Status: ✅ executed'; do
+  out=$(spec 2026-10-02-a.md "$(body "$st" '- Still open — pending')")
+  assert_has "status markup '$st' reads as finished" "[spec-pending]" "$out"
+done
+out=$(spec 2026-10-02-a.md "$(body '**Status:** executing now' '- Still open — pending')")
+assert_lacks "a status word that only starts like a finished one is not finished" "[spec-pending]" "$out"
+unstage
+out=$(spec 2026-09-01-old.md "$(printf '# Old spec\n\nNo section at all.\n')")
+assert_lacks "a spec dated before the cutover is not checked" "[spec-" "$out"
+unstage
+printf '# Notes\n' > "$r/docs/specs/README.md"; git -C "$r" add -A
+out=$( (cd "$r" && python3 "$lint" --added-only docs/specs/README.md 2>&1) || true)
+assert_has "an undated file in spec-dirs is reported as advisory" "[spec-undated]" "$out"
+unstage
+
+# The whole document is read: finishing a spec by editing only its status line still refuses the
+# pending entry on a line the commit does not touch.
+printf '%s\n' "$(body 'Status: draft' '- Still open — pending')" > "$r/docs/specs/2026-10-06-b.md"
+git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m b
+printf '%s\n' "$(body 'Status: executed' '- Still open — pending')" > "$r/docs/specs/2026-10-06-b.md"; git -C "$r" add -A
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only docs/specs/2026-10-06-b.md 2>&1) || true)
+assert_has "--added-only still refuses pending on an untouched line once finished" "[spec-pending]" "$out"
+git -C "$r" checkout -q HEAD -- docs/specs/2026-10-06-b.md
+
+# Moving a spec out of spec-dirs, or deleting it, finishes it.
+mkdir -p "$r/docs/archive"; git -C "$r" mv docs/specs/2026-10-06-b.md docs/archive/2026-10-06-b.md
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only docs/archive/2026-10-06-b.md 2>&1) || true)
+assert_has "moving a spec holding pending out of spec-dirs is refused" "[spec-pending]" "$out"
+git -C "$r" reset -q --hard HEAD
+git -C "$r" rm -q docs/specs/2026-10-06-b.md
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
+assert_has "deleting a spec holding pending is refused" "[spec-pending]" "$out"
+git -C "$r" reset -q --hard HEAD
+
+# Configuration: off is said aloud, and a mistyped key is not silently ignored.
+r2=$(repo nospec)
+put "$r2" "Plain text."
+assert_has "with no spec-dirs, doc-lint says the spec check is off" "spec check is off" "$(run "$r2")"
+printf 'spec-dir: docs/specs/\n' > "$r2/.doc-lint"
+assert_has "a mistyped spec- key is reported" "spec-dir" "$(run "$r2")"
+
 echo ""
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]
