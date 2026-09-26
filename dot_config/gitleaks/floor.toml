@@ -1,0 +1,10 @@
+# The floor for the global secret-scan hook (~/.local/bin/git-secret-scan): gitleaks' own default
+# rules, and nothing else. The hook always scans with this file, passed by explicit path, and then
+# scans again with the repository's own .gitleaks.toml when there is one.
+#
+# Why a separate floor: a repository config that defines its own rules without `useDefault`
+# REPLACES the defaults, so a cloned repository could ship a config that silently switches secret
+# detection off. Measured with gitleaks 8.30.1: a real age identity passed a scan under such a
+# config and was refused under this one.
+[extend]
+useDefault = true
