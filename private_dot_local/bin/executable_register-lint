@@ -38,6 +38,10 @@ WHAT IT CHECKS — blocking
                        silently truncates while the file still parses. Covers LIST items and
                        SCALARS alike -- it checked lists only until a scalar field truncated in
                        a real store and reached a generated index before anyone noticed.
+    yaml-invalid       an unquoted value a strict YAML parser rejects: one opening with a reserved
+                       indicator (a backtick, `@`, `&`, `*`, `!`, a bracket, a quote it does not
+                       close), or a scalar holding ': '. This tool reads frontmatter without a
+                       YAML parser, so without this check it passed files every parser refuses.
     artifact-path      a path-shaped artifact pointer that does not resolve from the repository
                        root. A pointer the reader cannot follow is worse than no pointer,
                        because it looks like it resolves. Skipped entirely when no repository
@@ -376,8 +380,22 @@ def check(entries, closed_dir, root=None, today=None):
                 if not sep or not rest.strip():
                     continue
                 kind, value = "scalar %r" % key.strip(), rest.strip()
-            if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) > 1:
+            if value.startswith(("'", '"')) and value.endswith(value[0]) and len(value) > 1:
                 continue
+            # Values a real YAML parser REJECTS rather than truncates. A plain scalar may not open
+            # with a reserved indicator, and a SCALAR may not hold a mapping indicator (': ', or a
+            # trailing ':'). In a list item `- key: value` is valid YAML, a one-entry mapping, so
+            # the colon rule applies to scalars only. Found by a consumer that read a store with a
+            # strict parser: four titles passed this lint, and that parse rejected all four.
+            invalid = None
+            if value[0] in "`@&*!|>%{}[],'\"":
+                invalid = "opens with %r, which YAML reserves" % value[0]
+            elif kind != "list" and (": " in value or value.endswith(":")):
+                invalid = "holds ': ', which YAML reads as a second key"
+            if invalid:
+                fail("yaml-invalid", e,
+                     "%s value %r %s -- a strict YAML parser rejects the file. Quote it."
+                     % (kind, value, invalid))
             if re.search(r"(?:^|\s)#", value):
                 fail("yaml-truncation", e,
                      "%s value %r contains an unquoted '#', which YAML reads as a comment -- the "

@@ -254,6 +254,30 @@ r="$tmp/hashcomment"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "# a real comment line is not a value" "The thing is measurably finished."
 assert_lacks "a comment LINE is not reported as a truncated value" "[yaml-truncation]" "$(run "$r")"
 
+# --- values a real YAML parser rejects outright -----------------------------------------
+# Found by a consumer that read a store with a strict parser: four titles passed this lint and
+# failed the parse, three opening with a backtick and one containing ': '.
+r="$tmp/yamlbacktick"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "held" 'gate: `parseToSrgb` stops clamping' "The thing is measurably finished."
+assert_has "a value opening with a backtick is reported" "[yaml-invalid]" "$(run "$r")"
+
+r="$tmp/yamlcolon"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "held" "gate: variance: investigate, then re-ratchet" "The thing is measurably finished."
+assert_has "a value containing ': ' is reported" "[yaml-invalid]" "$(run "$r")"
+
+r="$tmp/yamlat"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "artifacts:
+  - @scope/package review" "The thing is measurably finished."
+assert_has "a LIST value opening with a reserved indicator is reported" "[yaml-invalid]" "$(run "$r")"
+
+r="$tmp/yamlquoted"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "held" "gate: '\`parseToSrgb\` stops clamping: then decide'" "The thing is measurably finished."
+assert_lacks "a QUOTED value with both is accepted" "[yaml-invalid]" "$(run "$r")"
+
+r="$tmp/yamlurl"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "held" "gate: the release at 12:30 on https://example.invalid/x lands" "The thing is measurably finished."
+assert_lacks "a colon with no space after it is NOT reported" "[yaml-invalid]" "$(run "$r")"
+
 
 # --- artifact pointers: path-shaped ones must resolve ---------------------------------
 # The repository root is found by walking up to `.git`, so these fixtures create one. Without
