@@ -82,6 +82,19 @@ echo "== a repo's own config cannot switch the default rules off =="
 r=$(newrepo); canary_config "$r"; try "$r" a.txt "hello" >/dev/null; b=$(commits "$r")
 try "$r" b.txt "k=$FAKE_AGE" >/dev/null
 refused "an age identity is refused despite a config that drops the defaults" "$r" "$b"
+# The control, and the reason the floor exists: gitleaks run with only that repository config
+# does NOT find the identity. If this ever finds it, the floor is no longer needed for this case.
+if (cd "$r" && gitleaks git --pre-commit --staged --no-banner --config .gitleaks.toml . >/dev/null 2>&1); then
+  ok "control: the repo config alone lets the identity through"
+else
+  no "control: the repo config alone lets the identity through (gitleaks now finds it)"
+fi
+rm -rf "$r"
+
+echo "== a finding marked gitleaks:allow on its line commits =="
+r=$(newrepo); try "$r" a.txt "hello" >/dev/null; b=$(commits "$r")
+try "$r" b.txt "k=$FAKE_AGE # gitleaks:allow" >/dev/null
+landed "a line carrying gitleaks:allow is allowed" "$r" "$b"
 rm -rf "$r"
 
 echo "== a repo's own config adds its rules =="
