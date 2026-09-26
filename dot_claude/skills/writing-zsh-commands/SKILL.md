@@ -247,6 +247,42 @@ about the mangled path, which reads like the file is missing rather than like a 
 refspec, a `host:path` scp target, or anything else colon-delimited from a variable, the braces are
 not optional style.
 
+## 10. LOUD — a word starting with `=` is a command lookup (EQUALS expansion)
+
+zsh expands `=word` to the full path of the command `word`, the same as `$(which word)`. So a
+banner or separator that starts with `=` runs a lookup and fails:
+
+```
+echo === RESULT ===        # -> zsh: == not found     (the whole command dies)
+echo "=== RESULT ==="      # correct: quoted
+print -r -- '=== RESULT ==='
+```
+
+It is loud, which is the good news. The bad news is that it tends to sit in the middle of a long
+compound command, so everything before it ran and everything after it did not. Quote any argument
+that starts with `=`.
+
+## 11. SILENT — backticks inside a double-quoted `git commit -m` RUN
+
+Inside double quotes, `` `...` `` is command substitution in every POSIX shell, zsh included. A
+commit message that cites code the usual markdown way, `-m "the fix is `uv tool install` once"`,
+runs `uv tool install` and pastes its output (usually nothing) into the message. There is no error
+and the exit status is 0; the message just silently loses the phrase. It is the sharpest of these
+traps because it is found after the push, when fixing it needs a history rewrite.
+
+Single-quoting `-m` is not the fix, because prose contains apostrophes. Feed the message on stdin
+from a quoted heredoc instead:
+
+```
+git commit -F - <<'MSG'
+subject line
+
+The fix is `uv tool install` once from an unsandboxed shell.
+MSG
+```
+
+The quoted delimiter (`<<'MSG'`) turns off every expansion inside, backticks and `$` alike.
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
@@ -258,5 +294,9 @@ not optional style.
   colon after an unbraced variable ate it (§9).
 - **A check passed that you expected to fail** — suspect the pipeline exit status (§3) before
   believing it. A gate that cannot fail proves nothing.
+- **`zsh: <word> not found` where `<word>` is part of your own text** (`== not found`) — an
+  argument starts with `=` (§10).
+- **A commit message is missing a phrase you wrote in backticks** — command substitution ran
+  inside a double-quoted `-m` (§11).
 - **`command not found` only over SSH** — you are calling a shell function in a non-interactive
   shell (§7).
