@@ -38,6 +38,13 @@ the side effect, `command wt list` prints one per worktree.
 `wt list` is the one to run before anything else: it shows in a single view which worktrees have
 uncommitted work and which are behind, which is exactly what you need before switching or removing.
 
+**"Merged" means by ancestry, and a cherry-picked or rebased branch fails that test.** Its shas
+differ from what landed on the trunk, so `git branch -d` refuses it even when every change is in,
+and an ancestry check reports it unmerged. Check the patches instead: `git cherry -v main <branch>` prints `-` for a patch
+already on `main` and `+` for one that is not. Force-delete only when it shows no `+` lines, and
+first confirm the branch has at least one commit, so an empty or mistyped ref cannot pass as "nothing
+unmerged". A merged branch is not gone until it is also deleted on every remote it was pushed to.
+
 ## `mani` — the manifest is the whole model
 
 `mani` reads a manifest listing every project with a `path`, a clone `url`, and **`tags`**. Work is
