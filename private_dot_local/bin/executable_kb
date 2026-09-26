@@ -989,8 +989,9 @@ cmd_project() {
       if [ -n "$_psize" ] && [ "$_psize" -gt "$_budget" ] 2>/dev/null; then
         echo "kb: projection OVER BUDGET: $_psize bytes > $_budget (over by $((_psize - _budget)))" >&2
         echo "kb: this file loads into EVERY session at startup, so its size is a per-session tax." >&2
-        echo "kb: adding here means deciding what leaves. Move situational procedure to an on-demand" >&2
-        echo "kb: skill and keep a stub, or trim an existing topic -- then re-run \`kb project\`." >&2
+        echo "kb: adding here means deciding what leaves, or raising the cap in kb.toml with the reason" >&2
+        echo "kb: recorded. Move situational procedure to an on-demand skill (written and tested first)" >&2
+        echo "kb: and keep a stub, or trim an existing topic -- then re-run \`kb project\`." >&2
         _drift=1
       fi
     fi
