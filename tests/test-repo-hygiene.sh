@@ -39,4 +39,22 @@ if [ -n "$broken" ]; then
 fi
 echo "ok:   no tracked symlink dangles"
 
+# CHECK 2 -- no source comment in this tree depends on context the tree cannot carry.
+#
+# This repo ships comment-lint to every other repository and was, until 2026-09-26, the one place
+# its own commentary went unchecked. The lint run is the tree's own copy, not whatever this machine
+# has applied, so the suite judges what the tree would ship. Whole tree, blocking findings only:
+# the tree was at zero blocking when this check was added, so there is no backlog for a ratchet to
+# protect. No marker vocabulary is passed: record ids are refused in all added content by the
+# publish-boundary guard, and a public tree cannot carry that private list anyway.
+lint="$root/private_dot_local/bin/executable_comment-lint"
+command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 not available, so the comment check cannot run"; exit 1; }
+if ! out=$(cd "$root" && python3 "$lint" --blocking-only 2>&1); then
+  echo "FAIL: a source comment depends on context this tree cannot carry:"
+  printf '%s\n' "$out" | grep '^\[' | sed 's/^/      /'
+  echo "      full report: python3 private_dot_local/bin/executable_comment-lint"
+  exit 1
+fi
+echo "ok:   no source comment depends on context this tree cannot carry"
+
 echo "PASS"
