@@ -41,6 +41,13 @@
     # Configured hooks need git 2.54+; older versions ignore this block silently.
     command = sh "$HOME/.local/bin/git-ai-coauthor"
     event = prepare-commit-msg
+[hook "secret-scan"]
+    # Refuses a commit whose staged changes contain a plaintext secret, in every repository: a floor
+    # of gitleaks' default rules no repository config can weaken, then the repository's own
+    # .gitleaks.toml. Refuses when gitleaks is missing. Like every configured hook, it needs git
+    # 2.54+, and older git skips it silently, so an old git means no scan at all.
+    command = sh "$HOME/.local/bin/git-secret-scan"
+    event = pre-commit
 [gpg]
 	format = ssh
 # NOTE: commit.gpgsign is set per-domain in the overlay gitconfig (~/.dotlocal/gitconfig),

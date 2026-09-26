@@ -19,6 +19,7 @@ view on demand) ·
 `git-ai-coauthor` (prepare-commit-msg hook: adds a Claude co-author trailer, naming the session's model when it can, to commits made from a Claude Code session; wired in `~/.gitconfig`, per-repo opt-out `ai-coauthor.enabled false`) ·
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
+`git-secret-scan` (gitconfig pre-commit hook: gitleaks on staged changes, every repo) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review) ·

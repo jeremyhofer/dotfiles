@@ -26,6 +26,21 @@ Entries are newest first.
 
 ---
 
+## 2026-09-26
+
+**ACTION — every commit is now scanned for plaintext secrets, and refused without gitleaks.**
+`~/.gitconfig` gains a configured hook, `hook.secret-scan`, on `pre-commit`, which runs the new
+`~/.local/bin/git-secret-scan` in every repository. It scans the staged changes twice with gitleaks:
+once with `~/.config/gitleaks/floor.toml` (gitleaks' default rules, which a repository config cannot
+weaken), then with the repository's own `.gitleaks.toml` when it has one. Found secrets are
+redacted from the output. A finding that is not a secret is allowed with a `gitleaks:allow` comment
+on its line, or its fingerprint in the repository's `.gitleaksignore`.
+
+*What changes for you:* install gitleaks before applying, or every commit on the machine is refused
+with a message saying so. The base `Brewfile` now declares it for macOS (`brew bundle`); on Arch,
+`pacman -S gitleaks`. On git older than 2.54 the hook is ignored silently, as with every configured
+hook, so there is no scan at all there.
+
 ## 2026-09-25
 
 **Commits made from a Claude Code session now get a Claude co-author trailer automatically.**

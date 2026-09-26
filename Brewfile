@@ -25,6 +25,7 @@ brew "git"               # Homebrew's git, not Apple's bundled one, which lags b
                          # ~/.zprofile put brew's bin ahead of /usr/bin; GUI apps and launchd jobs still see Apple's.
 brew "gh"
 brew "git-delta"         # git diff/pager syntax highlighting (gitconfig [core] pager + [interactive] diffFilter)
+brew "gitleaks"          # secret scanner: the gitconfig secret-scan hook refuses every commit without it
 brew "lazygit"           # git TUI (LazyVim/snacks integration)
 # tuicr isn't in homebrew-core; this is the author's own tap. `trusted: true` declaratively trusts it
 # so `brew bundle` loads + installs tuicr with no separate `brew trust` step (Homebrew otherwise refuses
