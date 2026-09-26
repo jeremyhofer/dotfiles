@@ -20,6 +20,15 @@
 #   - an empty message, so aborting an editor commit still aborts it instead of committing a
 #     message that is nothing but the trailer;
 #   - a repository that opts out: `git config ai-coauthor.enabled false`.
+#
+# THE MODEL, best effort. Nothing in the environment names the model, but CLAUDE_CODE_SESSION_ID
+# names the session, and the session's transcript records the model on every assistant turn. So
+# the hook reads the most recent one and writes `Claude (<model-id>)`, which lets `git log` show
+# which model did what over time. Two known limits, both accepted: a subagent shares its parent's
+# session id, so a subagent's commit is attributed to the parent's model; and the transcript
+# format is Claude Code's internal one, so if it changes the lookup finds nothing and the trailer
+# falls back to plain `Claude`. Only a value shaped like `claude-<letters, digits, dots, dashes>`
+# is accepted: the same key also appears inside tool calls ("haiku", "sonnet") and must not match.
 set -eu
 
 msg=${1:-}
@@ -32,4 +41,18 @@ enabled=$(git config --type=bool --get ai-coauthor.enabled 2>/dev/null || echo t
 grep -qiE '^co-authored-by:.*<noreply@anthropic\.com>' "$msg" && exit 0
 grep -v '^#' "$msg" | grep -q '[^[:space:]]' || exit 0
 
-git interpret-trailers --in-place --trailer 'Co-Authored-By: Claude <noreply@anthropic.com>' "$msg"
+# session_model -- the model of the latest assistant turn in this session's transcript, or nothing.
+session_model() {
+  sid=${CLAUDE_CODE_SESSION_ID:-}
+  case "$sid" in ''|*[!A-Za-z0-9-]*) return 0 ;; esac   # a path component: UUID-shaped only
+  for t in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$sid".jsonl; do
+    [ -f "$t" ] || continue
+    tail -n 500 "$t" | grep -o '"model":"claude-[a-z0-9.-]*"' | tail -n 1 | sed 's/^"model":"//; s/"$//'
+    return 0
+  done
+}
+
+model=$(session_model 2>/dev/null || true)
+name=Claude
+[ -n "$model" ] && name="Claude ($model)"
+git interpret-trailers --in-place --trailer "Co-Authored-By: $name <noreply@anthropic.com>" "$msg"

@@ -31,9 +31,11 @@ Entries are newest first.
 **Commits made from a Claude Code session now get a Claude co-author trailer automatically.**
 `~/.gitconfig` gains a configured hook, `hook.ai-coauthor`, on `prepare-commit-msg`, which runs the
 new `~/.local/bin/git-ai-coauthor`. When `CLAUDECODE` is set (Claude Code sets it in its sessions and
-in the shells its subagents run), the hook appends `Co-Authored-By: Claude <noreply@anthropic.com>`
-unless the message already carries an Anthropic co-author trailer. Commits typed outside a session
-are untouched.
+in the shells its subagents run), the hook appends `Co-Authored-By: Claude (<model-id>)
+<noreply@anthropic.com>` unless the message already carries an Anthropic co-author trailer. The model
+comes from the session's transcript. It is best effort: a subagent's commit is credited to its
+parent's model, and when the transcript cannot be read the trailer says plain `Claude`. Commits
+typed outside a session are untouched.
 
 *What changes for you:* nothing to do on a machine with git 2.54 or later. On an older git the
 `hook.*` keys are ignored silently and commits stay unattributed; `git --version` tells you which
