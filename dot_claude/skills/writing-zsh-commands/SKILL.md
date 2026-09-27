@@ -295,6 +295,21 @@ MSG
 
 The quoted delimiter (`<<'MSG'`) turns off every expansion inside, backticks and `$` alike.
 
+## 12. SILENT — a git pathspec `dir/**/*.md` skips the files directly in `dir/`
+
+Not zsh, but it fails the same way: a subset at exit 0. Without the `:(glob)` magic, git matches a
+pathspec with `fnmatch` where `*` already crosses `/`, so `**/` demands one MORE directory level and
+the top-level files drop out:
+
+```
+git ls-files -- 'docs/**/*.md'          # docs/sub/deep.md          (docs/top.md MISSING)
+git ls-files -- 'docs/*.md'             # docs/sub/deep.md docs/top.md
+git ls-files -- ':(glob)docs/**/*.md'   # docs/sub/deep.md docs/top.md
+```
+
+Use `docs/*.md` for the whole tree, or `:(glob)` when you want `**` to mean what it means in zsh.
+A gate that enumerated with the first form once judged zero top-level documents and passed.
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
