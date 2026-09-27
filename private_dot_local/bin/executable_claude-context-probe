@@ -74,6 +74,7 @@ plant "$W/docs/import-in.md" IMPORTIN
 mkdir -p "$W/.claude/skills/probe-skill"
 plant "$W/.claude/CLAUDE.md" DOTCLAUDE
 plant "$W/CLAUDE.local.md" LOCALMD
+plant "$W/AGENTS.md" AGENTSWITH
 mkdir -p "$W/sub"
 plant "$W/sub/CLAUDE.md" SUBDIR
 plant "$ROOT/unreferenced.md" NEGATIVE
@@ -141,14 +142,21 @@ EOF
   mcp_args="--mcp-config $ROOT/mcp.json"
 fi
 
-# ---- layout B: a plain clone (the .git is a DIRECTORY) with an instruction file above it --------
-B="$ROOT/parent"
+# ---- layout B: a plain clone (the .git is a DIRECTORY) with an instruction file above it, and a
+# CLAUDE.md one level higher that is a SYMLINK to a file elsewhere. A symlink surfaces a generated
+# file kept outside the project without an @import, which Claude Code gates per project behind an
+# interactive approval.
+B="$ROOT/linkbox/parent"
 mkdir -p "$B/repo"
+plant "$ROOT/link-target.md" SYMLINK
+ln -s "$ROOT/link-target.md" "$ROOT/linkbox/CLAUDE.md" || exit 2
 git init -q "$B/repo" || exit 2
 plant "$B/CLAUDE.md" PARENT
 plant "$B/repo/CLAUDE.md" REPOROOT
 
 # ---- layout C: a repository whose only instruction file is AGENTS.md ------------------------------
+# Nothing above it may carry a CLAUDE.md: whether AGENTS.md is read can depend on whether any
+# CLAUDE.md was found, which is exactly what "alone" is testing.
 C="$ROOT/agents"
 mkdir -p "$C"
 git init -q "$C" || exit 2
@@ -231,6 +239,8 @@ row '.claude/CLAUDE.md in the repository'                       "$(verdict "$ROO
 row 'CLAUDE.local.md in the repository'                         "$(verdict "$ROOT/out-a" LOCALMD "$sa")"
 row 'CLAUDE.md in a subdirectory, at session start'             "$(verdict "$ROOT/out-a" SUBDIR "$sa")"
 row 'AGENTS.md alone, with no CLAUDE.md'                         "$(verdict "$ROOT/out-c" AGENTSMD "$sc")"
+row 'AGENTS.md beside a CLAUDE.md'                               "$(verdict "$ROOT/out-a" AGENTSWITH "$sa")"
+row 'CLAUDE.md two levels up, a symlink to a file elsewhere'   "$(verdict "$ROOT/out-b" SYMLINK "$sb")"
 printf '\nImports from CLAUDE.md\n'
 row '@import inside the repository'                             "$(verdict "$ROOT/out-a" IMPORTIN "$sa")"
 row '@import outside the repository (relative, ../)'            "$(verdict "$ROOT/out-a" IMPORTOUT "$sa")"

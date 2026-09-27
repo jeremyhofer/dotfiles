@@ -52,11 +52,15 @@ the machine. `--keep` output is for debugging on that machine and should not lea
 | `.claude/CLAUDE.md`, `CLAUDE.local.md` | these alternate locations are read | only `CLAUDE.md` at the root is dependable |
 | subdirectory, at session start | unexpected: subdirectory files normally load only when files there are read | the normal, lazy behaviour |
 | `AGENTS.md` alone | Claude Code reads `AGENTS.md` natively on this version | keep a `CLAUDE.md` that imports it |
+| `AGENTS.md` beside a `CLAUDE.md` | both are read | `AGENTS.md` is read only when no `CLAUDE.md` is found; import it from the `CLAUDE.md` |
+| symlink two levels up | a `CLAUDE.md` that is a symlink to a file kept elsewhere is read, with no approval, and shows that file's current content | surface an external file some other way |
 
 **Imports.** An `@import` inside the repository is the control for the import mechanism. An import
-from outside the repository may need the one-time approval an interactive session asks for, which a
-headless run cannot give, so `NOT loaded` there is not conclusive: open an interactive session in
-the kept tree and check `/memory` before designing around it.
+from outside the repository is gated: Claude Code records a per-project approval for external
+includes, asked for once in an interactive session, and a headless run cannot give it. So `NOT
+loaded` there means "not without that approval", and every new project path, such as each agent
+worktree, needs its own. To surface a file kept outside a project, prefer a symlinked `CLAUDE.md`,
+which the symlink row tests.
 
 **Hooks.** Each hook reports whether it RAN (it wrote a marker file) and whether its context was
 DELIVERED (the model saw its codeword). These fail for different reasons:
