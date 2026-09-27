@@ -18,6 +18,10 @@ Installed to `~/.local/bin`.
 - `chezmoi-overlay` runs a second, independent chezmoi instance for private configuration, with its
   own config, state and cache. Both instances target the same home directory, so their managed file
   sets have to stay disjoint.
+- `claude-context-probe` measures which context Claude Code actually loads on the machine it runs
+  on: instruction files above and below a repository, imports, hooks and their injected context,
+  skills and MCP servers. Managed machines can differ from the documented defaults, so this is
+  measured before designing how context reaches sessions there.
 - `git-clone-worktree` clones a repository as a bare repo with worktrees as sibling directories, so
   several branches can be checked out at the same time.
 - `git-merge-diff` shows the diff a merge would introduce, computed from the merge base rather than
@@ -47,6 +51,8 @@ agent loads by name when its trigger applies, rather than something kept in cont
 - `brew-and-brewfiles` covers installing and removing software on a Homebrew-managed Mac, which
   Brewfile layer an entry belongs in, and the failure signatures where a declared package silently
   did not install.
+- `claude-context-probe` covers running the probe above, reading each verdict and its controls,
+  and relaying the summary off a managed machine without copying files from it.
 - `dotfiles-layout-and-bootstrap` covers the two-instance model, deciding which layer a file belongs
   in, and the rule that you edit the source and apply rather than editing the deployed file.
 - `dotfiles-update` covers pulling and applying an update, catching up a machine that has been
@@ -67,7 +73,7 @@ agent loads by name when its trigger applies, rather than something kept in cont
 
 Run them with `sh tests/run-all.sh`, optionally with a filter argument to run one suite.
 
-There are 22 test scripts plus the runner. They cover each of the tools above and each subcommand of
+There are 36 test scripts plus the runner. They cover each of the tools above and each subcommand of
 `kb`, and they run as a pre-commit gate in this repository.
 
 ## Layout

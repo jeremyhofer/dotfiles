@@ -14,6 +14,7 @@ declares — reads both the bullet-header and frontmatter conventions and report
 than normalising it; `--strict` for a repo that has adopted a status vocabulary; `--subjects` renders a by-subject
 view on demand) ·
 `chezmoi-overlay` (runs the private second chezmoi instance) ·
+`claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·
 `register` (read a work register — list, stats, show, the next free id, and render a browsable index on demand rather than committing one that can go stale) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·
 `git-ai-coauthor` (prepare-commit-msg hook: adds a Claude co-author trailer, naming the session's model when it can, to commits made from a Claude Code session; wired in `~/.gitconfig`, per-repo opt-out `ai-coauthor.enabled false`) ·

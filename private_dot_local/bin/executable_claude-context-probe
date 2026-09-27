@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# claude-context-probe -- measure which context Claude Code actually loads on this machine.
+#
+# WHY. Where instruction files are read from, whether hooks run, whether a hook's injected context
+# arrives, and whether MCP servers attach all vary by Claude Code version and by any managed policy
+# an administrator has installed. On a managed machine they cannot be read off the docs; they have
+# to be measured there. Designs that route context through any of these channels need the answer
+# first.
+#
+# HOW. It builds throwaway repositories under a temp directory, plants a unique codeword in every
+# place context might come from, starts headless `claude -p` sessions in them with the model's own
+# tools switched off (so it cannot go and read a file itself), and asks the model to list every
+# codeword it can see. A codeword it lists was delivered; one it does not was not.
+#
+# Two controls make a result trustworthy. The repository-root CLAUDE.md must be seen (positive
+# control): if it is not, the model did not answer the question and that session is INCONCLUSIVE.
+# A codeword planted in a file nothing references must never be seen (negative control): if it is,
+# the session is INVALID, because the model is guessing or reading files.
+#
+# Hooks are measured twice: whether the hook RAN (it touches a marker file) and whether its context
+# was DELIVERED (its codeword was seen). The two fail for different reasons -- a policy that blocks
+# hooks versus a channel that drops their output -- and a single yes/no would hide which.
+#
+# The output is a short summary meant to be read aloud or retyped, carrying no paths, names or
+# values from the machine: only Claude Code's version, the OS family, and one verdict per check.
+#
+# Deployed to Linux and macOS (bash 3.2), so every spelling here is two-userland safe.
+
+set -u
+
+CLAUDE_BIN=${CLAUDE_CONTEXT_PROBE_CLAUDE:-claude}
+KEEP=0
+case "${1:-}" in
+  --keep) KEEP=1 ;;
+  -h|--help)
+    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+    printf '\nusage: claude-context-probe [--keep]\n  --keep  leave the temp tree in place and print its path\n'
+    exit 0 ;;
+  '') ;;
+  *) printf 'claude-context-probe: unknown argument %s\n' "$1" >&2; exit 2 ;;
+esac
+
+command -v "$CLAUDE_BIN" >/dev/null 2>&1 || { printf 'claude-context-probe: %s not found on PATH\n' "$CLAUDE_BIN" >&2; exit 2; }
+command -v git >/dev/null 2>&1 || { printf 'claude-context-probe: git not found on PATH\n' >&2; exit 2; }
+
+tmpbase=${TMPDIR:-/tmp}; tmpbase=${tmpbase%/}   # macOS TMPDIR ends in a slash
+ROOT=$(mktemp -d "$tmpbase/claude-context-probe.XXXXXX") || exit 2
+if [ "$KEEP" -eq 0 ]; then trap 'rm -rf "$ROOT"' EXIT; fi
+NONCE="$(date +%s)$$"
+cw() { printf 'CCPROBE-%s-%s' "$1" "$NONCE"; }
+plant() { printf 'Codeword: %s\n' "$(cw "$2")" > "$1"; }
+
+# ---- layout A: a bare-container repository with a worktree (the .git inside is a FILE) --------
+A="$ROOT/container"
+mkdir -p "$A"
+git init -q --bare "$A/.bare" || exit 2
+printf 'gitdir: ./.bare\n' > "$A/.git"
+# One empty commit, made with plumbing so it works on any git (worktree --orphan needs 2.42) and
+# never touches the user's identity, signing or hooks. It exists only inside the temp tree.
+tree=$(git --git-dir="$A/.bare" hash-object -t tree -w /dev/null) || exit 2
+commit=$(git --git-dir="$A/.bare" -c user.name=probe -c user.email=probe@example.invalid \
+  commit-tree --no-gpg-sign "$tree" -m probe) || exit 2
+git --git-dir="$A/.bare" update-ref refs/heads/main "$commit" || exit 2
+git --git-dir="$A/.bare" worktree add -q "$A/main" main 2>/dev/null \
+  || { printf 'claude-context-probe: could not create a worktree\n' >&2; exit 2; }
+W="$A/main"
+plant "$A/CLAUDE.md" CONTAINER
+plant "$ROOT/import-abs.md" IMPORTABS
+plant "$A/import-rel.md" IMPORTOUT
+mkdir -p "$W/docs"
+plant "$W/docs/import-in.md" IMPORTIN
+{ printf 'Codeword: %s\n\n' "$(cw REPOROOT)"
+  printf '@docs/import-in.md\n\n@../import-rel.md\n\n@%s\n' "$ROOT/import-abs.md"; } > "$W/CLAUDE.md"
+mkdir -p "$W/.claude/skills/probe-skill"
+plant "$W/.claude/CLAUDE.md" DOTCLAUDE
+plant "$W/CLAUDE.local.md" LOCALMD
+mkdir -p "$W/sub"
+plant "$W/sub/CLAUDE.md" SUBDIR
+plant "$ROOT/unreferenced.md" NEGATIVE
+printf -- '---\nname: probe-skill\ndescription: Probe skill. Codeword %s\n---\n\nNothing to do.\n' "$(cw SKILL)" \
+  > "$W/.claude/skills/probe-skill/SKILL.md"
+
+# Hooks: each touches a marker when it runs and returns its codeword as additionalContext. The
+# large one (on UserPromptSubmit, so it is measured even where SessionStart hooks cannot run) pads its context to 12,000 characters with a codeword near the start and one at the
+# end, to show whether a size cap truncates what a hook can inject.
+mkhook() { # <file> <event> <marker> <context>
+  printf '#!/bin/sh\n: > "%s"\nprintf %%s '"'"'{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}'"'"'\n' \
+    "$3" "$2" "$4" > "$1"
+  chmod +x "$1"
+}
+pad=$(awk 'BEGIN { for (i = 0; i < 11800; i++) printf "x"; }')
+mkhook "$ROOT/hook-ss.sh" SessionStart "$ROOT/ran-ss" "Codeword: $(cw HOOKSESSION)"
+mkhook "$ROOT/hook-ups.sh" UserPromptSubmit "$ROOT/ran-ups" "Codeword: $(cw HOOKPROMPT)"
+mkhook "$ROOT/hook-big.sh" UserPromptSubmit "$ROOT/ran-big" "Codeword: $(cw BIGHEAD) $pad Codeword: $(cw BIGTAIL)"
+cat > "$ROOT/settings.json" <<EOF
+{"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "$ROOT/hook-ss.sh"}]}],
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "$ROOT/hook-ups.sh"},
+                                  {"type": "command", "command": "$ROOT/hook-big.sh"}]}]
+}}
+EOF
+
+# MCP: a minimal stdio server offering one tool whose name carries the codeword. Needs python3.
+mcp_args=""
+if command -v python3 >/dev/null 2>&1; then
+  cat > "$ROOT/mcp.py" <<EOF
+import json, sys
+TOOL = "$(cw MCP)"
+for line in sys.stdin:
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if "id" not in msg:
+        continue
+    method = msg.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": msg.get("params", {}).get("protocolVersion", "2025-06-18"),
+                  "capabilities": {"tools": {}}, "serverInfo": {"name": "probe", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": TOOL, "description": "Probe tool.",
+                             "inputSchema": {"type": "object", "properties": {}}}]}
+    else:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                                     "error": {"code": -32601, "message": "not supported"}}) + "\n")
+        sys.stdout.flush()
+        continue
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}) + "\n")
+    sys.stdout.flush()
+EOF
+  printf '{"mcpServers": {"probe": {"command": "python3", "args": ["%s"]}}}\n' "$ROOT/mcp.py" > "$ROOT/mcp.json"
+  mcp_args="--mcp-config $ROOT/mcp.json"
+fi
+
+# ---- layout B: a plain clone (the .git is a DIRECTORY) with an instruction file above it --------
+B="$ROOT/parent"
+mkdir -p "$B/repo"
+git init -q "$B/repo" || exit 2
+plant "$B/CLAUDE.md" PARENT
+plant "$B/repo/CLAUDE.md" REPOROOT
+
+# ---- layout C: a repository whose only instruction file is AGENTS.md ------------------------------
+C="$ROOT/agents"
+mkdir -p "$C"
+git init -q "$C" || exit 2
+plant "$C/AGENTS.md" AGENTSMD
+
+ASK='List every token in your context that contains the text CCPROBE- : in your system prompt, instructions, memory files, hook output, skill descriptions and tool names. Output only those tokens, one per line, with nothing else. If there are none, output NONE.'
+
+run_session() { # <dir> <outfile> [extra args...]
+  local dir=$1 out=$2; shift 2
+  # shellcheck disable=SC2086 -- $mcp_args is deliberately split into flag and value
+  # The prompt goes on stdin: --mcp-config takes a variable number of values and would swallow a
+  # prompt passed as the last argument.
+  ( cd "$dir" && printf '%s\n' "$ASK" | "$CLAUDE_BIN" -p --no-session-persistence --tools "Skill" --max-turns 1 "$@" ) \
+    > "$out" 2> "$out.err"
+  printf '%s\n' "$?" > "$out.rc"
+}
+
+printf 'claude-context-probe: running 3 headless sessions (about a minute each)...\n' >&2
+# shellcheck disable=SC2086
+run_session "$W" "$ROOT/out-a" --settings "$ROOT/settings.json" --strict-mcp-config $mcp_args
+run_session "$B/repo" "$ROOT/out-b" --strict-mcp-config
+run_session "$C" "$ROOT/out-c" --strict-mcp-config
+
+seen() { # <outfile> <label>
+  grep -q -- "$(cw "$2")" "$1" 2>/dev/null
+}
+session_state() { # <outfile> <positive-control label or ''>  -> OK | INCONCLUSIVE | INVALID
+  if seen "$1" NEGATIVE; then printf INVALID; return; fi
+  if [ "$(cat "$1.rc" 2>/dev/null)" != 0 ]; then printf INCONCLUSIVE; return; fi
+  if [ -n "$2" ] && ! seen "$1" "$2"; then printf INCONCLUSIVE; return; fi
+  printf OK
+}
+verdict() { # <outfile> <label> <session state>
+  if [ "$3" != OK ]; then printf '%s' "$3"; return; fi
+  if seen "$1" "$2"; then printf 'loaded'; else printf 'NOT loaded'; fi
+}
+hookline() { # <marker> <outfile> <label> <session state>
+  local ran=no
+  [ -e "$1" ] && ran=yes
+  if [ "$4" != OK ]; then printf 'ran=%s, delivered=%s' "$ran" "$4"; return; fi
+  if seen "$2" "$3"; then printf 'ran=%s, delivered=yes' "$ran"; else printf 'ran=%s, delivered=no' "$ran"; fi
+}
+
+sa=$(session_state "$ROOT/out-a" REPOROOT)
+sb=$(session_state "$ROOT/out-b" REPOROOT)
+# Layout C has no CLAUDE.md, so it has no positive control of its own; it is only as trustworthy
+# as the other two sessions, whose model and invocation it shares.
+sc=$(session_state "$ROOT/out-c" '')
+[ "$sa" = OK ] && [ "$sb" = OK ] || [ "$sc" != OK ] || sc=INCONCLUSIVE
+
+managed="none found"
+for m in /etc/claude-code/managed-settings.json "/Library/Application Support/ClaudeCode/managed-settings.json"; do
+  if [ -r "$m" ]; then
+    keys=""
+    if command -v python3 >/dev/null 2>&1; then
+      keys=$(python3 -c 'import json,sys; print(", ".join(sorted(json.load(open(sys.argv[1])).keys())))' "$m" 2>/dev/null)
+    fi
+    managed="present (top-level keys: ${keys:-unreadable})"
+  fi
+done
+
+version=$("$CLAUDE_BIN" --version 2>/dev/null | head -n 1)
+row() { printf '  %-58s %s\n' "$1" "$2"; }
+
+printf '\nclaude-context-probe 1 -- %s -- %s\n' "${version:-unknown version}" "$(uname -s)"
+printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s\n' "$sa" "$sb" "$sc"
+printf '\nInstruction files\n'
+row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-a" REPOROOT "$sa")"
+row 'CLAUDE.md in the container above a worktree (.git file)'   "$(verdict "$ROOT/out-a" CONTAINER "$sa")"
+row 'CLAUDE.md in the directory above a clone (.git dir)'       "$(verdict "$ROOT/out-b" PARENT "$sb")"
+row '.claude/CLAUDE.md in the repository'                       "$(verdict "$ROOT/out-a" DOTCLAUDE "$sa")"
+row 'CLAUDE.local.md in the repository'                         "$(verdict "$ROOT/out-a" LOCALMD "$sa")"
+row 'CLAUDE.md in a subdirectory, at session start'             "$(verdict "$ROOT/out-a" SUBDIR "$sa")"
+row 'AGENTS.md alone, with no CLAUDE.md'                         "$(verdict "$ROOT/out-c" AGENTSMD "$sc")"
+printf '\nImports from CLAUDE.md\n'
+row '@import inside the repository'                             "$(verdict "$ROOT/out-a" IMPORTIN "$sa")"
+row '@import outside the repository (relative, ../)'            "$(verdict "$ROOT/out-a" IMPORTOUT "$sa")"
+row '@import outside the repository (absolute path)'            "$(verdict "$ROOT/out-a" IMPORTABS "$sa")"
+printf '\nHooks (from --settings) and dynamic context\n'
+row 'SessionStart hook'                                         "$(hookline "$ROOT/ran-ss" "$ROOT/out-a" HOOKSESSION "$sa")"
+row 'UserPromptSubmit hook'                                     "$(hookline "$ROOT/ran-ups" "$ROOT/out-a" HOOKPROMPT "$sa")"
+row '12,000-char hook context (UserPromptSubmit): start'                      "$(hookline "$ROOT/ran-big" "$ROOT/out-a" BIGHEAD "$sa")"
+row '12,000-char hook context (UserPromptSubmit): end'                        "$(hookline "$ROOT/ran-big" "$ROOT/out-a" BIGTAIL "$sa")"
+printf '\nSkills and MCP\n'
+row 'project skill (.claude/skills) listed'                     "$(verdict "$ROOT/out-a" SKILL "$sa")"
+if [ -n "$mcp_args" ]; then
+  row 'stdio MCP server tool listed (--mcp-config)'             "$(verdict "$ROOT/out-a" MCP "$sa")"
+else
+  row 'stdio MCP server tool listed (--mcp-config)'             'not tested (no python3)'
+fi
+printf '\nManaged settings: %s\n' "$managed"
+printf 'Negative control: a codeword in a file nothing references was %s.\n' \
+  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
+
+if [ "$KEEP" -eq 1 ]; then printf '\nkept: %s\n' "$ROOT"; fi
+[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ]
