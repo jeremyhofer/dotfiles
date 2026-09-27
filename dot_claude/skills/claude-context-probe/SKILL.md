@@ -13,7 +13,7 @@ managed policy an administrator installed. The docs describe the defaults, not a
 ## Run it
 
 ```sh
-claude-context-probe          # about one to three minutes; three short headless sessions
+claude-context-probe          # a few minutes; four short headless sessions
 claude-context-probe --keep   # also keep the temp tree, for debugging on that machine only
 ```
 
@@ -24,7 +24,7 @@ claude-context-probe --keep   # also keep the temp tree, for debugging on that m
   first run is the baseline: a verdict that differs between the two is a fact about the second
   machine; a verdict that is the same is a fact about the Claude Code version.
 - It needs `claude` and `git` on PATH, and `python3` for the MCP check (skipped without it).
-- It spends three model calls and writes only under the temp directory, which it deletes.
+- It spends four model sessions and writes only under the temp directory, which it deletes.
 
 ## Relay it
 
@@ -35,7 +35,7 @@ the machine. `--keep` output is for debugging on that machine and should not lea
 
 ## Read it
 
-**First line: the three sessions.** Each must say `OK` before any of its rows mean anything.
+**First line: the four sessions.** Each must say `OK` before any of its rows mean anything.
 
 - `INCONCLUSIVE`: the session failed, or the model did not report the repository-root CLAUDE.md
   that every session must see (the positive control). Its rows are not verdicts. Re-run; if it
@@ -69,6 +69,20 @@ DELIVERED (the model saw its codeword). These fail for different reasons:
   `start` delivered and `end` not means a cap below 12,000 characters. Split larger context across
   several hooks.
 
+**Skill dynamic context.** A line in a SKILL.md written `` !`command` `` runs when the skill is
+invoked, and its output replaces the line before the model sees the skill. This is the channel for
+context that must be current when it is used: the command can render records, status or state
+fresh each time. It works in skills and custom commands only; a `CLAUDE.md` does not run it.
+
+- `delivered`: the command ran at invocation and its output reached the model, with no shell call
+  of the model's own that could have fetched it instead.
+- `NOT delivered (disabled by policy)`: `disableSkillShellExecution` is set, typically by a managed
+  policy. Skills still load, as static text.
+- `NOT delivered (permission check failed)`: an injected command never prompts; it must already be
+  allowed, for example by the skill's `allowed-tools` frontmatter, or the invocation aborts.
+- `INCONCLUSIVE (the model ran a shell command itself)`: the codeword may have come from the
+  model's own call. Re-run.
+
 **Skills and MCP.** A listed project skill means skills in `.claude/skills` are an on-demand
 channel on this machine. A listed MCP tool means a stdio MCP server can be attached, which is what
 on-demand retrieval over MCP would need. `NOT loaded` on either usually means a managed policy.
@@ -81,3 +95,5 @@ on-demand retrieval over MCP would need. `NOT loaded` on either usually means a 
 - Interactive sessions. Everything runs headless (`claude -p`); interactive-only behaviour, such as
   approval prompts, is out of scope.
 - Plugins, output styles and user-level `~/.claude` files: it never writes outside its temp tree.
+- Skills synced from a claude.ai account: Claude Code never runs their injected commands, whatever
+  this probe reports for a local skill.

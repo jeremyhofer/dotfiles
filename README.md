@@ -20,7 +20,7 @@ Installed to `~/.local/bin`.
   sets have to stay disjoint.
 - `claude-context-probe` measures which context Claude Code actually loads on the machine it runs
   on: instruction files above and below a repository, imports, hooks and their injected context,
-  skills and MCP servers. Managed machines can differ from the documented defaults, so this is
+  skills, skill dynamic context (`` !`command` `` lines) and MCP servers. Managed machines can differ from the documented defaults, so this is
   measured before designing how context reaches sessions there.
 - `git-clone-worktree` clones a repository as a bare repo with worktrees as sibling directories, so
   several branches can be checked out at the same time.

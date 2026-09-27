@@ -80,6 +80,15 @@ plant "$ROOT/unreferenced.md" NEGATIVE
 printf -- '---\nname: probe-skill\ndescription: Probe skill. Codeword %s\n---\n\nNothing to do.\n' "$(cw SKILL)" \
   > "$W/.claude/skills/probe-skill/SKILL.md"
 
+# Dynamic context: a skill whose body runs a command when the skill is invoked, and prints a
+# codeword that appears nowhere in the skill's text. The model could also run that command itself
+# through its shell tool, which the skill needs available, so session D records its tool calls and
+# a codeword only counts as delivered when the model made no shell call of its own.
+printf '#!/bin/sh\nprintf "CCPROBE-%%s-%%s\\n" DYN "%s"\n' "$NONCE" > "$ROOT/dyn.sh"
+mkdir -p "$W/.claude/skills/probe-dynamic"
+printf -- '---\nname: probe-dynamic\ndescription: Probe of dynamic context. Invoke when asked to.\nallowed-tools: Bash(sh %s)\n---\n\nRendered:\n!`sh %s`\n' \
+  "$ROOT/dyn.sh" "$ROOT/dyn.sh" > "$W/.claude/skills/probe-dynamic/SKILL.md"
+
 # Hooks: each touches a marker when it runs and returns its codeword as additionalContext. The
 # large one (on UserPromptSubmit, so it is measured even where SessionStart hooks cannot run) pads its context to 12,000 characters with a codeword near the start and one at the
 # end, to show whether a size cap truncates what a hook can inject.
@@ -157,11 +166,18 @@ run_session() { # <dir> <outfile> [extra args...]
   printf '%s\n' "$?" > "$out.rc"
 }
 
-printf 'claude-context-probe: running 3 headless sessions (about a minute each)...\n' >&2
+printf 'claude-context-probe: running 4 headless sessions (up to a minute each)...\n' >&2
 # shellcheck disable=SC2086
 run_session "$W" "$ROOT/out-a" --settings "$ROOT/settings.json" --strict-mcp-config $mcp_args
 run_session "$B/repo" "$ROOT/out-b" --strict-mcp-config
 run_session "$C" "$ROOT/out-c" --strict-mcp-config
+# Session D asks the model to invoke the dynamic skill. It needs the shell tool, because a skill's
+# injected command runs through it and the invocation aborts without it.
+ASK_DYN='Invoke the probe-dynamic skill now. After it loads, list every token in your context that contains the text CCPROBE- , one per line, with nothing else.'
+( cd "$W" && printf '%s\n' "$ASK_DYN" | "$CLAUDE_BIN" -p --no-session-persistence --strict-mcp-config \
+    --tools "Skill,Bash" --allowedTools "Bash(sh $ROOT/dyn.sh)" --max-turns 3 \
+    --output-format stream-json --verbose ) > "$ROOT/out-d" 2> "$ROOT/out-d.err"
+printf '%s\n' "$?" > "$ROOT/out-d.rc"
 
 seen() { # <outfile> <label>
   grep -q -- "$(cw "$2")" "$1" 2>/dev/null
@@ -188,6 +204,7 @@ sb=$(session_state "$ROOT/out-b" REPOROOT)
 # Layout C has no CLAUDE.md, so it has no positive control of its own; it is only as trustworthy
 # as the other two sessions, whose model and invocation it shares.
 sc=$(session_state "$ROOT/out-c" '')
+sd=$(session_state "$ROOT/out-d" REPOROOT)
 [ "$sa" = OK ] && [ "$sb" = OK ] || [ "$sc" != OK ] || sc=INCONCLUSIVE
 
 managed="none found"
@@ -205,7 +222,7 @@ version=$("$CLAUDE_BIN" --version 2>/dev/null | head -n 1)
 row() { printf '  %-58s %s\n' "$1" "$2"; }
 
 printf '\nclaude-context-probe 1 -- %s -- %s\n' "${version:-unknown version}" "$(uname -s)"
-printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s\n' "$sa" "$sb" "$sc"
+printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s\n' "$sa" "$sb" "$sc" "$sd"
 printf '\nInstruction files\n'
 row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-a" REPOROOT "$sa")"
 row 'CLAUDE.md in the container above a worktree (.git file)'   "$(verdict "$ROOT/out-a" CONTAINER "$sa")"
@@ -225,6 +242,13 @@ row '12,000-char hook context (UserPromptSubmit): start'                      "$
 row '12,000-char hook context (UserPromptSubmit): end'                        "$(hookline "$ROOT/ran-big" "$ROOT/out-a" BIGTAIL "$sa")"
 printf '\nSkills and MCP\n'
 row 'project skill (.claude/skills) listed'                     "$(verdict "$ROOT/out-a" SKILL "$sa")"
+if [ "$sd" != OK ]; then dynline=$sd
+elif grep -q '"type":"tool_use"[^}]*"name":"Bash"' "$ROOT/out-d" 2>/dev/null; then dynline='INCONCLUSIVE (the model ran a shell command itself)'
+elif seen "$ROOT/out-d" DYN; then dynline='delivered'
+elif grep -q 'disabled by policy' "$ROOT/out-d" "$ROOT/out-d.err" 2>/dev/null; then dynline='NOT delivered (disabled by policy)'
+elif grep -q 'permission check failed' "$ROOT/out-d" "$ROOT/out-d.err" 2>/dev/null; then dynline='NOT delivered (permission check failed)'
+else dynline='NOT delivered'; fi
+row 'skill dynamic context (!`command` in SKILL.md)'               "$dynline"
 if [ -n "$mcp_args" ]; then
   row 'stdio MCP server tool listed (--mcp-config)'             "$(verdict "$ROOT/out-a" MCP "$sa")"
 else
@@ -232,7 +256,7 @@ else
 fi
 printf '\nManaged settings: %s\n' "$managed"
 printf 'Negative control: a codeword in a file nothing references was %s.\n' \
-  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
+  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE || seen "$ROOT/out-d" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
 
 if [ "$KEEP" -eq 1 ]; then printf '\nkept: %s\n' "$ROOT"; fi
-[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ]
+[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ] && [ "$sd" = OK ]

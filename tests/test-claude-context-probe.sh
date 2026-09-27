@@ -26,6 +26,8 @@ trap 'rm -rf "$TMP"' EXIT
 #   fail      exit non-zero
 #   hookdrop  run the hooks but do not report their context
 #   nohooks   never run the hooks (as under a policy that blocks them)
+#   modelbash invoke the dynamic skill, then also run a shell command itself
+#   policy    render the dynamic skill as a policy that disables shell execution would
 cat > "$TMP/claude" <<'EOF'
 #!/usr/bin/env bash
 mode=${FAKE_MODE:-normal}
@@ -34,7 +36,7 @@ settings=""
 while [ $# -gt 0 ]; do
   case "$1" in --settings) settings=$2; shift 2 ;; *) shift ;; esac
 done
-cat > /dev/null
+ask=$(cat)
 [ "$mode" = fail ] && exit 3
 if [ "$mode" = silent ]; then echo NONE; exit 0; fi
 for f in CLAUDE.md AGENTS.md; do [ -f "$f" ] && grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$f"; done
@@ -44,6 +46,13 @@ if [ -n "$settings" ] && [ "$mode" != nohooks ]; then
     [ "$mode" = hookdrop ] || grep -o 'CCPROBE-[A-Z]*-[0-9]*' <<< "$out"
   done
 fi
+case "$ask" in *probe-dynamic*)
+  echo '{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"probe-dynamic"}}'
+  cmd=$(sed -n 's/^!`\(.*\)`$/\1/p' .claude/skills/probe-dynamic/SKILL.md)
+  if [ "$mode" = policy ]; then echo '[shell command execution disabled by policy]'; else sh -c "$cmd"; fi
+  [ "$mode" = modelbash ] && echo '{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}'
+  ;;
+esac
 if [ "$mode" = leak ]; then
   d=$PWD
   while [ "$d" != / ]; do
@@ -60,7 +69,7 @@ run() { FAKE_MODE=$1 bash "$PROBE" 2>/dev/null; }
 
 printf '\n== an honest model ==\n'
 out=$(run normal); rc=$?
-[ "$rc" -eq 0 ] && has "$out" 'bare-container=OK  plain-clone=OK  agents-only=OK' \
+[ "$rc" -eq 0 ] && has "$out" 'bare-container=OK  plain-clone=OK  agents-only=OK  dynamic-skill=OK' \
   && ok "all three sessions are OK and the exit status is 0" || bad "honest run not OK" "rc=$rc: $out"
 has "$out" 'repository root (positive control) *loaded' && ok "the positive control reads loaded" || bad "control not loaded" "$out"
 has "$out" 'container above a worktree (.git file) *NOT loaded' \
@@ -93,6 +102,18 @@ printf '\n== hooks that run but whose context never arrives ==\n'
 out=$(run hookdrop); rc=$?
 has "$out" 'SessionStart hook *ran=yes, delivered=no' \
   && ok "ran=yes, delivered=no, distinct from a hook that never ran" || bad "dropped hook context misread" "$out"
+
+has "$out" 'SKILL.md) *delivered' && ok "a skill's injected command output reads delivered" || bad "dynamic context row wrong" "$out"
+
+printf '\n== the model runs the command itself ==\n'
+out=$(run modelbash)
+has "$out" 'SKILL.md) *INCONCLUSIVE (the model ran a shell command itself)' \
+  && ok "a codeword the model could have fetched itself is not counted as delivered" || bad "model's own shell call counted as delivery" "$out"
+
+printf '\n== a policy that disables skill shell execution ==\n'
+out=$(run policy)
+has "$out" 'SKILL.md) *NOT delivered (disabled by policy)' \
+  && ok "the policy placeholder is named as the cause" || bad "policy-disabled dynamic context misread" "$out"
 
 printf '\n== hooks that never run ==\n'
 out=$(run nohooks); rc=$?
