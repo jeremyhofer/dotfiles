@@ -33,8 +33,9 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
                        regenerate index/ (sources-of-truth + backlinks); derived output.
                        --check reports drift and writes nothing (exit 1 on drift);
                        --if-present downgrades "never generated" to a pass
-  project [--out DIR] [--max-sensitivity L] [--check [--if-present]]
-                       generate the tier-0 projection
+  project [--domain D] [--out DIR] [--max-sensitivity L] [--check [--if-present]]
+                       generate the tier-0 projection; with --domain, that domain's
+                       tier-1 slice, written to the repo named by [domain.D] repo
   rename <A> <C>       rename a record + rewrite every inbound edge A->C
   retire <A>           mark a record retired + strip inbound edges
   install-hooks [repo] wire a pre-commit that runs `kb lint` + both derived-output
