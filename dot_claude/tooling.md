@@ -14,6 +14,9 @@ declares — reads both the bullet-header and frontmatter conventions and report
 than normalising it; `--strict` for a repo that has adopted a status vocabulary; `--subjects` renders a by-subject
 view on demand) ·
 `chezmoi-overlay` (runs the private second chezmoi instance) ·
+`claude-scratch-hook` (Claude Code lifecycle hooks — SubagentStart/SubagentStop/Stop/SessionEnd —
+that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
+only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
 `claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·
 `register` (read a work register — list, stats, show, the next free id, and render a browsable index on demand rather than committing one that can go stale) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·

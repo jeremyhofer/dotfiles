@@ -22,6 +22,11 @@ Installed to `~/.local/bin`.
   on: instruction files above and below a repository, imports, hooks and their injected context,
   skills, skill dynamic context (`` !`command` `` lines) and MCP servers. Managed machines can differ from the documented defaults, so this is
   measured before designing how context reaches sessions there.
+- `claude-scratch-hook` is a set of Claude Code lifecycle hooks (SubagentStart, SubagentStop, Stop,
+  SessionEnd) that watch a session's scratch temp directory and delete it outright once the session
+  is gone. It acts only when `CLAUDE_CODE_TMPDIR` resolves to a `c-*` directory that is a direct
+  child of `/tmp` — the shape a launcher sets for a sandboxed session — and never follows a symlink
+  while measuring or deleting.
 - `git-clone-worktree` clones a repository as a bare repo with worktrees as sibling directories, so
   several branches can be checked out at the same time.
 - `git-merge-diff` shows the diff a merge would introduce, computed from the merge base rather than
@@ -76,7 +81,7 @@ agent loads by name when its trigger applies, rather than something kept in cont
 
 Run them with `sh tests/run-all.sh`, optionally with a filter argument to run one suite.
 
-There are 36 test scripts plus the runner. They cover each of the tools above and each subcommand of
+There are 37 test scripts plus the runner. They cover each of the tools above and each subcommand of
 `kb`, and they run as a pre-commit gate in this repository.
 
 ## Layout

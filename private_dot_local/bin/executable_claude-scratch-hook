@@ -1,0 +1,172 @@
+#!/bin/sh
+# claude-scratch-hook — Claude Code lifecycle hooks that watch and clear a session's scratch dir.
+#
+# WHY. A launcher can start a long-running session with
+#   --settings '{"env":{"CLAUDE_CODE_TMPDIR":"/tmp/c-<name>-<stamp>"}}'
+# Claude Code then uses $CLAUDE_CODE_TMPDIR/claude-<uid>/ as that session's temp root, and
+# sandboxed Bash sees TMPDIR pointed there. Agents fill that tree with copies and build output
+# and never clean it up. This script is wired as four lifecycle hooks (SubagentStart,
+# SubagentStop, Stop, SessionEnd) to nudge an agent to tidy up while it can still act, and to
+# delete the whole tree unconditionally once the session that owned it is gone.
+#
+# Hooks run UNSANDBOXED and inherit the session's environment, so CLAUDE_CODE_TMPDIR is visible
+# here exactly when Claude Code itself is using it. Docs: https://code.claude.com/docs/en/hooks.md
+#
+# SUBCOMMANDS (JSON hook input on stdin in every case; unused fields are ignored):
+#   subagent-start   touch a start-time marker for this agent_id.
+#   subagent-stop     if stop_hook_active: silent no-op (this is a continuation, not the real
+#                     stop). Otherwise sum bytes written under the root since that agent's marker
+#                     and, at or above the threshold, ask it (via SubagentStop additionalContext)
+#                     to clear what its parent does not need. Removes the marker either way once
+#                     it has actually processed a stop (not on the stop_hook_active skip).
+#   stop              same measurement, over the WHOLE root, as session-level feedback (Stop
+#                     additionalContext). No marker involved.
+#   session-end       delete the whole root outright. SessionEnd output is discarded by Claude
+#                     Code (side effects only), so this never prints anything.
+#
+# SAFETY. This script deletes directories, so acting at all is gated hard, for EVERY subcommand
+# including subagent-start and stop, which touch nothing destructive on their own:
+#   - CLAUDE_CODE_TMPDIR must be set, non-empty, name a directory that already exists, and
+#     canonicalize (cd + pwd -P, which resolves symlinks and eats any ..) to a path whose
+#     basename matches c-* and whose parent is *exactly* /tmp. Anything else -> exit 0, untouched.
+#     That single check also rejects a symlink escaping /tmp: canonicalization follows it, and
+#     the resolved path then fails the parent-is-/tmp test.
+#   - Never follow symlinks while walking the tree: `find` without -L only classifies what it
+#     lstats, so a symlinked file is never -type f and a symlinked directory is never descended
+#     into; `rm -rf` on a directory likewise unlinks a symlink member rather than recursing
+#     through it. Both therefore already leave a symlink's target alone with no extra code.
+#   - Never delete when the (canonicalized) root does not exist -- folded into the existence
+#     check above, since a nonexistent root also can't canonicalize.
+# A hook that breaks a session is worse than one that misses a cleanup, so any internal failure
+# (jq missing, a command erroring, malformed input) falls through to a silent `exit 0` rather than
+# a nonzero exit or a stray error on stdout/stderr.
+#
+# Threshold: $CLAUDE_SCRATCH_HOOK_THRESHOLD_MB, default 500. Portable: no GNU-only `find
+# -printf`, `stat -c`/`stat -f`, or `du -b` -- sizes come from `ls -ln` (field 5 is POSIX on both
+# userlands), batched with `find -exec ... +` (see skill cross-platform-tooling). One exec per file
+# was measured at 70s for a 59,617-file node_modules against under 1s batched, and the Stop hook
+# runs at the end of every turn.
+set -u
+
+subcommand=${1:-}
+case "$subcommand" in
+  subagent-start | subagent-stop | stop | session-end) ;;
+  *) exit 0 ;;
+esac
+
+command -v jq >/dev/null 2>&1 || exit 0
+command -v find >/dev/null 2>&1 || exit 0
+
+threshold_mb=${CLAUDE_SCRATCH_HOOK_THRESHOLD_MB:-500}
+case "$threshold_mb" in
+  '' | *[!0-9]*) threshold_mb=500 ;;
+esac
+
+# ---- validate CLAUDE_CODE_TMPDIR before touching anything -------------------------------------
+raw_root=${CLAUDE_CODE_TMPDIR:-}
+[ -n "$raw_root" ] || exit 0
+[ -d "$raw_root" ] || exit 0
+
+root=$(cd "$raw_root" 2>/dev/null && pwd -P) || exit 0
+[ -n "$root" ] || exit 0
+
+parent=$(dirname -- "$root")
+[ "$parent" = "/tmp" ] || exit 0
+
+base=$(basename -- "$root")
+case "$base" in
+  c-*) ;;
+  *) exit 0 ;;
+esac
+
+# ---- read the hook's JSON payload once -------------------------------------------------------
+payload=$(cat) || payload=""
+
+json_field() { # <jq filter> -> value on stdout, empty on any failure
+  printf '%s' "$payload" | jq -r "$1 // empty" 2>/dev/null
+}
+
+marker_dir="$root/.scratch-hook"
+
+# Bytes of regular files under $root, excluding $marker_dir and any "<root>/claude-*/-home-*"
+# directory (Claude Code's own per-session task output; the same exclusion the tmpfiles.conf
+# aging rule for this tree uses). Optionally restricted to files with an mtime newer than
+# $1 (a marker file), for the per-agent measurement.
+scratch_bytes() {
+  newer_than=${1:-}
+  home_glob="$root"/claude-*/-home-*
+  if [ -n "$newer_than" ]; then
+    find "$root" \( -path "$marker_dir" -o -path "$home_glob" \) -prune -o \
+      -type f -newer "$newer_than" -exec ls -ln {} + 2>/dev/null
+  else
+    find "$root" \( -path "$marker_dir" -o -path "$home_glob" \) -prune -o \
+      -type f -exec ls -ln {} + 2>/dev/null
+  fi | awk '{s += $5} END {printf "%d", s + 0}'
+}
+
+emit_context() { # <hookEventName> <message>
+  jq -n --arg h "$1" --arg c "$2" '{hookSpecificOutput: {hookEventName: $h, additionalContext: $c}}'
+}
+
+mb_of() { # <bytes> -> whole MB, rounded
+  awk -v b="$1" 'BEGIN { printf "%.0f", b / 1048576 }'
+}
+
+case "$subcommand" in
+
+  subagent-start)
+    agent_id=$(json_field '.agent_id')
+    [ -n "$agent_id" ] || exit 0
+    case "$agent_id" in
+      */* | *..*) exit 0 ;;
+    esac
+    mkdir -p -- "$marker_dir" 2>/dev/null || exit 0
+    : > "$marker_dir/agent-$agent_id.start" 2>/dev/null
+    exit 0
+    ;;
+
+  subagent-stop)
+    active=$(json_field '.stop_hook_active')
+    [ "$active" = "true" ] && exit 0
+
+    agent_id=$(json_field '.agent_id')
+    [ -n "$agent_id" ] || exit 0
+    case "$agent_id" in
+      */* | *..*) exit 0 ;;
+    esac
+    marker="$marker_dir/agent-$agent_id.start"
+    [ -e "$marker" ] || exit 0
+
+    bytes=$(scratch_bytes "$marker")
+    thresh_bytes=$((threshold_mb * 1024 * 1024))
+    if [ "$bytes" -ge "$thresh_bytes" ] 2>/dev/null; then
+      mb=$(mb_of "$bytes")
+      msg="Scratch check: about ${mb} MB was written under your temp directory while you ran. Delete the copies and build outputs your parent does not need, keep only the smallest thing that lets it re-check your result, and say in your final report what you kept and where."
+      emit_context "SubagentStop" "$msg"
+    fi
+    rm -f -- "$marker" 2>/dev/null
+    exit 0
+    ;;
+
+  stop)
+    active=$(json_field '.stop_hook_active')
+    [ "$active" = "true" ] && exit 0
+
+    bytes=$(scratch_bytes "")
+    thresh_bytes=$((threshold_mb * 1024 * 1024))
+    if [ "$bytes" -ge "$thresh_bytes" ] 2>/dev/null; then
+      mb=$(mb_of "$bytes")
+      msg="Scratch check: your session temp directory holds about ${mb} MB. Delete experiment copies and build outputs whose results are recorded; nothing meaningful may live there — it is deleted when the session ends."
+      emit_context "Stop" "$msg"
+    fi
+    exit 0
+    ;;
+
+  session-end)
+    rm -rf -- "$root" 2>/dev/null
+    exit 0
+    ;;
+
+esac
+
+exit 0
