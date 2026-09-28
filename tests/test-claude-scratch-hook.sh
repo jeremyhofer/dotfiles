@@ -162,14 +162,14 @@ else
   eq "real script: exit 0, jq absent, valid root" "$rc" "0"
   eq "real script: silent, jq absent, valid root" "$out" ""
 
-  broken=$(broken_copy '/command -v jq/d')
-  out=$(printf '{}' | env -i PATH="$noJQdir" HOME="$HOME" CLAUDE_CODE_TMPDIR="$jqroot" "$broken" stop 2>&1); rc=$?
-  case "$out" in
-    *jq*not\ found* | *"command not found"*) ok "plant: removing the jq guard leaks a 'not found' error with a valid root" ;;
-    *) if [ "$rc" != 0 ]; then ok "plant: removing the jq guard produces a nonzero exit with a valid root (rc=$rc)"
-       else no "plant: removing the jq guard did not change behaviour (rc=$rc out='$out')"; fi ;;
-  esac
+  # No plant here: without the guard the hook still exits 0 silently, because every jq call below
+  # it already discards errors. The guard is defence in depth, so removing it cannot be seen red.
   rm -rf "$jqroot"
+
+  # The session-end test above deleted $root. The agent and stop tests need a live root, named in
+  # the environment the way a launched session has it (runhook passes no CLAUDE_CODE_TMPDIR itself).
+  root=$(mktemp -d "/tmp/c-test-XXXXXX")
+  CLAUDE_CODE_TMPDIR=$root; export CLAUDE_CODE_TMPDIR
 
   # A file OLDER than agent-a's marker: must be EXCLUDED from agent-a's measurement. Created
   # BEFORE subagent-start, with a sleep to clear filesystems whose mtime resolution is 1s.
@@ -223,6 +223,8 @@ else
   else
     no "plant: removing the stop_hook_active guard did not change behaviour -- check the sed edit landed"
   fi
+
+  unset CLAUDE_CODE_TMPDIR
 
   echo "== stop measures the whole root and excludes claude-*/-home-* =="
   clean=$(mktemp -d "/tmp/c-test-XXXXXX")
