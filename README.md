@@ -61,6 +61,9 @@ agent loads by name when its trigger applies, rather than something kept in cont
   for parallel branches.
 - `overlay-doctor` covers setting up and auditing the private layer, and what to provision for each
   finding the checker reports.
+- `scratch-copies` covers making scratch copies small (a worktree or `git archive` instead of copying
+  a repository), and deleting them when their result is recorded, because `$TMPDIR` is shared by
+  every agent session and its quota can fill in a day.
 - `tuicr-code-review` covers driving a local code review and, more often, picking up a review a human
   already made so the comments can be acted on.
 - `visual-review` covers verifying a UI change before claiming it looks right, and why a screenshot
