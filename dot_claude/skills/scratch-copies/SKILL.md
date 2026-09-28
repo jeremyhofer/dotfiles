@@ -47,6 +47,14 @@ removes it: `work="$TMPDIR/<task-name>"`.
 | A tool that needs the complete artifact (a performance audit crawling a whole site, a package installed for real) | Keep the full copy, but one arm at a time where possible. Record the result, delete, then build the next | The honest cost of the proof, once |
 | Two real installs of dependencies | Let both use the package manager's shared cache. pnpm's content-addressed store links files into each install, so a second one costs little | Mostly shared |
 
+**Where a scratch worktree lives:** inside the task's scratch directory (`$work`, under
+`$TMPDIR`), never beside the repository's own worktrees. A scratch worktree next to real ones looks
+like live work, and removing it runs into the rule below.
+
+**Do not commit throwaway state just so a plain remove succeeds.** In a repository that requires
+signed commits, that is a signed commit for every experiment. Skipping hooks or signing to make it
+cheap is not acceptable either.
+
 **Removing a worktree:** `git worktree remove "$work/wt"`. Git refuses without `--force` when the
 worktree holds untracked files, such as build output, and permission rules often deny `--force`,
 because on a real worktree it destroys uncommitted work. For a scratch worktree, delete the directory
