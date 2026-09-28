@@ -47,9 +47,12 @@ removes it: `work="$TMPDIR/<task-name>"`.
 | A tool that needs the complete artifact (a performance audit crawling a whole site, a package installed for real) | Keep the full copy, but one arm at a time where possible. Record the result, delete, then build the next | The honest cost of the proof, once |
 | Two real installs of dependencies | Let both use the package manager's shared cache. pnpm's content-addressed store links files into each install, so a second one costs little | Mostly shared |
 
-**Removing a worktree:** `git worktree remove --force "$work/wt"`. If the directory was deleted any
-other way (`rm -rf`), the repository keeps a stale entry until `git worktree prune` runs. That was
-measured: the stale entry showed up as `prunable` in `git worktree list`.
+**Removing a worktree:** `git worktree remove "$work/wt"`. Git refuses without `--force` when the
+worktree holds untracked files, such as build output, and permission rules often deny `--force`,
+because on a real worktree it destroys uncommitted work. For a scratch worktree, delete the directory
+(`rm -rf "$work"`) and then run `git worktree prune` in the repository. Deleting without pruning
+leaves a stale entry, shown as `prunable` in `git worktree list`, until a prune runs. That was
+measured, and `prune` was checked to work inside the Claude Code sandbox.
 
 **Sparse worktrees fail inside the Claude Code sandbox.** `git sparse-checkout set` in a linked
 worktree must write `extensions.worktreeConfig` into the main repository's `.git/config`. The
@@ -60,8 +63,7 @@ the sandbox it works, but it still changes the shared repository config, which i
 ## Finishing a task
 
 - `rm -rf "$work"` once the numbers, diffs or logs you needed are written down somewhere durable.
-  Remove any worktree first with `git worktree remove --force`, or run `git worktree prune`
-  afterwards.
+  If it held a worktree, run `git worktree prune` in the repository afterwards.
 - If a parent agent may need to re-check your result, keep only the smallest thing that lets it do
   so (a manifest, a log, a report), say where it is, and say who deletes it.
 - Check your footprint before handing back: `du -sh "$work"`.
