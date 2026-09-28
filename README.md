@@ -62,6 +62,8 @@ agent loads by name when its trigger applies, rather than something kept in cont
   in, and the rule that you edit the source and apply rather than editing the deployed file.
 - `dotfiles-update` covers pulling and applying an update, catching up a machine that has been
   dormant, and why one layer can be left behind by an update to the other.
+- `filing-bug-reports` covers reproducing a bug in isolated scratch before reporting it, writing the
+  report from that clean reproduction only, and never attaching a session transcript.
 - `mani-and-worktrunk` covers working across several repositories at once and managing git worktrees
   for parallel branches.
 - `overlay-doctor` covers setting up and auditing the private layer, and what to provision for each
