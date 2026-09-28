@@ -94,8 +94,8 @@ eq "nonexistent root: exit 0" "$rc" "0"
 eq "nonexistent root: no output" "$out" ""
 eq "nonexistent root: never created" "$([ -e "$ghost" ] && echo present || echo absent)" "absent"
 
-echo "== CLAUDE_CODE_TMPDIR resolves OUTSIDE /tmp (a c-* dir nested under \$TMPDIR, not a direct child of /tmp) =="
-outside=$(mktemp -d "$TD/c-test-outside.XXXXXX")
+echo "== CLAUDE_CODE_TMPDIR resolves OUTSIDE /tmp (a c-* dir nested inside the test root, never a direct child of /tmp) =="
+outside=$(mktemp -d "$TESTROOT/c-test-outside.XXXXXX")
 : > "$outside/sentinel"
 out=$(CLAUDE_CODE_TMPDIR="$outside" runhook "$HOOK" session-end "" "" 2>&1); rc=$?
 eq "outside /tmp: exit 0" "$rc" "0"
@@ -104,7 +104,7 @@ eq "outside /tmp: sentinel file survives session-end" "$([ -f "$outside/sentinel
 
 # Plant: remove the "-parent must be exactly /tmp" guard and watch the SAME kind of directory get
 # deleted. Uses a second fixture so the first one's assertions above stay untouched by the plant.
-outside2=$(mktemp -d "$TD/c-test-outside2.XXXXXX")
+outside2=$(mktemp -d "$TESTROOT/c-test-outside2.XXXXXX")
 : > "$outside2/sentinel"
 broken=$(broken_copy '/\[ "\$parent" = "\/tmp" \] || exit 0/d')
 CLAUDE_CODE_TMPDIR="$outside2" runhook "$broken" session-end "" "" >/dev/null 2>&1
@@ -122,7 +122,7 @@ if [ -z "$root" ] || [ ! -d "$root" ]; then
   sk "valid-root behavioural tests (symlink, threshold, home-glob, newer-than, stop_hook_active, session-end deletion)" \
      "cannot create a directory directly under /tmp in this environment (mktemp -d /tmp/c-test-XXXXXX failed)"
 else
-  outside_target=$(mktemp -d "$TD/c-test-symlink-target.XXXXXX")
+  outside_target=$(mktemp -d "$TESTROOT/c-test-symlink-target.XXXXXX")
   echo "do not delete me" > "$outside_target/keepme"
   ln -s "$outside_target" "$root/escape-link"
   CLAUDE_CODE_TMPDIR="$root" runhook "$HOOK" session-end "" "" >/dev/null 2>&1
@@ -139,7 +139,7 @@ else
   # unlike find, it has no -L-equivalent toggle, so there is no one-line guard on the delete path
   # to remove.)
   root2=$(mktemp -d "/tmp/c-test-XXXXXX")
-  target2=$(mktemp -d "$TD/c-test-symlink-target2.XXXXXX")
+  target2=$(mktemp -d "$TESTROOT/c-test-symlink-target2.XXXXXX")
   bigfile "$target2/big.bin" 2
   ln -s "$target2" "$root2/escape-link"
   out=$(CLAUDE_CODE_TMPDIR="$root2" runhook "$HOOK" stop "$(stop_payload false)" "" 2>&1)
