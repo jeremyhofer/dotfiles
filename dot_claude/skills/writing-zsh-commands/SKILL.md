@@ -182,10 +182,16 @@ code under test is broken" rather than "the harness broke itself."
 relying on that is worse than just renaming the variable — a reader has to know the special-cases
 list to see that the code is safe.
 
+**A LOUD sibling: `status` is read-only.** zsh keeps `$?` under a second name, `status`, so
+`status=$(curl …)` fails with `read-only variable: status` and the script stops there. Seen in
+scripts that capture an HTTP or job status. Use `rc`, `http_status`, `st`.
+
 ## 6. Bash-only constructs that are simply absent
 
 `mapfile` / `readarray` do not exist (a loop over them silently does nothing), and `$PIPESTATUS`
-is `$pipestatus`. If you genuinely need bash semantics, say so explicitly — `bash -c '…'` is the
+is `$pipestatus`. Bash's indirect expansion is a LOUD `bad substitution`: `${!name}` (the value of
+the variable whose name is in `name`) is `${(P)name}` in zsh, and `${!assoc[@]}` (an associative
+array's keys) is `${(k)assoc}`. If you genuinely need bash semantics, say so explicitly — `bash -c '…'` is the
 honest escape hatch, and is better than writing something that half-works.
 
 ## 7. Running commands on a remote host — heredoc, never nested quotes
@@ -202,7 +208,9 @@ zero local expansion, and `-ls` / `-s` read the script from stdin.
 
 **A non-interactive shell never reads `.zshrc`**, so shell *functions and aliases do not exist over
 SSH*. If something works when typed by hand but reports `command not found` remotely, that is why —
-it needs to be a real script on `PATH`, not a function.
+it needs to be a real script on `PATH`, not a function. The same goes for a `PATH` entry that only
+`.zshrc` adds: a tool found interactively can be `command not found` over SSH (seen with `chezmoi`
+over SSH to a Mac). Call it by full path, or use a login shell (`zsh -ls`) if `.zprofile` adds it.
 
 ## 8. SILENT — a recursive search skips whatever the repo ignores, and `rg` does NOT fix it
 
@@ -310,6 +318,44 @@ git ls-files -- ':(glob)docs/**/*.md'   # docs/sub/deep.md docs/top.md
 Use `docs/*.md` for the whole tree, or `:(glob)` when you want `**` to mean what it means in zsh.
 A gate that enumerated with the first form once judged zero top-level documents and passed.
 
+## 13. LOUD — a function cannot take a name that is already an alias
+
+```zsh
+g() { git status; }     # with `alias g=…` loaded:
+# defining function based on alias `g'
+# parse error near `()'
+```
+
+zsh expands the alias before it sees the `()`, so the definition itself is a syntax error. Even the
+`function g { … }` form, which does define it, loses at call time, because the alias is expanded
+first. Pick a name that is not an alias; `whence -w <name>` says what a name currently is. Seen in
+test fixtures that used short helper names like `g`.
+
+## 14. LOUD — `/tmp` is read-only inside the agent's Bash sandbox
+
+`> /tmp/out.txt` fails with `read-only file system: /tmp/out.txt`. The sandbox gives each session a
+writable scratch directory in `$TMPDIR`; write there (`"$TMPDIR/out.txt"`), and pass it to tools that
+take a temp-directory flag. The most frequent trap in this list, and entirely avoidable.
+
+## 15. LOUD — prose inside single quotes ends at its first apostrophe
+
+`git commit -m 'don't stage it'` fails with `unmatched '`, because the apostrophe closes the string.
+Backticks and double quotes in prose do the same inside their own quoting (§11). Anything longer
+than a phrase goes in a quoted heredoc, which does no expansion at all:
+
+```zsh
+git commit -F - <<'MSG'
+Don't stage it: the `build/` output is regenerated.
+MSG
+```
+
+## 16. Bound every scan whose output size you do not know
+
+`grep -o`, `rg`, `strings` or `cat` over a large or binary file can print megabytes into the session,
+which costs context and can bury the one line you wanted. Bound it before running it:
+`rg -m 20 --max-columns 200 …`, `… | head -50`, `wc -c` first when unsure. For a file you will query
+more than once, extract once to a text file and search that.
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
@@ -325,5 +371,10 @@ A gate that enumerated with the first form once judged zero top-level documents 
   argument starts with `=` (§10).
 - **A commit message is missing a phrase you wrote in backticks** — command substitution ran
   inside a double-quoted `-m` (§11).
-- **`command not found` only over SSH** — you are calling a shell function in a non-interactive
-  shell (§7).
+- **`command not found` only over SSH** — you are calling a shell function, or a tool whose `PATH`
+  entry only `.zshrc` adds, in a non-interactive shell (§7).
+- **`read-only variable: status`** — `status` is `$?` under another name (§5b).
+- **`bad substitution`** on `${!…}` — bash indirect expansion; zsh spells it `${(P)…}` / `${(k)…}` (§6).
+- **`defining function based on alias`** — the function name is an alias (§13).
+- **`read-only file system: /tmp/…`** — write to `$TMPDIR` (§14).
+- **`unmatched '`** — an apostrophe in prose closed a single-quoted string (§15).
