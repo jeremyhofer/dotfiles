@@ -37,6 +37,9 @@ setup/
 .config/autostart
 # systemd-user env routing — Linux-only; macOS uses its own launchd ssh-agent
 .config/environment.d
+# per-user tmpfiles rules and systemd-user timer drop-ins — Linux-only
+.config/user-tmpfiles.d
+.config/systemd
 # Brave Wayland fractional-scale flag — Linux/Wayland only; wrong path + inert on macOS
 .config/brave-flags.conf
 {{ end }}
