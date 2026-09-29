@@ -39,6 +39,10 @@ WHAT IT CHECKS, at the repository root
     docs-dated        BLOCKING. A document in `docs/specs/`, `docs/plans/` or `docs/research/` is not
                       named `YYYY-MM-DD-slug`. Those documents are frozen or finished, and the date is
                       what orders and ages them.
+                      The three docs checks take `docs/` entries from the git index when the root is
+                      in a work tree, so an untracked or ignored leftover on disk (an empty directory
+                      git never records) does not block a commit; outside a work tree, as for a
+                      snapshot directory of staged copies, they read the filesystem.
     volatile          ADVISORY. A figure that an edit somewhere else can make false: a census
                       ("12 tests"), a claim pinned to a date ("as of 2026"), or "currently".
                       Name the command that measures it instead. Advisory because a number
@@ -61,6 +65,7 @@ USAGE
 """
 import pathlib
 import re
+import subprocess
 import sys
 
 MAX_LINES = 200
@@ -132,6 +137,24 @@ def rules_without_scope(root):
         if not (m and re.search(r"^paths\s*:", m.group(1), re.MULTILINE)):
             found.append(f)
     return found
+
+
+def docs_tracked(root):
+    """Path parts below docs/ of every file in the git index, or None when root is not a work tree's top.
+
+    The index, not the disk: git records no empty directory, so a leftover one (or an ignored build
+    output) is not part of what a commit ships and must not block it. Only a root that IS the top of
+    a work tree counts; a snapshot directory of staged copies is read from disk like any other."""
+    try:
+        top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True)
+        if top.returncode != 0 or pathlib.Path(top.stdout.strip()).resolve() != root.resolve():
+            return None
+        ls = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", "docs"],
+                            capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [pathlib.PurePosixPath(p).parts[1:] for p in ls.stdout.split("\0") if p.startswith("docs/")]
 
 
 def main(argv):
@@ -247,31 +270,40 @@ def main(argv):
     docs = root / "docs"
     if docs.is_dir() and not nested:
         index = docs / "README.md"
-        entries = sorted(e for e in docs.iterdir() if not e.name.startswith(".") and e.name != "README.md")
+        # {name: is_dir} for each entry directly under docs/, and the names under each dated directory.
+        tracked = docs_tracked(root)
+        if tracked is None:
+            top = {e.name: e.is_dir() for e in docs.iterdir()}
+            below = {sub: [e.name for e in (docs / sub).iterdir()] for sub in ("specs", "plans", "research") if (docs / sub).is_dir()}
+        else:
+            top, below = {}, {}
+            for parts in tracked:
+                top[parts[0]] = top.get(parts[0], False) or len(parts) > 1
+                if len(parts) > 1 and parts[0] in ("specs", "plans", "research"):
+                    below.setdefault(parts[0], []).append(parts[1])
+        entries = sorted((n, d) for n, d in top.items() if not n.startswith(".") and n != "README.md")
         if not index.is_file():
             blocking.append(("docs-index", "docs", 0, "no docs/README.md; it indexes every subdirectory and loose document in docs/"))
         else:
             itext = index.read_text(errors="replace")
-            for e in entries:
-                if e.is_dir() or e.suffix in (".md", ".txt"):
-                    if not re.search(r"(?<![\w.-])" + re.escape(e.name) + r"(?![\w.-])", itext):
-                        blocking.append(("docs-index", "docs/README.md", 0, f"does not name `{e.name}{'/' if e.is_dir() else ''}`"))
+            for name, is_dir in entries:
+                if is_dir or pathlib.PurePath(name).suffix in (".md", ".txt"):
+                    if not re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", itext):
+                        blocking.append(("docs-index", "docs/README.md", 0, f"does not name `{name}{'/' if is_dir else ''}`"))
         layout = ""
         if agents.is_file():
             at = agents.read_text(errors="replace")
             m = re.search(r"^## Layout\s*$(.*?)(?=^## |\Z)", at, re.MULTILINE | re.DOTALL)
             layout = m.group(1) if m else ""
-        for e in entries:
-            if e.is_dir() and e.name not in DOCS_LAYOUT and not re.search(r"(?<![\w.-])" + re.escape(e.name) + r"/", layout):
-                blocking.append(("docs-layout", f"docs/{e.name}", 0, "not a fleet layout directory and not named in AGENTS.md `## Layout`; declare it there, or move its content"))
-        for sub in ("specs", "plans", "research"):
-            d = docs / sub
-            if d.is_dir():
-                for e in sorted(d.iterdir()):
-                    if e.name.startswith(".") or e.name == "README.md":
-                        continue
-                    if not DATED.match(e.name):
-                        blocking.append(("docs-dated", f"docs/{sub}/{e.name}", 0, "not named YYYY-MM-DD-slug"))
+        for name, is_dir in entries:
+            if is_dir and name not in DOCS_LAYOUT and not re.search(r"(?<![\w.-])" + re.escape(name) + r"/", layout):
+                blocking.append(("docs-layout", f"docs/{name}", 0, "not a fleet layout directory and not named in AGENTS.md `## Layout`; declare it there, or move its content"))
+        for sub, names in sorted(below.items()):
+            for name in sorted(set(names)):
+                if name.startswith(".") or name == "README.md":
+                    continue
+                if not DATED.match(name):
+                    blocking.append(("docs-dated", f"docs/{sub}/{name}", 0, "not named YYYY-MM-DD-slug"))
 
     total_lines = sum(l for _, l, _ in loaded)
     total_bytes = sum(b for _, _, b in loaded)

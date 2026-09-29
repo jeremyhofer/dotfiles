@@ -184,5 +184,25 @@ rm "$d/docs/research/sweep-notes.md"; mkdir -p "$d/docs/research/2026-09-28-spik
 out=$(run "$d"); rc=$?
 [ "$rc" -eq 0 ] && ok "a dated research directory passes" || bad "dated directory refused" "$out"
 
+printf '\n== docs/ entries come from the git index in a work tree ==\n'
+d="$TMP/docs-git"; good "$d"; mkdir -p "$d/docs/adr"; printf 'x\n' > "$d/docs/adr/0001-x.md"
+printf '# Documents\n\n- `adr/`: decisions.\n' > "$d/docs/README.md"
+git -C "$d" init -q && git -C "$d" add -A
+mkdir -p "$d/docs/portfolio/FIN"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ! grep -q 'portfolio' <<< "$out" && ok "an untracked empty subdirectory is not refused" || bad "untracked leftover directory refused" "$out"
+printf 'x\n' > "$d/docs/portfolio/FIN/row.md"; git -C "$d" add docs/portfolio
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-layout\].*docs/portfolio' <<< "$out" && ok "the same subdirectory with a tracked file is refused" || bad "tracked undeclared directory not caught" "$out"
+git -C "$d" rm -rq --cached docs/portfolio; rm -rf "$d/docs/portfolio"
+mkdir -p "$d/docs/research"; printf 'x\n' > "$d/docs/research/2026-09-01-a.md"; git -C "$d" add docs/research
+printf '# Documents\n\n- `adr/`: decisions.\n- `research/`: investigations.\n' > "$d/docs/README.md"
+printf 'x\n' > "$d/docs/research/loose-notes.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ! grep -q 'loose-notes' <<< "$out" && ok "an untracked undated research note is not refused" || bad "untracked undated note refused" "$out"
+git -C "$d" add docs/research/loose-notes.md
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-dated\].*loose-notes.md' <<< "$out" && ok "a staged undated research note is refused" || bad "staged undated note not caught" "$out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
