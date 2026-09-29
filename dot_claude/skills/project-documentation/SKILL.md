@@ -1,6 +1,6 @@
 ---
 name: project-documentation
-description: Use when writing, filing, reviewing or moving any document in a project repository's `docs/` tree — a decision record (ADR), a spec, a plan, a runbook, a research note, a reference page, or a policy — or when deciding which of those a piece of writing should be, where it goes, or what its sections are for. Also fires when `context-lint` reports `docs-index`, `docs-layout` or `docs-dated`, when a `docs/` tree has no `docs/README.md`, on "write an ADR", "where does this doc go", "archive this spec", "is this a runbook or a plan". Covers the standard `docs/` layout, the index, what each document type is and when to choose it, the decision record's shape and the fresh-eyes review it owes, and the rules every type shares. A tracked-work entry has its own skill, `register-standard`.
+description: Use when writing, filing, reviewing or moving any document in a project repository's `docs/` tree — a decision record (ADR), a spec, a plan, a runbook, a research note, a reference page, or a policy — or when deciding which of those a piece of writing should be, where it goes, or what its sections are for. Also fires when `context-lint` reports `docs-index`, `docs-layout`, `docs-dated`, `docs-retired`, `docs-outside` or `docs-nested`, when a `docs/` tree has no `docs/README.md`, on "write an ADR", "where does this doc go", "archive this spec", "is this a runbook or a plan". Covers the standard `docs/` layout, the index, what each document type is and when to choose it, the decision record's shape and the fresh-eyes review it owes, and the rules every type shares. A tracked-work entry has its own skill, `register-standard`.
 ---
 
 # Project documentation: one layout, and what each document type is for
@@ -19,7 +19,7 @@ docs/
   reference/   the project's manual: architecture, commands, code style, testing, procedures
   policies/    governing policies           compliance/  compliance dossiers and control maps
   archive/     finished work: archive/specs/, archive/plans/, and other finished documents
-  <domain>/    the project's own subjects, named in AGENTS.md's `## Layout`
+  <subject>/   the project's own subjects, named in AGENTS.md's `## Layout`
 ```
 
 - **Create a directory only when it has content.**
@@ -28,8 +28,22 @@ docs/
   move it into its type's directory when that is clearly better.
 - **A project's own subjects** (search data, tax law, policies) get a directory named in the context
   file's `## Layout`. That declaration is what makes it part of the layout rather than drift.
+- **Every document of a type lives under `docs/`.** A top-level `adr/`, `specs/`, `plans/`,
+  `runbooks/`, `research/`, `reference/`, `evidence/`, `handoffs/` or `archive/` moves into it
+  (evidence is research; handoffs are archive). A repository's subject content and tool
+  configuration are not documents about the project and stay where they are.
+- **A `docs/` tree below the root belongs only to a publishable package**, one whose
+  `package.json` does not set `"private": true`: a monorepo package may ship its own docs. A
+  single-project repository keeps every document in the root `docs/`.
+- **Retired names stay retired.** No `docs/claude/` or `docs/agents/` (the project's manual is
+  `docs/reference/`, and people read it too) and no `superpowers` directory anywhere (specs and
+  plans are `docs/specs/` and `docs/plans/`). Declaring one in `## Layout` does not make it allowed.
+- **Moving a document means updating everything that cites it**: other documents, configuration,
+  gates and scripts, and archived documents too. Rewrite a path so it resolves; leave what an
+  archived document says happened as it was written.
 - `context-lint` checks all of this: the index, that every entry is named in it, that every
-  subdirectory is standard or declared, and that dated types carry dates.
+  subdirectory is standard or declared, that dated types carry dates, retired names, document
+  directories outside `docs/`, and `docs/` trees outside publishable packages.
 
 ## Which type is it?
 
