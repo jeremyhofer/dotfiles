@@ -423,7 +423,11 @@ def main(argv):
             return out
 
         for folder, is_dir in sorted(kids(("initiatives",)).items()):
-            if not is_dir or folder.startswith("."):
+            if folder.startswith("."):
+                continue
+            if not is_dir:
+                if folder != "README.md":
+                    blocking.append(("docs-initiative", f"docs/initiatives/{folder}", 0, "a file directly in docs/initiatives/; each initiative is a folder named <ID>-<slug>, and only a README.md may sit beside them"))
                 continue
             where = f"docs/initiatives/{folder}"
             inside = kids(("initiatives", folder))

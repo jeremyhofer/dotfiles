@@ -332,5 +332,15 @@ d2="$TMP/hookinit2"; initgood "$d2"; m_norm "$d2"; ( cd "$d2" && git init -q && 
 out=$(cd "$d2" && GIT_DIR="$d2/.git" GIT_INDEX_FILE="$d2/.git/index" python3 "$LINT" "$d2" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[docs-initiative\].*no README.md' <<< "$out" && ok "the repository itself, from its own hook, is checked against its index" || bad "own-hook run missed the initiative defect" "rc=$rc: $out"
 
+printf '\n== a file directly in docs/initiatives/ ==\n'
+d="$TMP/initloose"; good "$d"; mkdir -p "$d/docs/initiatives"
+printf '# Documents\n\n- `initiatives/`: one folder per open initiative.\n' > "$d/docs/README.md"
+printf '# Initiatives\n\nList them with the register.\n' > "$d/docs/initiatives/README.md"
+out=$(python3 "$LINT" "$d" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a README.md directly in docs/initiatives/ passes" || bad "initiatives README refused" "$out"
+printf 'x\n' > "$d/docs/initiatives/notes.md"
+out=$(python3 "$LINT" "$d" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-initiative\].*docs/initiatives/notes.md' <<< "$out" && ok "a loose file directly in docs/initiatives/ is refused" || bad "loose file in initiatives/ not caught" "$out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
