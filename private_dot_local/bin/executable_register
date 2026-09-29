@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""register -- read a work register: list it, show one entry, render an index, count it, and
-name the next free id.
+"""register -- read a work register: list it, show one entry, render an index, count it, report
+    what has gone quiet, and name the next free id.
 
 WHY A COMMAND RATHER THAN A COMMITTED FILE
     A register directory answers "what is the state of everything" only if you open every
@@ -34,6 +34,20 @@ NEXT ID IS READ NUMERICALLY, OVER EVERY ENTRY -- closed ones included, because a
     getting four-digit ids. Mixed widths are reported on stderr, since they are exactly the
     condition under which any other listing of the register gives the wrong answer.
 
+FOLDERS. An entry that is an initiative names its folder as a `folder:` artifact. `list` shows it
+    beside the status, and `show` lists the folder's files by type and the decision records its
+    README names, so "where is this work, and what is in it" is one command. `health` is the
+    on-demand, never-blocking report of what has gone quiet or unowned: an active initiative whose
+    folder has had no commit in 30 days, a standing entry past its cadence, and a document in the
+    repository-wide type folders that no initiative claims or only one does (a candidate to move
+    into it). It is advisory and always exits 0 -- a lint that blocked on staleness would be
+    refused by the next person in a hurry, so it reports and leaves the decision.
+
+    The repository root is the nearest ancestor of the register directory holding `.git`. Its
+    questions to git run with git's own environment variables removed: inside a git hook, GIT_DIR
+    and GIT_INDEX_FILE name the hook's repository and override `-C`, so a register in a snapshot
+    directory or another checkout would otherwise be answered from the wrong history.
+
     It does not WRITE entries. Creating, editing and closing them is hand work against a
     contract each register states in its own README, and a tool that generated entries would
     be generating the closure conditions and resolutions that are the whole point of writing
@@ -42,11 +56,22 @@ NEXT ID IS READ NUMERICALLY, OVER EVERY ENTRY -- closed ones included, because a
 
 import argparse
 import collections
+import datetime
+import os
 import pathlib
 import re
+import subprocess
 import sys
 
 CLOSED_STATUSES = ("done", "dropped")
+# Days a `standing` entry may go unverified per declared cadence. The same table the register's
+# lint holds; it is restated here because the two tools are installed separately.
+CADENCE_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
+# An active initiative whose folder has had no commit for this long is reported by `health`.
+QUIET_DAYS = 30
+# The repository-wide type folders under docs/; a document here that no initiative claims is
+# what `health` looks for. Mirrors the layout names the context lint knows.
+TYPE_DIRS = ("specs", "plans", "runbooks", "research", "reference", "policies", "compliance")
 ORDER = ("active", "ready", "blocked", "held", "standing", "scoped", "idea", "done", "dropped")
 
 
@@ -64,6 +89,21 @@ class Entry:
                         key, sep, value = line.partition(":")
                         if sep:
                             self.meta[key.strip()] = value.strip().strip("'\"")
+
+    @property
+    def folder(self):
+        """The path of the entry's `folder:` artifact, or "". Read from the artifacts block, which
+        the frontmatter reader above skips because its items are list lines."""
+        if not self.text.startswith("---"):
+            return ""
+        end = self.text.find("\n---", 3)
+        block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", self.text[3:end], re.M | re.S)
+        if block:
+            for value in re.findall(r"^\s*-\s*(.+?)\s*$", block.group(1), re.M):
+                kind, sep, rest = value.strip("'\" ").partition(":")
+                if sep and kind.strip() == "folder":
+                    return rest.strip()
+        return ""
 
     def get(self, key, default=""):
         return self.meta.get(key, default)
@@ -113,13 +153,36 @@ def select(entries, args):
     return entries
 
 
+def repo_root(root):
+    """The nearest ancestor of the register directory holding `.git` (a directory, or the file a
+    worktree has), or None. None means "do not answer git questions", never "guess a root"."""
+    root = root.resolve()
+    for d in [root] + list(root.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def git_out(base, *argv):
+    """Run git in `base` with git's own variables removed (see the docstring), or None on failure."""
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        r = subprocess.run(["git", "-C", str(base)] + list(argv), capture_output=True, text=True,
+                           env=clean)
+    except OSError:
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
 def cmd_list(entries, args):
     if not entries:
         print("no entries match", file=sys.stderr)
         return 0
     width = max(len(e.id) for e in entries)
+    fwidth = max(len(e.folder or "-") for e in entries)
     for e in entries:
-        line = "%-*s  %-9s  %s" % (width, e.id, e.get("status"), e.get("title"))
+        line = "%-*s  %-9s  %-*s  %s" % (width, e.id, e.get("status"), fwidth, e.folder or "-",
+                                         e.get("title"))
         if args.long and e.get("gate"):
             line += "\n%s  gate: %s" % (" " * width, e.get("gate"))
         print(line)
@@ -143,8 +206,41 @@ def cmd_show(entries, args):
     if not hits:
         print("no entry with id %r" % args.id, file=sys.stderr)
         return 1
-    sys.stdout.write(hits[0].text)
+    e = hits[0]
+    sys.stdout.write(e.text)
+    if e.folder:
+        show_folder(e, args)
     return 0
+
+
+def show_folder(e, args):
+    """Append the entry's folder: its path, its files grouped by type subdirectory, and the
+    decision records its README names. Read from disk, so a folder that is not there says so."""
+    base = repo_root(pathlib.Path(args.root))
+    print("\nfolder: %s" % e.folder)
+    if base is None or not (base / e.folder).is_dir():
+        print("  (not found on disk)")
+        return
+    top = base / e.folder
+    groups = collections.defaultdict(list)
+    for f in sorted(p for p in top.rglob("*") if p.is_file()):
+        rel = f.relative_to(top)
+        groups[rel.parts[0] + "/" if len(rel.parts) > 1 else "."].append("/".join(rel.parts[1:]) if len(rel.parts) > 1 else rel.name)
+    for group in sorted(groups, key=lambda g: (g != ".", g)):
+        print("  %s" % ("files directly in the folder" if group == "." else group))
+        for name in groups[group]:
+            print("    %s" % name)
+    readme = top / "README.md"
+    if readme.is_file():
+        text = readme.read_text(encoding="utf-8", errors="replace")
+        seen = []
+        for m in re.finditer(r"\b[A-Z][A-Z0-9]*-ADR-\d+\b|(?:[\w./-]*/)?adr/[\w.-]+\.md", text):
+            if m.group(0) not in seen:
+                seen.append(m.group(0))
+        if seen:
+            print("  decision records its README names")
+            for name in seen:
+                print("    %s" % name)
 
 
 def cmd_index(entries, args):
@@ -170,6 +266,80 @@ def cmd_index(entries, args):
     else:
         sys.stdout.write(text)
     return 0
+
+
+def named_in(name, text):
+    """Does `name` appear in `text` as a whole file name, not the tail of a longer one?"""
+    return re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", text) is not None
+
+
+def cmd_health(entries, args):
+    """Advisory report of what has gone quiet or unowned. Always exits 0."""
+    base = repo_root(pathlib.Path(args.root))
+    findings = []
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    if base is None:
+        print("register: %s is not inside a git repository -- skipping the folder and document "
+              "checks" % args.root, file=sys.stderr)
+    for e in entries:
+        if base is not None and e.get("status") == "active" and e.folder:
+            out = git_out(base, "log", "-1", "--format=%ct", "--", e.folder)
+            last = out.strip() if out is not None else ""
+            if not last:
+                findings.append("%s: active, and its folder %s has no commit" % (e.id, e.folder))
+            elif now - int(last) > QUIET_DAYS * 86400:
+                findings.append("%s: active, and its folder %s has no commit in %d days"
+                                % (e.id, e.folder, QUIET_DAYS))
+        if e.get("status") == "standing":
+            cadence, verified = e.get("cadence"), e.get("verified")
+            if cadence in CADENCE_DAYS and re.match(r"^\d{4}-\d{2}-\d{2}$", verified):
+                age = (datetime.date.today() - datetime.date.fromisoformat(verified)).days
+                if age > CADENCE_DAYS[cadence]:
+                    findings.append("%s: standing, last verified %s, %dd ago, past its %s cadence"
+                                    % (e.id, verified, age, cadence))
+    if base is not None:
+        findings += unclaimed_documents(base, entries)
+    if not findings:
+        print("health: nothing to report")
+    for line in findings:
+        print(line)
+    return 0
+
+
+def unclaimed_documents(base, entries):
+    """Documents in the repository-wide type folders that no initiative names (or only one does).
+
+    NAMED means the file name appears in a register entry, a decision record or a folder README.
+    Whether it is claimed by an INITIATIVE is narrower: an entry, or that entry's folder README --
+    counted once per initiative id, so an entry and its own README naming a document do not make
+    two. A decision record or a subject README makes a document named without making it claimed."""
+    docs = base / "docs"
+    claimants = []      # (initiative id or None, text)
+    for e in entries:
+        claimants.append((e.id, e.text))
+    for adr in sorted((docs / "adr").glob("*.md")) if (docs / "adr").is_dir() else []:
+        claimants.append((None, adr.read_text(encoding="utf-8", errors="replace")))
+    readmes = sorted(docs.glob("*/README.md")) + sorted(docs.glob("initiatives/*/README.md")) \
+        + sorted(docs.glob("archive/initiatives/*/README.md"))
+    for r in readmes:
+        m = re.match(r"^([A-Z][A-Z0-9]*-\d+)", r.parent.name)
+        in_initiatives = r.parent.parent.name == "initiatives"
+        claimants.append((m.group(1) if m and in_initiatives else None,
+                          r.read_text(encoding="utf-8", errors="replace")))
+    out = []
+    for t in TYPE_DIRS:
+        for f in sorted(p for p in (docs / t).rglob("*") if p.is_file()) if (docs / t).is_dir() else []:
+            if f.name == "README.md":
+                continue
+            rel = f.relative_to(base).as_posix()
+            hits = [(i, text) for i, text in claimants if named_in(f.name, text)]
+            initiatives = sorted({i for i, _ in hits if i})
+            if not hits:
+                out.append("%s: named by nothing -- no entry, decision record or README" % rel)
+            elif len(initiatives) == 1:
+                out.append("%s: named by one initiative (%s) only -- a candidate to move into its "
+                           "folder" % (rel, initiatives[0]))
+    return out
 
 
 ID_SHAPE = re.compile(r"^(.*?)(\d+)$")
@@ -204,7 +374,7 @@ def cmd_next(entries, args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Read a work register.")
-    p.add_argument("command", choices=("list", "stats", "show", "index", "next"))
+    p.add_argument("command", choices=("list", "stats", "show", "index", "next", "health"))
     p.add_argument("id", nargs="?", help="entry id, for `show`")
     p.add_argument("--root", default="docs/register", help="the register directory")
     p.add_argument("--status", help="comma-separated statuses to include")
@@ -234,6 +404,9 @@ def main(argv=None):
     if a.command == "next":
         # Over EVERY entry: filters would hide the closed ids that must never be reused.
         return cmd_next(entries, a)
+    if a.command == "health":
+        # Over EVERY entry, like `next`: a filter would hide the claimants a document is named by.
+        return cmd_health(entries, a)
     return {"list": cmd_list, "stats": cmd_stats, "index": cmd_index}[a.command](
         select(entries, a), a)
 

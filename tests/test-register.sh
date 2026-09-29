@@ -108,6 +108,99 @@ assert_has "outgrowing the width is reported" "wider than every existing id" "$(
 two="$tmp/two"; mkdir -p "$two"; entry "$two" "ABC-1" "idea" "a" ""; entry "$two" "XYZ-2" "idea" "b" ""
 python3 "$reg" next --root "$two" >/dev/null 2>&1 && bad "two prefixes is an error" || ok "two prefixes is an error"
 
+# --- folders: an entry's `folder:` artifact, in `list`, `show` and `health`
+# These need a real repository, because `health` asks git when a folder last changed and because
+# the repository root is where the type folders are read from. Every git call strips or sets its
+# own identity so the fixture never depends on the machine running it.
+g="$tmp/repo"; gr="$g/docs/register"; mkdir -p "$gr/closed"
+gt() { git -C "$g" -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+git init -q "$g"
+fentry() {  # $1 id  $2 status  $3 folder-or-empty  $4 extra frontmatter line-or-empty  $5 body text
+  { echo "---"; echo "id: $1"; echo "title: Title of $1"; echo "status: $2"; echo "owner: jeremy"
+    echo "verified: 2026-09-22"; [ -n "${4:-}" ] && echo "$4"
+    if [ -n "${3:-}" ]; then echo "artifacts:"; echo "  - spec:docs/specs/x.md"; echo "  - folder:$3"; fi
+    echo "---"; echo ""; echo "# $1"; echo ""; echo "${5:-Body.}"
+  } > "$gr/$1-slug.md"
+}
+fdoc() { mkdir -p "$(dirname "$g/$1")"; echo "# $1" > "$g/$1"; }
+
+fentry ABC-0001 active docs/initiatives/ABC-0001-alpha/ "" "Names docs/plans/2026-01-01-shared.md here."
+fentry ABC-0002 active docs/initiatives/ABC-0002-beta/ "" "Nothing."
+fentry ABC-0003 active "" "" "No folder."
+fentry ABC-0004 standing "" "cadence: weekly" "A standing one."
+fentry ABC-0005 standing "" "cadence: annual" "Another standing one."
+sed -i 's/^verified: .*/verified: 2026-01-01/' "$gr/ABC-0004-slug.md"
+fdoc docs/initiatives/ABC-0001-alpha/README.md
+echo "Files: specs/2026-01-01-a.md. Decision: ABC-ADR-0005 and docs/adr/0006-x.md; also docs/plans/2026-01-01-shared.md." >> "$g/docs/initiatives/ABC-0001-alpha/README.md"
+fdoc docs/initiatives/ABC-0001-alpha/specs/2026-01-01-a.md
+fdoc docs/initiatives/ABC-0001-alpha/research/2026-01-02-r.md
+fdoc docs/initiatives/ABC-0002-beta/README.md
+fdoc docs/initiatives/ABC-0002-beta/plans/2026-01-01-b.md
+# repository-wide type folders: one shared by two initiatives' entries/READMEs, one named by only
+# ABC-0001, one named by nobody, one named only by an ADR.
+fdoc docs/plans/2026-01-01-shared.md
+fdoc docs/specs/2026-01-01-solo.md
+fdoc docs/runbooks/orphan-runbook.md
+fdoc docs/reference/adr-only.md
+fdoc docs/adr/0001-x.md
+echo "Mentions adr-only.md only." >> "$g/docs/adr/0001-x.md"
+echo "Also see 2026-01-01-shared.md" >> "$g/docs/initiatives/ABC-0002-beta/README.md"
+echo "Covers 2026-01-01-solo.md" >> "$gr/ABC-0001-slug.md"
+gt add -A >/dev/null
+GIT_COMMITTER_DATE="2026-01-01T00:00:00" GIT_AUTHOR_DATE="2026-01-01T00:00:00" gt commit -q -m old
+# ABC-0001 is touched now, so only ABC-0002's folder is stale.
+echo more >> "$g/docs/initiatives/ABC-0001-alpha/specs/2026-01-01-a.md"
+gt add -A >/dev/null; gt commit -q -m recent
+grun() { python3 "$reg" "$@" --root "$gr" 2>&1 || true; }
+
+out=$(grun list)
+assert_has "list shows an entry's folder" "docs/initiatives/ABC-0001-alpha/" "$out"
+line=$(printf '%s\n' "$out" | grep '^ABC-0003')
+assert_has "list shows a placeholder for an entry with no folder" " - " "$line"
+assert_has "list still shows the title" "Title of ABC-0001" "$out"
+
+out=$(grun show ABC-0001)
+assert_has "show prints the folder path" "folder: docs/initiatives/ABC-0001-alpha/" "$out"
+assert_has "show groups files by type subdirectory" "specs/" "$out"
+assert_has "show lists a file under its type" "2026-01-01-a.md" "$out"
+assert_has "show lists another type" "research/" "$out"
+assert_has "show lists the README as a root file" "README.md" "$out"
+assert_has "show lists an ADR id the README names" "ABC-ADR-0005" "$out"
+assert_has "show lists an ADR file the README names" "docs/adr/0006-x.md" "$out"
+assert_lacks "show of an entry with no folder adds no folder section" "docs/initiatives" "$(grun show ABC-0003)"
+
+out=$(grun health)
+assert_has "health names an active entry whose folder is stale" "ABC-0002" "$(echo "$out" | grep -i 'no commit')"
+assert_lacks "health leaves an active entry with a recent commit alone" "ABC-0001" "$(echo "$out" | grep -i 'no commit')"
+assert_lacks "health leaves an entry with no folder out of the stale check" "ABC-0003" "$(echo "$out" | grep -i 'no commit')"
+assert_has "health names a standing entry past its cadence" "ABC-0004" "$(echo "$out" | grep -i 'cadence')"
+assert_lacks "health leaves a standing entry within its cadence" "ABC-0005" "$(echo "$out" | grep -i 'cadence')"
+assert_has "health names a document only one initiative names" "docs/specs/2026-01-01-solo.md" "$(echo "$out" | grep -i 'one initiative')"
+assert_lacks "health leaves a document two initiatives name" "2026-01-01-shared.md" "$out"
+assert_has "health names a document nothing names" "docs/runbooks/orphan-runbook.md" "$(echo "$out" | grep -i 'named by nothing')"
+assert_lacks "a document only an ADR names is neither list" "adr-only.md" "$out"
+python3 "$reg" health --root "$gr" >/dev/null 2>&1 && ok "health exits 0 with findings" || bad "health exits 0 with findings"
+# Near miss: a folder committed today is not stale, at the edge of the window.
+echo x >> "$g/docs/initiatives/ABC-0002-beta/plans/2026-01-01-b.md"; gt add -A >/dev/null; gt commit -q -m touch
+assert_lacks "a folder with a fresh commit is not stale" "ABC-0002" "$(grun health | grep -i 'no commit')"
+
+# A hook exports GIT_DIR and GIT_INDEX_FILE naming ITS repository; they must not redirect the
+# questions this tool asks git about the fixture's folders.
+other="$tmp/other"; git init -q "$other"
+echo x > "$other/f"; git -C "$other" add f
+hookenv() { GIT_DIR="$other/.git" GIT_INDEX_FILE="$other/.git/index" python3 "$reg" "$@" --root "$gr" 2>&1 || true; }
+out=$(hookenv health)
+assert_has "in a hook's environment health still reads the fixture's own history" "docs/runbooks/orphan-runbook.md" "$out"
+assert_lacks "in a hook's environment a fresh folder is still fresh" "ABC-0002" "$(echo "$out" | grep -i 'no commit')"
+assert_has "in a hook's environment list still shows the fixture's folder" "docs/initiatives/ABC-0001-alpha/" "$(hookenv list)"
+assert_has "in a hook's environment show still lists the fixture's files" "2026-01-01-a.md" "$(hookenv show ABC-0001)"
+# A folder with NO commit of its own in a repository that has history: the other repository's
+# history would answer differently if GIT_DIR leaked through, so plant one only the fixture lacks.
+fentry ABC-0006 active docs/initiatives/ABC-0006-gamma/ "" "New."
+mkdir -p "$g/docs/initiatives/ABC-0006-gamma"; echo r > "$g/docs/initiatives/ABC-0006-gamma/README.md"
+assert_has "an uncommitted folder counts as having no commit" "ABC-0006" "$(grun health | grep -i 'no commit')"
+assert_has "the same holds inside a hook's environment" "ABC-0006" "$(hookenv health | grep -i 'no commit')"
+
 # --- a wrong root is an ERROR, not an empty answer. Those look identical and only one is true.
 python3 "$reg" list --root "$tmp/nope" >/dev/null 2>&1 && bad "a missing root exits non-zero" || ok "a missing root exits non-zero"
 mkdir -p "$tmp/hollow"; echo "# nothing" > "$tmp/hollow/notes.md"
