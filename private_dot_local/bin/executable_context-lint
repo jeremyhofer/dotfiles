@@ -34,7 +34,7 @@ WHAT IT CHECKS, at the repository root
                       a session or a tool finds anything in `docs/`.
     docs-layout       BLOCKING. A `docs/` subdirectory is neither one of the fleet layout's names
                       (adr, register, specs, plans, runbooks, research, reference, policies,
-                      compliance, archive) nor named in
+                      compliance, initiatives, archive) nor named in
                       the context file's `## Layout`, where a project declares its own subjects.
     docs-dated        BLOCKING. A document in `docs/specs/`, `docs/plans/` or `docs/research/` is not
                       named `YYYY-MM-DD-slug`. Those documents are frozen or finished, and the date is
@@ -58,6 +58,18 @@ WHAT IT CHECKS, at the repository root
                       in a work tree, so an untracked or ignored leftover on disk (an empty directory
                       git never records) does not block a commit; outside a work tree, as for a
                       snapshot directory of staged copies, they read the filesystem.
+    docs-initiative   BLOCKING. A folder directly under `docs/initiatives/` has no README.md; its README
+                      does not name each file and subdirectory in the folder; it holds a file
+                      other than README.md; or it holds a subdirectory other than specs, plans,
+                      runbooks, research, reference, policies or compliance. The README is what
+                      makes a folder one initiative's whole record rather than a heap.
+                      A document or directory directly under an initiative's specs/, plans/ or
+                      research/ that is not named `YYYY-MM-DD-slug` is a docs-dated finding, as at
+                      the repository-wide type folders.
+    docs-subject      BLOCKING. A subject declared in `## Layout` (a `docs/<name>/` line naming a
+                      directory that exists, other than a fleet layout name) has no README.md. A
+                      declared subject that is not on disk yet is not checked.
+                      Nothing inside `docs/archive/` is checked.
     volatile          ADVISORY. A figure that an edit somewhere else can make false: a census
                       ("12 tests"), a claim pinned to a date ("as of 2026"), or "currently".
                       Name the command that measures it instead. Advisory because a number
@@ -88,7 +100,10 @@ import sys
 MAX_LINES = 200
 MAX_BYTES = 14000
 REQUIRED = ["Tasks", "Layout", "Deeper context", "Rules", "Writing here"]
-DOCS_LAYOUT = {"adr", "register", "specs", "plans", "runbooks", "research", "reference", "policies", "compliance", "archive"}
+DOCS_LAYOUT = {"adr", "register", "specs", "plans", "runbooks", "research", "reference", "policies", "compliance", "initiatives", "archive"}
+# The type subdirectories an initiative folder may hold, and the three whose entries are dated.
+INITIATIVE_SUBDIRS = {"specs", "plans", "runbooks", "research", "reference", "policies", "compliance"}
+INITIATIVE_DATED = ("specs", "plans", "research")
 DATED = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 RETIRED_ANYWHERE = {"superpowers", ".superpowers"}
 RETIRED_DOCS = {"claude", "agents"}
@@ -395,6 +410,47 @@ def main(argv):
                     continue
                 if not DATED.match(name):
                     blocking.append(("docs-dated", f"docs/{sub}/{name}", 0, "not named YYYY-MM-DD-slug"))
+
+        # Initiative folders and declared subjects. Entries come from the same source as the checks above.
+        def kids(prefix):
+            if tracked is None:
+                base = docs.joinpath(*prefix)
+                return {e.name: e.is_dir() for e in base.iterdir()} if base.is_dir() else {}
+            out = {}
+            for parts in tracked:
+                if len(parts) > len(prefix) and parts[:len(prefix)] == prefix:
+                    out[parts[len(prefix)]] = out.get(parts[len(prefix)], False) or len(parts) > len(prefix) + 1
+            return out
+
+        for folder, is_dir in sorted(kids(("initiatives",)).items()):
+            if not is_dir or folder.startswith("."):
+                continue
+            where = f"docs/initiatives/{folder}"
+            inside = kids(("initiatives", folder))
+            if "README.md" not in inside:
+                blocking.append(("docs-initiative", where, 0, "no README.md; it names every file and subdirectory of the initiative"))
+                rtext = None
+            else:
+                rtext = (docs / "initiatives" / folder / "README.md").read_text(errors="replace")
+            for name, sub in sorted(inside.items()):
+                if name.startswith(".") or name == "README.md":
+                    continue
+                if rtext is not None and not re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", rtext):
+                    blocking.append(("docs-initiative", f"{where}/README.md", 0, f"does not name `{name}{'/' if sub else ''}`"))
+                if not sub:
+                    blocking.append(("docs-initiative", f"{where}/{name}", 0, "a loose file in an initiative folder; only README.md sits here, documents go in a type subdirectory"))
+                elif name not in INITIATIVE_SUBDIRS:
+                    blocking.append(("docs-initiative", f"{where}/{name}", 0, "not one of the initiative type subdirectories (" + ", ".join(sorted(INITIATIVE_SUBDIRS)) + ")"))
+                elif name in INITIATIVE_DATED:
+                    for doc in sorted(kids(("initiatives", folder, name))):
+                        if not doc.startswith(".") and doc != "README.md" and not DATED.match(doc):
+                            blocking.append(("docs-dated", f"{where}/{name}/{doc}", 0, "not named YYYY-MM-DD-slug"))
+        declared = set(re.findall(r"(?<![\w.-])docs/([\w.-]+)/", layout))
+        for name in sorted(declared):
+            if name in DOCS_LAYOUT or name in RETIRED_DOCS or name.startswith("."):
+                continue
+            if top.get(name) is True and "README.md" not in kids((name,)):
+                blocking.append(("docs-subject", f"docs/{name}", 0, "a subject declared in AGENTS.md `## Layout` has no README.md; it says what the subject holds and how it is organized"))
 
     total_lines = sum(l for _, l, _ in loaded)
     total_bytes = sum(b for _, _, b in loaded)

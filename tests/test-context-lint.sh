@@ -157,7 +157,7 @@ out=$(python3 "$LINT" --nested "$d" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[claude-import\]' <<< "$out" && ok "--nested still requires the @AGENTS.md bridge" || bad "--nested skipped the bridge" "$out"
 
 printf '\n== the docs/ layout ==\n'
-d="$TMP/docs"; good "$d"; mkdir -p "$d/docs/adr" "$d/docs/research" "$d/docs/seo"
+d="$TMP/docs"; good "$d"; mkdir -p "$d/docs/adr" "$d/docs/research" "$d/docs/seo"; printf '# Search data\n' > "$d/docs/seo/README.md"
 printf '# Documents\n\n- `adr/`: decisions.\n- `research/`: investigations.\n- `seo/`: search data.\n- `primer.md`: the ads primer.\n' > "$d/docs/README.md"
 printf 'x\n' > "$d/docs/primer.md"; printf 'x\n' > "$d/docs/research/2026-09-01-sweep.md"
 python3 - "$d/AGENTS.md" <<'EOF'
@@ -258,6 +258,79 @@ out=$(cd "$d" && GIT_DIR="$d/.git" GIT_INDEX_FILE="$d/.git/index" python3 "$LINT
 [ "$rc" -eq 0 ] && ok "a snapshot linted from inside a hook does not read the hook repo's index" || bad "hook env leaked the real index into a snapshot run" "$out"
 out=$(cd "$d" && GIT_DIR="$d/.git" GIT_INDEX_FILE="$d/.git/index" python3 "$LINT" "$d" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[docs-nested\].*pkg/docs' <<< "$out" && ok "the repository itself, linted from its own hook, still reads its index" || bad "root run inside its own hook lost the index" "$out"
+
+printf '\n== initiative folders and declared subjects, in a git index and on disk ==\n'
+# initgood <dir>: a conforming repository with one initiative folder and one declared subject.
+initgood() {
+  good "$1"; local d="$1"
+  mkdir -p "$d/docs/initiatives/ABC-0001-cleanup/"{specs,plans,research/2026-09-02-bundle,reference} "$d/docs/catalog" "$d/docs/archive/initiatives"
+  printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`.\n' > "$d/docs/initiatives/ABC-0001-cleanup/README.md"
+  printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/specs/2026-09-01-a.md"
+  printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/plans/2026-09-01-b.md"
+  printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/research/2026-09-02-bundle/data.md"
+  printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/reference/guide.md"
+  printf '# Catalog\n' > "$d/docs/catalog/README.md"; printf 'x\n' > "$d/docs/catalog/items.md"
+  printf 'x\n' > "$d/docs/archive/initiatives/.keep"
+  printf '# Documents\n\n- `adr/`, `initiatives/`, `catalog/`, `archive/`.\n' > "$d/docs/README.md"
+  python3 - "$d/AGENTS.md" <<'EOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+p.write_text(p.read_text().replace("- `docs/adr/`: decisions.", "- `docs/adr/`: decisions. `docs/catalog/`: the product catalog.", 1))
+EOF
+}
+I=docs/initiatives/ABC-0001-cleanup
+m_norm()      { rm "$1/$I/README.md"; }
+m_unnamedf()  { printf 'x\n' > "$1/$I/notes.md"; }
+m_unnameds()  { printf '# Cleanup\n\n- `specs/`, `plans/`, `reference/`.\n' > "$1/$I/README.md"; }
+m_loose()     { printf 'x\n' > "$1/$I/notes.md"; printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`, `notes.md`.\n' > "$1/$I/README.md"; }
+m_adr()       { mkdir -p "$1/$I/adr"; printf 'x\n' > "$1/$I/adr/0001-x.md"; printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`, `adr/`.\n' > "$1/$I/README.md"; }
+m_undated()   { printf 'x\n' > "$1/$I/research/loose-notes.md"; }
+m_undatedp()  { printf 'x\n' > "$1/$I/plans/rollout.md"; }
+m_nosubj()    { rm "$1/docs/catalog/README.md"; }
+m_ghost()     { python3 - "$1/AGENTS.md" <<'EOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("`docs/catalog/`", "`docs/ghost/`, `docs/catalog/`", 1))
+EOF
+}
+m_archive()   { mkdir -p "$1/docs/archive/initiatives/oddity" "$1/docs/archive/junk"; printf 'x\n' > "$1/docs/archive/initiatives/oddity/loose.txt"; printf 'x\n' > "$1/docs/archive/junk/undated.md"; }
+m_none()      { :; }
+# expect <mutator> <mode: git|disk> <label> <grep-pattern | ->  ; '-' means the near miss must pass with no docs finding
+expect() {
+  local mut="$1" mode="$2" label="$3" pat="$4" d="$TMP/i-$1-$2"
+  initgood "$d"; "$mut" "$d"
+  [ "$mode" = git ] && { git -C "$d" init -q && git -C "$d" add -A; }
+  out=$(run "$d"); rc=$?
+  if [ "$pat" = - ]; then
+    [ "$rc" -eq 0 ] && ! grep -q '\[docs-' <<< "$out" && ok "$label ($mode): passes" || bad "$label ($mode): near miss refused" "rc=$rc: $out"
+  else
+    [ "$rc" -eq 1 ] && grep -q "$pat" <<< "$out" && ok "$label ($mode): refused" || bad "$label ($mode): not caught" "rc=$rc: $out"
+  fi
+}
+for mode in git disk; do
+  expect m_none     $mode "a complete initiative, a dated bundle, a flat subject with README" -
+  expect m_norm     $mode "an initiative without README.md"            '\[docs-initiative\].*ABC-0001-cleanup.*no README.md'
+  expect m_unnamedf $mode "a README not naming a file"                 '\[docs-initiative\].*does not name `notes.md`'
+  expect m_unnameds $mode "a README not naming a subdirectory"         '\[docs-initiative\].*does not name `research/`'
+  expect m_loose    $mode "a loose file in the initiative folder"      '\[docs-initiative\].*notes.md.*loose'
+  expect m_adr      $mode "a disallowed subdirectory (adr/)"           '\[docs-initiative\].*adr.*not one of'
+  expect m_undated  $mode "an undated file under research/"            '\[docs-dated\].*initiatives/ABC-0001-cleanup/research/loose-notes.md'
+  expect m_undatedp $mode "an undated file under plans/"               '\[docs-dated\].*initiatives/ABC-0001-cleanup/plans/rollout.md'
+  expect m_nosubj   $mode "a declared subject without README.md"       '\[docs-subject\].*docs/catalog.*no README.md'
+  expect m_ghost    $mode "a subject declared but not on disk"         -
+  expect m_archive  $mode "malformed content under docs/archive/"      -
+done
+
+printf '\n== initiative checks inside a git hook environment ==\n'
+d="$TMP/hookinit"; good "$d"; ( cd "$d" && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+snap="$TMP/hookinitsnap"; initgood "$snap"; m_norm "$snap"
+out=$(cd "$d" && GIT_DIR="$d/.git" GIT_INDEX_FILE="$d/.git/index" python3 "$LINT" "$snap" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-initiative\].*no README.md' <<< "$out" && ok "a snapshot with a planted initiative defect is refused from inside a hook" || bad "hook env hid the snapshot's initiative defect" "rc=$rc: $out"
+snap="$TMP/hookinitsnap2"; initgood "$snap"
+out=$(cd "$d" && GIT_DIR="$d/.git" GIT_INDEX_FILE="$d/.git/index" python3 "$LINT" "$snap" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a conforming initiative snapshot passes from inside a hook" || bad "conforming snapshot refused in a hook" "rc=$rc: $out"
+d2="$TMP/hookinit2"; initgood "$d2"; m_norm "$d2"; ( cd "$d2" && git init -q && git add -A )
+out=$(cd "$d2" && GIT_DIR="$d2/.git" GIT_INDEX_FILE="$d2/.git/index" python3 "$LINT" "$d2" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-initiative\].*no README.md' <<< "$out" && ok "the repository itself, from its own hook, is checked against its index" || bad "own-hook run missed the initiative defect" "rc=$rc: $out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
