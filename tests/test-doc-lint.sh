@@ -218,6 +218,63 @@ out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
 assert_has "deleting a spec holding pending is refused" "[spec-pending]" "$out"
 git -C "$r" reset -q --hard HEAD
 
+# A `*` as one whole path segment of a spec-dirs value matches exactly one segment, so the check
+# reaches an initiative folder's specs/ without reaching its research/ sibling. A value without
+# `*` keeps its plain prefix meaning.
+r=$(repo pat)
+printf 'spec-dirs: docs/initiatives/*/specs/ docs/specs/\n' > "$r/.doc-lint"
+echo "# Guide" > "$r/docs/guide.md"
+git -C "$r" add -A
+git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m base
+pat() {  # $1 path under docs/  $2 content -> write it, stage it, run the staged check on it
+  mkdir -p "$r/docs/$(dirname "$1")"; printf '%s\n' "$2" > "$r/docs/$1"; git -C "$r" add -A
+  (cd "$r" && python3 "$lint" --added-only --blocking-only "docs/$1" 2>&1) || true
+}
+NODEC=$(printf '# A spec\n\nStatus: draft\n\n## Goal\n\nText.\n')
+I=initiatives/ABC-0001-x
+out=$(pat $I/specs/2026-10-02-a.md "$NODEC")
+assert_has "a spec without Decisions inside a matched initiative folder is refused" "[spec-decisions]" "$out"
+out=$(pat $I/specs/2026-10-02-a.md "$(body 'Status: draft' '- Open — pending')")
+assert_lacks "a well-formed spec in a matched folder is accepted" "[spec-" "$out"
+out=$(pat $I/research/2026-10-02-r.md "$NODEC")
+assert_lacks "a research note in the sibling research/ directory is not checked" "[spec-" "$out"
+out=$(pat $I/deep/specs/2026-10-02-d.md "$NODEC")
+assert_lacks "a directory two segments deep does not match a one-segment star" "[spec-" "$out"
+out=$(pat initiatives/specs/2026-10-02-z.md "$NODEC")
+assert_lacks "the star does not match zero segments" "[spec-" "$out"
+out=$(pat specs/2026-10-02-p.md "$NODEC")
+assert_has "a plain prefix in the same config keeps its meaning" "[spec-decisions]" "$out"
+out=$(pat $I/specs/sub/2026-10-02-s.md "$NODEC")
+assert_has "a matched folder is searched recursively, as a plain prefix is" "[spec-decisions]" "$out"
+git -C "$r" reset -q --hard HEAD; git -C "$r" clean -qfd
+# A finished spec moved from a matched folder to docs/archive/ is refused while it holds pending.
+mkdir -p "$r/docs/$I/specs" "$r/docs/$I/research" "$r/docs/archive/$I/specs"
+printf '%s\n' "$(body 'Status: executed' '- Still open — pending')" > "$r/docs/$I/specs/2026-10-06-b.md"
+git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m b
+mkdir -p "$r/docs/archive/$I/specs"
+git -C "$r" mv "docs/$I/specs/2026-10-06-b.md" "docs/archive/$I/specs/2026-10-06-b.md"
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
+assert_has "moving a spec holding pending from a matched folder to docs/archive/ is refused" "[spec-pending]" "$out"
+git -C "$r" reset -q --hard HEAD
+# The same move with every decision homed is accepted.
+printf '%s\n' "$(body 'Status: executed' '- Not taken — dropped')" > "$r/docs/$I/specs/2026-10-06-b.md"
+git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m c
+mkdir -p "$r/docs/archive/$I/specs"
+git -C "$r" mv "docs/$I/specs/2026-10-06-b.md" "docs/archive/$I/specs/2026-10-06-b.md"
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
+assert_lacks "archiving a finished spec with every decision homed is accepted" "[spec-" "$out"
+git -C "$r" reset -q --hard HEAD
+
+# Inside a git hook, git exports GIT_DIR and GIT_INDEX_FILE. Point them at a DIFFERENT repository:
+# the linted repository must still be answered by its own index.
+other="$tmp/otherrepo"; mkdir -p "$other"; git -C "$other" init -q; echo x > "$other/x.md"; git -C "$other" add -A
+printf '%s\n' "$NODEC" > "$r/docs/$I/specs/2026-10-07-h.md"; git -C "$r" add -A
+out=$( (cd "$r" && GIT_DIR="$other/.git" GIT_INDEX_FILE="$other/.git/index" python3 "$lint" --added-only --blocking-only "docs/$I/specs/2026-10-07-h.md" 2>&1) || true)
+assert_has "with another repository's GIT_DIR exported, the linted repository is still read" "[spec-decisions]" "$out"
+out=$( (cd "$r" && GIT_DIR=.git GIT_INDEX_FILE=.git/index python3 "$lint" --added-only --blocking-only "docs/$I/specs/2026-10-07-h.md" 2>&1) || true)
+assert_has "with the linted repository's own GIT_DIR exported, as in its own hook, it is still read" "[spec-decisions]" "$out"
+git -C "$r" reset -q --hard HEAD; git -C "$r" clean -qfd
+
 # Configuration: off is said aloud, and a mistyped key is not silently ignored.
 r2=$(repo nospec)
 put "$r2" "Plain text."

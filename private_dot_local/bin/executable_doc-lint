@@ -57,6 +57,10 @@ CONFIG
                                   higher, sub-headings included.
 
         spec-dirs: a/ b/          directories holding specs and plans (searched recursively).
+                                  A `*` that is a whole path segment (`docs/initiatives/*/specs/`)
+                                  matches exactly one segment, so an initiative's specs/ is
+                                  reached and its sibling research/ is not. A value without `*`
+                                  is a plain prefix, as before; a `*` inside a segment is literal.
                                   Enables the spec check; without it doc-lint says the check
                                   is off. A mistyped `spec…` key is reported, not ignored.
         spec-cutover: YYYY-MM-DD  only documents whose name begins with a date on or after
@@ -227,8 +231,29 @@ def mask_code(line: str) -> str:
     return INLINE_CODE.sub(lambda m: " " * len(m.group(0)), line)
 
 
+def git_env(cwd: pathlib.Path) -> dict[str, str] | None:
+    """The environment for git calls about the repository at CWD. Inside a git hook, git exports
+    GIT_DIR and GIT_INDEX_FILE and they override the working directory, so a run started in one
+    repository while the hook belongs to another would read the other's index. They are kept only
+    when the hook's repository IS the one at CWD, where GIT_INDEX_FILE names the index actually
+    being committed; otherwise git is asked with its variables removed."""
+    if not os.environ.get("GIT_DIR"):
+        return None
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    gd = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd, capture_output=True,
+                        text=True, env=clean)
+    if gd.returncode == 0 and \
+            pathlib.Path(os.environ["GIT_DIR"]).resolve() == pathlib.Path(gd.stdout.strip()).resolve():
+        return None
+    return clean
+
+
+_GIT_ENV: dict[str, str] | None = None
+
+
 def git(*args: str, cwd: pathlib.Path) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True,
+                          env=_GIT_ENV).stdout
 
 
 def tracked(root: pathlib.Path) -> tuple[set[str], set[str], set[str]]:
@@ -357,8 +382,20 @@ def check_file(text, rel, files, dirs, tops, cfg: Config):
     return findings
 
 
+def under_spec_dir(rel: str, d: str) -> bool:
+    """Whether REL lies under the spec-dirs value D. Without a `*` segment that is the plain string
+    prefix it always was. A `*` that is a whole segment matches exactly one non-empty segment of
+    REL, so `docs/initiatives/*/specs/` reaches an initiative's `specs/` and nothing beside it."""
+    if "/*/" not in "/" + d:
+        return rel.startswith(d)
+    want = d.rstrip("/").split("/")
+    have = rel.split("/")
+    # REL must be deeper than the directory: a file inside it, not the directory's own name.
+    return len(have) > len(want) and all(w == "*" or w == h for w, h in zip(want, have))
+
+
 def in_spec_dirs(rel: str, cfg: Config) -> bool:
-    return any(rel.startswith(d) for d in cfg.spec_dirs)
+    return any(under_spec_dir(rel, d) for d in cfg.spec_dirs)
 
 
 def spec_status(lines: list[str]) -> tuple[int, str] | None:
@@ -489,6 +526,8 @@ def main(argv: list[str]) -> int:
         elif a not in ("--blocking-only", "--added-only"):
             rest.append(a)
     start = pathlib.Path.cwd()
+    global _GIT_ENV
+    _GIT_ENV = git_env(start)
     root = pathlib.Path(git("rev-parse", "--show-toplevel", cwd=start).strip())
     cfg, source = load_config(root, explicit)
     if source is None:
