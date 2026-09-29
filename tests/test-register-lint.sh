@@ -303,6 +303,96 @@ entry "$r2" "ABC-01" "active" "artifacts:
   - adr:docs/adr/9999-not-here.md" "The thing is measurably finished."
 assert_lacks "outside a repository the path check is SKIPPED, not failed" "[artifact-path]" "$(run "$r2")"
 
+# --- initiative folders: id, naming entry, and place ----------------------------------
+# A folder under docs/initiatives/ belongs to an OPEN entry that names it as `folder:`; a finished
+# one is under docs/archive/initiatives/. Each refusal has one planted defect, and each has a near
+# miss that must pass. An archived tree is named and placed, never opened.
+mkrepo() { rm -rf "$1"; mkdir -p "$1/docs/register/closed" "$1/.git"; }
+run_r() { python3 "$lint" "$1/docs/register" --quiet 2>&1 || true; }
+
+f="$tmp/f-good"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-01-thing"
+entry "$f/docs/register" "ABC-01" "active" "artifacts:
+  - folder:docs/initiatives/ABC-01-thing/" "The thing is measurably finished."
+out=$(run_r "$f")
+assert_lacks "an open entry with its folder in place is clean" "[" "$out"
+
+f="$tmp/f-noid"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-99-ghost"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_has "a folder named for an id this register lacks is reported" "[initiative-id]" "$(run_r "$f")"
+
+f="$tmp/f-noprefix"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/just-a-name"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_has "a folder with no id at the start of its name is reported" "[initiative-id]" "$(run_r "$f")"
+
+f="$tmp/f-unnamed"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-01-thing"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_has "a folder its entry does not name is reported" "[initiative-folder]" "$(run_r "$f")"
+
+f="$tmp/f-otherfolder"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-01-thing" "$f/docs/initiatives/ABC-01-other"
+entry "$f/docs/register" "ABC-01" "active" "artifacts:
+  - folder:docs/initiatives/ABC-01-other/" "The thing is measurably finished."
+out=$(run_r "$f")
+assert_has "the folder the entry does NOT name is reported" "ABC-01-thing" "$out"
+assert_lacks "and the one it names is not" "ABC-01-other/" "$out"
+
+f="$tmp/f-donelive"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-01-thing"
+entry "$f/docs/register/closed" "ABC-01" "done" "closed: 2026-01-02
+artifacts:
+  - folder:docs/initiatives/ABC-01-thing/" "The thing is finished."
+sed -i.bak 's/^### Resolution$/### Resolution\nIt shipped./' "$f/docs/register/closed/ABC-01-a-tracked-thing.md"; rm -f "$f/docs/register/closed/"*.bak
+assert_has "a done entry whose folder is still live is reported" "[initiative-place]" "$(run_r "$f")"
+
+f="$tmp/f-droplive"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-01-thing"
+entry "$f/docs/register/closed" "ABC-01" "dropped" "closed: 2026-01-02
+artifacts:
+  - folder:docs/initiatives/ABC-01-thing/" "The thing is finished."
+sed -i.bak 's/^### Resolution$/### Resolution\nDropped./' "$f/docs/register/closed/ABC-01-a-tracked-thing.md"; rm -f "$f/docs/register/closed/"*.bak
+assert_has "a dropped entry whose folder is still live is reported" "[initiative-place]" "$(run_r "$f")"
+
+f="$tmp/f-openarchived"; mkrepo "$f"; mkdir -p "$f/docs/archive/initiatives/ABC-01-thing"
+entry "$f/docs/register" "ABC-01" "active" "artifacts:
+  - folder:docs/archive/initiatives/ABC-01-thing/" "The thing is measurably finished."
+assert_has "an open entry whose folder is archived is reported" "[initiative-place]" "$(run_r "$f")"
+
+f="$tmp/f-donearch"; mkrepo "$f"; mkdir -p "$f/docs/archive/initiatives/ABC-01-thing"
+entry "$f/docs/register/closed" "ABC-01" "done" "closed: 2026-01-02
+artifacts:
+  - folder:docs/archive/initiatives/ABC-01-thing/" "The thing is finished."
+sed -i.bak 's/^### Resolution$/### Resolution\nIt shipped./' "$f/docs/register/closed/ABC-01-a-tracked-thing.md"; rm -f "$f/docs/register/closed/"*.bak
+assert_lacks "a done entry archived correctly is clean" "[" "$(run_r "$f")"
+
+# Archived trees are frozen: their NAME and PLACE are read, their contents never. A malformed
+# interior (no README, a stray file, an undated spec) must not be reported.
+mkdir -p "$f/docs/archive/initiatives/ABC-01-thing/specs" "$f/docs/archive/initiatives/ABC-01-thing/weird-dir"
+: > "$f/docs/archive/initiatives/ABC-01-thing/stray.md"; : > "$f/docs/archive/initiatives/ABC-01-thing/specs/undated.md"
+assert_lacks "an archived folder's malformed CONTENTS are not inspected" "[" "$(run_r "$f")"
+
+# An archived folder with an unknown id is still refused: its name is read.
+f="$tmp/f-archghost"; mkrepo "$f"; mkdir -p "$f/docs/archive/initiatives/ABC-77-ghost"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_has "an archived folder for an unknown id is reported" "[initiative-id]" "$(run_r "$f")"
+
+# Files beside the folders (an index, a note) are not folders and are left alone.
+f="$tmp/f-file"; mkrepo "$f"; mkdir -p "$f/docs/initiatives"; : > "$f/docs/initiatives/README.md"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_lacks "a file directly under docs/initiatives is not a folder" "[" "$(run_r "$f")"
+
+# No initiatives directory at all: nothing new is checked (a repository not yet converted).
+f="$tmp/f-none"; mkrepo "$f"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_lacks "a repository without docs/initiatives is unaffected" "[" "$(run_r "$f")"
+
+# INSIDE A GIT HOOK, git exports GIT_DIR and GIT_INDEX_FILE. The result must be about the fixture,
+# not about whichever repository the hook belongs to. A snapshot directory has no .git of its own;
+# the root is then the parent of docs/.
+other="$tmp/other-repo"; mkdir -p "$other"; git init -q "$other"
+snap="$tmp/f-snap"; rm -rf "$snap"; mkdir -p "$snap/docs/register/closed" "$snap/docs/initiatives/ABC-99-ghost"
+entry "$snap/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+hookout=$(GIT_DIR="$other/.git" GIT_INDEX_FILE="$other/.git/index" python3 "$lint" "$snap/docs/register" --quiet 2>&1 || true)
+assert_has "in a hook environment a snapshot is judged on its own folders" "[initiative-id]" "$hookout"
+hookout=$(GIT_DIR="$other/.git" GIT_INDEX_FILE="$other/.git/index" run_r "$tmp/f-good")
+assert_lacks "in a hook environment a clean repository stays clean" "[" "$hookout"
+
 # --- staleness: advisory, and it never blocks -----------------------------------------
 run_at() { python3 "$lint" "$1" --quiet --today "$2" 2>&1 || true; }
 

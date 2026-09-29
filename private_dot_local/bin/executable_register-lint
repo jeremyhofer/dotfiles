@@ -46,6 +46,13 @@ WHAT IT CHECKS — blocking
                        root. A pointer the reader cannot follow is worse than no pointer,
                        because it looks like it resolves. Skipped entirely when no repository
                        root can be found, rather than reporting every pointer as broken.
+    initiative-id      a directory under `docs/initiatives/` or `docs/archive/initiatives/` whose
+                       name does not start with an id in this register.
+    initiative-folder  a live initiative directory its entry does not name as `folder:`.
+    initiative-place   an initiative directory in the wrong tree for its entry's status: a `done`
+                       or `dropped` entry under `docs/initiatives/`, or any other status under
+                       `docs/archive/initiatives/`. Archived directories are read for their name
+                       and place only, never their contents -- an archived tree is frozen.
     status-vocabulary  a status outside the vocabulary below.
     location           a closed entry outside the closed directory, or an open one inside.
     resolution         a closed entry with an empty resolution. Closing is a claim.
@@ -94,6 +101,7 @@ THE PREFIX IS DERIVED, NEVER CONFIGURED
 import argparse
 import datetime
 import pathlib
+import posixpath
 import re
 import sys
 
@@ -174,6 +182,32 @@ def repo_root(start):
         if (d / ".git").exists():
             return d
     return None
+
+
+def initiative_root(root):
+    """Where `docs/initiatives/` is looked for: the repository top, else the parent of `docs/`.
+
+    The second form is for a snapshot directory of staged copies, which a hook lints and which has
+    no `.git`. This does not shell out to git: inside a hook GIT_DIR overrides where git believes
+    it is, so asking git would answer about the hook's repository rather than the directory given.
+    """
+    top = repo_root(root)
+    if top is not None:
+        return top
+    parent = root.resolve().parent
+    return parent.parent if parent.name == "docs" else None
+
+
+def folder_artifacts(entry):
+    """Normalised relative paths this entry names with a `folder:` artifact."""
+    block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", entry.raw_front, re.M | re.S)
+    found = set()
+    if block:
+        for value in re.findall(r"^\s*-\s*(.+?)\s*$", block.group(1), re.M):
+            kind, sep, rest = value.strip().strip("'\"").partition(":")
+            if sep and kind.strip() == "folder":
+                found.add(posixpath.normpath(rest.strip().strip("'\"")))
+    return found
 
 
 ID_RE = re.compile(r"^([A-Z][A-Z0-9]*)-([0-9]+)$")
@@ -549,6 +583,48 @@ def check(entries, closed_dir, root=None, today=None):
             fail("stale-entry", e,
                  "last verified %s, %dd ago, against a %dd budget for status %r"
                  % (raw, age, budget, e.status))
+
+    # --- initiative folders ---------------------------------------------------------------
+    # Only the NAME and PLACE of a directory are read here. A folder under docs/archive/ is frozen
+    # and its contents are not this tool's business (nor are a live one's: shape is another tool's).
+    top = initiative_root(root) if root is not None else None
+    if top is not None:
+        by_id = {e.id: e for e in entries if e.id}
+        named = {}
+        for e in entries:
+            for rel in folder_artifacts(e):
+                named.setdefault(rel, []).append(e)
+        for live, tree in ((True, "docs/initiatives"), (False, "docs/archive/initiatives")):
+            base_dir = top / tree
+            if not base_dir.is_dir():
+                continue
+            for d in sorted(p for p in base_dir.iterdir() if p.is_dir()):
+                rel = "%s/%s" % (tree, d.name)
+                lead = re.match(r"^([A-Z][A-Z0-9]*-[0-9]+)(?:-|$)", d.name)
+                owner = by_id.get(lead.group(1)) if lead else None
+                if owner is None:
+                    findings.append((
+                        "initiative-id", rel,
+                        "the name does not start with an id in this register -- an initiative "
+                        "folder is named for the entry that owns it, e.g. %s-<slug>"
+                        % (sorted(by_id)[0] if by_id else "PREFIX-NN")))
+                    continue
+                if live and not any(o is owner for o in named.get(rel, [])):
+                    findings.append((
+                        "initiative-folder", rel,
+                        "%s does not name this directory as an artifact `folder:%s/` -- the entry "
+                        "and its folder must point at each other" % (owner.id, rel)))
+                closed = owner.status in CLOSED_STATUSES
+                if live and closed:
+                    findings.append((
+                        "initiative-place", rel,
+                        "%s is %r, so its folder belongs under docs/archive/initiatives/"
+                        % (owner.id, owner.status)))
+                elif not live and not closed:
+                    findings.append((
+                        "initiative-place", rel,
+                        "%s is %r, not finished, so its folder belongs under docs/initiatives/"
+                        % (owner.id, owner.status)))
 
     return findings
 
