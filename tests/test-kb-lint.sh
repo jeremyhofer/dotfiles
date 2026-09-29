@@ -22,7 +22,10 @@ KB="$here/../private_dot_local/bin/executable_kb"
 [ -f "$KB" ] || { echo "FAIL: base does not ship kb"; exit 1; }
 kb() { sh "$KB" "$@"; }
 
-newkb() { d=$(mktemp -d "$_TMP/kb.XXXXXX"); mkdir -p "$d/context"; printf '%s' "$d"; }
+# Every fixture KB lives under one parent, removed on exit: newkb runs in a command substitution, so
+# it cannot register its own directory for cleanup.
+_KBT=$(mktemp -d "$_TMP/kbtest.XXXXXX"); trap 'rm -rf "$_KBT"' EXIT
+newkb() { d=$(mktemp -d "$_KBT/kb.XXXXXX"); mkdir -p "$d/context"; printf '%s' "$d"; }
 
 # valid record body with an overridable edge line ($1=file, $2=name, $3=extra-line)
 emit() { # file name extra
@@ -85,7 +88,7 @@ echo "ok:   restricted-path rule enforced (plaintext flagged; ciphertext skipped
 
 # (e') a plaintext restricted record must be flagged even when an ANCESTOR dir merely
 # contains the substring ".age" (suffix check, not substring).
-base=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$base"' EXIT
+base=$(mktemp -d "$_KBT/kb.XXXXXX")
 root="$base/notes.agenda"; mkdir -p "$root/context"
 emit "$root/context/a.md" a 'related: []'; sedi 's/^sensitivity: internal$/sensitivity: restricted/' "$root/context/a.md"
 KB_ROOT="$root" kb lint >/dev/null 2>&1 && rc=0 || rc=$?

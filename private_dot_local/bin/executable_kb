@@ -377,6 +377,9 @@ cmd_lint() {
   _scope=$(mktemp "$_TMP/kb.lint.XXXXXX")
   _namesu=$(mktemp "$_TMP/kb.lint.XXXXXX")
   _names=$(mktemp "$_TMP/kb.lint.XXXXXX")
+  # `set -e` aborts on any failing command below, before the cleanup at the end; a trap removes the
+  # files on every exit path.
+  trap 'rm -f "$_all" "$_scope" "$_namesu" "$_names"' EXIT
 
   kb_find_records "$_root" > "$_all"
 
@@ -527,6 +530,7 @@ cmd_index() {
     fi
     _drift=0
     _tmp=$(mktemp -d "$_TMP/kb.index.XXXXXX")
+    trap 'rm -rf "$_tmp"' EXIT
     kb_index_root "$_root" "$_tmp"
     for _n in sources-of-truth.md backlinks.md; do
       cmp -s "$_tmp/$_n" "$_root/index/$_n" 2>/dev/null \
@@ -956,6 +960,7 @@ cmd_project() {
     # regenerate to a temp and compare; never write the real outputs. Exit 1 on any drift.
     _drift=0
     _tmp=$(mktemp "$_TMP/kb.proj.XXXXXX")
+    trap 'rm -f "$_tmp"' EXIT
     kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_tmp"
     cmp -s "$_tmp" "$_out/AGENTS.md" 2>/dev/null || { echo "kb: projection drift: $_out/AGENTS.md" >&2; _drift=1; }
     cmp -s "$_tmp" "$_out/GEMINI.md" 2>/dev/null || { echo "kb: projection drift: $_out/GEMINI.md" >&2; _drift=1; }
