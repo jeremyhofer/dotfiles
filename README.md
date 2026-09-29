@@ -68,6 +68,9 @@ agent loads by name when its trigger applies, rather than something kept in cont
   for parallel branches.
 - `overlay-doctor` covers setting up and auditing the private layer, and what to provision for each
   finding the checker reports.
+- `recording-what-you-learn` covers where a lesson, correction or preference belongs instead of
+  Claude Code's machine-local memory store, which is unversioned and read by no other session in
+  the project. A machine's private layer can add its own homes in a `fleet.md` beside it.
 - `scratch-copies` covers making scratch copies small (a worktree or `git archive` instead of copying
   a repository), and deleting them when their result is recorded, because `$TMPDIR` is shared by
   every agent session and its quota can fill in a day.
