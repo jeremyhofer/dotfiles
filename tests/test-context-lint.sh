@@ -173,11 +173,11 @@ out=$(run "$d"); rc=$?
 printf '# Documents\n\n- `adr/`, `research/`, `seo/`.\n' > "$d/docs/README.md"
 out=$(run "$d"); rc=$?
 [ "$rc" -eq 1 ] && grep -q 'does not name `primer.md`' <<< "$out" && ok "a loose document the index does not name is refused" || bad "unindexed loose document not caught" "$out"
-printf '# Documents\n\n- `adr/`, `research/`, `seo/`, `claude/`.\n- `primer.md`.\n' > "$d/docs/README.md"; mkdir -p "$d/docs/claude"
+printf '# Documents\n\n- `adr/`, `research/`, `seo/`, `misc/`.\n- `primer.md`.\n' > "$d/docs/README.md"; mkdir -p "$d/docs/misc"
 out=$(run "$d"); rc=$?
-[ "$rc" -eq 1 ] && grep -q '\[docs-layout\].*docs/claude' <<< "$out" && ! grep -q 'docs/seo' <<< "$out" \
+[ "$rc" -eq 1 ] && grep -q '\[docs-layout\].*docs/misc' <<< "$out" && ! grep -q 'docs/seo' <<< "$out" \
   && ok "an undeclared subdirectory is refused, a declared one is not" || bad "layout check wrong" "$out"
-rmdir "$d/docs/claude"; printf 'x\n' > "$d/docs/research/sweep-notes.md"
+rmdir "$d/docs/misc"; printf 'x\n' > "$d/docs/research/sweep-notes.md"
 out=$(run "$d"); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[docs-dated\].*sweep-notes.md' <<< "$out" && ok "an undated research note is refused" || bad "undated note not caught" "$out"
 rm "$d/docs/research/sweep-notes.md"; mkdir -p "$d/docs/research/2026-09-28-spike-results"
@@ -203,6 +203,53 @@ out=$(run "$d"); rc=$?
 git -C "$d" add docs/research/loose-notes.md
 out=$(run "$d"); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[docs-dated\].*loose-notes.md' <<< "$out" && ok "a staged undated research note is refused" || bad "staged undated note not caught" "$out"
+
+printf '\n== retired homes and document types outside docs/ ==\n'
+d="$TMP/retired"; good "$d"; mkdir -p "$d/docs/claude"; printf 'x\n' > "$d/docs/claude/arch.md"
+printf '# Documents\n\n- `claude/`: the manual.\n' > "$d/docs/README.md"
+python3 - "$d/AGENTS.md" <<'EOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+p.write_text(p.read_text().replace("- `docs/adr/`: decisions.", "- `docs/adr/`: decisions. `docs/claude/`: the manual.", 1))
+EOF
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-retired\].*docs/claude' <<< "$out" && ok "docs/claude/ is refused even when declared" || bad "declared docs/claude/ passed" "$out"
+rm -rf "$d/docs/claude"; mkdir -p "$d/docs/agents"; printf 'x\n' > "$d/docs/agents/a.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-retired\].*docs/agents' <<< "$out" && ok "docs/agents/ is refused" || bad "docs/agents/ passed" "$out"
+rm -rf "$d/docs/agents"; printf '# Documents\n\nNothing yet.\n' > "$d/docs/README.md"
+mkdir -p "$d/tools/.superpowers/x"; printf 'x\n' > "$d/tools/.superpowers/x/s.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-retired\].*tools/.superpowers' <<< "$out" && ok "a .superpowers path anywhere is refused" || bad "nested .superpowers passed" "$out"
+rm -rf "$d/tools"; mkdir -p "$d/research"; printf 'x\n' > "$d/research/2026-09-01-a.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-outside\].*research' <<< "$out" && ok "a top-level research/ is refused" || bad "top-level research/ passed" "$out"
+rm -rf "$d/research"
+mkdir -p "$d/goals/research" "$d/packages/x/docs" "$d/policies"
+printf 'x\n' > "$d/goals/research/2026-09-01-a.md"; printf 'x\n' > "$d/packages/x/docs/guide.md"; printf '{}\n' > "$d/policies/allow.json"
+printf '{"name":"x"}\n' > "$d/packages/x/package.json"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ! grep -q '\[docs-' <<< "$out" && ok "nested research/, a publishable package docs/ tree and top-level policies/ pass" || bad "near-miss refused" "$out"
+git -C "$d" init -q && git -C "$d" add -A
+mkdir -p "$d/research"; printf 'x\n' > "$d/research/2026-09-01-a.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ! grep -q 'docs-outside' <<< "$out" && ok "an untracked top-level research/ in a work tree passes" || bad "untracked top-level research/ refused" "$out"
+git -C "$d" add research
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-outside\].*research' <<< "$out" && ok "a tracked top-level research/ is refused" || bad "tracked top-level research/ passed" "$out"
+
+printf '\n== a docs/ tree below the root only inside a publishable package ==\n'
+d="$TMP/nesteddocs"; good "$d"
+mkdir -p "$d/packages/pub/docs" "$d/frontend/docs/design" "$d/tools/x/docs"
+printf '{"name":"pub","private":false}\n' > "$d/packages/pub/package.json"; printf 'x\n' > "$d/packages/pub/docs/guide.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ! grep -q 'docs-nested' <<< "$out" && ok "a publishable package's docs/ passes" || bad "publishable package docs refused" "$out"
+printf '{"name":"fe","private":true}\n' > "$d/frontend/package.json"; printf 'x\n' > "$d/frontend/docs/design/diff.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-nested\].*frontend/docs.*private package' <<< "$out" && ok "a private package's docs/ is refused" || bad "private package docs passed" "$out"
+rm -rf "$d/frontend"; printf 'x\n' > "$d/tools/x/docs/notes.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-nested\].*tools/x/docs.*no package.json' <<< "$out" && ok "a docs/ tree with no package.json above it is refused" || bad "unowned nested docs passed" "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
