@@ -35,7 +35,9 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
                        --if-present downgrades "never generated" to a pass
   project [--domain D] [--out DIR] [--max-sensitivity L] [--check [--if-present]]
                        generate the tier-0 projection; with --domain, that domain's
-                       tier-1 slice, written to the repo named by [domain.D] repo
+                       tier-1 slice, written under the KB's index/projections/domains/D
+                       (or --out). Never into a repository root: each repository's
+                       AGENTS.md and CLAUDE.md belong to that repository's owner
   rename <A> <C>       rename a record + rewrite every inbound edge A->C
   retire <A>           mark a record retired + strip inbound edges
   install-hooks [repo] wire a pre-commit that runs `kb lint` + both derived-output
@@ -94,26 +96,6 @@ kb_config_domains() {
     /^[ \t]*\[/ {
       sec=$0; sub(/^[ \t]*\[/,"",sec); sub(/\][ \t]*$/,"",sec)
       if (sec ~ /^domain\./) print substr(sec, length("domain.")+1)
-    }
-  ' "$1"
-}
-
-# kb_config_domain_repo CONFIG SLUG -- print the `repo` path for `[domain.<slug>]`
-# (empty if absent).
-kb_config_domain_repo() {
-  awk -v want="$2" '
-    function trim(s){ sub(/^[ \t]+/,"",s); sub(/[ \t]+$/,"",s); return s }
-    function unquote(s){ sub(/^"/,"",s); sub(/"$/,"",s); return s }
-    /^[ \t]*#/ { next }
-    /^[ \t]*\[/ {
-      sec=$0; sub(/^[ \t]*\[/,"",sec); sub(/\][ \t]*$/,"",sec)
-      cur=""
-      if (sec ~ /^domain\./) cur=substr(sec, length("domain.")+1)
-      next
-    }
-    /^[ \t]*repo[ \t]*=/ {
-      v=$0; sub(/^[ \t]*repo[ \t]*=[ \t]*/,"",v); v=unquote(trim(v))
-      if (cur==want) { print v; exit }
     }
   ' "$1"
 }
@@ -948,20 +930,16 @@ cmd_project() {
 
   _root=$(kb_resolve_root) || exit 1
 
-  # Selection = tier AND domain. Bare: Tier-0 universal. --domain <slug>:
-  # that domain's Tier-1 slice, output repo resolved from config `[domain.<slug>] repo`.
+  # Selection = tier AND domain. Bare: Tier-0 universal. --domain <slug>: that domain's Tier-1
+  # slice, written inside the KB. It used to default to the repository named in the config, which
+  # replaced that repository's hand-maintained AGENTS.md and CLAUDE.md whole; a repository's owner
+  # now reads the slice from here and edits what it needs into its own files.
   if [ -n "$_domainflag" ]; then
     _tier=1
     _domain=$_domainflag
     _title="Domain context: $_domain (Tier 1)"
     if [ -n "$_outflag" ]; then _out=$_outflag
-    else
-      _cfg=$(kb_config_path)
-      _repo=""
-      [ -f "$_cfg" ] && _repo=$(kb_config_domain_repo "$_cfg" "$_domain")
-      if [ -n "$_repo" ]; then _out=$_repo
-      else _out="$_root/index/projections/domains/$_domain"; fi
-    fi
+    else _out="$_root/index/projections/domains/$_domain"; fi
   else
     _tier=0
     _domain=universal
@@ -1002,6 +980,13 @@ cmd_project() {
     return $_drift
   fi
 
+  # A repository root's context files are hand-maintained by its owner, and this writes AGENTS.md,
+  # CLAUDE.md and GEMINI.md whole. Refuse rather than replace them.
+  if [ -e "$_out/.git" ]; then
+    echo "kb: refusing to write a projection into a repository root ($_out): its AGENTS.md and CLAUDE.md" >&2
+    echo "kb: are maintained by its owner. Project elsewhere (the default, or --out <dir>) and edit what you need in." >&2
+    exit 1
+  fi
   mkdir -p "$_out"
   # write via temp + mv so consumers never see a half-generated set
   kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_out/AGENTS.md.kbtmp.$$" && mv "$_out/AGENTS.md.kbtmp.$$" "$_out/AGENTS.md"
