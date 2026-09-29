@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""context-lint — check a repository's always-on agent context against the project context standard.
+
+WHY THIS EXISTS
+    A coding agent loads a repository's context file at the start of every session. When each
+    repository shapes that file differently, a session cannot know where the task list, the
+    decision log or the off-limits actions are written; and as the file grows, its instructions
+    are followed less. The standard fixes the shape and caps the size. A written standard is a
+    request; this is the check that holds it.
+
+WHAT IT CHECKS, at the repository root
+    agents-missing    BLOCKING. There is no AGENTS.md. It holds the tool-neutral context.
+    claude-import     BLOCKING. CLAUDE.md is missing, or its first non-blank line is not
+                      `@AGENTS.md`. Claude Code reads AGENTS.md natively only when no CLAUDE.md
+                      or CLAUDE.local.md exists, so a personal CLAUDE.local.md would silently
+                      drop the whole file; the import cannot fail that way.
+    title             BLOCKING. AGENTS.md does not open with a `# <repo name>` heading.
+    sections          BLOCKING. A required section is missing or out of order, or an optional
+                      section sits before the last required one. Required, in order:
+                      Tasks, Layout, Deeper context, Rules, Writing here.
+    size              BLOCKING. What loads unconditionally exceeds 200 lines or 14,000 bytes:
+                      AGENTS.md, the rest of CLAUDE.md, every file either imports (followed
+                      transitively), and every .claude/rules file without a `paths:` scope.
+                      An import loads at session start with the file that names it, so moving
+                      text into one changes nothing a session loads.
+    import            BLOCKING. An in-repository `@import` does not resolve, so it cannot be
+                      counted. ADVISORY for an import outside the repository, which Claude Code
+                      loads only after a per-project approval.
+    generated         BLOCKING. A generated block (text between `<!-- ... start -->` and
+                      `<!-- ... end -->` markers, as Nx writes) is followed by hand-written
+                      text in its file. A generated block goes last.
+    volatile          ADVISORY. A figure that an edit somewhere else can make false: a census
+                      ("12 tests"), a claim pinned to a date ("as of 2026"), or "currently".
+                      Name the command that measures it instead. Advisory because a number
+                      that describes something the file itself defines is fine, and no
+                      pattern tells the two apart.
+
+WHAT IT CANNOT CHECK
+    * Whether the content is right: that each line is something a fresh session would otherwise
+      get wrong, that a rule truly cannot be enforced by a check, that pointers point at the
+      right documents. Those are review, not pattern.
+    * Paths inside the prose. `doc-lint` checks that.
+    * A nested context file, unless asked: `context-lint --nested <subdirectory>` checks one. A
+      nested file adds to the root file, so it needs the `@AGENTS.md` bridge, the caps, working
+      imports and a generated block last, but not the root's title and sections.
+
+USAGE
+    context-lint [<repo-root>]            default: the current directory
+    context-lint --nested <subdirectory>  a nested context file: no title or section checks
+    Exit 0 when nothing blocks, 1 when something does, 2 on a usage error.
+"""
+import pathlib
+import re
+import sys
+
+MAX_LINES = 200
+MAX_BYTES = 14000
+REQUIRED = ["Tasks", "Layout", "Deeper context", "Rules", "Writing here"]
+MAX_IMPORT_DEPTH = 5  # Claude Code follows imports to this depth
+
+GEN_START = re.compile(r"<!--\s*([\w .-]+?)\s*start\s*-->", re.IGNORECASE)
+GEN_END = re.compile(r"<!--\s*([\w .-]+?)\s*end\s*-->", re.IGNORECASE)
+FENCE = re.compile(r"^\s*(```|~~~)")
+BACKTICK = re.compile(r"`[^`]*`")
+# An import is `@` at the start of a line or after whitespace, followed by a path-like token.
+# The leading boundary keeps e-mail addresses out.
+IMPORT = re.compile(r"(?:^|(?<=\s))@((?:~/|\.{1,2}/|/)?[\w.~/-]*[\w-](?:\.[\w]+)?)")
+CENSUS = re.compile(
+    r"(?<![\w.-])(?:~|about |roughly |approximately )?\d+\s+"
+    r"(rows|files|findings|violations|entries|packages|projects|posts|URLs|repos|"
+    r"machines|hits|gaps|skills|agents|topics|commits|tests|cases|lines|bytes|pages)\b",
+    re.IGNORECASE,
+)
+CENSUS_NOT = re.compile(
+    r"\b(last|first|up to|beyond|at most|at least|fewer than|more than|per|under|over)\s+$"
+    r"|[<>≥≤]=?\s*$"
+)
+ASOF = re.compile(r"\bas of\s+(20\d\d|[A-Z][a-z]+ 20\d\d|\d\d?/\d\d?/\d\d)", re.IGNORECASE)
+CURRENTLY = re.compile(r"\bcurrently\b", re.IGNORECASE)
+
+
+def prose_lines(text):
+    """Yield (line number, line) for lines outside fenced code blocks."""
+    fenced = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if not fenced:
+            yield n, line
+
+
+def imports_of(path, text):
+    """Resolve each @import in a file's prose to a path (not yet checked for existence)."""
+    out = []
+    for n, line in prose_lines(text):
+        bare = BACKTICK.sub(lambda m: " " * len(m.group(0)), line)
+        for m in IMPORT.finditer(bare):
+            token = m.group(1).rstrip(".,;:)")
+            if "/" not in token and "." not in token:
+                continue  # a handle or a word, not a path
+            if token.startswith("~/"):
+                target = pathlib.Path.home() / token[2:]
+            elif token.startswith("/"):
+                target = pathlib.Path(token)
+            else:
+                target = path.parent / token
+            out.append((n, token, target))
+    return out
+
+
+def rules_without_scope(root):
+    rules = root / ".claude" / "rules"
+    if not rules.is_dir():
+        return []
+    found = []
+    for f in sorted(rules.rglob("*.md")):
+        head = f.read_text(errors="replace")
+        m = re.match(r"---\n(.*?)\n---\n", head, re.DOTALL)
+        if not (m and re.search(r"^paths\s*:", m.group(1), re.MULTILINE)):
+            found.append(f)
+    return found
+
+
+def main(argv):
+    args = argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    nested = bool(args) and args[0] == "--nested"
+    if nested:
+        args = args[1:]
+    if len(args) > 1 or (nested and not args):
+        print(__doc__.strip())
+        return 2
+    root = pathlib.Path(args[0] if args else ".").resolve()
+    if not root.is_dir():
+        print(f"context-lint: not a directory: {root}", file=sys.stderr)
+        return 2
+    blocking, advisory = [], []
+    agents, claude = root / "AGENTS.md", root / "CLAUDE.md"
+
+    def rel(p):
+        try:
+            return str(p.resolve().relative_to(root))
+        except ValueError:
+            return str(p)
+
+    if not agents.is_file():
+        blocking.append(("agents-missing", "AGENTS.md", 0, "no AGENTS.md at the repository root"))
+    if not claude.is_file():
+        blocking.append(("claude-import", "CLAUDE.md", 0, "no CLAUDE.md; create one whose first line is `@AGENTS.md`"))
+    else:
+        first = next((l.strip() for l in claude.read_text(errors="replace").splitlines() if l.strip()), "")
+        if first != "@AGENTS.md":
+            blocking.append(("claude-import", "CLAUDE.md", 1, f"first line is `{first[:60]}`; it must be `@AGENTS.md`"))
+
+    # Sections: the root file only. A nested file adds to the root and carries its own content.
+    if agents.is_file() and not nested:
+        text = agents.read_text(errors="replace")
+        heads = [(n, l) for n, l in prose_lines(text) if re.match(r"#{1,2} ", l)]
+        if not heads or not heads[0][1].startswith("# "):
+            blocking.append(("title", "AGENTS.md", heads[0][0] if heads else 1,
+                             "the file must open with a `# <repo name>` heading"))
+        h2 = [(n, l[3:].strip()) for n, l in heads if l.startswith("## ")]
+        names = [h for _, h in h2]
+        pos = -1
+        for req in REQUIRED:
+            if req not in names:
+                blocking.append(("sections", "AGENTS.md", 0, f"missing required section `## {req}`"))
+                continue
+            i = names.index(req)
+            if i < pos:
+                blocking.append(("sections", "AGENTS.md", h2[i][0], f"`## {req}` is out of order; required order: "
+                                 + ", ".join(REQUIRED)))
+            pos = max(pos, i)
+        last_req = max((names.index(r) for r in REQUIRED if r in names), default=-1)
+        for i, (n, h) in enumerate(h2[:last_req]):
+            if h not in REQUIRED:
+                blocking.append(("sections", "AGENTS.md", n, f"optional section `## {h}` comes before the required ones end; move it after `## Writing here`"))
+
+    # What loads unconditionally: the two files, their imports transitively, unscoped rules.
+    loaded, seen = [], set()
+
+    def visit(path, depth, is_claude=False):
+        key = path.resolve()
+        if key in seen:
+            return
+        seen.add(key)
+        text = path.read_text(errors="replace")
+        counted = text
+        if is_claude:  # the `@AGENTS.md` line itself is the bridge, AGENTS.md is counted on its own
+            counted = "\n".join(l for l in text.splitlines() if l.strip() != "@AGENTS.md")
+        loaded.append((path, len(counted.splitlines()), len(counted.encode())))
+        # A generated block must be the last content in its file.
+        lines = text.splitlines()
+        for n, line in enumerate(lines, 1):
+            if GEN_END.search(line) and any(l.strip() for l in lines[n:]):
+                blocking.append(("generated", rel(path), n, "hand-written text follows a generated block; the block goes last"))
+        if depth >= MAX_IMPORT_DEPTH:
+            return
+        for n, token, target in imports_of(path, text):
+            if is_claude and token == "AGENTS.md":
+                continue
+            try:
+                inside = target.resolve().is_relative_to(root)
+            except (OSError, ValueError):
+                inside = False
+            if not inside:
+                advisory.append(("import", rel(path), n, f"`@{token}` is outside the repository; Claude Code loads it only after a per-project approval"))
+                continue
+            if not target.is_file():
+                blocking.append(("import", rel(path), n, f"`@{token}` does not resolve, so what it loads cannot be counted"))
+                continue
+            visit(target, depth + 1)
+
+    if agents.is_file():
+        visit(agents, 0)
+    if agents.is_file() and not nested:
+        # A generated block in AGENTS.md before the required sections is out of place too.
+        text = agents.read_text(errors="replace")
+        first_req = next((n for n, l in prose_lines(text) if l.startswith("## ") and l[3:].strip() in REQUIRED), None)
+        for n, line in enumerate(text.splitlines(), 1):
+            if GEN_START.search(line) and first_req and n < first_req:
+                blocking.append(("generated", "AGENTS.md", n, "a generated block sits before the required sections; it goes after them"))
+    if claude.is_file():
+        visit(claude, 0, is_claude=True)
+    for f in ([] if nested else rules_without_scope(root)):
+        if f.resolve() not in seen:
+            seen.add(f.resolve())
+            t = f.read_text(errors="replace")
+            loaded.append((f, len(t.splitlines()), len(t.encode())))
+
+    total_lines = sum(l for _, l, _ in loaded)
+    total_bytes = sum(b for _, _, b in loaded)
+    if total_lines > MAX_LINES or total_bytes > MAX_BYTES:
+        over = []
+        if total_lines > MAX_LINES:
+            over.append(f"{total_lines} lines (cap {MAX_LINES})")
+        if total_bytes > MAX_BYTES:
+            over.append(f"{total_bytes} bytes (cap {MAX_BYTES})")
+        blocking.append(("size", "AGENTS.md", 0, "what loads unconditionally is " + " and ".join(over)
+                         + "; move situational content to a deeper-context document, a nested context file,"
+                         " a path-scoped rules file or a skill, never into an import"))
+
+    # Volatile figures, in the hand-written files only.
+    for path, _, _ in loaded:
+        for n, line in prose_lines(path.read_text(errors="replace")):
+            bare = BACKTICK.sub(lambda m: " " * len(m.group(0)), line)
+            for m in CENSUS.finditer(bare):
+                if not CENSUS_NOT.search(bare[: m.start()]):
+                    advisory.append(("volatile", rel(path), n, f"`{m.group(0).strip()}` is a census; if it counts something outside this file, name the command that measures it"))
+            for rx, what in ((ASOF, "a claim pinned to a date"), (CURRENTLY, "\"currently\" dates itself")):
+                m = rx.search(bare)
+                if m:
+                    advisory.append(("volatile", rel(path), n, f"`{m.group(0)}`: {what}"))
+
+    print(f"context-lint: {root.name}: {total_lines} lines, {total_bytes} bytes load unconditionally "
+          f"(caps {MAX_LINES} lines, {MAX_BYTES} bytes), from:")
+    for path, l, b in loaded:
+        print(f"  {rel(path):50} {l:5} lines {b:7} bytes")
+    for kind, file, n, msg in blocking + advisory:
+        where = f"{file}:{n}" if n else file
+        tag = "BLOCKING" if (kind, file, n, msg) in blocking else "advisory"
+        print(f"[{kind}] {tag} {where}: {msg}")
+    print(f"context-lint: {len(blocking)} blocking, {len(advisory)} advisory. "
+          "A clean run says the shape and size hold, not that the content is right.")
+    return 1 if blocking else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
