@@ -28,6 +28,9 @@ trap 'rm -rf "$TMP"' EXIT
 #   nohooks   never run the hooks (as under a policy that blocks them)
 #   modelbash invoke the dynamic skill, then also run a shell command itself
 #   policy    render the dynamic skill as a policy that disables shell execution would
+#   readctx   in the read session, also read a context file directly
+#   fewreads  in the read session, read only two of the three data files
+#   noinject  in the read session, read the files but receive no context scoped to them
 cat > "$TMP/claude" <<'EOF'
 #!/usr/bin/env bash
 mode=${FAKE_MODE:-normal}
@@ -40,6 +43,20 @@ ask=$(cat)
 [ "$mode" = fail ] && exit 3
 if [ "$mode" = silent ]; then echo NONE; exit 0; fi
 for f in CLAUDE.md AGENTS.md; do [ -f "$f" ] && grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$f"; done
+# A rules file without a paths: scope loads at session start.
+for f in .claude/rules/*.md; do [ -f "$f" ] && ! grep -q '^paths:' "$f" && grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$f"; done
+case "$ask" in *"Use the Read tool"*)
+  files="sub/data.txt pkg/data.txt scoped/data.txt"
+  [ "$mode" = fewreads ] && files="sub/data.txt pkg/data.txt"
+  [ "$mode" = readctx ] && files="$files pkg/AGENTS.md"
+  for f in $files; do printf '{"type":"tool_use","name":"Read","input":{"file_path":"%s/%s"}}\n' "$PWD" "$f"; done
+  if [ "$mode" != noinject ]; then
+    # What the harness attaches when those files are read: the nested CLAUDE.md, what it imports,
+    # and the rules file whose paths: scope matches.
+    grep -o 'CCPROBE-[A-Z]*-[0-9]*' sub/CLAUDE.md pkg/AGENTS.md .claude/rules/probe-scoped.md | sed 's/^[^:]*://'
+  fi
+  ;;
+esac
 if [ -n "$settings" ] && [ "$mode" != nohooks ]; then
   for cmd in $(grep -o '"command": "[^"]*"' "$settings" | sed 's/"command": "//; s/"$//'); do
     out=$("$cmd")
@@ -81,6 +98,28 @@ has "$out" 'nothing references was not seen' && ok "the negative control reads n
 has "$out" '9.9.9' && ok "the version is reported" || bad "version missing" "$out"
 has "$out" "$TMP" && bad "a machine path leaked into the summary" "the summary must carry no paths" \
   || ok "no path from the machine appears in the summary"
+
+has "$out" 'on-demand=OK' && ok "the read session is OK when it read exactly the three data files" || bad "read session not OK" "$out"
+has "$out" 'without paths:, at session start *loaded' && ok "an unscoped rules file reads loaded at session start" || bad "unscoped rule row wrong" "$out"
+has "$out" 'with paths:, at session start *NOT loaded' && ok "a scoped rules file reads NOT loaded at session start" || bad "scoped rule at start row wrong" "$out"
+has "$out" 'importing AGENTS.md, at session start *NOT loaded' && ok "the nested import reads NOT loaded at session start" || bad "nested import at start row wrong" "$out"
+has "$out" 'nested CLAUDE.md, after reading a file beside it *loaded' && ok "the nested CLAUDE.md reads loaded after a read" || bad "nested after read row wrong" "$out"
+has "$out" 'importing AGENTS.md, after reading beside *loaded' && ok "the nested import reads loaded after a read" || bad "nested import after read row wrong" "$out"
+has "$out" 'matching file *loaded' && ok "the scoped rules file reads loaded after a matching read" || bad "scoped rule after read row wrong" "$out"
+
+printf '\n== the read session reads a context file itself ==\n'
+out=$(run readctx); rc=$?
+[ "$rc" -ne 0 ] && has "$out" 'on-demand=INCONCLUSIVE' && has "$out" 'after reading a file beside it *INCONCLUSIVE' \
+  && ok "a codeword the model could have read directly is not counted" || bad "direct read of a context file counted" "rc=$rc: $out"
+
+printf '\n== the read session reads too few files ==\n'
+out=$(run fewreads)
+has "$out" 'on-demand=INCONCLUSIVE' && ok "a session that skipped a data file is INCONCLUSIVE, not NOT loaded" || bad "missing read not caught" "$out"
+
+printf '\n== the files are read and nothing scoped to them arrives ==\n'
+out=$(run noinject)
+has "$out" 'on-demand=OK' && has "$out" 'after reading a file beside it *NOT loaded' && has "$out" 'matching file *NOT loaded' \
+  && ok "on-demand context that never arrives reads NOT loaded" || bad "missing injection misread" "$out"
 
 printf '\n== a model that reports the unreferenced codeword ==\n'
 out=$(run leak); rc=$?

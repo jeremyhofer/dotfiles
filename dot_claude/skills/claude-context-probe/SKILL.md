@@ -13,7 +13,7 @@ managed policy an administrator installed. The docs describe the defaults, not a
 ## Run it
 
 ```sh
-claude-context-probe          # a few minutes; four short headless sessions
+claude-context-probe          # a few minutes; five short headless sessions
 claude-context-probe --keep   # also keep the temp tree, for debugging on that machine only
 ```
 
@@ -24,7 +24,7 @@ claude-context-probe --keep   # also keep the temp tree, for debugging on that m
   first run is the baseline: a verdict that differs between the two is a fact about the second
   machine; a verdict that is the same is a fact about the Claude Code version.
 - It needs `claude` and `git` on PATH, and `python3` for the MCP check (skipped without it).
-- It spends four model sessions and writes only under the temp directory, which it deletes.
+- It spends five model sessions and writes only under the temp directory, which it deletes.
 
 ## Relay it
 
@@ -35,7 +35,7 @@ the machine. `--keep` output is for debugging on that machine and should not lea
 
 ## Read it
 
-**First line: the four sessions.** Each must say `OK` before any of its rows mean anything.
+**First line: the five sessions.** Each must say `OK` before any of its rows mean anything.
 
 - `INCONCLUSIVE`: the session failed, or the model did not report the repository-root CLAUDE.md
   that every session must see (the positive control). Its rows are not verdicts. Re-run; if it
@@ -61,6 +61,16 @@ includes, asked for once in an interactive session, and a headless run cannot gi
 loaded` there means "not without that approval", and every new project path, such as each agent
 worktree, needs its own. To surface a file kept outside a project, prefer a symlinked `CLAUDE.md`,
 which the symlink row tests.
+
+**Rules files.** A `.claude/rules/` file without a `paths:` scope should read `loaded` at session
+start, so it costs as much as the `CLAUDE.md` does; one with a scope should read `NOT loaded` there.
+
+**On demand.** One session keeps the Read tool on and reads three files that carry no codeword: one
+beside a nested `CLAUDE.md`, one beside a nested `CLAUDE.md` that imports a nested `AGENTS.md`, and
+one matching a rules file's `paths:` scope. `loaded` after the read, with `NOT loaded` at session
+start, means that pattern loads context only when it is needed, which is what makes it a place to
+move content out of an always-on file. The session is `INCONCLUSIVE` if it read any other file (it
+could have read a codeword itself) or skipped one of the three.
 
 **Hooks.** Each hook reports whether it RAN (it wrote a marker file) and whether its context was
 DELIVERED (the model saw its codeword). These fail for different reasons:

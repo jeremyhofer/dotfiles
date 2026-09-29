@@ -12,6 +12,11 @@
 # tools switched off (so it cannot go and read a file itself), and asks the model to list every
 # codeword it can see. A codeword it lists was delivered; one it does not was not.
 #
+# One session keeps a single tool on, Read, because some context loads only when a file is read: a
+# nested CLAUDE.md, a nested AGENTS.md it imports, and a .claude/rules file scoped by `paths:`. It
+# reads three files that carry no codeword, and nothing else; if it reads any other file, the
+# session is INCONCLUSIVE, since it could have fetched a codeword itself.
+#
 # Two controls make a result trustworthy. The repository-root CLAUDE.md must be seen (positive
 # control): if it is not, the model did not answer the question and that session is INCONCLUSIVE.
 # A codeword planted in a file nothing references must never be seen (negative control): if it is,
@@ -80,6 +85,16 @@ plant "$W/sub/CLAUDE.md" SUBDIR
 plant "$ROOT/unreferenced.md" NEGATIVE
 printf -- '---\nname: probe-skill\ndescription: Probe skill. Codeword %s\n---\n\nNothing to do.\n' "$(cw SKILL)" \
   > "$W/.claude/skills/probe-skill/SKILL.md"
+
+# On-demand context (session E). The data files carry no codeword; the context around them does.
+mkdir -p "$W/pkg" "$W/scoped" "$W/.claude/rules"
+printf 'Nothing here.\n' > "$W/sub/data.txt"
+printf 'Nothing here.\n' > "$W/pkg/data.txt"
+printf 'Nothing here.\n' > "$W/scoped/data.txt"
+printf '@AGENTS.md\n' > "$W/pkg/CLAUDE.md"
+plant "$W/pkg/AGENTS.md" NESTIMPORT
+printf -- '---\npaths:\n  - "scoped/**"\n---\n\nCodeword: %s\n' "$(cw RULESCOPED)" > "$W/.claude/rules/probe-scoped.md"
+plant "$W/.claude/rules/probe-always.md" RULEALWAYS
 
 # Dynamic context: a skill whose body runs a command when the skill is invoked, and prints a
 # codeword that appears nowhere in the skill's text. The model could also run that command itself
@@ -174,7 +189,7 @@ run_session() { # <dir> <outfile> [extra args...]
   printf '%s\n' "$?" > "$out.rc"
 }
 
-printf 'claude-context-probe: running 4 headless sessions (up to a minute each)...\n' >&2
+printf 'claude-context-probe: running 5 headless sessions (up to a minute each)...\n' >&2
 # shellcheck disable=SC2086
 run_session "$W" "$ROOT/out-a" --settings "$ROOT/settings.json" --strict-mcp-config $mcp_args
 run_session "$B/repo" "$ROOT/out-b" --strict-mcp-config
@@ -186,6 +201,12 @@ ASK_DYN='Invoke the probe-dynamic skill now. After it loads, list every token in
     --tools "Skill,Bash" --allowedTools "Bash(sh $ROOT/dyn.sh)" --max-turns 3 \
     --output-format stream-json --verbose ) > "$ROOT/out-d" 2> "$ROOT/out-d.err"
 printf '%s\n' "$?" > "$ROOT/out-d.rc"
+# Session E reads three neutral files with the Read tool, so that context scoped to them can load.
+ASK_READ='Use the Read tool to read these three files, and no others: sub/data.txt, pkg/data.txt, scoped/data.txt. Then list every token in your context that contains the text CCPROBE- , one per line, with nothing else.'
+( cd "$W" && printf '%s\n' "$ASK_READ" | "$CLAUDE_BIN" -p --no-session-persistence --strict-mcp-config \
+    --tools "Read" --allowedTools "Read" --max-turns 6 \
+    --output-format stream-json --verbose ) > "$ROOT/out-e" 2> "$ROOT/out-e.err"
+printf '%s\n' "$?" > "$ROOT/out-e.rc"
 
 seen() { # <outfile> <label>
   grep -q -- "$(cw "$2")" "$1" 2>/dev/null
@@ -213,6 +234,17 @@ sb=$(session_state "$ROOT/out-b" REPOROOT)
 # as the other two sessions, whose model and invocation it shares.
 sc=$(session_state "$ROOT/out-c" '')
 sd=$(session_state "$ROOT/out-d" REPOROOT)
+se=$(session_state "$ROOT/out-e" REPOROOT)
+# Session E counts only if it read exactly the three data files: reading anything else could have
+# fetched a codeword directly, and reading fewer leaves a NOT loaded that means nothing.
+if [ "$se" = OK ]; then
+  reads=$(grep -o '"file_path":"[^"]*"' "$ROOT/out-e" 2>/dev/null | sed 's/^"file_path":"//; s/"$//' | sort -u)
+  others=$(printf '%s\n' "$reads" | grep -v -E -e '^$' -e '(^|/)(sub|pkg|scoped)/data\.txt$')
+  [ -z "$others" ] || se=INCONCLUSIVE
+  for d in sub pkg scoped; do
+    printf '%s\n' "$reads" | grep -q -E "(^|/)$d/data\\.txt\$" || se=INCONCLUSIVE
+  done
+fi
 [ "$sa" = OK ] && [ "$sb" = OK ] || [ "$sc" != OK ] || sc=INCONCLUSIVE
 
 managed="none found"
@@ -230,7 +262,7 @@ version=$("$CLAUDE_BIN" --version 2>/dev/null | head -n 1)
 row() { printf '  %-58s %s\n' "$1" "$2"; }
 
 printf '\nclaude-context-probe 1 -- %s -- %s\n' "${version:-unknown version}" "$(uname -s)"
-printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s\n' "$sa" "$sb" "$sc" "$sd"
+printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s  on-demand=%s\n' "$sa" "$sb" "$sc" "$sd" "$se"
 printf '\nInstruction files\n'
 row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-a" REPOROOT "$sa")"
 row 'CLAUDE.md in the container above a worktree (.git file)'   "$(verdict "$ROOT/out-a" CONTAINER "$sa")"
@@ -245,6 +277,14 @@ printf '\nImports from CLAUDE.md\n'
 row '@import inside the repository'                             "$(verdict "$ROOT/out-a" IMPORTIN "$sa")"
 row '@import outside the repository (relative, ../)'            "$(verdict "$ROOT/out-a" IMPORTOUT "$sa")"
 row '@import outside the repository (absolute path)'            "$(verdict "$ROOT/out-a" IMPORTABS "$sa")"
+printf '\nRules files (.claude/rules)\n'
+row 'without paths:, at session start'                           "$(verdict "$ROOT/out-a" RULEALWAYS "$sa")"
+row 'with paths:, at session start'                              "$(verdict "$ROOT/out-a" RULESCOPED "$sa")"
+printf '\nOn demand (a session that reads one file in each scope)\n'
+row 'nested CLAUDE.md, after reading a file beside it'           "$(verdict "$ROOT/out-e" SUBDIR "$se")"
+row 'nested CLAUDE.md importing AGENTS.md, at session start'     "$(verdict "$ROOT/out-a" NESTIMPORT "$sa")"
+row 'nested CLAUDE.md importing AGENTS.md, after reading beside' "$(verdict "$ROOT/out-e" NESTIMPORT "$se")"
+row 'rules file with paths:, after reading a matching file'      "$(verdict "$ROOT/out-e" RULESCOPED "$se")"
 printf '\nHooks (from --settings) and dynamic context\n'
 row 'SessionStart hook'                                         "$(hookline "$ROOT/ran-ss" "$ROOT/out-a" HOOKSESSION "$sa")"
 row 'UserPromptSubmit hook'                                     "$(hookline "$ROOT/ran-ups" "$ROOT/out-a" HOOKPROMPT "$sa")"
@@ -266,7 +306,7 @@ else
 fi
 printf '\nManaged settings: %s\n' "$managed"
 printf 'Negative control: a codeword in a file nothing references was %s.\n' \
-  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE || seen "$ROOT/out-d" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
+  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE || seen "$ROOT/out-d" NEGATIVE || seen "$ROOT/out-e" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
 
 if [ "$KEEP" -eq 1 ]; then printf '\nkept: %s\n' "$ROOT"; fi
-[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ] && [ "$sd" = OK ]
+[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ] && [ "$sd" = OK ] && [ "$se" = OK ]
