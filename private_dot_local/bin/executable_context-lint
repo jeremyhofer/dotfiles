@@ -29,6 +29,16 @@ WHAT IT CHECKS, at the repository root
     generated         BLOCKING. A generated block (text between `<!-- ... start -->` and
                       `<!-- ... end -->` markers, as Nx writes) is followed by hand-written
                       text in its file. A generated block goes last.
+    docs-index        BLOCKING. A `docs/` tree has no `docs/README.md`, or the index does not name a
+                      subdirectory or a document loose at `docs/` root. The index is how a reader,
+                      a session or a tool finds anything in `docs/`.
+    docs-layout       BLOCKING. A `docs/` subdirectory is neither one of the fleet layout's names
+                      (adr, register, specs, plans, runbooks, research, reference, policies,
+                      compliance, archive) nor named in
+                      the context file's `## Layout`, where a project declares its own subjects.
+    docs-dated        BLOCKING. A document in `docs/specs/`, `docs/plans/` or `docs/research/` is not
+                      named `YYYY-MM-DD-slug`. Those documents are frozen or finished, and the date is
+                      what orders and ages them.
     volatile          ADVISORY. A figure that an edit somewhere else can make false: a census
                       ("12 tests"), a claim pinned to a date ("as of 2026"), or "currently".
                       Name the command that measures it instead. Advisory because a number
@@ -56,6 +66,8 @@ import sys
 MAX_LINES = 200
 MAX_BYTES = 14000
 REQUIRED = ["Tasks", "Layout", "Deeper context", "Rules", "Writing here"]
+DOCS_LAYOUT = {"adr", "register", "specs", "plans", "runbooks", "research", "reference", "policies", "compliance", "archive"}
+DATED = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 MAX_IMPORT_DEPTH = 5  # Claude Code follows imports to this depth
 
 GEN_START = re.compile(r"<!--\s*([\w .-]+?)\s*start\s*-->", re.IGNORECASE)
@@ -230,6 +242,36 @@ def main(argv):
             seen.add(f.resolve())
             t = f.read_text(errors="replace")
             loaded.append((f, len(t.splitlines()), len(t.encode())))
+
+    # The docs/ layout, for a repository root (a nested context file owns no docs/ tree).
+    docs = root / "docs"
+    if docs.is_dir() and not nested:
+        index = docs / "README.md"
+        entries = sorted(e for e in docs.iterdir() if not e.name.startswith(".") and e.name != "README.md")
+        if not index.is_file():
+            blocking.append(("docs-index", "docs", 0, "no docs/README.md; it indexes every subdirectory and loose document in docs/"))
+        else:
+            itext = index.read_text(errors="replace")
+            for e in entries:
+                if e.is_dir() or e.suffix in (".md", ".txt"):
+                    if not re.search(r"(?<![\w.-])" + re.escape(e.name) + r"(?![\w.-])", itext):
+                        blocking.append(("docs-index", "docs/README.md", 0, f"does not name `{e.name}{'/' if e.is_dir() else ''}`"))
+        layout = ""
+        if agents.is_file():
+            at = agents.read_text(errors="replace")
+            m = re.search(r"^## Layout\s*$(.*?)(?=^## |\Z)", at, re.MULTILINE | re.DOTALL)
+            layout = m.group(1) if m else ""
+        for e in entries:
+            if e.is_dir() and e.name not in DOCS_LAYOUT and not re.search(r"(?<![\w.-])" + re.escape(e.name) + r"/", layout):
+                blocking.append(("docs-layout", f"docs/{e.name}", 0, "not a fleet layout directory and not named in AGENTS.md `## Layout`; declare it there, or move its content"))
+        for sub in ("specs", "plans", "research"):
+            d = docs / sub
+            if d.is_dir():
+                for e in sorted(d.iterdir()):
+                    if e.name.startswith(".") or e.name == "README.md":
+                        continue
+                    if not DATED.match(e.name):
+                        blocking.append(("docs-dated", f"docs/{sub}/{e.name}", 0, "not named YYYY-MM-DD-slug"))
 
     total_lines = sum(l for _, l, _ in loaded)
     total_bytes = sum(b for _, _, b in loaded)

@@ -35,7 +35,7 @@ Templates: `template-AGENTS.md` and `template-CLAUDE.md` beside this file.
 | --- | --- | --- |
 | `# <repo name>` + one or two sentences | What it is, who owns it, its boundary: public, private or client-owned, and what must never land in it | A feature tour |
 | `## Tasks` | The entry point, the command that lists tasks live, and the few a session needs first: set up, the fast check, the full gate | A full command catalogue; it drifts |
-| `## Layout` | The directories whose purpose is not obvious, and where decisions, tracked work, designs and runbooks live | A tour of what `ls` shows |
+| `## Layout` | That `docs/` follows the standard layout and `docs/README.md` indexes it (skill `project-documentation`); the project's own `docs/` subjects, each named as `docs/<name>/`; top-level directories whose purpose is not obvious | A tour of what `ls` shows |
 | `## Deeper context` | Where to read before acting, each with the situation that calls for it; that the decision log wins over summaries; project skills | The documents' content |
 | `## Rules` | Only rules no hook or gate can enforce | Anything a check enforces; generic good practice |
 | `## Writing here` | The prose voice line, and anything specific to this repository's documents | A documentation standard |
@@ -76,7 +76,7 @@ demand" rows.
 
 | Pattern | How | Loads when |
 | --- | --- | --- |
-| A deeper-context document | Write `docs/<topic>.md`; add a `## Deeper context` line naming the situation: "read before cutting a release" | The session judges that the situation has arisen |
+| A deeper-context document | Write `docs/reference/<topic>.md`; add a `## Deeper context` line naming the situation: "read before cutting a release" | The session judges that the situation has arisen |
 | A nested context file | In the subdirectory it concerns, an `AGENTS.md` with the content and a `CLAUDE.md` whose first line is `@AGENTS.md` | A file in that subdirectory is read |
 | A path-scoped rules file | `.claude/rules/<topic>.md` with frontmatter `paths:` listing globs, e.g. `- "src/api/**"` | A file matching a glob is read |
 | A project skill | `.claude/skills/<name>/SKILL.md`, its description naming the situations | Its description always; its body when invoked |
@@ -116,3 +116,4 @@ Check a generator's other side effects every time it runs: Nx's setup, for examp
 - `context-lint --help`: exactly what the check enforces and what it cannot.
 - `claude-context-probe`: which context this machine actually loads.
 - `recording-what-you-learn`: where a lesson learned mid-work belongs, often one of the homes above.
+- `project-documentation`: the `docs/` layout, its index, and what each document type is.

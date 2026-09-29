@@ -13,13 +13,14 @@ Entry point: `<just | npx nx | make>`. Live list: `<just --list | npx nx show pr
 
 ## Layout
 
-- `docs/adr/`: decisions. `docs/register/`: tracked work.
-- <only the directories whose purpose is not obvious from their names>
+- `docs/` follows the standard layout; `docs/README.md` indexes it.
+- <`docs/<subject>/`: each project-specific docs directory, one line each>
+- <only the top-level directories whose purpose is not obvious from their names>
 
 ## Deeper context
 
 - Decisions in `docs/adr/` win over any summary, including this file.
-- <`docs/<topic>.md`: read before <the situation that calls for it>.>
+- <`docs/reference/<topic>.md`: read before <the situation that calls for it>.>
 
 ## Rules
 

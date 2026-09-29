@@ -15,6 +15,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 good() { # <dir> -- a conforming repository
   mkdir -p "$1/docs"
+  printf '# Documents\n\nNothing yet.\n' > "$1/docs/README.md"
   printf '@AGENTS.md\n' > "$1/CLAUDE.md"
   cat > "$1/AGENTS.md" <<'EOF'
 # widget
@@ -154,6 +155,34 @@ out=$(run "$d"); rc=$?
 printf '# API\n' > "$d/CLAUDE.md"
 out=$(python3 "$LINT" --nested "$d" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[claude-import\]' <<< "$out" && ok "--nested still requires the @AGENTS.md bridge" || bad "--nested skipped the bridge" "$out"
+
+printf '\n== the docs/ layout ==\n'
+d="$TMP/docs"; good "$d"; mkdir -p "$d/docs/adr" "$d/docs/research" "$d/docs/seo"
+printf '# Documents\n\n- `adr/`: decisions.\n- `research/`: investigations.\n- `seo/`: search data.\n- `primer.md`: the ads primer.\n' > "$d/docs/README.md"
+printf 'x\n' > "$d/docs/primer.md"; printf 'x\n' > "$d/docs/research/2026-09-01-sweep.md"
+python3 - "$d/AGENTS.md" <<'EOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+p.write_text(p.read_text().replace("- `docs/adr/`: decisions.", "- `docs/adr/`: decisions. `docs/seo/`: search-console exports.", 1))
+EOF
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ! grep -q '\[docs-' <<< "$out" && ok "an indexed tree with a declared domain directory passes" || bad "conforming docs tree refused" "$out"
+rm "$d/docs/README.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-index\].*no docs/README.md' <<< "$out" && ok "a docs tree without an index is refused" || bad "missing index not caught" "$out"
+printf '# Documents\n\n- `adr/`, `research/`, `seo/`.\n' > "$d/docs/README.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q 'does not name `primer.md`' <<< "$out" && ok "a loose document the index does not name is refused" || bad "unindexed loose document not caught" "$out"
+printf '# Documents\n\n- `adr/`, `research/`, `seo/`, `claude/`.\n- `primer.md`.\n' > "$d/docs/README.md"; mkdir -p "$d/docs/claude"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-layout\].*docs/claude' <<< "$out" && ! grep -q 'docs/seo' <<< "$out" \
+  && ok "an undeclared subdirectory is refused, a declared one is not" || bad "layout check wrong" "$out"
+rmdir "$d/docs/claude"; printf 'x\n' > "$d/docs/research/sweep-notes.md"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-dated\].*sweep-notes.md' <<< "$out" && ok "an undated research note is refused" || bad "undated note not caught" "$out"
+rm "$d/docs/research/sweep-notes.md"; mkdir -p "$d/docs/research/2026-09-28-spike-results"
+out=$(run "$d"); rc=$?
+[ "$rc" -eq 0 ] && ok "a dated research directory passes" || bad "dated directory refused" "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
