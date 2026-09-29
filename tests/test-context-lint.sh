@@ -251,5 +251,13 @@ rm -rf "$d/frontend"; printf 'x\n' > "$d/tools/x/docs/notes.md"
 out=$(run "$d"); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[docs-nested\].*tools/x/docs.*no package.json' <<< "$out" && ok "a docs/ tree with no package.json above it is refused" || bad "unowned nested docs passed" "$out"
 
+printf '\n== inside a git hook (GIT_DIR / GIT_INDEX_FILE exported) ==\n'
+d="$TMP/hookenv"; good "$d"; ( cd "$d" && git init -q && mkdir -p pkg/docs && printf '{"private": true}\n' > pkg/package.json && printf 'x\n' > pkg/docs/a.md && git add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+snap="$TMP/hooksnap"; mkdir -p "$snap"; cp "$d/AGENTS.md" "$d/CLAUDE.md" "$snap/"; cp -r "$d/docs" "$snap/"
+out=$(cd "$d" && GIT_DIR="$d/.git" GIT_INDEX_FILE="$d/.git/index" python3 "$LINT" "$snap" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a snapshot linted from inside a hook does not read the hook repo's index" || bad "hook env leaked the real index into a snapshot run" "$out"
+out=$(cd "$d" && GIT_DIR="$d/.git" GIT_INDEX_FILE="$d/.git/index" python3 "$LINT" "$d" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -q '\[docs-nested\].*pkg/docs' <<< "$out" && ok "the repository itself, linted from its own hook, still reads its index" || bad "root run inside its own hook lost the index" "$out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

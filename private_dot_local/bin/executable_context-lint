@@ -167,13 +167,24 @@ def tracked_paths(root):
     The index, not the disk: git records no empty directory, so a leftover one (or an ignored build
     output) is not part of what a commit ships and must not block it. Only a root that IS the top of
     a work tree counts; a snapshot directory of staged copies is read from disk like any other."""
+    # Inside a git hook, git exports GIT_DIR and GIT_INDEX_FILE, and they override `-C`: a snapshot
+    # directory would then answer as the hook's repository and read its index. So ask which
+    # repository root is with git's variables removed, and keep them for the index read only when the
+    # hook's repository IS root's, where GIT_INDEX_FILE names the index actually being committed.
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=clean)
         if top.returncode != 0 or pathlib.Path(top.stdout.strip()).resolve() != root.resolve():
             return None
+        env = clean
+        if os.environ.get("GIT_DIR"):
+            gd = subprocess.run(["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
+                                capture_output=True, text=True, env=clean, check=True)
+            if pathlib.Path(os.environ["GIT_DIR"]).resolve() == pathlib.Path(gd.stdout.strip()).resolve():
+                env = None
         ls = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True, check=True, env=env)
     except (OSError, subprocess.CalledProcessError):
         return None
     return [pathlib.PurePosixPath(p).parts for p in ls.stdout.split("\0") if p]
