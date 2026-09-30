@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """register -- read a work register: list it, show one entry, render an index, count it, report
-    what has gone quiet, and name the next free id.
+    what has gone quiet, search it for what already exists, and name the next free id.
 
 WHY A COMMAND RATHER THAN A COMMITTED FILE
     A register directory answers "what is the state of everything" only if you open every
@@ -48,6 +48,34 @@ FOLDERS. An entry that is an initiative names its folder as a `folder:` artifact
     and GIT_INDEX_FILE name the hook's repository and override `-C`, so a register in a snapshot
     directory or another checkout would otherwise be answered from the wrong history.
 
+RELATIONS. An entry states a relation once, in its frontmatter, under one of six keys: `part-of`
+    (on the child), `blocks` (on the entry that must finish first), `duplicates`, `split-from`,
+    `supersedes` and `relates`. Each takes one id or a block list of ids (`  - X-0012` lines under
+    the key), read the way `artifacts:` is; an inline `[a, b]` list is not read here. The inverse is
+    never written, only derived: `show` ends with a Relations block listing each relation the entry
+    states and each one another entry states about it (children, blocked by, duplicated by, split
+    into, superseded by, related by), each with the other entry's status. An id with a prefix other
+    than this register's is looked up through the fleet manifest (`fleet-decl`: the project whose
+    `leakPrefix` lists the prefix, and its `path`), when that tool and the manifest are present. A
+    renamed register declares its old prefix beside its new one (`NEW,OLD`), and an id under either
+    is matched by number, since a rename keeps numbers; otherwise it is shown as unresolved, and nothing fails because it could not be.
+
+RELATED. `related <words...>` searches every entry, open and closed, for the words in its title,
+    body and `artifacts:`, and prints id, status, title and the number of matches, most first. It is
+    the lookup that runs before an entry is filed: a duplicate is found by one search or not at all.
+    It exits 0 with "no match" when nothing matches, since that is an answer.
+
+HEALTH REPORTS, each advisory. Besides the folder and cadence reports above, `health` prints
+    `[untyped-mention]` (a body mention of another entry of this register with no typed relation
+    between the two in either direction; a count, or the list with `--mentions`, because a register
+    of hundreds of entries would otherwise print hundreds of lines), `[gate-closed]` (a `blocked` or
+    `held` entry whose `gate:` names an entry that has closed), `[gate-untyped]` (such a `gate:`
+    naming an entry that does not list the gated one under `blocks:`), `[child-of-closed]` (an open
+    entry `part-of` a closed one), `[unresolved-foreign]` (ids in a relation key or a `gate:` that
+    name another register and do not resolve, grouped by prefix with a count) and
+    `standing-overdue` (a `standing` entry carrying `overdue: report`, past its cadence, which
+    is what that field exempts from the register lint's blocking staleness check).
+
     It does not WRITE entries. Creating, editing and closing them is hand work against a
     contract each register states in its own README, and a tool that generated entries would
     be generating the closure conditions and resolutions that are the whole point of writing
@@ -60,18 +88,24 @@ import datetime
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
 CLOSED_STATUSES = ("done", "dropped")
 # Days a `standing` entry may go unverified per declared cadence. The same table the register's
 # lint holds; it is restated here because the two tools are installed separately.
-CADENCE_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
+CADENCE_DAYS = {"weekly": 7, "fortnightly": 14, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
 # An active initiative whose folder has had no commit for this long is reported by `health`.
 QUIET_DAYS = 30
 # The repository-wide type folders under docs/; a document here that no initiative claims is
 # what `health` looks for. Mirrors the layout names the context lint knows.
 TYPE_DIRS = ("specs", "plans", "runbooks", "research", "reference", "policies", "compliance")
+# The six relation keys an entry may state, and how each reads from the other end.
+RELATION_KEYS = ("part-of", "blocks", "duplicates", "split-from", "supersedes", "relates")
+INVERSE = {"part-of": "children", "blocks": "blocked by", "duplicates": "duplicated by",
+           "split-from": "split into", "supersedes": "superseded by", "relates": "related by"}
+ID_TOKEN = re.compile(r"(?<![\w-])([A-Z][A-Z0-9]*-)(\d+)(?![\w])")
 ORDER = ("active", "ready", "blocked", "held", "standing", "scoped", "idea", "done", "dropped")
 
 
@@ -104,6 +138,39 @@ class Entry:
                 if sep and kind.strip() == "folder":
                     return rest.strip()
         return ""
+
+    @property
+    def frontmatter(self):
+        end = self.text.find("\n---", 3) if self.text.startswith("---") else -1
+        return self.text[3:end] if end != -1 else ""
+
+    @property
+    def body(self):
+        end = self.text.find("\n---", 3) if self.text.startswith("---") else -1
+        return self.text[end + 4:] if end != -1 else self.text
+
+    def relations(self):
+        """{key: [ids]} for the six relation keys, each a scalar or a block list of ids. Ids are
+        found by shape, so a trailing comment or quoting on a line does not hide one."""
+        out = {}
+        lines = self.frontmatter.splitlines()
+        for i, line in enumerate(lines):
+            key, sep, value = line.partition(":")
+            if not sep or key not in RELATION_KEYS:
+                continue
+            ids = [m.group(0) for m in ID_TOKEN.finditer(value.split(" #")[0])]
+            for nxt in lines[i + 1:]:
+                if re.match(r"^\s*-", nxt):
+                    ids += [m.group(0) for m in ID_TOKEN.finditer(nxt.split(" #")[0])]
+                elif nxt.strip() and not nxt.lstrip().startswith("#"):
+                    break
+            out[key] = ids
+        return out
+
+    @property
+    def artifacts_text(self):
+        block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", self.frontmatter, re.M | re.S)
+        return block.group(1) if block else ""
 
     def get(self, key, default=""):
         return self.meta.get(key, default)
@@ -174,6 +241,114 @@ def git_out(base, *argv):
     return r.stdout if r.returncode == 0 else None
 
 
+def key_of(token):
+    """(prefix, number) of an id string, so `ABC-7` and `ABC-0007` are the same entry."""
+    m = ID_TOKEN.fullmatch(token)
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+class Resolver:
+    """Where an id in a relation points: an entry of this register, an entry of another register the
+    fleet manifest lets this machine read, or nowhere it can be reached.
+
+    The other registers are found through `fleet-decl` (the project declaring the id's `leakPrefix`,
+    then its `path` under the Devel root), asked lazily so a register with only its own ids never
+    calls it. Every failure -- no `fleet-decl`, no `yq`, no manifest, a register not cloned here --
+    reads as "unresolved", never as an error: a relation is still true on a machine that cannot
+    look it up."""
+
+    def __init__(self, entries):
+        self.own = {}
+        for e in entries:
+            k = key_of(e.id)
+            if k:
+                self.own[k] = e
+        self.prefixes = {k[0] for k in self.own}
+        self.paths = None
+        self.loaded = {}
+
+    def _decl(self, *argv):
+        try:
+            r = subprocess.run([self.tool] + list(argv), capture_output=True, text=True)
+        except OSError:
+            return ""
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    def _paths(self):
+        if self.paths is None:
+            self.paths = {}
+            self.tool = shutil.which("fleet-decl")
+            if self.tool:
+                devel = pathlib.Path(os.environ.get("FLEET_DEVEL_ROOT") or
+                                     pathlib.Path.home() / "Devel")
+                for project in self._decl("--projects-with", "leakPrefix").split():
+                    prefixes = self._decl("--entry", project, "leakPrefix")
+                    path = self._decl("--entry", project, "path")
+                    for prefix in prefixes.replace(",", " ").split():
+                        if path:
+                            self.paths[prefix] = devel / path / "docs" / "register"
+        return self.paths
+
+    def foreign_register(self, prefix):
+        """The register that owns `prefix` ("ABC-" style), as {number: entry}, or None. Keyed by
+        number alone, so an id under a renamed register's old prefix finds the entry."""
+        name = prefix.rstrip("-")
+        if name not in self.loaded:
+            path = self._paths().get(name)
+            found = None
+            if path is not None and path.is_dir():
+                try:
+                    found = {key_of(e.id)[1]: e for e in load(path) if key_of(e.id)}
+                except OSError:
+                    found = None
+            self.loaded[name] = found
+        return self.loaded[name]
+
+    def resolve(self, token):
+        """(kind, entry-or-None): kind is "own" or "foreign"; entry is None when it does not
+        resolve. An own-prefix id with no entry is "own" and None -- a dangling relation."""
+        k = key_of(token)
+        if k is None:
+            return ("foreign", None)
+        if k[0] in self.prefixes:
+            return ("own", self.own.get(k))
+        reg = self.foreign_register(k[0])
+        return ("foreign", reg.get(k[1]) if reg else None)
+
+
+def is_closed(e):
+    return e.get("status") in CLOSED_STATUSES
+
+
+def relation_rows(e, entries, res):
+    """(label, id, entry-or-None, note) rows for `show`: each relation `e` states, then each one
+    another entry of this register states about `e`."""
+    rows = []
+    for key in RELATION_KEYS:
+        for t in e.relations().get(key, []):
+            kind, other = res.resolve(t)
+            note = "" if other else (
+                "unresolved: not an entry of this register" if kind == "own" else
+                "unresolved: another register this machine cannot read")
+            rows.append((key, t, other, note))
+    mine = key_of(e.id)
+    for x in entries:
+        for key, targets in x.relations().items():
+            if any(key_of(t) == mine for t in targets):
+                rows.append((INVERSE[key], x.id, x, ""))
+    return rows
+
+
+def show_relations(e, entries, res):
+    rows = relation_rows(e, entries, res)
+    if not rows:
+        return
+    print("\nRelations")
+    for label, token, other, note in rows:
+        detail = ("[%s]  %s" % (other.get("status"), other.get("title"))) if other else "(%s)" % note
+        print("  %-13s %-10s %s" % (label, token, detail))
+
+
 def cmd_list(entries, args):
     if not entries:
         print("no entries match", file=sys.stderr)
@@ -186,6 +361,26 @@ def cmd_list(entries, args):
         if args.long and e.get("gate"):
             line += "\n%s  gate: %s" % (" " * width, e.get("gate"))
         print(line)
+    return 0
+
+
+def cmd_related(entries, args):
+    """Entries whose title, body or `artifacts:` contain any of the words, most matches first.
+    Over every entry, closed ones included: a closed entry is the likeliest thing to duplicate."""
+    words = [w.lower() for w in args.words]
+    scored = []
+    for e in entries:
+        hay = "\n".join((e.get("title"), e.body, e.artifacts_text)).lower()
+        n = sum(hay.count(w) for w in words)
+        if n:
+            scored.append((-n, e.num, e))
+    if not scored:
+        print("no match")
+        return 0
+    scored.sort(key=lambda t: t[:2])
+    width = max(len(e.id) for _, _, e in scored)
+    for neg, _, e in scored:
+        print("%-*s  %-9s  %s  (%d)" % (width, e.id, e.get("status"), e.get("title"), -neg))
     return 0
 
 
@@ -202,12 +397,13 @@ def cmd_stats(entries, args):
 
 
 def cmd_show(entries, args):
-    hits = [e for e in entries if e.id == args.id]
+    hits = [e for e in entries if e.id == args.words[0]]
     if not hits:
-        print("no entry with id %r" % args.id, file=sys.stderr)
+        print("no entry with id %r" % args.words[0], file=sys.stderr)
         return 1
     e = hits[0]
     sys.stdout.write(e.text)
+    show_relations(e, entries, Resolver(entries))
     if e.folder:
         show_folder(e, args)
     return 0
@@ -295,8 +491,10 @@ def cmd_health(entries, args):
             if cadence in CADENCE_DAYS and re.match(r"^\d{4}-\d{2}-\d{2}$", verified):
                 age = (datetime.date.today() - datetime.date.fromisoformat(verified)).days
                 if age > CADENCE_DAYS[cadence]:
-                    findings.append("%s: standing, last verified %s, %dd ago, past its %s cadence"
-                                    % (e.id, verified, age, cadence))
+                    label = "standing-overdue" if e.get("overdue") == "report" else "standing"
+                    findings.append("%s: %s, last verified %s, %dd ago, past its %s cadence"
+                                    % (e.id, label, verified, age, cadence))
+    findings += relation_findings(entries, args)
     if base is not None:
         findings += unclaimed_documents(base, entries)
     if not findings:
@@ -304,6 +502,62 @@ def cmd_health(entries, args):
     for line in findings:
         print(line)
     return 0
+
+
+def relation_findings(entries, args):
+    """What the typed relations and the prose around them do not yet agree on. Advisory."""
+    res = Resolver(entries)
+    out = []
+    typed = set()       # unordered pairs of entry keys joined by any relation
+    for e in entries:
+        for targets in e.relations().values():
+            for t in targets:
+                typed.add(frozenset((key_of(e.id), key_of(t))))
+    mentions = []
+    for e in entries:
+        me, seen = key_of(e.id), set()
+        for m in ID_TOKEN.finditer(e.body):
+            k = (m.group(1), int(m.group(2)))
+            other = res.own.get(k)
+            if other is not None and k != me and k not in seen and frozenset((me, k)) not in typed:
+                seen.add(k)
+                mentions.append((e, other))
+    if mentions:
+        if args.mentions:
+            out += ["[untyped-mention] %s mentions %s, with no typed relation between them"
+                    % (e.id, o.id) for e, o in mentions]
+        else:
+            out.append("[untyped-mention] %d body mentions of another entry with no typed relation "
+                       "(list them with --mentions)" % len(mentions))
+    foreign = collections.defaultdict(set)
+    for e in entries:
+        if e.get("status") in ("blocked", "held"):
+            for m in ID_TOKEN.finditer(e.get("gate")):
+                kind, gated = res.resolve(m.group(0))
+                if kind != "own" or gated is None or gated is e:
+                    continue
+                if is_closed(gated):
+                    out.append("[gate-closed] %s: %s, gated on %s, which is %s"
+                               % (e.id, e.get("status"), gated.id, gated.get("status")))
+                if key_of(e.id) not in {key_of(t) for t in gated.relations().get("blocks", [])}:
+                    out.append("[gate-untyped] %s: gated on %s, which does not list it under blocks"
+                               % (e.id, gated.id))
+        if not is_closed(e):
+            for t in e.relations().get("part-of", []):
+                kind, parent = res.resolve(t)
+                if kind == "own" and parent is not None and is_closed(parent):
+                    out.append("[child-of-closed] %s: open, part-of %s, which is %s"
+                               % (e.id, parent.id, parent.get("status")))
+        tokens = [t for ts in e.relations().values() for t in ts]
+        tokens += [m.group(0) for m in ID_TOKEN.finditer(e.get("gate"))]
+        for t in tokens:
+            kind, other = res.resolve(t)
+            if kind == "foreign" and other is None:
+                foreign[key_of(t)[0].rstrip("-")].add(t)
+    for prefix in sorted(foreign):
+        out.append("[unresolved-foreign] %s: %d ids this machine cannot resolve (%s)"
+                   % (prefix, len(foreign[prefix]), ", ".join(sorted(foreign[prefix]))))
+    return out
 
 
 def unclaimed_documents(base, entries):
@@ -374,13 +628,14 @@ def cmd_next(entries, args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Read a work register.")
-    p.add_argument("command", choices=("list", "stats", "show", "index", "next", "health"))
-    p.add_argument("id", nargs="?", help="entry id, for `show`")
+    p.add_argument("command", choices=("list", "stats", "show", "index", "next", "health", "related"))
+    p.add_argument("words", nargs="*", help="an entry id for `show`; the words for `related`")
     p.add_argument("--root", default="docs/register", help="the register directory")
     p.add_argument("--status", help="comma-separated statuses to include")
     p.add_argument("--open", action="store_true", help="actionable entries only")
     p.add_argument("--closed", action="store_true", help="finished entries only")
     p.add_argument("--match", help="regex over id and title")
+    p.add_argument("--mentions", action="store_true", help="list untyped mentions, for `health`")
     p.add_argument("--long", action="store_true", help="include the gate, for `list`")
     p.add_argument("--write", help="write to this path, for `index`")
     p.add_argument("--link-base", default="", help="path prefix for links, for `index`")
@@ -397,10 +652,16 @@ def main(argv=None):
         print("register: %s holds no entries -- check --root" % root, file=sys.stderr)
         return 1
     if a.command == "show":
-        if not a.id:
+        if not a.words:
             print("register show needs an id", file=sys.stderr)
             return 1
         return cmd_show(entries, a)
+    if a.command == "related":
+        if not a.words:
+            print("register related needs at least one word", file=sys.stderr)
+            return 1
+        # Over EVERY entry: a closed entry is the likeliest duplicate.
+        return cmd_related(entries, a)
     if a.command == "next":
         # Over EVERY entry: filters would hide the closed ids that must never be reused.
         return cmd_next(entries, a)

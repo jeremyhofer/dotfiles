@@ -63,7 +63,23 @@ WHAT IT CHECKS — blocking
     date-format        a date field that is not YYYY-MM-DD.
     standing-stale     a no-terminus entry last verified longer ago than its own declared
                        cadence. This is the only thing making that status an obligation
-                       rather than an exemption.
+                       rather than an exemption. Also refused: `overdue:` on any status but
+                       `standing`, or with any value but `report` (both `conditional-field`).
+    relation-unknown   a relation naming an id with THIS register's prefix that is no entry in it,
+                       open or closed. An id with another prefix is not checked: this tool sees
+                       one register, and a foreign id is not its to resolve.
+    relation-self      an entry that names itself under a relation key.
+    relation-both-ends A names B and B names A under the same key. A relation is stated once, on
+                       the entry its key belongs to; the other end is derived, never written.
+    relation-cycle     a cycle of `blocks:`, reported once and naming its members. Nothing in a
+                       cycle can start.
+    relation-duplicate-status
+                       an entry with `duplicates:` whose status is not `dropped`. A duplicate is
+                       finished by being dropped in favour of the other entry.
+    closure-review     only where the register's README carries a line
+                       `Closure review required from: YYYY-MM-DD`: a `done` entry in the closed
+                       directory, closed on or after that date, whose Resolution lacks
+                       `**Closure review:** YYYY-MM-DD, met.` No such line, no check.
     not-renamed        the register keeps finished entries in a directory named `archive/`.
                        Build tooling commonly skips any path containing that word, because
                        an archived tree is frozen and exempt from checking; a closed entry
@@ -76,6 +92,9 @@ WHAT IT REPORTS — advisory, never blocking
                        with a named owner, which an empty section is not.
     alignment-owed     entries whose condition cannot be written without deciding something
                        undecided. These need a person, not an edit.
+    standing-overdue   a `standing` entry carrying `overdue: report` that is past its cadence.
+                       It says so instead of blocking, for a review whose lateness is worth
+                       seeing but not worth stopping every commit in the register over.
 
 WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets over-trusted
     * Whether a written closure condition is a good one, or even a condition. Any prose
@@ -84,6 +103,9 @@ WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets o
       declared"; it cannot judge what is there. The heuristic narrows the gap for the
       spellings seen so far and will not catch a new one.
     * Whether a task checklist reflects the work. An entry may carry one stale task.
+    * Whether a relation is TRUE, only that it is well formed. An id with another prefix is
+      never resolved here; that takes the manifest of registers, which this tool does not read.
+    * Whether a closure review was any good, only that its line is present.
     * Whether an entry should exist at all, or who filed it. Authorship is a stated rule
       with no mechanism behind it; nothing here distinguishes one author from another.
     * A closed entry's closure condition. Closed entries are judged by their resolution,
@@ -159,7 +181,7 @@ ABSENCE_RE = re.compile(
     re.I,
 )
 
-CADENCE_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
+CADENCE_DAYS = {"weekly": 7, "fortnightly": 14, "monthly": 31, "quarterly": 93, "biannual": 186, "annual": 366}
 
 # How long an ACTIONABLE entry may go unverified before it is worth a second look. Advisory, and
 # absent statuses are exempt rather than generous: `idea` because an untouched idea is not stale
@@ -214,7 +236,46 @@ ID_RE = re.compile(r"^([A-Z][A-Z0-9]*)-([0-9]+)$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLOSURE_HEADING = "Definition of done"
 
-ADVISORY = ("triage-debt", "alignment-owed", "stale-entry")
+ADVISORY = ("triage-debt", "alignment-owed", "stale-entry", "standing-overdue")
+
+# Each key states ONE kind of relation, on the entry it belongs to; the other end is derived.
+RELATION_KEYS = ("part-of", "blocks", "duplicates", "split-from", "supersedes", "relates")
+ANY_ID_RE = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
+REVIEW_FLOOR_RE = re.compile(r"^\s*Closure review required from:\s*(\d{4}-\d{2}-\d{2})\s*$", re.M)
+REVIEW_LINE_RE = re.compile(r"\*\*Closure review:\*\*\s*\d{4}-\d{2}-\d{2},\s*met\.")
+
+
+def relations(entry):
+    """{key: [ids]} for the relation keys an entry states, as a scalar or a block list.
+
+    Read the way `folder_artifacts` reads `artifacts:`, with no YAML parser. An inline `[a, b]`
+    list yields nothing here: it is already refused as `yaml-invalid`, and guessing at it would
+    report a second finding for the one defect.
+    """
+    found = {}
+    for key in RELATION_KEYS:
+        ids = []
+        scalar = entry.meta.get(key, "")
+        if scalar and not scalar.startswith("["):
+            ids += ANY_ID_RE.findall(scalar)
+        block = re.search(r"^%s:\s*$(.*?)(?=^\S|\Z)" % re.escape(key), entry.raw_front, re.M | re.S)
+        if block:
+            for value in re.findall(r"^\s*-\s*(.+?)\s*$", block.group(1), re.M):
+                ids += ANY_ID_RE.findall(value)
+        if ids:
+            found[key] = ids
+    return found
+
+
+def closing_date(entry):
+    """The entry's `closed:` date, or None when it is absent or malformed.
+
+    `closed:` is the field the contract requires on every closed entry, and the only one that says
+    when it closed: a History heading or `verified:` says when something was written or confirmed.
+    A missing or malformed `closed:` is already its own finding, so it is not reported twice here.
+    """
+    closed = entry.meta.get("closed", "").strip().strip("'\"")
+    return closed if DATE_RE.match(closed) else None
 
 
 class Entry:
@@ -463,6 +524,12 @@ def check(entries, closed_dir, root=None, today=None):
                  "wearing a label, which is the exemption this status exists instead of")
         if not standing and cadence:
             fail("conditional-field", e, "status %r must not carry a 'cadence'" % status)
+        overdue = e.meta.get("overdue", "").strip().lower()
+        if overdue and not standing:
+            fail("conditional-field", e, "status %r must not carry an 'overdue'" % status)
+        elif overdue and overdue != "report":
+            fail("conditional-field", e,
+                 "overdue %r is not 'report', the only value it takes" % overdue)
         if standing and cadence:
             if cadence not in CADENCE_DAYS:
                 fail("conditional-field", e,
@@ -472,7 +539,11 @@ def check(entries, closed_dir, root=None, today=None):
                 if DATE_RE.match(verified):
                     age = (datetime.date.today() - datetime.date.fromisoformat(verified)).days
                     if age > CADENCE_DAYS[cadence]:
-                        fail("standing-stale", e,
+                        # `overdue: report` turns the block into a report. Only a review whose
+                        # lateness is a fact worth seeing may ask for that; every other standing
+                        # entry stays an obligation.
+                        kind = "standing-overdue" if overdue == "report" else "standing-stale"
+                        fail(kind, e,
                              "last verified %s is %dd old against a %s cadence (%dd) -- "
                              "re-verify it, or it is no longer standing"
                              % (verified, age, cadence, CADENCE_DAYS[cadence]))
@@ -583,6 +654,79 @@ def check(entries, closed_dir, root=None, today=None):
             fail("stale-entry", e,
                  "last verified %s, %dd ago, against a %dd budget for status %r"
                  % (raw, age, budget, e.status))
+
+    # --- relations ------------------------------------------------------------------------
+    # Only ids with THIS register's prefix are resolved. A foreign id names an entry in a register
+    # this tool cannot see, so calling it unknown would report every cross-register pointer broken.
+    # With two prefixes present there is no "this register" to resolve against, and that is already
+    # an id-integrity finding, so the resolution check is skipped rather than guessed.
+    known = {e.id: e for e in entries if e.id}
+    own = next(iter(prefixes)) if len(prefixes) == 1 else None
+    stated = {e.id: relations(e) for e in entries if e.id}
+    for e in entries:
+        rels = stated.get(e.id, {})
+        for key, ids in rels.items():
+            for other in dict.fromkeys(ids):
+                if other == e.id:
+                    fail("relation-self", e, "%s: names itself" % key)
+                    continue
+                m = ID_RE.match(other)
+                if own and m and m.group(1) == own and other not in known:
+                    fail("relation-unknown", e,
+                         "%s: %s has this register's prefix but is not an entry in it, open or "
+                         "closed" % (key, other))
+                    continue
+                if other in known and e.id in stated.get(other, {}).get(key, []) and e.id < other:
+                    fail("relation-both-ends", e,
+                         "%s: %s and %s each name the other -- state it once, on the entry the "
+                         "key belongs to; the other end is derived" % (key, e.id, other))
+        if "duplicates" in rels and e.status != "dropped":
+            fail("relation-duplicate-status", e,
+                 "has `duplicates:` but status is %r -- a duplicate is dropped in favour of the "
+                 "entry it duplicates" % e.status)
+
+    # A cycle in `blocks:` is a strongly connected group: every member reaches every other.
+    # Reachability from each node is quadratic, which a register of hundreds of entries carrying a
+    # handful of `blocks:` edges never notices, and it avoids a hand-rolled Tarjan to get wrong.
+    edges = {i: [o for o in r.get("blocks", []) if o in known and o != i]
+             for i, r in stated.items()}
+
+    def reach(start):
+        seen_, todo = set(), list(edges.get(start, []))
+        while todo:
+            n = todo.pop()
+            if n not in seen_:
+                seen_.add(n)
+                todo.extend(edges.get(n, []))
+        return seen_
+
+    reached = {i: reach(i) for i in edges if edges[i]}
+    grouped = set()
+    for i in sorted(reached):
+        if i in grouped or i not in reached[i]:
+            continue
+        members = sorted({n for n in reached[i] if n in reached and i in reached[n]} | {i})
+        grouped.update(members)
+        fail("relation-cycle", known[members[0]],
+             "blocks: cycle among %s -- nothing in it can start" % ", ".join(members))
+
+    # --- closure review ---------------------------------------------------------------------
+    # The floor is a line in the register's own README, so each register opts in on a date of its
+    # own choosing and an entry closed before it is never asked for a review it could not have had.
+    readme = root / "README.md" if root is not None else None
+    floor = None
+    if readme is not None and readme.is_file():
+        found = REVIEW_FLOOR_RE.search(readme.read_text(encoding="utf-8", errors="replace"))
+        floor = found.group(1) if found else None
+    if floor:
+        for e in entries:
+            if e.status != "done" or not e.in_closed_dir:
+                continue
+            closed_on = closing_date(e)
+            if closed_on and closed_on >= floor and not REVIEW_LINE_RE.search(e.section("Resolution") or ""):
+                fail("closure-review", e,
+                     "closed %s, on or after the register's review floor %s, and its Resolution "
+                     "has no `**Closure review:** YYYY-MM-DD, met.` line" % (closed_on, floor))
 
     # --- initiative folders ---------------------------------------------------------------
     # Only the NAME and PLACE of a directory are read here. A folder under docs/archive/ is frozen
