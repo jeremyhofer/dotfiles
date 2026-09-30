@@ -270,7 +270,13 @@ fleet_main() {
   printf 'claude-context-probe --fleet: Claude Code %s, %s\n' "${version%% *}" "$(uname -s)"
   row_ bg-launch "$r_bg"; row_ agents-json "$r_ag"; printf '  %-18s %s\n' agents-pid "$r_apid"; printf '  %-18s %s\n' agents-state "$r_ast"   # informational: not counted in the exit status
    row_ settings-env "$r_env"; row_ tmpdir "$r_tmp"
-  row_ transcript "$r_tr"; row_ attach "$r_att"; row_ resume-bg "$r_res"; row_ rm "$r_rm"; row_ respawn "$r_resp"
+  row_ transcript "$r_tr"; row_ attach "$r_att"; row_ resume-bg "$r_res"; row_ rm "$r_rm"
+  # A version whose rows carry no pid cannot be asked to respawn a killed worker; that is a fact
+  # about the version, reported, not a failure of the machine.
+  case "$r_resp" in
+    'INCONCLUSIVE (no pid'*) printf '  %-18s %s\n' respawn "$r_resp" ;;
+    *) row_ respawn "$r_resp" ;;
+  esac
   for alias in haiku sonnet opus 'opus[1m]'; do
     case "$mrows" in *"$alias=yes;"*) row_ "model $alias" yes ;; *) row_ "model $alias" no ;; esac
   done

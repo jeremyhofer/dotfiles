@@ -155,7 +155,7 @@ row "$out" respawn 'INCONCLUSIVE (no pid to kill on this version)' && ok "respaw
 for r in bg-launch settings-env tmpdir transcript attach resume-bg rm; do
   row "$out" "$r" yes && ok "$r yes without a pid" || bad "$r not yes without a pid" "$out"
 done
-[ "$rc" -ne 0 ] && ok "a row that is not yes makes the exit status non-zero" || bad "exit status" "rc=$rc"
+[ "$rc" -eq 0 ] && ok "a version with no pid is not a failure: exit 0 when every other row is yes" || bad "exit status without a pid" "rc=$rc"
 cleaned && ok "cleanup" || bad "cleanup" "$(cat "$STATE/log")"
 
 printf '\n== rows that carry a pid ==\n'
