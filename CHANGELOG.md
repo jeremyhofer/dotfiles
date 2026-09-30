@@ -41,6 +41,13 @@ and key names only, never a value or a path under the home directory, so its rep
 any machine. It ends by naming the two deeper checks, `claude-context-probe` and its background-session
 mode.
 
+**`claude-context-probe --fleet` measures Claude Code's background-session features** on the machine it
+runs on: starting a named background session with a model and a settings `env` block, listing it as
+JSON (and whether rows carry `pid` or `state`), the session's `TMPDIR`, its transcript, attach,
+resume in the background, removal, respawn, which model aliases answer, and which of the tools a
+session fleet uses exist. It starts one small session and a few one-line model calls, removes
+everything it created, and prints versions and verdicts only. Run it in an ordinary terminal.
+
 *What changes for you:* nothing required. After applying, run the doctor and read its assessment: a git
 older than 2.54, or an older git earlier on `PATH`, means the configured hooks (the secret scan, the
 co-author trailer) are skipped silently.
