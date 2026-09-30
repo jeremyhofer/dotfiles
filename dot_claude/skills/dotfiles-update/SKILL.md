@@ -53,6 +53,45 @@ formula marked `REQUIRED` (its header explains the marker) is on PATH, and refus
 if one is not — so a skipped `brew bundle` fails at step 6 with one clear message instead of
 somewhere unrelated, later. If you see that refusal, it means exactly step 5 above was skipped.
 
+## Catching up a machine that is far behind
+
+A machine weeks behind has several changelog entries to act on at once, and one of them can make the
+apply itself refuse. Take it in this order:
+
+```sh
+git -C ~/.local/share/chezmoi log -1 --format='%h %ad' --date=short    # note it: the changelog starts here
+git -C ~/.local/share/chezmoi pull --ff-only
+# Read CHANGELOG.md from the top down to that date. List every ACTION before touching anything.
+brew bundle --file ~/.local/share/chezmoi/Brewfile    # macOS: install what the Brewfile now requires
+exec zsh -l                                           # a new login shell, so PATH changes take effect
+sh ~/.local/share/chezmoi/setup/overlay-doctor --machine   # BEFORE the apply: what can this machine do?
+chezmoi diff        # read it; a long diff is expected after weeks
+chezmoi apply
+chezmoi-overlay diff && chezmoi-overlay apply         # if the machine has a private layer
+sh ~/.local/share/chezmoi/setup/overlay-doctor        # overlay compliance, then the assessment again
+```
+
+**Why the Brewfile comes first:** the base can start requiring a tool (`gitleaks` for the secret scan
+on every commit, `yq` for the apply itself), and applying before installing it either stops the apply
+or blocks every commit afterwards.
+
+**Why the assessment runs twice:** before the apply it shows what the machine brings (which git runs,
+whether its configured hooks fire, which tools are missing); after, it confirms the apply changed what
+it should. A git older than 2.54, or one earlier on `PATH`, skips every configured hook silently,
+which looks exactly like a working machine.
+
+**Then measure what Claude Code does here**, in an ordinary terminal rather than inside an agent
+session (whose sandbox changes what can run):
+
+```sh
+claude-context-probe            # which context files, imports, rules and skills load
+claude-context-probe --fleet    # background sessions, their listing, resume, settings env, models
+```
+
+**Report back** the doctor's assessment and both probes' summaries by retyping or reading them out.
+They carry versions, verdicts and key names only, never paths or values from the machine, which is
+what makes them safe to move off it.
+
 ## Things that will bite
 
 - **`chezmoi apply` does not apply the overlay.** Two instances, two commands. A clean `chezmoi diff`

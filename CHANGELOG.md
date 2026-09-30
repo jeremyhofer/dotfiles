@@ -22,9 +22,68 @@ no base update can make for you. That asymmetry is the whole reason this file ex
 propagates automatically, the overlay does not, and a machine can therefore end up carrying a base
 that expects a piece its overlay never grew.
 
+**A machine that is weeks behind** should not apply in one step. Skill `dotfiles-update` has the
+walk: read every entry since the commit you have, install what the Brewfile now requires before
+applying, then let `overlay-doctor` assess the machine and report what it found.
+
 Entries are newest first.
 
 ---
+
+## 2026-09-30
+
+**`overlay-doctor` now assesses the machine it runs on** (advisory; `overlay-doctor --machine` runs it
+alone, with or without an overlay). It reports the git that runs and whether its configured hooks
+actually fire, measured in a throwaway repository; every `git` on `PATH`, in order; the tools the base
+expects (`git zsh jq yq gitleaks chezmoi mani wt claude`); the login shell; the OS; Claude Code's
+version; and the top-level key names of any managed Claude Code policy. It prints versions, presence
+and key names only, never a value or a path under the home directory, so its report can be retyped off
+any machine. It ends by naming the two deeper checks, `claude-context-probe` and its background-session
+mode.
+
+*What changes for you:* nothing required. After applying, run the doctor and read its assessment: a git
+older than 2.54, or an older git earlier on `PATH`, means the configured hooks (the secret scan, the
+co-author trailer) are skipped silently.
+
+**`overlay-doctor` asks every private file for a reason (Tier P, advisory).** The setup is public by
+default: a file the private layer deploys either states why it must be private, or its mechanism
+belongs in the base with the private part supplied through a `~/.dotlocal` fragment, chezmoi data, the
+repository manifest or an environment variable. The reasons live in `PRIVATE-REASONS` at the overlay's
+source root, one `target-glob<TAB>reason<TAB>why` line each, with the reason one of `secrets`,
+`identity`, `infra`, `domain-program`, `domain-context`. Tier P lists every deployed file that matches no
+line; with no list it prints one advisory line.
+
+*What changes for you:* nothing required. To adopt it, write `PRIVATE-REASONS` and add it to the
+overlay's `.chezmoiignore`; the files it leaves unlisted are the ones to move to the base.
+
+**Two `overlay-doctor` false results fixed.** A `run_` script of the same name in both layers was
+reported as one file with two owners, failing a correct overlay: a script runs in its own instance and
+deploys nothing. And a template's `.tmpl` suffix was kept in its target, so a plain file in one layer
+and a template of the same target in the other went unreported.
+
+**ACTION if a private layer deploys a `register-standard` skill.** The skill has shipped from the base
+since 2026-09-29. A private copy of `~/.claude/skills/register-standard/` now collides with it, and
+whichever layer applies last wins; the doctor reports the collision. Remove the private copy, and put
+anything domain-specific in `~/.dotlocal/skills/register-standard.md`, which the public skill reads.
+
+**`kb project --domain` never writes a repository's root context files** (2026-09-29). A domain's
+slice of the projection is written inside the knowledge base (`index/projections/domains/<slug>`) or to
+`--out`; a directory that is a repository root is refused, and the config's per-domain `repo` key is no
+longer read. *What changes for you:* if a domain config relied on that key, point the importing file at
+the slice instead.
+
+**New since 2026-09-26, nothing to do:** `claude-context-probe` measures which context Claude Code
+loads on the machine it runs on. `context-lint` and skill `project-context-file` check a repository's
+agent context file against one shape; skill `project-documentation` and `context-lint`'s docs checks do
+the same for `docs/`. `register` gains typed relations shown from both ends, `register related` and
+cross-entry reports in `register health`; `register-lint` refuses malformed relations, and refuses a
+`done` closure without its review line only in a register whose README sets a start date for that.
+`doc-lint`'s `spec-dirs:` takes a one-segment `*`, and a spec archived in the commit that promotes its
+decisions is judged by its staged copy. `adr-lint` reads a Living record's cadence only where it
+declares one. New skills: `recording-what-you-learn`, `filing-bug-reports`, `scratch-copies`.
+`claude-scratch-hook` cleans Claude Code agent scratch through lifecycle hooks, where the machine's
+settings wire them; on Linux, a tmpfiles rule ages the same scratch hourly.
+
 
 ## 2026-09-26
 
