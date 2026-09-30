@@ -445,9 +445,15 @@ def main(argv):
                     blocking.append(("docs-initiative", f"{where}/{name}", 0, "a loose file in an initiative folder; only README.md sits here, documents go in a type subdirectory"))
                 elif name not in INITIATIVE_SUBDIRS:
                     blocking.append(("docs-initiative", f"{where}/{name}", 0, "not one of the initiative type subdirectories (" + ", ".join(sorted(INITIATIVE_SUBDIRS)) + ")"))
-                elif name in INITIATIVE_DATED:
+                else:
+                    # The README lists every document, not only the type subdirectories: it is the
+                    # initiative's index, and a document it does not name is one nobody will find.
                     for doc in sorted(kids(("initiatives", folder, name))):
-                        if not doc.startswith(".") and doc != "README.md" and not DATED.match(doc):
+                        if doc.startswith(".") or doc == "README.md":
+                            continue
+                        if rtext is not None and not re.search(r"(?<![\w.-])" + re.escape(doc) + r"(?![\w.-])", rtext):
+                            blocking.append(("docs-initiative", f"{where}/README.md", 0, f"does not name `{name}/{doc}`"))
+                        if name in INITIATIVE_DATED and not DATED.match(doc):
                             blocking.append(("docs-dated", f"{where}/{name}/{doc}", 0, "not named YYYY-MM-DD-slug"))
         declared = set(re.findall(r"(?<![\w.-])docs/([\w.-]+)/", layout))
         for name in sorted(declared):
@@ -488,6 +494,9 @@ def main(argv):
         where = f"{file}:{n}" if n else file
         tag = "BLOCKING" if (kind, file, n, msg) in blocking else "advisory"
         print(f"[{kind}] {tag} {where}: {msg}")
+    if alltracked is not None and (root / "docs").is_dir():
+        print("context-lint: docs/ was read from the git index, as a commit would record it; "
+              "a file written but not yet staged is not counted.")
     print(f"context-lint: {len(blocking)} blocking, {len(advisory)} advisory. "
           "A clean run says the shape and size hold, not that the content is right.")
     return 1 if blocking else 0

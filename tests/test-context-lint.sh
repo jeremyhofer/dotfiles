@@ -264,7 +264,7 @@ printf '\n== initiative folders and declared subjects, in a git index and on dis
 initgood() {
   good "$1"; local d="$1"
   mkdir -p "$d/docs/initiatives/ABC-0001-cleanup/"{specs,plans,research/2026-09-02-bundle,reference} "$d/docs/catalog" "$d/docs/archive/initiatives"
-  printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`.\n' > "$d/docs/initiatives/ABC-0001-cleanup/README.md"
+  printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`. Documents: `2026-09-01-a.md`, `2026-09-01-b.md`, `2026-09-02-bundle`, `guide.md`.\n' > "$d/docs/initiatives/ABC-0001-cleanup/README.md"
   printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/specs/2026-09-01-a.md"
   printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/plans/2026-09-01-b.md"
   printf 'x\n' > "$d/docs/initiatives/ABC-0001-cleanup/research/2026-09-02-bundle/data.md"
@@ -281,9 +281,9 @@ EOF
 I=docs/initiatives/ABC-0001-cleanup
 m_norm()      { rm "$1/$I/README.md"; }
 m_unnamedf()  { printf 'x\n' > "$1/$I/notes.md"; }
-m_unnameds()  { printf '# Cleanup\n\n- `specs/`, `plans/`, `reference/`.\n' > "$1/$I/README.md"; }
-m_loose()     { printf 'x\n' > "$1/$I/notes.md"; printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`, `notes.md`.\n' > "$1/$I/README.md"; }
-m_adr()       { mkdir -p "$1/$I/adr"; printf 'x\n' > "$1/$I/adr/0001-x.md"; printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`, `adr/`.\n' > "$1/$I/README.md"; }
+m_unnameds()  { printf '# Cleanup\n\n- `specs/`, `plans/`, `reference/`. Documents: `2026-09-01-a.md`, `2026-09-01-b.md`, `2026-09-02-bundle`, `guide.md`.\n' > "$1/$I/README.md"; }
+m_loose()     { printf 'x\n' > "$1/$I/notes.md"; printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`, `notes.md`. Documents: `2026-09-01-a.md`, `2026-09-01-b.md`, `2026-09-02-bundle`, `guide.md`.\n' > "$1/$I/README.md"; }
+m_adr()       { mkdir -p "$1/$I/adr"; printf 'x\n' > "$1/$I/adr/0001-x.md"; printf '# Cleanup\n\n- `specs/`, `plans/`, `research/`, `reference/`, `adr/`. Documents: `2026-09-01-a.md`, `2026-09-01-b.md`, `2026-09-02-bundle`, `guide.md`.\n' > "$1/$I/README.md"; }
 m_undated()   { printf 'x\n' > "$1/$I/research/loose-notes.md"; }
 m_undatedp()  { printf 'x\n' > "$1/$I/plans/rollout.md"; }
 m_nosubj()    { rm "$1/docs/catalog/README.md"; }
@@ -341,6 +341,21 @@ out=$(python3 "$LINT" "$d" 2>&1); rc=$?
 printf 'x\n' > "$d/docs/initiatives/notes.md"
 out=$(python3 "$LINT" "$d" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && grep -q '\[docs-initiative\].*docs/initiatives/notes.md' <<< "$out" && ok "a loose file directly in docs/initiatives/ is refused" || bad "loose file in initiatives/ not caught" "$out"
+
+printf '\n== an initiative README names every document ==\n'
+d="$TMP/initnames"; good "$d"; mkdir -p "$d/docs/initiatives/ABC-0001-x/specs"
+printf '# Documents\n\n- `initiatives/`: one folder per open initiative.\n' > "$d/docs/README.md"
+printf 'x\n' > "$d/docs/initiatives/ABC-0001-x/specs/2026-01-02-x-design.md"
+printf '# ABC-0001\n\n- `specs/`: the design.\n' > "$d/docs/initiatives/ABC-0001-x/README.md"
+out=$(python3 "$LINT" "$d" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && grep -q 'does not name `specs/2026-01-02-x-design.md`' <<< "$out" && ok "a document inside a type subdirectory the README does not name is refused" || bad "unnamed document in specs/ not caught" "$out"
+printf '# ABC-0001\n\n- `specs/`: `2026-01-02-x-design.md`, the design.\n' > "$d/docs/initiatives/ABC-0001-x/README.md"
+out=$(python3 "$LINT" "$d" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a README naming every document passes" || bad "complete README refused" "$out"
+( cd "$d" && git init -q && git add -A )
+printf 'x\n' > "$d/docs/initiatives/ABC-0001-x/specs/2026-01-03-y-design.md"
+out=$(python3 "$LINT" "$d" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && grep -q 'git index' <<< "$out" && ok "in a work tree an unstaged file is not counted, and the output says the index was read" || bad "index note missing, or an unstaged file counted" "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

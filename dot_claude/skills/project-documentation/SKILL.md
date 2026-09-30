@@ -172,7 +172,7 @@ regenerates is believed while wrong.
 ### The checks
 
 - `context-lint` `docs-initiative`: a folder under `docs/initiatives/` without `README.md`; a README
-  not naming each subdirectory; a file in the folder other than the README; a subdirectory outside
+  not naming each subdirectory and each document in them; a file in the folder other than the README; a subdirectory outside
   the typed list; a file directly in `docs/initiatives/` other than a `README.md`. `docs-dated`: an
   undated entry under an initiative's `specs/`, `plans/` or `research/`. `docs-subject`: a declared
   subject that exists without a `README.md`.
@@ -183,9 +183,9 @@ regenerates is believed while wrong.
 - `doc-lint` reaches specs and plans inside initiatives once `.doc-lint` says
   `spec-dirs: docs/specs/ docs/plans/ docs/initiatives/*/specs/ docs/initiatives/*/plans/` (a `*`
   standing for one whole path segment).
-- **Not checked:** that the README lists each file inside the subdirectories (only the
-  subdirectories themselves are checked; the files are on you), what a subject README says, and
-  anything in `docs/archive/`.
+- **Not checked:** what a subject README says, and anything in `docs/archive/`.
+- **In a git work tree the checks read the index,** as a commit records it: a file written but not
+  yet staged is not counted, and the output says so.
 
 ## Which type is it?
 
