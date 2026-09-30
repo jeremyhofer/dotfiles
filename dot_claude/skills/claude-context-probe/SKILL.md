@@ -118,19 +118,20 @@ transcripts and temp dir (`--keep` keeps only the temp dir).
 | Row | `yes` means |
 | --- | --- |
 | `bg-launch` | `claude --bg -n <name> --model haiku --settings ...` started a session and exited 0 |
-| `agents-json` | `claude agents --json` lists it with an id, pid, session id and cwd |
+| `agents-json` | `claude agents --json` lists it with an id, name, session id and cwd. Measured on 2.1.285, a row has exactly `cwd id kind name sessionId startedAt state` (state seen: `working`, `blocked`) |
+| `agents-pid`, `agents-state` | informational: rows carry a `pid`, rows carry a `state`. 2.1.285 has no `pid`; a tool that keys liveness on it needs to know. Liveness in the rows below uses `pid` when present, else `state` (any value other than an exited or completed one counts as live) |
 | `settings-env` | an env var set through `--settings` reached the session's shell |
 | `tmpdir` | `CLAUDE_CODE_TMPDIR` from `--settings` decided the session's `TMPDIR` |
 | `transcript` | the session's `.jsonl` transcript exists under the Claude config dir's `projects` folder |
-| `attach` | `claude attach` ran and killing it left the session listed with a live pid |
+| `attach` | `claude attach` ran and killing it left the session listed and live |
 | `resume-bg` | `--bg --resume <session id>` started a second, listed session |
 | `rm` | `claude rm` removed the row and left the transcript |
-| `respawn` | after its process was killed, a session with the same name came back on a new pid |
+| `respawn` | after its process was killed, a session with the same name came back on a new pid; `INCONCLUSIVE` where rows carry no pid |
 | `model <alias>` | `claude -p --model <alias>` answered, for `haiku`, `sonnet`, `opus`, `opus[1m]` |
 | `tool <name>` | `present` or `absent` from the session's own list of tool names, for `Agent`, `Workflow`, `EnterWorktree`, `SendMessage`, `ListAgents`; `Bash` is reported present only, since `run_in_background` is a parameter of it that a name list cannot show |
 
 A `no` on `bg-launch` makes the rows that need a session `INCONCLUSIVE`. The exit status is
-non-zero unless every row before `tool` is `yes`.
+non-zero unless every row before `tool` is `yes`, apart from the two informational `agents-` rows.
 
 ## What it does not test
 

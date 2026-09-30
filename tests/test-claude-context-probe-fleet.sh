@@ -13,6 +13,8 @@
 #   norespawn   a killed session is not brought back
 #   bad1m       `-p --model opus[1m]` fails
 #   noworkflow  the tool listing omits Workflow
+#   exited      every listed row has state "exited"
+# FAKE_PID=1 makes `agents --json` rows carry a pid, as on versions that list one.
 
 set -u
 
@@ -43,7 +45,11 @@ list_rows() {
     fi
     printf '%s|%s|%s|%s|%s\n' "$id" "$name" "$pid" "$sid" "$cwd" >> "$S/rows.new"
     [ $first -eq 1 ] || out="$out,"; first=0
-    out="$out{\"id\":\"$id\",\"name\":\"$name\",\"pid\":$pid,\"sessionId\":\"$sid\",\"cwd\":\"$cwd\"}"
+    # The default rows carry exactly the keys measured on Claude Code 2.1.285 (no pid); FAKE_PID=1
+    # adds one, for versions that list it.
+    extra=""; [ "${FAKE_PID:-0}" = 1 ] && extra="\"pid\":$pid,"
+    state=working; [ "$mode" = exited ] && state=exited
+    out="$out{\"cwd\":\"$cwd\",\"id\":\"$id\",\"kind\":\"background\",${extra}\"name\":\"$name\",\"sessionId\":\"$sid\",\"startedAt\":\"2026-01-01T00:00:00Z\",\"state\":\"$state\"}"
   done < "$S/rows"
   mv "$S/rows.new" "$S/rows"
   printf '[%s]\n' "$out"
@@ -113,12 +119,12 @@ cleaned() {
 }
 row() { has "$1" "^  $2  *$3"; }
 
-printf '\n== all-green stub ==\n'
-out=$(run normal); rc=$?
+printf '\n== all-green stub (rows carry a pid) ==\n'
+out=$(FAKE_PID=1 run normal); rc=$?
 [ "$rc" -eq 0 ] && ok "exit status 0" || bad "green run exit status" "rc=$rc: $out"
 has "$out" '^claude-context-probe --fleet: Claude Code 9.9.9' && ok "header names the tool, version" || bad "header" "$out"
 has "$out" '^run with: claude-context-probe --fleet$' && ok "closing line names the command" || bad "closing line" "$out"
-for r in bg-launch agents-json settings-env tmpdir transcript attach resume-bg rm respawn; do
+for r in bg-launch agents-json agents-pid agents-state settings-env tmpdir transcript attach resume-bg rm respawn; do
   row "$out" "$r" yes && ok "$r yes" || bad "$r not yes" "$out"
 done
 for m in haiku sonnet opus 'opus\[1m\]'; do
@@ -140,10 +146,30 @@ cleaned && ok "rm was called for every session created" || bad "a session was no
 grep -q -- '--tools' "$STATE/args" && bad "--fleet ran a context session" || ok "--fleet runs only fleet checks"
 grep -q -- '--bg -n ccprobe-fleet-' "$STATE/args" && ok "the session is named ccprobe-fleet-<nonce>" || bad "session name" "$(cat "$STATE/args")"
 
+printf '\n== rows as measured on 2.1.285: no pid ==\n'
+out=$(run normal); rc=$?
+row "$out" agents-json yes && ok "agents-json yes without a pid" || bad "agents-json needs no pid" "$out"
+row "$out" agents-pid no && ok "agents-pid no" || bad "agents-pid" "$out"
+row "$out" agents-state yes && ok "agents-state yes" || bad "agents-state" "$out"
+row "$out" respawn 'INCONCLUSIVE (no pid to kill on this version)' && ok "respawn INCONCLUSIVE with no pid" || bad "respawn without pid" "$out"
+for r in bg-launch settings-env tmpdir transcript attach resume-bg rm; do
+  row "$out" "$r" yes && ok "$r yes without a pid" || bad "$r not yes without a pid" "$out"
+done
+[ "$rc" -ne 0 ] && ok "a row that is not yes makes the exit status non-zero" || bad "exit status" "rc=$rc"
+cleaned && ok "cleanup" || bad "cleanup" "$(cat "$STATE/log")"
+
+printf '\n== rows that carry a pid ==\n'
+out=$(FAKE_PID=1 run normal)
+row "$out" agents-pid yes && row "$out" agents-state yes && ok "agents-pid yes when rows carry a pid" || bad "agents-pid with pid" "$out"
+
+printf '\n== rows whose state says exited ==\n'
+out=$(run exited)
+row "$out" attach no && row "$out" resume-bg no && ok "an exited state is not live" || bad "exited state read as live" "$out"
+
 printf '\n== --bg fails ==\n'
 out=$(run bgfail); rc=$?
 [ "$rc" -ne 0 ] && row "$out" bg-launch no && ok "bg-launch no, non-zero exit" || bad "bgfail" "rc=$rc: $out"
-for r in agents-json settings-env tmpdir transcript attach resume-bg rm respawn; do
+for r in agents-json agents-pid agents-state settings-env tmpdir transcript attach resume-bg rm respawn; do
   row "$out" "$r" 'INCONCLUSIVE (' && ok "$r INCONCLUSIVE" || bad "$r not INCONCLUSIVE" "$out"
 done
 row "$out" 'model haiku' yes && ok "independent rows still run" || bad "model row skipped" "$out"
@@ -165,7 +191,7 @@ out=$(run rmkeeps); rc=$?
 row "$out" rm no && ok "rm no" || bad "rmkeeps" "$out"
 
 printf '\n== a killed session does not come back ==\n'
-out=$(run norespawn); rc=$?
+out=$(FAKE_PID=1 run norespawn); rc=$?
 row "$out" respawn no && row "$out" rm yes && ok "respawn no" || bad "norespawn" "$out"
 cleaned && ok "cleanup" || bad "cleanup" "$(cat "$STATE/log")"
 
