@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# context-footprint — measure the always-on context a Claude session carries before it does any work.
+#
+# WHY THIS EXISTS. One imported rules file had a byte ceiling and nothing else did, so a cap bounded
+# ~62% of the always-on total while a memory index, a skill-description block and a set of CLAUDE.md
+# files grew unmeasured. Bounding one component of an unmeasured total does not bound anything. This
+# measures every component, so the number under discussion is the number that matters.
+#
+# IT REPORTS, IT DOES NOT GATE: a context budget is a target to steer by, not a hard limit. Default exit is 0
+# whatever the total. `--check` exits 1 when over budget, for a caller that deliberately wants that;
+# nothing wires it by default.
+#
+# WHAT THE NUMBER IS FOR. The cost is not money -- the always-on prefix is prompt-cached, so
+# re-sending it each turn is cheap. The cost is ROOM: every always-on token is unavailable to file
+# contents, tool output and conversation history for the whole session, and caching does not give
+# that back. A secondary cost is attention: standing rules compete with the task for salience.
+#
+# NOTE ON THE ASSIGNMENTS BELOW. They read oddly for a reason. The obvious `${VAR:-default}` form is
+# refused by the secret-leak-guard, which matches the substring TOKEN in a variable name -- a false
+# positive here, but the two-line form below is the guard's own documented safe alternative rather
+# than a way around it. Keep it; do not "simplify" it back.
+set -uo pipefail
+
+# Bytes per token: a rough divisor for English markdown; tables and code run denser. Every token
+# figure printed is an ESTIMATE and is labelled as one -- this is not a tokenizer.
+BYTES_PER_TOKEN=4
+[ -n "${CONTEXT_BYTES_PER_TOKEN:+x}" ] && BYTES_PER_TOKEN=$CONTEXT_BYTES_PER_TOKEN
+
+# Provisional, and meant to be reviewed; override with CONTEXT_BUDGET_TOKENS. A target to measure
+# against, NOT a derived capacity limit -- no measurement of where always-on context begins to
+# degrade instruction-following exists, and this number does not pretend to be one.
+BUDGET_TOKENS=25000
+[ -n "${CONTEXT_BUDGET_TOKENS:+x}" ] && BUDGET_TOKENS=$CONTEXT_BUDGET_TOKENS
+
+STATE=$HOME/.local/state/context-footprint/last.tsv
+[ -n "${CONTEXT_FOOTPRINT_STATE:+x}" ] && STATE=$CONTEXT_FOOTPRINT_STATE
+ROOT=$PWD
+[ -n "${CONTEXT_FOOTPRINT_ROOT:+x}" ] && ROOT=$CONTEXT_FOOTPRINT_ROOT
+HOME_DIR=$HOME
+[ -n "${CONTEXT_FOOTPRINT_HOME:+x}" ] && HOME_DIR=$CONTEXT_FOOTPRINT_HOME
+
+die() { printf 'context-footprint: %s\n' "$*" >&2; exit 2; }
+
+json_out=0 do_check=0 quiet_delta=0 probe_hooks=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json)           json_out=1; shift ;;
+    --check)          do_check=1; shift ;;
+    --no-delta)       quiet_delta=1; shift ;;
+    --no-hook-probe)  probe_hooks=0; shift ;;
+    -h|--help)  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+                printf '\nUsage: context-footprint [--json] [--check] [--no-delta] [--no-hook-probe]\n'
+                printf '  --no-hook-probe  do not execute plugin SessionStart hooks to size their\n'
+                printf '                   injected output; that row then reports UNMEASURED.\n'; exit 0 ;;
+    *) die "unknown argument '$1' (see --help)" ;;
+  esac
+done
+
+# --- component collection -------------------------------------------------------------------
+# Rows are "label<TAB>bytes<TAB>detail". A component that cannot be READ emits -1 and is reported
+# as UNREADABLE rather than as zero. That is the whole reason the field is not a plain integer:
+# ~/.claude/agents is a character-device mask under the Bash sandbox, and a masked directory sums
+# naively to 0 -- indistinguishable from "you have no agents".
+rows=()
+add_row() { rows+=("$1"$'\t'"$2"$'\t'"${3:-}"); }
+bytes_of() { if [ -r "$1" ]; then wc -c < "$1" | tr -d ' '; else echo 0; fi; }
+
+# CLAUDE.md files plus their transitive @imports. Resolving imports matters: the global file's real
+# weight can be its own 8 KB plus a 74 KB file it pulls in by reference, and a meter counting only
+# the file would under-report the largest component in the system by an order of magnitude.
+seen_imports=""
+import_bytes() {
+  local f="$1" dir line target total=0
+  case " $seen_imports " in *" $f "*) echo 0; return ;; esac
+  seen_imports="$seen_imports $f"
+  if [ ! -r "$f" ]; then echo 0; return; fi
+  dir=$(dirname "$f")
+  while IFS= read -r line; do
+    target="${line#@}"
+    [ -n "$target" ] || continue
+    case "$target" in
+      /*) : ;;
+      "~"*) target="$HOME_DIR${target#\~}" ;;
+      *) target="$dir/$target" ;;
+    esac
+    [ -r "$target" ] || continue
+    total=$(( total + $(bytes_of "$target") + $(import_bytes "$target") ))
+  done < <(grep '^@' "$f" 2>/dev/null)
+  echo "$total"
+}
+
+g="$HOME_DIR/.claude/CLAUDE.md"
+if [ -r "$g" ]; then
+  gi=$(import_bytes "$g")
+  add_row "global CLAUDE.md" "$(bytes_of "$g")" "~/.claude/CLAUDE.md"
+  [ "$gi" -gt 0 ] && add_row "  + its @imports" "$gi" "resolved transitively"
+else
+  add_row "global CLAUDE.md" -1 "$g unreadable"
+fi
+
+# Project CLAUDE.md chain: cwd walked up to /. Verified behaviour -- the walk has no .git boundary.
+d="$ROOT"; chain=()
+while :; do
+  # Prepended, not appended: the walk runs cwd -> root but a session LOADS root -> cwd, and a
+  # table that lists them backwards invites the reader to mis-attribute which file overrides which.
+  if [ -r "$d/CLAUDE.md" ]; then
+    if [ "${#chain[@]}" -gt 0 ]; then chain=("$d/CLAUDE.md" "${chain[@]}"); else chain=("$d/CLAUDE.md"); fi
+  fi
+  [ "$d" = "/" ] && break
+  d=$(dirname "$d")
+done
+if [ "${#chain[@]}" -gt 0 ]; then
+for f in "${chain[@]}"; do
+  [ "$f" = "$g" ] && continue
+  short="$f"
+  case "$f" in "$HOME_DIR"/*) short="~${f#"$HOME_DIR"}" ;; esac
+  add_row "project CLAUDE.md" "$(bytes_of "$f")" "$short"
+done
+fi
+
+# ~/.claude/rules/*.md -- enumerated by LISTING the directory, never by a guessed name pattern.
+rd="$HOME_DIR/.claude/rules"
+if [ -d "$rd" ] && [ -r "$rd" ]; then
+  rb=0; rn=0
+  while IFS= read -r f; do rb=$(( rb + $(bytes_of "$f") )); rn=$((rn+1)); done \
+    < <(find "$rd" -maxdepth 1 -name '*.md' -type f 2>/dev/null)
+  add_row "rules" "$rb" "$rn file(s)"
+elif [ -e "$rd" ]; then
+  add_row "rules" -1 "not readable as a directory"
+fi
+
+# The project's memory index. Loaded whole at session start; entries past the cliff are dropped.
+slug="${ROOT//\//-}"
+mem="$HOME_DIR/.claude/projects/$slug/memory/MEMORY.md"
+[ -r "$mem" ] && add_row "memory index" "$(bytes_of "$mem")" "$(wc -l < "$mem" | tr -d ' ') lines"
+
+# Skill and agent DESCRIPTIONS. Only the frontmatter description is always-on; the body loads on
+# demand. That ratio is the argument for moving a rule out of always-on text into a skill or an agent, and
+# it is why an agent carrying a large body is better leverage than a skill carrying a small one.
+desc_bytes() {
+  awk '
+    NR==1 && $0!="---" { exit }
+    NR>1 && /^---[[:space:]]*$/ { exit }
+    /^description:/ { d=1; n+=length(substr($0,13))+1; next }
+    d && /^[[:space:]]/ { n+=length($0)+1; next }
+    d { d=0 }
+    END { print n+0 }
+  ' "$1" 2>/dev/null
+}
+
+sum_defs() {
+  local label="$1" pat="$2"; shift 2
+  local b=0 n=0 unread=0 d f real seen=""
+  for d in "$@"; do
+    [ -e "$d" ] || continue
+    if [ ! -d "$d" ] || [ ! -r "$d" ]; then unread=$((unread+1)); continue; fi
+    while IFS= read -r f; do
+      real=$(readlink -f "$f" 2>/dev/null || echo "$f")
+      case " $seen " in *" $real "*) continue ;; esac   # never double-count a symlinked definition
+      seen="$seen $real"
+      b=$(( b + $(desc_bytes "$f") )); n=$((n+1))
+    # -L, deliberately: a personal skill may be a SYMLINK to a directory elsewhere (the docs
+    # sanction it; four third-party skills are symlinked into ~/.agents/skills here). Without -L,
+    # find does not descend into a symlinked directory, so those definitions are dropped
+    # SILENTLY -- not reported unreadable, simply absent. Measured 2026-09-19: 31 found without
+    # -L, 35 with. The readlink -f dedupe above is what keeps -L from double-counting.
+    done < <(find -L "$d" -name "$pat" -type f 2>/dev/null)
+  done
+  if [ "$n" -eq 0 ] && [ "$unread" -gt 0 ]; then
+    add_row "$label" -1 "$unread path(s) unreadable (sandbox mask?)"
+  else
+    local detail="$n definition(s)"
+    [ "$unread" -gt 0 ] && detail="$detail, $unread path(s) UNREADABLE"
+    add_row "$label" "$b" "$detail"
+  fi
+}
+
+sum_defs "skill descriptions" "SKILL.md" "$HOME_DIR/.claude/skills" "$ROOT/.claude/skills"
+sum_defs "agent descriptions" "*.md"     "$HOME_DIR/.claude/agents"  "$ROOT/.claude/agents"
+
+# --- plugin-delivered context ------------------------------------------------------------------
+# A plugin ships skills, commands and agents exactly like the personal layer does, and their
+# descriptions load every session identically -- but they live under ~/.claude/plugins/cache,
+# which this meter did not look at until 2026-09-19. The omission was not flagged as unreadable;
+# the channel was simply out of scope, so the TOTAL read as a measurement while missing ~11 KB.
+#
+# Only ENABLED plugins are counted. A disabled plugin stays fully cached on disk and costs
+# nothing in context -- `vercel` was 13 KB of cached skills while switched off, which is larger
+# than every enabled plugin put together and would have swamped the number if counted.
+
+enabled_plugins() {
+  local settings="$HOME_DIR/.claude/settings.json"
+  [ -r "$settings" ] || return 0
+  # Scoped to the enabledPlugins block rather than grepping the whole file: a bare search for
+  # '"x@y": true' would also match any future setting that happens to look like one.
+  awk '
+    /"enabledPlugins"[[:space:]]*:/ { inblk=1; next }
+    inblk && /^[[:space:]]*\}/     { inblk=0 }
+    inblk && /:[[:space:]]*true/   { if (match($0, /"[^"]+"/)) print substr($0, RSTART+1, RLENGTH-2) }
+  ' "$settings"
+}
+
+plugin_subdirs() {  # $1 = subdirectory name (skills|commands|agents)
+  local sub="$1" key plug mkt d newest
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    plug=${key%@*}; mkt=${key#*@}
+    newest=""
+    for d in "$HOME_DIR"/.claude/plugins/cache/"$mkt"/"$plug"/*/; do
+      [ -d "$d" ] && newest="$d"          # several versions may be cached; the last sorts newest
+    done
+    [ -n "$newest" ] && [ -d "$newest$sub" ] && printf '%s\n' "$newest$sub"
+  done < <(enabled_plugins)
+}
+
+pdirs=(); while IFS= read -r d; do pdirs+=("$d"); done < <(plugin_subdirs skills)
+[ "${#pdirs[@]}" -gt 0 ] && sum_defs "plugin skills" "SKILL.md" "${pdirs[@]}"
+
+pdirs=(); while IFS= read -r d; do pdirs+=("$d"); done < <(plugin_subdirs commands; plugin_subdirs agents)
+[ "${#pdirs[@]}" -gt 0 ] && sum_defs "plugin cmds/agents" "*.md" "${pdirs[@]}"
+
+# --- plugin SessionStart injections --------------------------------------------------------------
+# The channel no description-based accounting can see, and the largest single plugin cost here.
+# A plugin may register a SessionStart hook whose stdout is injected into the prompt verbatim on
+# every startup/clear/compact. `superpowers` does exactly that: its hook emits the whole ~3 KB
+# using-superpowers SKILL.md, which is larger than all 14 of its skill descriptions combined and
+# appeared nowhere in this meter before. Counting descriptions alone therefore ranked the single
+# most expensive plugin third.
+#
+# This is measured by RUNNING the hook, because its output is computed, not declarable. That is
+# not a new exposure -- the hook already runs at every session start -- but it is the one place
+# this tool is not purely read-only, so `--no-hook-probe` turns it off and the row then reports
+# as unmeasured rather than as zero. A zero here would be a lie in the shape of a measurement.
+
+_bounded() {  # $1 = seconds, rest = command. macOS has no `timeout`; coreutils installs gtimeout.
+  local secs="$1"; shift
+  if command -v timeout  >/dev/null 2>&1; then timeout  "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
+  else "$@"; fi
+}
+
+hook_bytes=0 hook_n=0 hook_skipped=0
+while IFS= read -r key; do
+  [ -n "$key" ] || continue
+  plug=${key%@*}; mkt=${key#*@}
+  root=""
+  for d in "$HOME_DIR"/.claude/plugins/cache/"$mkt"/"$plug"/*/; do [ -d "$d" ] && root="$d"; done
+  [ -n "$root" ] || continue
+  hooks_json="$root/hooks/hooks.json"
+  [ -r "$hooks_json" ] || continue
+  grep -q '"SessionStart"' "$hooks_json" 2>/dev/null || continue
+  hook_n=$((hook_n+1))
+  if [ "$probe_hooks" -eq 0 ]; then hook_skipped=$((hook_skipped+1)); continue; fi
+  cmd=$(sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$hooks_json" | head -1)
+  cmd=${cmd//\\\"/\"}
+  cmd=${cmd//'${CLAUDE_PLUGIN_ROOT}'/${root%/}}
+  out=$(CLAUDE_PLUGIN_ROOT="${root%/}" _bounded 5 bash -c "$cmd" 2>/dev/null </dev/null)
+  if [ -n "$out" ]; then hook_bytes=$(( hook_bytes + ${#out} )); else hook_skipped=$((hook_skipped+1)); fi
+done < <(enabled_plugins)
+
+if [ "$hook_n" -gt 0 ]; then
+  if [ "$hook_bytes" -gt 0 ]; then
+    detail="$hook_n plugin hook(s)"
+    [ "$hook_skipped" -gt 0 ] && detail="$detail, $hook_skipped UNMEASURED"
+    add_row "plugin hook injection" "$hook_bytes" "$detail"
+  else
+    add_row "plugin hook injection" -1 "$hook_n hook(s) present, not probed"
+  fi
+fi
+
+# --- totals ---------------------------------------------------------------------------------
+total=0; unreadable=0
+if [ "${#rows[@]}" -gt 0 ]; then
+for r in "${rows[@]}"; do
+  b=$(printf '%s' "$r" | cut -f2)
+  if [ "$b" -lt 0 ]; then unreadable=$((unreadable+1)); else total=$(( total + b )); fi
+done
+fi
+tokens=$(( total / BYTES_PER_TOKEN ))
+budget_bytes=$(( BUDGET_TOKENS * BYTES_PER_TOKEN ))
+
+prev_total=""
+[ -r "$STATE" ] && prev_total=$(awk -F'\t' '$1=="TOTAL"{print $2}' "$STATE" | tail -1)
+
+# Minimal JSON string escaping. Labels and details carry filesystem paths, which may contain a
+# backslash or a quote; emitting them raw produces output that parses nowhere. Found by the test
+# suite, which fed --json to jq and got a parse error from a label containing a lone backslash.
+json_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/ /g'; }
+
+if [ "$json_out" -eq 1 ]; then
+  printf '{"total_bytes":%s,"est_tokens":%s,"budget_tokens":%s,"unreadable_components":%s,' \
+    "$total" "$tokens" "$BUDGET_TOKENS" "$unreadable"
+  [ -n "$prev_total" ] && printf '"prev_total_bytes":%s,' "$prev_total"
+  printf '"components":['
+  sep=""
+  if [ "${#rows[@]}" -gt 0 ]; then
+  for r in "${rows[@]}"; do
+    printf '%s{"label":"%s","bytes":%s,"detail":"%s"}' "$sep" \
+      "$(json_esc "$(printf '%s' "$r" | cut -f1)")" \
+      "$(printf '%s' "$r" | cut -f2)" \
+      "$(json_esc "$(printf '%s' "$r" | cut -f3)")"
+    sep=","
+  done
+  fi
+  printf ']}\n'
+else
+  bar=$(printf '%.0s-' $(seq 1 74))
+  printf '\n  %-26s %10s %7s  %s\n' "COMPONENT" "BYTES" "SHARE" "DETAIL"
+  printf '  %s\n' "$bar"
+  if [ "${#rows[@]}" -gt 0 ]; then
+  for r in "${rows[@]}"; do
+    l=$(printf '%s' "$r" | cut -f1); b=$(printf '%s' "$r" | cut -f2); dt=$(printf '%s' "$r" | cut -f3)
+    if [ "$b" -lt 0 ]; then
+      printf '  %-26s %10s %7s  %s\n' "$l" "UNREADABLE" "-" "$dt"
+    else
+      pct=0; [ "$total" -gt 0 ] && pct=$(( b * 100 / total ))
+      printf '  %-26s %10s %6s%%  %s\n' "$l" "$b" "$pct" "$dt"
+    fi
+  done
+  fi
+  printf '  %s\n' "$bar"
+  printf '  %-26s %10s\n' "TOTAL" "$total"
+  printf '  %-26s %10s  (estimate at %s bytes/token)\n' "est. tokens" "~$tokens" "$BYTES_PER_TOKEN"
+  printf '  %-26s %10s  (~%s bytes)\n' "budget" "$BUDGET_TOKENS" "$budget_bytes"
+  if [ "$total" -gt "$budget_bytes" ]; then
+    printf '\n  OVER BUDGET by ~%s tokens. Reporting only -- nothing is blocked.\n' \
+      "$(( (total - budget_bytes) / BYTES_PER_TOKEN ))"
+  else
+    printf '\n  Within budget: ~%s tokens of headroom.\n' \
+      "$(( (budget_bytes - total) / BYTES_PER_TOKEN ))"
+  fi
+  if [ "$quiet_delta" -eq 0 ] && [ -n "$prev_total" ]; then
+    dd=$(( total - prev_total ))
+    if [ "$dd" -eq 0 ]; then printf '  Unchanged since last run.\n'
+    else printf '  Delta since last run: %+d bytes (~%+d tokens).\n' "$dd" "$(( dd / BYTES_PER_TOKEN ))"
+    fi
+  fi
+  # Repeated at the bottom because a reader scanning for a total would otherwise take it as
+  # measured. With anything unreadable the total is a FLOOR, not a measurement.
+  if [ "$unreadable" -gt 0 ]; then
+    printf '\n  %s component(s) UNREADABLE -- the total above is a LOWER BOUND, not a measurement.\n' \
+      "$unreadable"
+  fi
+  printf '\n'
+fi
+
+if [ "$quiet_delta" -eq 0 ]; then
+  if mkdir -p "$(dirname "$STATE")" 2>/dev/null; then
+    { if [ "${#rows[@]}" -gt 0 ]; then for r in "${rows[@]}"; do printf '%s\n' "$r"; done; fi
+      printf 'TOTAL\t%s\t%s\n' "$total" "$(date +%s)"; } > "$STATE" 2>/dev/null || true
+  fi
+fi
+
+if [ "$do_check" -eq 1 ] && [ "$total" -gt "$budget_bytes" ]; then exit 1; fi
+exit 0

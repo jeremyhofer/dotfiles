@@ -1,0 +1,529 @@
+#!/usr/bin/env bash
+# memory-doctor — report on the health of the Claude auto-memory stores on this machine.
+#
+# WHY. A memory store has no owner, no history and no backup: it is not in git, nothing expires an
+# entry, and the only enforced limit in the whole system is a cliff you cannot see. Specifically:
+# only the first 200 lines OR 25 KB of MEMORY.md is loaded at session start, and everything past it
+# is dropped SILENTLY -- no error when it is written, none when it is read. So a store degrades in
+# ways that are invisible from inside a session, which is the only place anyone ever looks.
+#
+# This reports the four things that actually go wrong, measured rather than judged:
+#   budget     how close each index is to the cliff
+#   usage      which memories are ever actually READ (from the read log the hook writes)
+#   stale      project memories whose work item has closed -- journals nothing retires
+#   integrity  orphans, dangling index links, dangling wikilinks, stale repo paths
+#
+# THE ONE RULE THIS TOOL WILL NOT LET YOU BREAK. A read count measures what a model CHOSE to read,
+# which is confounded by how well the memory is described in MEMORY.md. A never-read memory may be
+# worthless, or may be described so badly it is never selected -- opposite conclusions from an
+# identical signal. So this tool never says "delete"; it says REVIEW, and it says the first question
+# on review is whether the index line is any good. Nothing here is a delete trigger.
+#
+# FAIL LOUD, NOT SILENT -- and for this tool that principle has one specific, load-bearing case.
+# If the read log is missing or young, `usage` must NOT report that every memory is unread. That
+# reading is not merely wrong, it is wrong in the direction that invites deleting the whole store,
+# and it is what a naive implementation does on day one. So: no log means exit 2, and a log younger
+# than MEMORY_DOCTOR_MIN_WINDOW_DAYS reports its own window and refuses to call anything unused.
+# The same applies to the registers: if none can be read, `stale` exits rather than reporting that
+# nothing is stale.
+#
+# Deployed to Linux and darwin, so every spelling here is two-userland safe.
+
+set -uo pipefail
+
+STORES_ROOT=${MEMORY_DOCTOR_STORES:-"$HOME/.claude/projects"}
+LOG=${MEMORY_DOCTOR_LOG:-"${XDG_STATE_HOME:-$HOME/.local/state}/claude-memory-usage/reads.jsonl"}
+# Colon-separated register directories. Unset: discovered from each canonical's declared launch
+# dir (see register_dirs), resolved under DEVEL_ROOT.
+REGISTERS=${MEMORY_DOCTOR_REGISTERS:-}
+DEVEL_ROOT=${MEMORY_DOCTOR_DEVEL:-"$HOME/Devel"}
+MIN_WINDOW_DAYS=${MEMORY_DOCTOR_MIN_WINDOW_DAYS:-14}
+# Retired repo paths that memories must no longer cite: one fixed string per line.
+STALE_PATHS=${MEMORY_DOCTOR_STALE_PATHS:-"${XDG_CONFIG_HOME:-$HOME/.config}/memory-doctor/stale-paths"}
+
+# The cliff, and the budget the write-guard enforces at 80% of it.
+CLIFF_BYTES=25600; CLIFF_LINES=200
+BUDGET_BYTES=20480; BUDGET_LINES=160
+
+die() { printf 'memory-doctor: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+# --- two-userland helpers (GNU first, BSD second) -----------------------------------------------
+file_bytes() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# BSD `date -j -f` has no free-form mode, so the fallback ENUMERATES the shapes accepted rather
+# than translating. Most-specific first: BSD date parses greedily and will accept a prefix, so a
+# loose format tried early matches part of a fuller string and returns the wrong instant happily.
+parse_time() {
+  local at="$1" f
+  date -d "$at" +%s 2>/dev/null && return 0
+  for f in '%Y-%m-%dT%H:%M:%SZ' '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S' '%Y-%m-%d'; do
+    date -j -f "$f" "$at" +%s 2>/dev/null && return 0
+  done
+  return 1
+}
+
+now=$(date +%s)
+days_since() { # <epoch> -> whole days
+  local t="$1"
+  [ -n "$t" ] || { printf '?'; return; }
+  printf '%d' $(( (now - t) / 86400 ))
+}
+
+stores() { # emit each store's memory dir, skipping any marked as an archive
+  # A store may be a deliberate pre-conversion UNDO COPY rather than a live store -- kept by
+  # copying rather than moving. Reporting findings against one is worse than noise: a
+  # canonical acting on them would edit a copy that exists precisely to be frozen, destroying the
+  # undo. Measured 2026-08-30 on a session that had both a live store and an
+  # archive and whose only "dangling wikilink" fleet-wide lives in the archive.
+  #
+  # Opt-in by MARKER FILE rather than by inferring from the path: the tool cannot tell an archive
+  # from a live store by name, and guessing would either miss real stores or silence real ones.
+  # An archive is declared by its owner, who is the only one who knows.
+  local d
+  for d in "$STORES_ROOT"/*/memory; do
+    [ -d "$d" ] || continue
+    [ -e "$d/.memory-archive" ] && continue
+    printf '%s\n' "$d"
+  done
+}
+archived_stores() { # archives, for reporting that they were deliberately skipped
+  local d
+  for d in "$STORES_ROOT"/*/memory; do
+    [ -d "$d" ] || continue
+    [ -e "$d/.memory-archive" ] && printf '%s\n' "$d"
+  done
+}
+store_name() { basename "$(dirname "$1")"; }
+
+# Report what was DELIBERATELY not scanned -- from EVERY subcommand, not just `integrity`.
+#
+# The rule is stated one function up: "a silent skip is how a store stops being checked without
+# anyone deciding". Until 2026-09-07 only `integrity` obeyed it, so `budget`, `usage` and `stale`
+# each rendered a PARTIAL fleet as a complete one, at exit 0, with nothing in the output saying how
+# many stores were left out. That is this tool's own headline failure class -- a scan of zero stores
+# must not look like a healthy fleet -- merely scaled down to a subset.
+#
+# `budget` is where it bit hardest, and the reason is specific rather than cosmetic: an archive is
+# frozen by definition, so its index can NEVER be condensed and it will never leave the table by
+# being fixed. A reader diffing this table against a directory listing therefore finds rows missing
+# with no stated cause, and the two available guesses -- "the tool skipped them on purpose" and "the
+# tool did not see them" -- have opposite responses.
+report_archive_skips() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    printf '  ARCHIVE-SKIPPED   %s  (marked .memory-archive; frozen undo copy, not checked)\n' "$(store_name "$d")"
+  done < <(archived_stores)
+}
+
+# A store with no MEMORY.md, reported rather than skipped. Both subcommands used to do
+# `[ -f MEMORY.md ] || continue`, so a store that exists and is EMPTY rendered exactly like one that
+# was never there: one session ran 18 days and 67 commits with an empty store, and the fleet's
+# only memory instrument showed nothing. Two cases, because they call for different responses:
+#   ABSENT    the store exists and holds no memories. Possibly fine (knowledge went to committed
+#             files), but a decision someone should be able to see.
+#   NO-INDEX  memories exist and nothing indexes them, so none of them loads at session start.
+report_indexless() { # <store dir> <budget|integrity>
+  local d="$1" n f
+  n=0
+  for f in "$d"/*.md; do [ -f "$f" ] && n=$((n + 1)); done
+  if [ "$n" -eq 0 ]; then
+    if [ "$2" = budget ]; then
+      printf '  %-46s %8s %6s %7s %6s  %s\n' "$(store_name "$d")" - - - - 'ABSENT (store exists, no memories)'
+    else
+      printf '  ABSENT            %s  (store exists, holds no memories)\n' "$(store_name "$d")"
+    fi
+  elif [ "$2" = budget ]; then
+    printf '  %-46s %8s %6s %7s %6s  %s\n' "$(store_name "$d")" - - - - "NO-INDEX ($n memories, none load)"
+  else
+    printf '  NO-INDEX          %s  %s memory file(s), no MEMORY.md: none of them loads at session start\n' "$(store_name "$d")" "$n"
+  fi
+}
+
+# FAIL LOUD on the input that feeds EVERY subcommand.
+#
+# MEMORY_DOCTOR_STORES is the ROOT that CONTAINS the per-project stores -- it is not one store.
+# Passed a store NAME (a natural mistake, and one that reads correctly), the glob below matches
+# nothing, every command scans zero stores, and the output is byte-indistinguishable from a
+# genuinely clean fleet AT EXIT 0. Reported 2026-08-30 by a session that briefly recorded a
+# store as verified-clean on the strength of such a run, and caught it only because the output
+# looked too terse. That is not a mechanism.
+#
+# This is the same principle the header states and that `usage` and `stale` already enforce for a
+# missing read log and a missing portfolio: a false "nothing found" is wrong in the direction that
+# invites destructive action. The root was the one input not covered.
+#
+# The zero-match case is deliberately a SEPARATE, equally loud condition. A nonexistent root and a
+# root holding no stores currently render identically, and only one of them is a typo -- saying
+# which is the difference between "you passed the wrong path" and "this machine has no stores yet".
+require_stores_root() {
+  [ -d "$STORES_ROOT" ] || die "no stores root at $STORES_ROOT
+  MEMORY_DOCTOR_STORES names the ROOT DIRECTORY CONTAINING the per-project stores (default
+  ~/.claude/projects), not a single store. Refusing rather than reporting a clean fleet."
+  local found=0 d
+  for d in "$STORES_ROOT"/*/memory; do [ -d "$d" ] && { found=1; break; }; done
+  [ "$found" -eq 1 ] || die "stores root $STORES_ROOT contains no */memory directories
+  Nothing was scanned. Reported rather than rendered as clean -- a zero-store scan and a healthy
+  fleet must not look the same."
+}
+
+# ================================================================================================
+cmd_budget() {
+  require_stores_root
+  local any=0 d idx b l pb pl flag
+  printf 'INDEX BUDGET — the cliff is %s bytes / %s lines, past which entries are dropped silently.\n' \
+    "$CLIFF_BYTES" "$CLIFF_LINES"
+  printf 'The write-guard denies at %s / %s (80%%), leaving room to react.\n\n' "$BUDGET_BYTES" "$BUDGET_LINES"
+  printf '  %-46s %8s %6s %7s %6s  %s\n' STORE BYTES 'OF-25K' LINES 'OF-200' STATUS
+  while IFS= read -r d; do
+    idx="$d/MEMORY.md"
+    if [ ! -f "$idx" ]; then report_indexless "$d" budget; continue; fi
+    b=$(file_bytes "$idx"); l=$(awk 'END{print NR}' "$idx")
+    pb=$(( b * 100 / CLIFF_BYTES )); pl=$(( l * 100 / CLIFF_LINES ))
+    flag=ok
+    if [ "$b" -ge "$BUDGET_BYTES" ] || [ "$l" -ge "$BUDGET_LINES" ]; then flag='OVER-BUDGET'; any=1
+    elif [ "$b" -ge $(( BUDGET_BYTES * 875 / 1000 )) ] || [ "$l" -ge $(( BUDGET_LINES * 875 / 1000 )) ]; then flag=tight; any=1; fi
+    printf '  %-46s %8s %5s%% %7s %5s%%  %s\n' "$(store_name "$d")" "$b" "$pb" "$l" "$pl" "$flag"
+  done < <(stores)
+  report_archive_skips
+  [ "$any" -eq 1 ] && printf '\n  Condense by shortening index lines and moving detail into the topic file each points at.\n'
+  return 0
+}
+
+# ================================================================================================
+cmd_usage() {
+  require_stores_root
+  [ -f "$LOG" ] || die "no read log at $LOG -- the memory-usage hook is not wired, or has never fired.
+Refusing to report usage: with no log every memory looks unread, which is the one wrong answer that
+invites deleting the store."
+  command -v jq >/dev/null 2>&1 || die "jq is required for usage"
+
+  local first last fe le win n
+  first=$(head -1 "$LOG" | jq -r '.ts // empty' 2>/dev/null)
+  last=$(tail -1 "$LOG" | jq -r '.ts // empty' 2>/dev/null)
+  fe=$(parse_time "$first" 2>/dev/null || true)
+  le=$(parse_time "$last" 2>/dev/null || true)
+  win=$(days_since "${fe:-}")
+  n=$(awk 'END{print NR}' "$LOG")
+
+  printf 'READ USAGE — %s records, logging since %s (%s days), last %s\n\n' \
+    "$n" "${first:-?}" "$win" "${last:-?}"
+
+  if [ "$win" = '?' ] || [ "$win" -lt "$MIN_WINDOW_DAYS" ]; then
+    printf '  *** OBSERVATION WINDOW TOO SHORT (%s of %s days). ***\n' "$win" "$MIN_WINDOW_DAYS"
+    printf '  A memory not seen in this window has NOT been shown to be unused -- the log simply does\n'
+    printf '  not cover its history. Read counts below are real; absences below are not yet evidence.\n\n'
+  fi
+
+  printf '  READ AT LEAST ONCE (count, store, file):\n'
+  jq -r '"\(.store)\t\(.file)"' "$LOG" 2>/dev/null | sort | uniq -c | sort -rn \
+    | awk '{printf "    %4d  %-46s %s\n", $1, $2, $3}'
+
+  # When the window is too short, COUNT the unobserved files but do not LIST them. Printing three
+  # hundred filenames under a heading that means "no evidence either way" is an invitation to act
+  # on them, and the list looks identical to a real finding. Withholding it is the difference
+  # between reporting an absence of data and reporting a result.
+  local d f short=0 unobserved=0
+  if [ "$win" = '?' ] || [ "$win" -lt "$MIN_WINDOW_DAYS" ]; then short=1; fi
+  [ "$short" -eq 1 ] && printf '\n  NOT YET OBSERVED (count only — the window is too short for this to be a finding):\n' \
+                     || printf '\n  NO READ OBSERVED in the window above:\n'
+  while IFS= read -r d; do
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue
+      case "$(basename "$f")" in MEMORY.md) continue ;; esac
+      grep -qF "\"file\":\"$(basename "$f")\"" "$LOG" 2>/dev/null && continue
+      unobserved=$(( unobserved + 1 ))
+      [ "$short" -eq 1 ] || printf '    %-46s %s\n' "$(store_name "$d")" "$(basename "$f")"
+    done
+  done < <(stores)
+  [ "$short" -eq 1 ] && printf '    %s files, across %s stores. Re-run after %s days of logging.\n' \
+      "$unobserved" "$(stores | wc -l | tr -d ' ')" "$MIN_WINDOW_DAYS"
+
+  report_archive_skips
+
+  printf '\n  These are REVIEW candidates, never delete candidates. Ask in this order:\n'
+  printf '    1. Is the MEMORY.md index line for it any good? An unfindable memory reads as an unused one.\n'
+  printf '    2. Is it procedural rather than factual? Then it is a SKILL, not a memory.\n'
+  printf '    3. Is it a fact with a committed home already? Then it is a pointer, not a copy.\n'
+  return 0
+}
+
+# ================================================================================================
+# Register directories to read, one per line. MEMORY_DOCTOR_REGISTERS overrides; otherwise each
+# canonical's declared launch dir (`fleet-decl`, the base tool that reads mani.yaml) plus
+# `docs/register`. Declared, not globbed: a guessed path pattern misses a register silently, and
+# one project's register is keyed with a prefix a hard-coded list did not name.
+register_dirs() {
+  if [ -n "$REGISTERS" ]; then
+    printf '%s\n' "$REGISTERS" | tr ':' '\n'
+    return 0
+  fi
+  command -v fleet-decl >/dev/null 2>&1 || die "fleet-decl not on PATH and MEMORY_DOCTOR_REGISTERS unset -- cannot find the registers"
+  local names name dir rc
+  names=$(fleet-decl --canonicals); rc=$?
+  # exit 2 is "the declaration record is unreadable". Read as "no canonicals", it would scan nothing
+  # and report nothing stale.
+  [ "$rc" -eq 0 ] || die "fleet-decl --canonicals exited $rc -- the fleet record is unreadable. Refusing to report staleness."
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    dir=$(fleet-decl --canonical "$name" canonicalLaunchDir) || { printf '%s\n' "(no launch dir declared for $name)"; continue; }
+    printf '%s\n' "$DEVEL_ROOT/$dir/docs/register"
+  done <<< "$names"
+}
+
+# "ABC-0036" and "ABC-36" are the same entry: ids were zero-padded to four digits in the 2026-09-22
+# migration, and memories written before it cite the short form. Compare on the number.
+norm_id() { printf '%s' "$1" | awk -F- '{ n=$NF; sub(/^0+/, "", n); if (n=="") n="0"; $NF=n; OFS="-"; $1=$1; print }' OFS=-; }
+
+cmd_stale() {
+  command -v register >/dev/null 2>&1 || die "register (the base tool) is not on PATH -- cannot resolve work-item status"
+
+  # id -> status, from every register `register list` can read. An unreadable one is NAMED in the
+  # output and the rest are still read: skipping it silently would report its repo's memories as
+  # not stale when they were never checked. None readable is fatal.
+  local map reg rows unread="" read_any=0 dirs; map=$(mktemp) || die "mktemp failed"
+  : > "$map"
+  dirs=$(register_dirs) || { rm -f "$map"; exit 2; }
+  while IFS= read -r reg; do
+    [ -n "$reg" ] || continue
+    case "$reg" in "("*) unread="$unread$reg"$'\n'; continue ;; esac
+    if rows=$(register list --root "$reg" 2>&1); then
+      read_any=1
+      # Normalised in the same pass as norm_id does it, rather than one process per entry.
+      awk '$1 ~ /^[A-Z]+-[0-9]+$/ { p=$1; sub(/-[0-9]+$/, "", p); n=substr($1, length(p) + 2);
+                                    sub(/^0+/, "", n); if (n == "") n = "0"; print p"-"n"\t"$2 }' \
+        <<< "$rows" >> "$map"
+    else
+      unread="$unread$reg: $(head -1 <<< "$rows")"$'\n'
+    fi
+  done <<< "$dirs"
+  [ "$read_any" -eq 1 ] || { rm -f "$map"; die "no register could be read. Refusing to report staleness rather than reporting that nothing is stale.
+$unread"; }
+  [ -s "$map" ] || { rm -f "$map"; die "parsed 0 entries from the registers -- the \`register list\` output format changed."; }
+  # An id resolving to more than one status means two registers claim it; refuse rather than pick.
+  if awk -F'\t' '{c[$1]++} END{for (k in c) if (c[k]>1) exit 1}' "$map"; then :; else
+    rm -f "$map"; die "an id resolved to multiple statuses -- two registers claim one id, refusing to guess."
+  fi
+  # Cite-able prefixes are whatever the registers hold, not a fixed list.
+  local prefixes
+  prefixes=$(cut -f1 "$map" | sed 's/-[0-9]*$//' | sort -u | paste -sd'|' -)
+
+  printf 'CLOSED-OUT JOURNALS — project memories whose every cited work item is done or dropped.\n'
+  printf 'The action is CONVERT THE JOURNAL TO ITS OUTCOME, not delete: the outcome is usually the\n'
+  printf 'only part worth keeping, and it is not recoverable once the file is gone.\n\n'
+
+  local d f ids id st all_closed found=0 cited
+  while IFS= read -r d; do
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue
+      case "$(basename "$f")" in MEMORY.md) continue ;; esac
+      # `type:` at ANY indentation. It is nested under `metadata:` in the documented schema, but
+      # 30 memories across this fleet declare it at the top level -- an older schema that was never
+      # migrated. Anchoring to two spaces made `stale` silently skip 10 project memories, and
+      # "silently" is the whole problem: this command's output is a list, so files it never
+      # examined are indistinguishable from files it cleared. Measured 2026-08-30, after the same
+      # anchor produced a confidently wrong fleet measurement that one session caught.
+      grep -qE '^[[:space:]]*type:[[:space:]]*project[[:space:]]*$' "$f" 2>/dev/null || continue
+      ids=$(grep -oE "(^|[^A-Za-z0-9-])($prefixes)-[0-9]+" "$f" 2>/dev/null | grep -oE "($prefixes)-[0-9]+" | sort -u)
+      [ -n "$ids" ] || continue
+      all_closed=1; cited=""
+      while IFS= read -r id; do
+        st=$(awk -F'\t' -v k="$(norm_id "$id")" '$1==k{print $2; exit}' "$map")
+        [ -n "$st" ] || { all_closed=0; continue; }   # unknown id: not evidence of closure
+        cited="$cited $id=$st"
+        case "$st" in done|dropped) ;; *) all_closed=0 ;; esac
+      done <<< "$ids"
+      if [ "$all_closed" -eq 1 ] && [ -n "$cited" ]; then
+        found=1
+        # Size is shown because a memory ALREADY converted to a pointer still cites the same closed
+        # row and so still matches -- correctly, but it needs no work. Size is the cheapest way to
+        # tell "still a journal" from "already an outcome" at a glance, and it is shown rather than
+        # applied as a hidden filter so the reader judges it instead of the tool guessing.
+        printf '  %-46s %-42s %6s bytes\n' "$(store_name "$d")" "$(basename "$f")" "$(file_bytes "$f")"
+        printf '        cited:%s\n' "$cited"
+      fi
+    done
+  done < <(stores)
+  rm -f "$map"
+  [ "$found" -eq 0 ] && printf '  none.\n'
+  while IFS= read -r reg; do
+    [ -n "$reg" ] && printf '  REGISTER-UNREAD   %s  (memories citing its ids were not checked)\n' "$reg"
+  done <<< "$unread"
+  report_archive_skips
+  return 0
+}
+
+# ================================================================================================
+# Wikilink resolution is fleet-wide and convention-tolerant, for two measured reasons (2026-08-30).
+#
+# (1) FOLDING. Filenames and `name:` fields across these stores are split between hyphenated and
+#     underscored spelling, so a link written [[foo-bar]] routinely names a file foo_bar.md. Read
+#     literally, 66 of 72 "dangling" links in one store were exactly this -- one naming-convention
+#     question, not 66 repairs. Fold both spellings before comparing, and report only a per-store
+#     COUNT of links that needed folding, so the convention drift stays visible without ever
+#     becoming a work list.
+# (2) CROSS-STORE. A memory in one store may legitimately link into another; that is what
+#     the memory standard asks for INSTEAD of copying the memory into both. Resolving a link only
+#     within its own store calls those dangling, which invites the very duplication that rule
+#     exists to prevent. So resolve against every store, and when a link lands in another one, say so
+#     explicitly rather than silently -- a bare silence would leave the next reader free to "fix"
+#     it with a local copy.
+#
+# The scan pattern accepts underscores as well as hyphens. It previously did not, so an underscored
+# wikilink was never even examined -- a check blind to part of its own subject, which reports clean.
+link_key() { printf '%s' "$1" | tr 'A-Z_' 'a-z-'; }
+
+# ================================================================================================
+cmd_integrity() {
+  require_stores_root
+  local d idx f base found=0 map sn t key local_hit any_hit folded pats
+  printf 'INTEGRITY — index/file agreement, link resolution, and stale repo paths.\n\n'
+
+  # Retired paths to flag, one fixed string per line (# comments and blank lines ignored). Built
+  # once, outside the store loop, so a missing file is said ONCE. A silent skip is how a check
+  # stops running without anyone deciding.
+  pats=$(mktemp) || return 1
+  if [ -f "$STALE_PATHS" ]; then
+    grep -v '^[[:space:]]*#' "$STALE_PATHS" | grep -v '^[[:space:]]*$' > "$pats"
+  else
+    printf '  STALE-PATH check skipped: no patterns file at %s (create it, one retired path per line, to enable)\n\n' "$STALE_PATHS"
+    : > "$pats"
+  fi
+
+  # Fleet-wide filename index (<fold-key><TAB><store>), built once: a link is only ever called
+  # dangling after it has failed to resolve in EVERY store, not just its own.
+  map=$(mktemp) || return 1
+  while IFS= read -r d; do
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue; base=$(basename "$f" .md)
+      case "$base" in MEMORY) continue ;; esac
+      printf '%s\t%s\t%s\n' "$(link_key "$base")" "$(store_name "$d")" "$base" >> "$map"
+      # ...and under its `name:` slug, which is what a wikilink actually targets. Indexing the
+      # FILENAME alone reported a correctly-written link as dangling whenever the two diverge --
+      # 46 memories fleet-wide (2026-08-30: 30 in one store, 16 in another), so every link aimed at
+      # any of them by its documented name was a phantom repair. Measured and reported by
+      # a session running this tool against its own store.
+      #
+      # A UNION, deliberately, not a swap: some links target the filename and some the `name:`,
+      # so resolving on either one ALONE manufactures the mirror image of the bug being fixed.
+      # Indentation-agnostic, matching the `type:` read below. `name:` is top-level in every store
+      # today, so an anchored `^name:` works — and would keep working right up until the schema
+      # nests it the way `type:` already is, at which point the union resolution silently loses its
+      # name half and reverts to the defect fixed this morning, with no error. The anchored form was
+      # correct-by-accident; this one is correct. Flagged 2026-08-30.
+      nm=$(sed -n 's/^[[:space:]]*name:[[:space:]]*//p' "$f" 2>/dev/null | head -1 | sed 's/^["'"'"']//; s/["'"'"']$//')
+      if [ -n "$nm" ] && [ "$(link_key "$nm")" != "$(link_key "$base")" ]; then
+        printf '%s\t%s\t%s\n' "$(link_key "$nm")" "$(store_name "$d")" "$nm" >> "$map"
+      fi
+    done
+  done < <(stores)
+
+  while IFS= read -r d; do
+    idx="$d/MEMORY.md"
+    if [ ! -f "$idx" ]; then report_indexless "$d" integrity; continue; fi
+    sn=$(store_name "$d")
+    # A store may index a whole FAMILY of files with one collective entry carrying a glob --
+    # e.g. "Phase 2-4 handoffs live in `project-phase*-*.md`". Those files are reachable: a
+    # reader of the index sees the pointer. Counting them as orphans reported 21 "invisible" files
+    # in one store when only 6 were, and ORPHAN's whole meaning is "not reachable from the
+    # index" -- so the inflation does not just overstate a number, it makes the number stop
+    # measuring what it is read for. Worse, the inflation is invisible from the count alone.
+    # Measured 2026-08-30 on one store; 15 of its 15 remaining orphans are glob-covered, and
+    # the detection below finds exactly those 15 with no false positives.
+    idx_globs=$(grep -o '`[^`]*\*[^`]*`' "$idx" 2>/dev/null | tr -d '`' | sort -u)
+    collective=0
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue; base=$(basename "$f")
+      case "$base" in MEMORY.md) continue ;; esac
+      grep -qF "($base)" "$idx" && continue          # indexed individually
+      covered=
+      while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        # shellcheck disable=SC2254  -- $g is deliberately unquoted: it IS the glob pattern
+        case "$base" in $g) covered=1; break ;; esac
+      done <<< "$idx_globs"
+      if [ -n "$covered" ]; then
+        collective=$((collective + 1))
+      else
+        printf '  ORPHAN            %s  %s (file exists, no index line)\n' "$sn" "$base"; found=1
+      fi
+    done
+    [ "$collective" -gt 0 ] && printf '  COLLECTIVE-INDEX  %s  %s file(s) reachable via a glob index entry, not individually (not orphans)\n' "$sn" "$collective"
+    grep -oE '\]\([a-z0-9_-]+\.md\)' "$idx" 2>/dev/null | tr -d ']()' | sort -u | while IFS= read -r t; do
+      [ -f "$d/$t" ] || printf '  DANGLING-INDEX    %s  %s (index points at a missing file)\n' "$sn" "$t"
+    done
+
+    folded=0
+    # Process substitution, not a pipe: the loop must run in THIS shell or $folded is lost.
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      key=$(link_key "$t")
+      local_hit=$(awk -F'\t' -v k="$key" -v s="$sn" '$1==k && $2==s{print $2; exit}' "$map")
+      any_hit=$(awk -F'\t' -v k="$key" '$1==k{print $2; exit}' "$map")
+      # An EXACT, unfolded match against a `name:` slug in this same store. Checked before the
+      # fold bucket because it is neither a repair nor a convention question -- the link is correct
+      # as written and nothing about it is pending. Without this branch, adding `name:` keys to the
+      # map pushed every such link into FOLD-ONLY (measured on a real store: 66 -> 68, both
+      # additions character-for-character identical to their target's name:). That inflation is
+      # worse than a wrong number: FOLD-ONLY exists to size ONE pending decision -- whether to
+      # settle on hyphens or underscores -- so padding it with items that decision would not touch
+      # makes it stop measuring the thing it is read for.
+      exact_name=$(awk -F'\t' -v t="$t" -v s="$sn" '$3==t && $2==s{print $2; exit}' "$map")
+      if [ -f "$d/$t.md" ]; then
+        :                                              # exact filename hit, nothing to say
+      elif [ -n "$exact_name" ]; then
+        :                                              # exact `name:` slug hit, likewise
+      elif [ -n "$local_hit" ]; then
+        folded=$((folded + 1))
+      elif [ -n "$any_hit" ]; then
+        printf '  XSTORE-WIKILINK   %s  [[%s]] -> %s (legitimate cross-store link; do NOT make a local copy)\n' "$sn" "$t" "$any_hit"
+      else
+        printf '  DANGLING-WIKILINK %s  [[%s]] (resolves in no store)\n' "$sn" "$t"
+      fi
+    done < <(grep -ho '\[\[[A-Za-z0-9_-]*\]\]' "$d"/*.md 2>/dev/null | tr -d '[]' | sort -u)
+    [ "$folded" -gt 0 ] && printf '  FOLD-ONLY         %s  %s wikilink(s) resolve only by folding -/_ (mixed naming convention, not repairs)\n' "$sn" "$folded"
+
+    if [ -s "$pats" ]; then
+      # -F: fixed strings, no regex; -f reads them from the file. Portable to GNU and BSD grep.
+      grep -lF -f "$pats" "$d"/*.md 2>/dev/null | while IFS= read -r t; do
+        printf '  STALE-PATH        %s  %s (cites a retired path listed in %s)\n' "$sn" "$(basename "$t")" "$STALE_PATHS"
+      done
+    fi
+  done < <(stores)
+  rm -f "$map" "$pats"
+  # Say what was skipped. A silent skip is how a store stops being checked without anyone deciding.
+  report_archive_skips
+  [ "$found" -eq 0 ] && printf '  (no orphans; any findings above are link or path issues)\n'
+  return 0
+}
+
+usage() {
+  cat <<'USAGE'
+usage: memory-doctor <command>
+
+  budget      how close each MEMORY.md is to the silent-truncation cliff
+  usage       which memories are actually read (needs the memory-usage hook's log)
+  stale       project memories whose cited work items have all closed
+  integrity   orphans, dangling index links, dangling wikilinks, stale repo paths
+  report      all of the above
+
+Nothing here emits a delete recommendation. Every finding is a REVIEW trigger.
+
+env: MEMORY_DOCTOR_STORES, MEMORY_DOCTOR_LOG, MEMORY_DOCTOR_MIN_WINDOW_DAYS,
+     MEMORY_DOCTOR_STALE_PATHS (patterns file of retired paths; default
+     ${XDG_CONFIG_HOME:-~/.config}/memory-doctor/stale-paths),
+     MEMORY_DOCTOR_REGISTERS (colon-separated register dirs; default: each canonical's
+     declared launch dir + docs/register), MEMORY_DOCTOR_DEVEL (default ~/Devel)
+USAGE
+}
+
+case "${1:-report}" in
+  budget)    cmd_budget ;;
+  usage)     cmd_usage ;;
+  stale)     cmd_stale ;;
+  integrity) cmd_integrity ;;
+  report)    cmd_budget; printf '\n'; cmd_stale; printf '\n'; cmd_integrity
+             printf '\n'; cmd_usage || printf '  (usage unavailable: see above)\n' ;;
+  -h|--help|help) usage ;;
+  *)         usage; exit 2 ;;
+esac

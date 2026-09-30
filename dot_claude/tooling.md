@@ -18,6 +18,8 @@ view on demand) ·
 that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
 only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
 `claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·
+`memory-doctor` (health of Claude Code's auto-memory stores: index size against the silent-truncation cliff, stale project memories, orphans and dangling links; `usage` needs a read-log hook) ·
+`context-footprint` (bytes of always-on context per component — CLAUDE.md files and their imports, memory index, skill and agent descriptions, plugins — against a token budget; reports, `--check` to gate) ·
 `register` (read a work register — list, stats, show an entry with its initiative folder, what has gone quiet (`health`), the next free id, and render a browsable index on demand rather than committing one that can go stale; skill `register-standard`) ·
 `lint-tasknames` (a repo's task names — just, npm, make, Nx — against the vocabulary in skill `naming-build-tasks`; `--fleet` for every repo the mani manifest declares) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·
