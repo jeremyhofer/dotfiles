@@ -52,6 +52,11 @@ fine), then add the same key to the declared block of the `modify_` script and c
 not in that block, it is local to this machine and will not travel — that is the whole gap the
 script exists to close.
 
+The base's script declares only preferences true on any machine. Keys that belong to one domain
+(plugins, hooks, sandbox paths, permission rules) go in that domain's fragment,
+`~/.dotlocal/claude/settings-declared`, which the script runs and merges on top; its header states
+the fragment's contract.
+
 **Two keys should deliberately NOT be declared, and adding them would do real damage:**
 
 - **`model`** — the enforced default lives in the managed layer (see §4). Declaring it here too

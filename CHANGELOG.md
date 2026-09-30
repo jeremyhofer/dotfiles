@@ -32,6 +32,17 @@ Entries are newest first.
 
 ## 2026-09-30
 
+**ACTION (if a private layer managed `~/.claude/settings.json` or the status line) — the base now
+owns both.** `dot_claude/modify_settings.json` merges generic preferences (editor mode, UI, the
+status line) over the live file, then the domain's fragment: an executable at
+`~/.dotlocal/claude/settings-declared` printing `{"declared": {...}, "retiredHooks": [...]}` for
+plugins, hooks, sandbox paths and permission rules. `statusline-command.sh` moves here too. The
+skeleton has a fragment stub and a `run_onchange_` script that re-applies this target when the
+fragment changes.
+
+*What changes for you:* move your private layer's declared keys into the fragment and stop managing
+the two files there, in the same sitting as pulling this; until then both instances write them.
+
 **Five skills and a tool move into the base** from a private layer: skills `naming-build-tasks`,
 `cross-platform-tooling`, `fault-isolation`, `vetting-tooling`, `claude-config-layers`, and the tool
 `lint-tasknames`. Each skill ends by pointing at an optional

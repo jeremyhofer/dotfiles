@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# ~/.claude/settings.json -- managed as a PARTIAL file: this base's defaults, then the domain's.
+#
+# WHY A modify_ SCRIPT AND NOT A NORMAL MANAGED FILE. Claude Code writes to this file at runtime:
+# confirming a pick in /model writes the "model" key, /config writes UI preferences, toggling a
+# plugin rewrites enabledPlugins, and granting a permission appends to permissions.allow. A plain
+# chezmoi-managed file would fight all of that -- every apply would revert whatever the app just
+# wrote, and every app write would show up as local drift. chezmoi's modify_ prefix exists for
+# exactly this case ("manage part, but not all, of a file"): the script receives the CURRENT file
+# on stdin and prints the desired state.
+#
+# So the rule this implements is the standing one for Claude settings files: NEVER blind-overwrite,
+# always jq-merge. The declared keys win; every other key in the live file is preserved untouched.
+#
+# TWO LAYERS OF DECLARED KEYS, merged in order, the later winning:
+#
+#   1. The base block below: preferences true on any machine (editor mode, UI, the status line).
+#   2. The domain's fragment: an executable at ~/.dotlocal/claude/settings-declared (or
+#      $CLAUDE_SETTINGS_FRAGMENT) that prints {"declared": {...}, "retiredHooks": [...]}. A private
+#      layer supplies what only its domain has: plugins, hooks, sandbox paths, permission rules. It
+#      is a script rather than a JSON file so the reason for each entry can sit beside it. A private
+#      chezmoi instance changing it has to re-apply this target; a domain without one gets the base
+#      block alone.
+#
+# WHAT IS DELIBERATELY NOT DECLARED BY THE BASE, and should not be declared by a fragment either:
+#
+#   * "model"            -- where an enforced default exists it lives in the ROOT-OWNED managed
+#                           settings file (/etc/claude-code/managed-settings.json on Linux), which
+#                           outranks this one. Declaring it here too would create a second source of
+#                           truth, and the losing one would sit here looking authoritative.
+#
+#   * "permissions.allow" -- an ARRAY that the app accretes as permissions are granted. jq's
+#                           object-merge REPLACES arrays wholesale rather than unioning them, so
+#                           declaring it would silently discard every grant since it was declared.
+#
+# ARRAY SEMANTICS, which a fragment must know: every declared array REPLACES the live one. That is
+# right for arrays the app never writes (sandbox paths, deny rules, hook lists): the source is
+# authoritative, and an entry added by hand to the live file and not declared is reverted on the
+# next apply. It is wrong only for arrays the app accretes, which is why those are never declared.
+#
+# RETIRED HOOKS. The merge can only add, so a hook dropped from a declaration survives in every live
+# file that already carried it and keeps firing on machines nobody touches. The fragment names each
+# retired hook script once in "retiredHooks"; any hook entry whose command contains one is removed
+# from every event, and an event left empty is dropped.
+#
+# FAIL OPEN, in every direction. No jq, or unreadable input, means print what came in and change
+# nothing -- a dotfiles apply must never be the reason a machine loses its Claude settings. Empty or
+# unparseable input starts from an empty object, which is how a fresh machine gets these defaults.
+# A fragment that fails or prints anything but a JSON object is skipped with a warning on stderr,
+# and the base block still applies: the live file keeps whatever the fragment declared last time.
+
+set -uo pipefail
+
+live=$(cat)
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf '%s' "$live"
+  exit 0
+fi
+
+if [ -z "${live//[[:space:]]/}" ] || ! printf '%s' "$live" | jq -e . >/dev/null 2>&1; then
+  live='{}'
+fi
+
+base=$(cat <<EOF
+{
+  "editorMode": "vim",
+  "enableArtifact": false,
+  "remoteControlAtStartup": false,
+  "skipWorkflowUsageWarning": true,
+  "statusLine": {
+    "command": "bash ${HOME}/.claude/statusline-command.sh",
+    "type": "command"
+  },
+  "tui": "fullscreen",
+  "wheelScrollAccelerationEnabled": true,
+  "worktree": {
+    "baseRef": "fresh"
+  }
+}
+EOF
+)
+
+frag_path=${CLAUDE_SETTINGS_FRAGMENT:-"$HOME/.dotlocal/claude/settings-declared"}
+domain='{}'; retired='[]'
+if [ -f "$frag_path" ]; then
+  if out=$(bash "$frag_path" 2>/dev/null) \
+     && printf '%s' "$out" | jq -e '(type == "object") and ((.declared // {}) | type == "object")' >/dev/null 2>&1; then
+    domain=$(printf '%s' "$out" | jq -c '.declared // {}')
+    retired=$(printf '%s' "$out" | jq -c '[.retiredHooks // [] | .[] | strings]')
+  else
+    printf 'modify_settings.json: settings fragment %s failed or did not print a JSON object; applying the base block only\n' "$frag_path" >&2
+  fi
+fi
+
+printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" '
+  (. * $base * $domain)
+  | if (.hooks | type) == "object" and ($retired | length) > 0 then
+      .hooks |= (with_entries(
+        .value |= map(select(any(.hooks[]?; (.command // "") as $c | any($retired[]; . as $r | $c | contains($r))) | not)))
+      | with_entries(select(.value | length > 0)))
+    else . end'

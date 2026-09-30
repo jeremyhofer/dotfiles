@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Optional: this domain's half of ~/.claude/settings.json. The base's modify_settings.json runs this
+# and merges "declared" over the live file after the base's defaults; "retiredHooks" names hook
+# scripts to strip from every event. Read that script's header for the contract (declared arrays
+# REPLACE; never declare "model" or "permissions.allow"), and keep
+# run_onchange_after_merge-claude-settings.sh.tmpl beside it so a change here reaches the file.
+cat <<EOF
+{
+  "declared": {},
+  "retiredHooks": []
+}
+EOF

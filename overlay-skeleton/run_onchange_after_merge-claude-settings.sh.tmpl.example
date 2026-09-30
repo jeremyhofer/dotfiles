@@ -1,0 +1,17 @@
+#!/bin/sh
+# Re-applies the BASE's ~/.claude/settings.json whenever this domain's settings fragment changes.
+#
+# WHY: the merge script is the base's (dot_claude/modify_settings.json there); it reads this
+# overlay's fragment, ~/.dotlocal/claude/settings-declared, at the moment the BASE applies. So a
+# fragment change deployed by this instance reaches the settings file only on the base's next
+# apply, which the usual order (base, then overlay) has already run. Without this, a new sandbox
+# path or hook would sit in the fragment, deployed and inert, until some later apply.
+#   fragment hash: {{ include "dot_dotlocal/claude/executable_settings-declared" | sha256sum }}
+#
+# Targeted at the one file, so it deploys nothing else from the base. Warns rather than failing:
+# the fragment is already in place, and the next base apply converges regardless.
+set -u
+command -v chezmoi >/dev/null 2>&1 || { echo "merge-claude-settings: chezmoi not on PATH; run \`chezmoi apply ~/.claude/settings.json\`" >&2; exit 0; }
+chezmoi apply --no-tty "$HOME/.claude/settings.json" \
+  || echo "merge-claude-settings: re-applying ~/.claude/settings.json failed; run \`chezmoi apply ~/.claude/settings.json\`" >&2
+exit 0
