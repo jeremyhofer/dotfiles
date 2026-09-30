@@ -474,6 +474,157 @@ assert_has "the legacy finished-entry name is reported" "[not-renamed]" "$out"
 entry "$r/archive" "ABC-02" "done" "closed: 2026-01-02" "The thing is finished."
 assert_has "entries in the legacy directory are still checked" "[resolution]" "$(run "$r")"
 
+# --- relations: each blocking kind planted, each with a near miss ------------------------
+# A scalar and a block list are both read, because existing registers use the first and the
+# contract allows the second.
+r="$tmp/rel-ok"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "blocks: ABC-02" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "supersedes: GAP-41" "The thing is measurably finished."
+entry "$r" "ABC-03" "active" "relates:
+  - ABC-01
+  - ABC-02" "The thing is measurably finished."
+entry "$r/closed" "ABC-04" "dropped" "closed: 2026-01-02
+duplicates: ABC-01" "The thing is measurably finished."
+out=$(run "$r")
+assert_lacks "scalar, list and foreign-prefix relations to real entries are clean" "[relation" "$out"
+
+r="$tmp/rel-unknown"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "blocks: ABC-99" "The thing is measurably finished."
+assert_has "a relation to an id of this prefix that is no entry is reported" "[relation-unknown]" "$(run "$r")"
+r="$tmp/rel-unknown-list"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "part-of:
+  - ABC-02
+  - ABC-99" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "" "The thing is measurably finished."
+assert_has "an unknown id inside a block list is reported" "ABC-99" "$(run "$r")"
+r="$tmp/rel-closed-target"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "split-from: ABC-02" "The thing is measurably finished."
+entry "$r/closed" "ABC-02" "dropped" "closed: 2026-01-02" "The thing is measurably finished."
+assert_lacks "a relation to a CLOSED entry resolves" "[relation-unknown]" "$(run "$r")"
+
+r="$tmp/rel-self"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "relates: ABC-01" "The thing is measurably finished."
+assert_has "an entry naming itself is reported" "[relation-self]" "$(run "$r")"
+
+r="$tmp/rel-both"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "blocks: ABC-02" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "blocks: ABC-01" "The thing is measurably finished."
+out=$(run "$r")
+assert_has "the same key on both ends is reported" "[relation-both-ends]" "$out"
+r="$tmp/rel-both-relates"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "relates: ABC-02" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "relates:
+  - ABC-01" "The thing is measurably finished."
+assert_has "relates on both ends, one scalar and one list, is reported" "[relation-both-ends]" "$(run "$r")"
+r="$tmp/rel-both-miss"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "blocks: ABC-02" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "relates: ABC-01" "The thing is measurably finished."
+assert_lacks "different keys on the two ends are not both-ends" "[relation-both-ends]" "$(run "$r")"
+
+r="$tmp/rel-cycle"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "blocks: ABC-02" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "blocks: ABC-03" "The thing is measurably finished."
+entry "$r" "ABC-03" "active" "blocks: ABC-01" "The thing is measurably finished."
+out=$(run "$r")
+assert_has "a three-entry blocks cycle is reported" "[relation-cycle]" "$out"
+assert_has "the cycle names its members" "ABC-01, ABC-02, ABC-03" "$out"
+n=$(printf '%s\n' "$out" | grep -c '\[relation-cycle\]' || true)
+[ "$n" -eq 1 ] && ok "a cycle is reported once, not once per member" || bad "a cycle is reported once ($n reports)"
+r="$tmp/rel-chain"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "blocks: ABC-02" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "blocks: ABC-03" "The thing is measurably finished."
+entry "$r" "ABC-03" "active" "" "The thing is measurably finished."
+assert_lacks "a chain of blocks with no way back is not a cycle" "[relation-cycle]" "$(run "$r")"
+
+r="$tmp/rel-dup"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+entry "$r" "ABC-02" "active" "duplicates: ABC-01" "The thing is measurably finished."
+assert_has "duplicates on an entry that is not dropped is reported" "[relation-duplicate-status]" "$(run "$r")"
+r="$tmp/rel-dup-ok"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+entry "$r/closed" "ABC-02" "dropped" "closed: 2026-01-02
+duplicates: ABC-01" "The thing is measurably finished."
+assert_lacks "duplicates on a dropped entry is accepted" "[relation-duplicate-status]" "$(run "$r")"
+
+# Inside a git hook git exports GIT_DIR and GIT_INDEX_FILE, which point at the hook's own
+# repository; the verdict must be about the register given.
+other="$tmp/rel-other-repo"; mkdir -p "$other"; git init -q "$other"
+r="$tmp/rel-hook"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "relates: ABC-01" "The thing is measurably finished."
+hookout=$(GIT_DIR="$other/.git" GIT_INDEX_FILE="$other/.git/index" python3 "$lint" "$r" --quiet 2>&1 || true)
+assert_has "in a hook environment a relation defect is still refused" "[relation-self]" "$hookout"
+GIT_DIR="$other/.git" GIT_INDEX_FILE="$other/.git/index" python3 "$lint" "$r" --quiet >/dev/null 2>&1 \
+  && bad "in a hook environment the refusal still exits non-zero" || ok "in a hook environment the refusal still exits non-zero"
+
+# --- closure review: a register opts in by a README line ---------------------------------
+# closed_entry DIR ID HISTORY-DATE RESOLUTION-TEXT
+closed_entry() {
+  mkdir -p "$1/closed"
+  {
+    echo "---"; echo "id: $2"; echo "title: A tracked thing"; echo "status: done"
+    echo "closed: $3"; echo "owner: jeremy"; echo "verified: $3"; echo "---"; echo ""
+    echo "# $2 — A tracked thing"; echo ""; echo "### Resolution"; echo "$4"; echo ""
+    echo "## History"; echo "### 2026-01-01 — raised"; echo "### $3 — closed"
+  } > "$1/closed/$2-a-tracked-thing.md"
+}
+r="$tmp/cr-none"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+closed_entry "$r" "ABC-02" "2026-09-01" "It is finished."
+printf '# Register\n\nNo floor here.\n' > "$r/README.md"
+assert_lacks "with no floor line in the README nothing is checked" "[closure-review]" "$(run "$r")"
+
+r="$tmp/cr-missing"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+closed_entry "$r" "ABC-02" "2026-09-01" "It is finished."
+printf '# Register\n\nClosure review required from: 2026-08-01\n' > "$r/README.md"
+assert_has "a done entry closed after the floor with no review line is reported" "[closure-review]" "$(run "$r")"
+
+r="$tmp/cr-met"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+closed_entry "$r" "ABC-02" "2026-09-01" "It is finished.
+**Closure review:** 2026-09-01, met."
+printf '# Register\n\nClosure review required from: 2026-08-01\n' > "$r/README.md"
+assert_lacks "a done entry closed after the floor WITH the review line is clean" "[closure-review]" "$(run "$r")"
+
+r="$tmp/cr-before"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+closed_entry "$r" "ABC-02" "2026-07-01" "It is finished."
+printf '# Register\n\nClosure review required from: 2026-08-01\n' > "$r/README.md"
+assert_lacks "an entry closed before the floor is not asked for a review" "[closure-review]" "$(run "$r")"
+
+r="$tmp/cr-dropped"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+entry "$r/closed" "ABC-02" "dropped" "closed: 2026-09-01" "Dropped, superseded."
+printf '# Register\n\nClosure review required from: 2026-08-01\n' > "$r/README.md"
+assert_lacks "a dropped entry needs no closure review" "[closure-review]" "$(run "$r")"
+
+# --- cadence: fortnightly, and `overdue: report` on standing only ------------------------
+r="$tmp/fortnight"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "standing" "cadence: fortnightly" "Reviewed." "$(date -d '-10 days' +%Y-%m-%d 2>/dev/null || date -v-10d +%Y-%m-%d)"
+out=$(run "$r")
+assert_lacks "fortnightly is a cadence, and ten days is inside it" "[" "$out"
+entry "$r" "ABC-01" "standing" "cadence: fortnightly" "Reviewed." "$(date -d '-20 days' +%Y-%m-%d 2>/dev/null || date -v-20d +%Y-%m-%d)"
+assert_has "twenty days is past a fortnightly cadence" "[standing-stale]" "$(run "$r")"
+
+r="$tmp/overdue"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "standing" "cadence: weekly
+overdue: report" "Reviewed." "2026-01-01"
+out=$(run "$r")
+assert_has "an overdue standing entry that asks to report is advisory" "[standing-overdue]" "$out"
+assert_lacks "and is no longer the blocking kind" "[standing-stale]" "$out"
+python3 "$lint" "$r" --quiet >/dev/null 2>&1 && ok "standing-overdue does not block" || bad "standing-overdue does not block"
+r="$tmp/overdue-fresh"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "standing" "cadence: weekly
+overdue: report" "Reviewed."
+assert_lacks "overdue: report on a fresh standing entry is clean" "[" "$(run "$r")"
+r="$tmp/overdue-active"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "overdue: report" "The thing is measurably finished."
+assert_has "overdue on a status other than standing is refused" "[conditional-field]" "$(run "$r")"
+r="$tmp/overdue-value"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "standing" "cadence: weekly
+overdue: block" "Reviewed."
+assert_has "an overdue value other than report is refused" "[conditional-field]" "$(run "$r")"
+
 # --- absent register is not an error ----------------------------------------------------
 python3 "$lint" "$tmp/does-not-exist" --quiet >/dev/null 2>&1 \
   && ok "an absent register exits 0" || bad "an absent register exits 0"
