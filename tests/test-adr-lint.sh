@@ -106,6 +106,38 @@ r="$tmp/living"; bullet "$r" 0001 Living
 assert_has "a Living record with no currency machinery is reported" "[living-contract]" "$(run "$r")"
 python3 "$lint" "$r" --quiet >/dev/null 2>&1 && ok "a Living gap does NOT block" || bad "a Living gap does NOT block"
 
+# --- living-stale: the cadence is the one the record DECLARES, not any cadence word in its text.
+# A Living record naming "the weekly blog drip" in its body, with an event-driven refresh, was
+# reported 8d stale against a weekly cadence it never had; a record whose body said "projects churn
+# weekly" was held to seven days while it declared "otherwise quarterly". A cadence counts only in a
+# paragraph or list item that states a refresh (otherwise, backstop, re-verify, refresh trigger).
+living() {  # $1 dir  $2 extra body text  $3 last amendment date
+  mkdir -p "$1"
+  { echo "# ADR-0001: A decision"; echo "- **Status:** Living"; echo "- **Date:** 2026-01-01"
+    echo "- **Deciders:** Jeremy"; echo "- **Tags:** test"; echo ""
+    echo "## Context"; echo "The stable half and the volatile half. Freshness: as-of 2026-01-01."
+    echo ""; echo "$2"; echo ""
+    echo "**Refresh procedure:** re-run the checks."; echo ""
+    echo "## Amendment log"; echo ""; echo "### $3 — refreshed"; echo "Checked."
+  } > "$1/0001-a-decision.md"
+}
+old=2020-01-01
+r="$tmp/cad-declared"; living "$r" "**Refresh triggers:** a new release; otherwise
+quarterly." "$old"
+assert_has "a declared cadence, wrapped across a line, is enforced" "[living-stale]" "$(run "$r")"
+assert_has "and read as the declared one" "quarterly cadence" "$(run "$r")"
+r="$tmp/cad-incidental"; living "$r" "**Refresh triggers:** a major OS release.
+
+The weekly blog drip fetches and signs; the timer is weekly." "$old"
+assert_lacks "a cadence word in the body is not a cadence" "[living-stale]" "$(run "$r")"
+r="$tmp/cad-both"; living "$r" "Upstream projects churn weekly.
+
+**Refresh triggers:** a new release; otherwise quarterly." "$old"
+assert_has "a body word does not override the declared cadence" "quarterly cadence" "$(run "$r")"
+assert_lacks "and is not read as weekly" "weekly cadence" "$(run "$r")"
+r="$tmp/cad-fresh"; living "$r" "**Refresh triggers:** a new release; otherwise quarterly." "$(date +%Y-%m-%d)"
+assert_lacks "a fresh record under its declared cadence is clean" "[living-stale]" "$(run "$r")"
+
 # --- tracking reciprocity, and the failure that started all this
 reg="$tmp/reg/docs/register"; mkdir -p "$reg/closed"
 { echo "---"; echo "id: ABC-01"; echo "title: t"; echo "status: active"; echo "owner: j"

@@ -124,6 +124,28 @@ LIVING_REQUIRED = (
 )
 
 
+CADENCE_RE = re.compile(r"(?i)\b(weekly|monthly|quarterly|biannual|annual)\b")
+REFRESH_RE = re.compile(r"(?i)\botherwise\b|\bbackstop\b|re-verify|refresh triggers?\b")
+
+
+def declared_cadence(text):
+    """The cadence a Living record declares, or None when its refreshes are event-driven only.
+
+    A cadence word counts only inside a paragraph or list item that states a refresh ("otherwise
+    quarterly", "Backstop: quarterly", "Re-verify on ... or quarterly"). Taking the first cadence
+    word anywhere held one record to seven days because its body mentioned "the weekly blog drip",
+    and another to seven days though it declared "otherwise quarterly", because its context said
+    upstream projects "churn weekly". A paragraph ends at a blank line or a new list item, so a
+    declaration wrapped across lines is still read whole.
+    """
+    for block in re.split(r"\n\s*\n|\n(?=\s*(?:[-*]|\d+\.)\s)", text):
+        if REFRESH_RE.search(block):
+            found = CADENCE_RE.search(block)
+            if found:
+                return found
+    return None
+
+
 def clean(s):
     return re.sub(r"\s+", " ", re.sub(r"[*_`]", "", s or "")).strip()
 
@@ -394,7 +416,7 @@ def check(records, adr_dir, register, floor, review_floor=None, dimensions=()):
             for pat, msg in LIVING_REQUIRED:
                 if not re.search(pat, r.text, re.M):
                     out.append(("living-contract", where, msg))
-            cad = re.search(r"(?i)\b(weekly|monthly|quarterly|biannual|annual)\b", r.text)
+            cad = declared_cadence(r.text)
             # Amendment entries are written BOTH ways across this corpus -- bold and heading.
             # Reading only one silently skipped the cadence check on any record using the
             # other, so the record made a freshness claim that nothing checked.
