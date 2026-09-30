@@ -114,6 +114,29 @@ else
   no "plant: removing the /tmp-parent guard did not change behaviour -- the guard may not be load-bearing"
 fi
 
+
+echo "session-end: the session's large-scratch folder under ~/.cache/agent-scratch"
+# Its own guard, independent of /tmp, so these run anywhere: a fake HOME, and a CLAUDE_CODE_TMPDIR
+# naming a /tmp root that need not exist (it may have aged out before the session ended).
+H="$TESTROOT/home"; AS="$H/.cache/agent-scratch"; mkdir -p "$AS"
+nm="c-cachetest-$$"
+mkdir -p "$AS/$nm/deep" "$AS/c-other-$$" "$AS/not-a-session"; : > "$AS/$nm/deep/f"
+: > "$AS/c-other-$$/keep"; : > "$AS/not-a-session/keep"
+HOME="$H" CLAUDE_CODE_TMPDIR="/tmp/$nm" "$HOOK" session-end </dev/null >/dev/null 2>&1
+[ ! -e "$AS/$nm" ] && ok "the session's own folder is removed" || no "the session's own folder is removed"
+[ -e "$AS/c-other-$$/keep" ] && ok "another session's folder survives" || no "another session's folder survives"
+[ -e "$AS/not-a-session/keep" ] && ok "a folder not named for a session survives" || no "a folder not named for a session survives"
+mkdir -p "$AS/named" ; : > "$AS/named/keep"
+HOME="$H" CLAUDE_CODE_TMPDIR="/tmp/named" "$HOOK" session-end </dev/null >/dev/null 2>&1
+[ -e "$AS/named/keep" ] && ok "a root not named c-* removes nothing" || no "a root not named c-* removes nothing"
+outside3="$TESTROOT/outside3"; mkdir -p "$outside3"; : > "$outside3/precious"
+ln -s "$outside3" "$AS/c-link-$$"
+HOME="$H" CLAUDE_CODE_TMPDIR="/tmp/c-link-$$" "$HOOK" session-end </dev/null >/dev/null 2>&1
+[ -e "$outside3/precious" ] && ok "a symlinked folder's target survives" || no "a symlinked folder's target survives"
+mkdir -p "$AS/c-stop-$$"; : > "$AS/c-stop-$$/keep"
+printf '{}' | HOME="$H" CLAUDE_CODE_TMPDIR="/tmp/c-stop-$$" "$HOOK" stop >/dev/null 2>&1
+[ -e "$AS/c-stop-$$/keep" ] && ok "only session-end removes it" || no "only session-end removes it"
+
 echo "== a symlink INSIDE the root pointing outside it is not followed =="
 # The remaining tests need a genuine root: a directory whose basename matches c-* and whose parent
 # is literally /tmp. A sandbox that denies writes directly under /tmp cannot produce one.

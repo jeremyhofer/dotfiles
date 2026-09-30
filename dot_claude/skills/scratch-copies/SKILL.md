@@ -16,6 +16,27 @@ description: Use before copying a repository, a build output, an installed depen
    Anything over about 50 MB, say up front when it will be deleted. When handing back, list what you
    kept and why.
 
+
+## When a copy is too big for `/tmp`
+
+`/tmp` is a RAM tmpfs with a per-user quota. A scratch copy that needs gigabytes (a whole scratch
+application with its dependencies, a copy of another repository) goes on disk instead, in the one
+sanctioned place:
+
+```sh
+big="$HOME/.cache/agent-scratch/$(basename "${CLAUDE_CODE_TMPDIR:-c-adhoc-$$}")"
+mkdir -p "$big"
+```
+
+- **Name it for the session's `/tmp` root** (`$CLAUDE_CODE_TMPDIR`, a `c-*` directory, when a launcher
+  set one): `claude-scratch-hook` removes exactly that folder when the session ends.
+- **Delete it yourself when the result is recorded.** Deleting under `~/.cache/agent-scratch/` is
+  allowed where a guard restricts `rm`; the rest of `~/.cache` is not scratch and stays protected.
+- **Never put it anywhere else under `~/.cache`**: nothing cleans an arbitrary folder there, and an
+  agent may not be allowed to delete it, so the cleanup lands on a person.
+- On Linux, anything left is aged out after three days without a write; on macOS only the session-end
+  removal and your own deletion clean it.
+
 ## Why this matters more than it looks
 
 **`$TMPDIR` is shared.** The Claude Code sandbox points every session a user runs, and every
