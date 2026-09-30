@@ -1,6 +1,6 @@
 ---
 name: register-standard
-description: Use when creating, filing, editing, closing, migrating or linting a work-register entry in any repository — an `ABC-0012`-style entry under `docs/register/`, the register's README, its `closed/` directory, its `folder:` artifact, or its lint. Fires on "file a register entry", "close this entry", "definition of done", "closure condition", "ALIGNMENT REQUIRED", "TRIAGE REQUIRED", "standing status", `docs/register/`, `register next`, `register list`, `register show`, `register health`, `register-lint`, and on the question "is this done?" asked of a tracked item. Covers the nine statuses and which need which fields, the recoverability rule for closure conditions and the three sentinels that declare an absence, the initiative folder an entry names, why the finished-entry directory is `closed/` and never `archive/`, why each register's README must repeat the rules in full rather than cite them, who may file at all, and how a separate limitations register folds in as `held` entries.
+description: Use when creating, filing, editing, closing, migrating or linting a work-register entry in any repository — an `ABC-0012`-style entry under `docs/register/`, the register's README, its `closed/` directory, its `folder:` artifact, its relations to other entries (`part-of:`, `blocks:`, `duplicates:`, `split-from:`, `supersedes:`, `relates:`), or its lint. Fires on "file a register entry", "close this entry", "definition of done", "closure condition", "ALIGNMENT REQUIRED", "TRIAGE REQUIRED", "standing status", `docs/register/`, `register next`, `register list`, `register show`, `register related`, `register health`, `register-lint`, "closure review", "cross-project review", and on the question "is this done?" asked of a tracked item. Covers the nine statuses and which need which fields, the recoverability rule for closure conditions and the three sentinels that declare an absence, the initiative folder an entry names, why the finished-entry directory is `closed/` and never `archive/`, why each register's README must repeat the rules in full rather than cite them, who may file at all, how relations are stated once and read from both ends, the recorded search and the reviews at filing and closing, the periodic cross-project review, and how a separate limitations register folds in as `held` entries.
 ---
 
 # The register standard
@@ -84,12 +84,14 @@ title: One line, a noun phrase
 status: scoped
 gate:                # iff status is blocked or held
 cadence:             # iff status is standing
+overdue: report      # only on the one standing review entry (§5)
 owner: <who decides>
 verified: 2026-01-20 # when someone last confirmed this entry true
 closed:              # iff status is done or dropped
 artifacts:
   - adr:ADR-0008
   - folder:docs/initiatives/<PREFIX>-0009-slug/
+part-of: <PREFIX>-0002   # relations: §2, "Relations"
 ---
 ```
 
@@ -99,12 +101,13 @@ artifacts:
 | `title` | yes | One line. |
 | `status` | yes | One of the nine in §3. |
 | `gate` | iff `blocked` / `held` | What must happen before it can move. |
-| `cadence` | iff `standing` | `weekly`, `monthly`, `quarterly`, `biannual` or `annual`. |
+| `cadence` | iff `standing` | `weekly`, `fortnightly`, `monthly`, `quarterly`, `biannual` or `annual`. |
+| `overdue` | only on `standing` | `report` is its only value: past its cadence, the entry is reported instead of refused (§5). |
 | `owner` | yes | Who decides. |
 | `verified` | yes | When someone last confirmed the entry true, `YYYY-MM-DD`. |
 | `closed` | iff `done` / `dropped` | When it closed. |
 | `artifacts` | no | A YAML list of `kind:value` pointers into this repository (below). |
-| `supersedes`, `split-from` | no | An id this entry replaces, or was separated out of. |
+| `part-of`, `blocks`, `duplicates`, `split-from`, `supersedes`, `relates` | no | Relations to other entries, one id or a list (below). |
 
 **Artifacts.** `adr:` takes an id; `spec:`, `plan:`, `runbook:`, `research:` and `repo:` take a
 value; `folder:` names the entry's initiative folder, `docs/initiatives/<ID>-<slug>/` (§7). A value
@@ -120,6 +123,35 @@ because a pointer that looks followable and is not is worse than none.
 - **Quote any value containing `#`**, list item or scalar. Unquoted, YAML reads a comment and the
   value truncates while the file still parses. Quote a value starting with a backtick, `@`, `&`,
   `*`, `!` or a bracket, or holding `: `, for the same reason.
+
+### Relations: stated once, typed, read from both ends
+
+Entries relate constantly: one is part of another, waits on another, repeats another. Written as prose
+in a body, a relation is visible from one end only and no tool can follow it. So a relation is a
+frontmatter key, **written on one entry only**; the other end is derived by `register show` (§8).
+
+| Key | Written on | Says | The other end reads |
+| --- | --- | --- | --- |
+| `part-of:` | the child | this is a piece of that initiative | children |
+| `blocks:` | the entry that must finish first | that one cannot finish before this | blocked by |
+| `duplicates:` | the entry closing `dropped` | this repeats that one, which carries the work | duplicated by |
+| `split-from:` | the newer entry | this was separated out of that one | split into |
+| `supersedes:` | the newer entry | this replaces that one | superseded by |
+| `relates:` | the later-filed entry | the two bear on each other, nothing stronger | relates |
+
+- **One id, or a block list**: `blocks: ABC-0012`, or `blocks:` followed by `  - ABC-0012` lines. Never
+  an inline `[a, b]` list, which the lint refuses as invalid YAML.
+- **Never write a relation on both ends.** Two copies of one fact disagree the first time only one is
+  edited, and the far end is often an entry you should not be editing. The lint refuses it.
+- **A `gate:` stays prose.** When the gate is another entry, also write `blocks:` on that entry, so the
+  gate shows from both sides; `register health` reports a gate and a relation that disagree.
+- **Type a relation when you next edit the entry that should hold it.** Do not convert a register's
+  prose mentions in bulk: most sit in closed entries nobody will read again, and `register health
+  --mentions` lists what is left for the periodic review (§5) to work down.
+- **Across registers**, a relation names the other entry by its prefixed id, and only in a repository
+  whose publish guard accepts another register's ids (§10). `register show` resolves the prefix
+  through the machine's repository manifest when there is one; a renamed register declares its old
+  prefix beside its new one there, and ids under either are matched by number.
 
 **A migrated entry keeps its old `verified:` date and gains `migrated: <date>`.** Resetting
 `verified` to the move date manufactures fresh verification out of a file move and hides real age.
@@ -174,7 +206,10 @@ Append-only, newest last. One dated entry per material change.
 - **`### Tasks` makes progress counted, not asserted**: N of M, no weights, no estimates, so it
   cannot rot. Its history in version control is a burndown for free.
 - **`### Resolution` is required to close and cites evidence**: a commit, a record, an artifact.
-  Closing is a claim, and a claim needs a referent.
+  Closing is a claim, and a claim needs a referent. A `done` closure also carries the reviewer's
+  line, `**Closure review:** YYYY-MM-DD, met.` (§5, "Closing").
+- **The first History entry records the search made before filing**:
+  `**Searched:** <ids checked>; none covers this because <reason>.` (§6).
 - **Durable narrative belongs in a decision record, spec or runbook**; the entry cites it.
 - **A filename begins with its id**, so a rename cannot orphan it from its citations. Truncate the
   slug at a word boundary.
@@ -230,11 +265,43 @@ In place of a closure condition, a `standing` entry states: (1) **what is re-ver
 enough for someone else to do it; (2) **the cadence**, also in `cadence:`; (3) **the de-standing
 trigger**, which always includes *the re-verification stopped happening*. Without all three it is
 `active` wearing a label. A `standing` entry whose `verified:` is older than its cadence is stale,
-and the lint refuses it.
+and the lint refuses it, unless it carries `overdue: report` (below).
 
 `standing` is for perpetual *doing*. Perpetual *looking* ("re-check on each major release") belongs
 in a revisit list. Report standing entries apart from closing work: a burndown that counts items
 that never burn down is not read.
+
+### The cross-project review: one `standing` entry
+
+Where several registers' work weaves together, keep **one `standing` entry** whose re-verification is
+the review, in the register that holds the list of registers. Each cycle:
+
+1. Run `register health` over every register this machine holds.
+2. Resolve the findings in its own register: type the relations the reports list, close what is done,
+   re-verify what went quiet.
+3. Send each finding in another register to whoever authors that register. **Never edit another
+   project's register from here**: only its own maintainer authors it.
+4. File nothing new except through §6's three tests.
+5. Record in the entry's History what was reconciled, and re-set `verified:`.
+
+It carries **`overdue: report`**: a late review is reported by `register health` and as a lint
+advisory, and never blocks a commit, because stopping every commit in the register over one missed
+cycle costs more than the lateness does. No other entry takes `overdue:`. The cadence is the
+register's choice; `weekly` suits a busy team's register, `fortnightly` a personal fleet's.
+
+### Closing: a reviewer reads the condition against the Resolution
+
+**Before an entry moves to `closed/` as `done`, one fresh-context reviewer** (an agent or person
+started without the closer's context) reads its Definition of done against its Resolution and the
+evidence the Resolution cites, and answers *met* or *not met*.
+
+- *Met*: write `**Closure review:** YYYY-MM-DD, met.` in the Resolution, then close.
+- *Not met*: the entry stays open, and the gap becomes its next action.
+- A `dropped` entry needs only its reason read; no line is required.
+
+The person who did the work is the worst placed to judge it finished, because they read the
+condition through what they meant to build. The lint checks the line's presence on entries closed on
+or after a date the register sets in its README (§9); it cannot check that the review was any good.
 
 ## 6. Who may file
 
@@ -246,11 +313,21 @@ that never burn down is not read.
 2. **Does an entry already cover it?** Search before authoring, every time; approval to track says
    nothing about duplicates. Where a related entry exists, extend it: two entries for one concern
    split its history, and neither knows about the other.
-   `register list --match '<topic>'` searches ids and titles; `grep -rli '<topic>' docs/register`
-   searches bodies.
+   `register related <words>` searches every entry, open and closed, by title, body and
+   `artifacts:`, most matches first. **Record the search** in the new entry's first History entry:
+   `**Searched:** <ids checked>; none covers this because <reason>.` A search nobody can see did not
+   visibly happen, and the duplicates this test exists for were each one search away.
 3. **Is it an initiative?** A beginning, an end, a state worth seeing. A finding, defect or task is
    content inside one (its checklist or history). If you cannot honestly write a closure condition
-   and a task list, it is not an entry. Chores and routines are not entries.
+   and a task list, it is not an entry. Chores are not entries; a recurring obligation someone must
+   keep doing is a `standing` entry (§5), not a new entry each time.
+
+**An entry filed with a document**, or whose Definition of done names a document it will produce,
+also gets **one fresh-context reviewer before it is committed**: someone started without the filer's
+context, reading the draft for overlap with the entries the search found, contradiction with a
+related entry, and a closure condition that can be checked. The filer decides whether the entry
+qualifies and says so in the History entry. A small entry with no document relies on the recorded
+search alone.
 
 **Allocate the id with `register next`.** It reads every id numerically, `closed/` included, and
 keeps the register's width. A new register's first id is written by hand (`<PREFIX>-0001`, padded
@@ -270,8 +347,9 @@ two in both directions, so neither can drift from the other unnoticed.
 
 - **At `done` or `dropped` the folder moves to `docs/archive/initiatives/`** and the `folder:`
   pointer is rewritten to the new path, in the same commit that closes the entry.
-- **A recurring cycle (a quarterly review, a yearly plan) is a new initiative each time**, so each
-  cycle closes.
+- **A recurring cycle that produces its own documents (a yearly plan) is a new initiative each
+  time**, so each cycle closes. A recurring review that is an obligation rather than a deliverable
+  is one `standing` entry (§5).
 - What goes inside the folder, its README, and the full close sequence: skill
   `project-documentation`.
 
@@ -282,9 +360,10 @@ All take `--root <dir>`, default `docs/register`, so run them from the repositor
 | Question | Command |
 | --- | --- |
 | What is open, and where is each one's folder? | `register list --open` (`--status active`, `--match <regex>`, `--long` adds gates) |
-| Everything about one entry | `register show <ID>`: the entry, then its folder's files by type subdirectory and the decision records its README names |
+| Everything about one entry | `register show <ID>`: the entry, its relations from both ends with each other entry's status, then its folder's files by type subdirectory and the decision records its README names |
+| Does an entry already cover this? | `register related <words>`: every entry, open and closed, by matches in title, body and `artifacts:` |
 | Counts by status | `register stats` |
-| What has gone quiet or unclaimed? | `register health`: an `active` entry whose folder has no commit in 30 days, a `standing` entry past its cadence, a document in the repository-wide type folders named by nothing or by one initiative only. Advisory; always exits 0 |
+| What has gone quiet or unclaimed? | `register health`: an `active` entry whose folder has no commit in 30 days, a `standing` entry past its cadence, a document in the repository-wide type folders named by nothing or by one initiative only; and across entries: a body mention with no typed relation (`untyped-mention`, a count; `--mentions` lists them), a `gate:` naming a closed entry (`gate-closed`) or one that does not list it under `blocks:` (`gate-untyped`), an open child of a closed parent (`child-of-closed`), a foreign id that does not resolve (`unresolved-foreign`). Advisory; always exits 0 |
 | The next free id | `register next` |
 | A browsable table | `register index --write <path>`, on demand; never commit one, since a derived file nobody regenerates is believed while wrong |
 
@@ -301,9 +380,16 @@ sentinel; a heuristic), `sentinel-mismatch`, `conditional-field`, `empty-field`,
 `initiative-folder` (a live folder its entry does not name as `folder:`), `initiative-place` (a live
 folder for a closed entry, or an archived one for an open entry), `status-vocabulary`, `location`,
 `resolution`, `next-action`, `filename`, `id-integrity`, `required-field`, `date-format`,
-`standing-stale`, `not-renamed` (finished entries under `archive/`).
+`standing-stale`, `not-renamed` (finished entries under `archive/`); for relations,
+`relation-unknown` (an id with this register's prefix that is no entry in it), `relation-self`,
+`relation-both-ends`, `relation-cycle` (a cycle of `blocks:`), `relation-duplicate-status` (a
+`duplicates:` entry that is not `dropped`); and `closure-review`, a `done` entry closed on or after the
+README's line `Closure review required from: YYYY-MM-DD` whose Resolution lacks the review line. No
+such line, no check: a register opts in on a date of its own, and no entry closed before it is asked
+for a review it could not have had.
 **Advisory:** `triage-debt`, `alignment-owed`, `stale-entry` (an `active` entry unverified for 30
-days, `ready`/`scoped`/`blocked`/`held` for 90). The prefix is derived from the entries, never
+days, `ready`/`scoped`/`blocked`/`held` for 90), `standing-overdue` (the `overdue: report` entry past
+its cadence). The prefix is derived from the entries, never
 configured.
 
 **What it cannot check:** whether a condition is a good one, whether the tasks reflect the work,
@@ -335,8 +421,11 @@ new aggregate tool due in the same commit.
 
 ## 10. Referring to things outside the repository
 
-- **Never cite another repository's ids or paths in an entry.** A pointer the reader cannot open
-  looks like it resolves. Write the reasoning into the entry and cite nothing.
+- **Never cite another repository's ids or paths in an entry**, with one exception below. A pointer
+  the reader cannot open looks like it resolves. Write the reasoning into the entry and cite nothing.
+- **The exception: a typed relation in the register that coordinates the others** (the one holding
+  the cross-project review, §5), where the repository's publish guard accepts other registers' ids.
+  Relations between projects live there, and a project register relates only among its own entries.
 - **If the repository has a publish or leak guard, run it before declaring a migration done.**
   Content written for months without that boundary in mind is exactly what a move drags across it.
   Record a guard refusal inside the entry it affected.
@@ -379,6 +468,10 @@ the repository, deliberately.
 ## Status vocabulary                (all nine, and which live in closed/)
 ## The closure condition            (the recoverability rule and the three sentinels)
 ## Initiative folders               (folder:, archiving at close)
+## Relations                        (the six keys, which entry holds each, never both ends)
+## Filing and closing               (the Searched: line, the reviewer at filing and at closing,
+                                     the Closure review: line, and the line
+                                     `Closure review required from: YYYY-MM-DD`)
 ## What is not built, and why       (what does not enforce these rules)
 ## Referring to things outside this repository
 ```
