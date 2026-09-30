@@ -501,8 +501,13 @@ def check_spec(text: str, rel: str, files: set[str], dirs: set[str], cfg: Config
 
 
 def leaving_specs(root: pathlib.Path, cfg: Config) -> list[tuple[str, str]]:
-    """(source path, content before the change) for staged renames out of, and deletions from,
-    spec-dirs. The commit hooks pass added and modified files only, so these are found here."""
+    """(source path, content being finished) for staged renames out of, and deletions from,
+    spec-dirs. The commit hooks pass added and modified files only, so these are found here.
+
+    A rename is judged by the STAGED copy at its destination, since that is what the commit records:
+    a close sequence promotes a spec's decisions and archives it in one commit, and reading the copy
+    from before the change refused exactly that. A deletion has no staged copy, so its last one is
+    read from HEAD."""
     out = []
     status = git("diff", "--cached", "--name-status", "-M", "--diff-filter=DR", cwd=root)
     for line in status.splitlines():
@@ -510,7 +515,8 @@ def leaving_specs(root: pathlib.Path, cfg: Config) -> list[tuple[str, str]]:
         src = parts[1] if len(parts) > 1 else ""
         dst = parts[2] if len(parts) > 2 else ""
         if in_spec_dirs(src, cfg) and not in_spec_dirs(dst, cfg) and src.endswith(".md"):
-            out.append((src, git("show", f"HEAD:{src}", cwd=root)))
+            content = git("show", f":{dst}", cwd=root) if dst else git("show", f"HEAD:{src}", cwd=root)
+            out.append((src, content))
     return out
 
 

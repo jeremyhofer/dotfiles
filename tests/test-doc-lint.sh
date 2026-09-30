@@ -264,6 +264,25 @@ git -C "$r" mv "docs/$I/specs/2026-10-06-b.md" "docs/archive/$I/specs/2026-10-06
 out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
 assert_lacks "archiving a finished spec with every decision homed is accepted" "[spec-" "$out"
 git -C "$r" reset -q --hard HEAD
+# Promoting and archiving in ONE commit, as an initiative's close sequence prescribes: the check reads
+# the STAGED copy at its new path, not the pre-change copy at the old one. It read the old one until
+# the first real initiative close was refused for decisions the staged copy had already promoted.
+printf '%s\n' "$(body 'Status: executed' '- Still open — pending')" > "$r/docs/$I/specs/2026-10-06-b.md"
+git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m d
+printf '%s\n' "$(body 'Status: executed' '- Now placed — docs/guide.md')" > "$r/docs/$I/specs/2026-10-06-b.md"
+git -C "$r" add -A; mkdir -p "$r/docs/archive/$I/specs"
+git -C "$r" mv "docs/$I/specs/2026-10-06-b.md" "docs/archive/$I/specs/2026-10-06-b.md"
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
+assert_lacks "promoting and archiving in one commit is accepted" "[spec-pending]" "$out"
+git -C "$r" reset -q --hard HEAD
+# The near miss: moved in the same commit, but the staged copy still holds pending.
+printf '%s\n' "$(body 'Status: executed' '- Still open — pending
+- Now placed — docs/guide.md')" > "$r/docs/$I/specs/2026-10-06-b.md"
+git -C "$r" add -A; mkdir -p "$r/docs/archive/$I/specs"
+git -C "$r" mv "docs/$I/specs/2026-10-06-b.md" "docs/archive/$I/specs/2026-10-06-b.md"
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
+assert_has "an edited, moved spec whose staged copy still holds pending is refused" "[spec-pending]" "$out"
+git -C "$r" reset -q --hard HEAD
 
 # Inside a git hook, git exports GIT_DIR and GIT_INDEX_FILE. Point them at a DIFFERENT repository:
 # the linted repository must still be answered by its own index.
