@@ -15,6 +15,7 @@ managed policy an administrator installed. The docs describe the defaults, not a
 ```sh
 claude-context-probe          # a few minutes; five short headless sessions
 claude-context-probe --keep   # also keep the temp tree, for debugging on that machine only
+claude-context-probe --fleet  # the background-session checks only; see "Fleet checks"
 ```
 
 - **Run it in an ordinary terminal**, not from inside an agent session. An agent's sandbox changes
@@ -100,6 +101,37 @@ fresh each time. It works in skills and custom commands only; a `CLAUDE.md` does
 **Skills and MCP.** A listed project skill means skills in `.claude/skills` are an on-demand
 channel on this machine. A listed MCP tool means a stdio MCP server can be attached, which is what
 on-demand retrieval over MCP would need. `NOT loaded` on either usually means a managed policy.
+
+## Fleet checks (--fleet)
+
+`claude-context-probe --fleet` runs ONLY these checks, not the context ones. They answer whether
+the features that long-lived, named background sessions depend on work on this build and policy.
+It starts real background sessions and a few small `haiku` calls (plus one each on `sonnet`, `opus`
+and `opus[1m]`), so it costs a few model calls, billed wherever that machine's usage is billed.
+Run it in an ordinary terminal, not inside an agent session, and run it at home first as the
+baseline to compare other machines against.
+
+Every row reads `yes`, `no`, or `INCONCLUSIVE (reason)`; the summary carries no paths, names or
+values, so it can be retyped. Every session it started is removed, even on failure, along with its
+transcripts and temp dir (`--keep` keeps only the temp dir).
+
+| Row | `yes` means |
+| --- | --- |
+| `bg-launch` | `claude --bg -n <name> --model haiku --settings ...` started a session and exited 0 |
+| `agents-json` | `claude agents --json` lists it with an id, name, session id and cwd. Measured on 2.1.285, a row has exactly `cwd id kind name sessionId startedAt state` (state seen: `working`, `blocked`) |
+| `agents-pid`, `agents-state` | informational: rows carry a `pid`, rows carry a `state`. 2.1.285 has no `pid`; a tool that keys liveness on it needs to know. Liveness in the rows below uses `pid` when present, else `state` (any value other than an exited or completed one counts as live) |
+| `settings-env` | an env var set through `--settings` reached the session's shell |
+| `tmpdir` | `CLAUDE_CODE_TMPDIR` from `--settings` decided the session's `TMPDIR` |
+| `transcript` | the session's `.jsonl` transcript exists under the Claude config dir's `projects` folder |
+| `attach` | `claude attach` ran and killing it left the session listed and live |
+| `resume-bg` | `--bg --resume <session id>` started a second, listed session |
+| `rm` | `claude rm` removed the row and left the transcript |
+| `respawn` | after its process was killed, a session with the same name came back on a new pid; `INCONCLUSIVE` where rows carry no pid |
+| `model <alias>` | `claude -p --model <alias>` answered, for `haiku`, `sonnet`, `opus`, `opus[1m]` |
+| `tool <name>` | `present` or `absent` from the session's own list of tool names, for `Agent`, `Workflow`, `EnterWorktree`, `SendMessage`, `ListAgents`; `Bash` is reported present only, since `run_in_background` is a parameter of it that a name list cannot show |
+
+A `no` on `bg-launch` makes the rows that need a session `INCONCLUSIVE`. The exit status is
+non-zero unless every row before `tool` is `yes`, apart from the two informational `agents-` rows.
 
 ## What it does not test
 
