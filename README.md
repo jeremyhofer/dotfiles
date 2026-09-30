@@ -71,9 +71,16 @@ agent loads by name when its trigger applies, rather than something kept in cont
 - `project-context-file` covers a repository's agent context file: `AGENTS.md` as the source in six
   fixed sections, `CLAUDE.md` importing it, the 200-line and 14,000-byte caps on what loads
   unconditionally, and the on-demand patterns that keep situational content out of every session.
+- `project-documentation` covers a repository's `docs/` tree: the layout and its index, filing each
+  document by the initiative or subject it serves and then by type, closing an initiative, and
+  adopting the layout in an existing notes repository.
 - `recording-what-you-learn` covers where a lesson, correction or preference belongs instead of
   Claude Code's machine-local memory store, which is unversioned and read by no other session in
   the project. A machine's private layer can add its own homes in a `fleet.md` beside it.
+- `register-standard` covers a work register: the entry's shape, its nine statuses, the closure
+  condition and the sentinels that declare one absent, who may file, and the initiative folder an
+  entry names. A machine's private layer can name its own registers in
+  `~/.dotlocal/skills/register-standard.md`.
 - `scratch-copies` covers making scratch copies small (a worktree or `git archive` instead of copying
   a repository), and deleting them when their result is recorded, because `$TMPDIR` is shared by
   every agent session and its quota can fill in a day.

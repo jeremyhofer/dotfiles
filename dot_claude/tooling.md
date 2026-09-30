@@ -18,7 +18,7 @@ view on demand) ·
 that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
 only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
 `claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·
-`register` (read a work register — list, stats, show, the next free id, and render a browsable index on demand rather than committing one that can go stale) ·
+`register` (read a work register — list, stats, show an entry with its initiative folder, what has gone quiet (`health`), the next free id, and render a browsable index on demand rather than committing one that can go stale; skill `register-standard`) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·
 `context-lint` (a repository's `AGENTS.md`/`CLAUDE.md` against the context-file standard: sections, size caps counting imports; skill `project-context-file`) ·
 `git-ai-coauthor` (prepare-commit-msg hook: adds a Claude co-author trailer, naming the session's model when it can, to commits made from a Claude Code session; wired in `~/.gitconfig`, per-repo opt-out `ai-coauthor.enabled false`) ·
