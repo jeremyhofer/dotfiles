@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""lint-tasknames — assert a repo's runnable task names follow the shared vocabulary.
+
+Reads the category list FROM the deployed naming-build-tasks skill (single source;
+this tool deliberately carries no copy of the vocabulary), then reads every task
+name a repo declares through four readers — `just --summary`, package.json
+scripts, `make -qp`, and Nx (`nx show project --json` per project) — and checks
+each name for:
+
+  separator  the name carries a colon (the shape is `verb-qualifier`, hyphen)
+  verb       the first hyphen-separated token is not a vocabulary category
+
+Read-only. Exit 0 clean, 1 violations, 2 a READER ERROR (a build file exists but
+its reader could not enumerate tasks — reported loudly and separately, because a
+reader that silently reads nothing would be a green that means nothing).
+
+Discovery is TREE-WIDE for just/npm/make: any nested justfile / package.json /
+Makefile is read too (node_modules, .git, dist and similar are pruned), because a
+single-directory read once hid an entire frontend/package.json of 32 scripts and
+under-reported a repo's true naming scope by half. Nx stays root-only on purpose:
+the workspace graph already enumerates every nested project. Findings from a
+nested dir are labelled with its relative path. A build tool with no marker file
+anywhere in the tree is a skip, not an error; the per-source tally line makes
+skips visible so coverage is never implied.
+
+Ecosystem-mandated names are exempt, not violations: npm lifecycle scripts
+(prepare, install, version, …, and pre<X>/post<X> of another script), npm's
+reserved `start`/`test` (kept as thin delegating aliases by convention), and
+just's `default` listing idiom.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SKILL_CANDIDATES = [
+    Path.home() / ".claude/skills/naming-build-tasks/SKILL.md",
+    Path.home() / ".local/share/chezmoi/dot_claude/skills/naming-build-tasks/SKILL.md",
+]
+
+NPM_LIFECYCLE = {
+    "prepare", "prepublish", "prepublishOnly", "prepack", "postpack",
+    "preinstall", "install", "postinstall", "preuninstall", "uninstall",
+    "preversion", "version", "postversion", "dependencies",
+}
+NPM_RESERVED_ALIASES = {"start", "test"}
+JUST_IDIOM = {"default"}
+# Targets Nx itself (or its plugins) provides on inferred projects — machinery,
+# not authored names, and inference-first is the stated preference, so
+# these are ecosystem-mandated the same way npm lifecycle scripts are.
+NX_PROVIDED = {"nx-release-publish", "watch-deps"}
+
+# --- severity ------------------------------------------------------------------------------------
+# The point of the split: a leading token outside the vocabulary (`wifi-capture`)
+# confuses nobody, while using `check` for something that verifies is the confusion the triad exists
+# to prevent -- and treating them at identical weight is what trained readers to skim this tool.
+ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
+STRICT = False
+
+# What each triad word READS, per the vocabulary skill:
+#   check    the tree -- source, config, generated or built output   "is it well-formed?"
+#   verify   this machine and this repo's history                    "is it actually true?"
+#   validate a deployed, running target                              "is the live thing good?"
+# These patterns look for unambiguous evidence of the wrong SUBJECT, never for the absence of one:
+# a body with no strong signal is left alone rather than guessed at.
+MACHINE_RE = re.compile(r"\b(systemctl|pacman|brew list|dpkg|rpm -q|/etc/|command -v|which |uname|"
+                        r"stat |ssh-add|gpg --list|git (log|rev-parse|rev-list|show-ref|verify-commit))\b")
+LIVE_RE    = re.compile(r"(https?://|\bcurl\b|\bwget\b|playwright|lighthouse|\bnc -z\b|localhost:\d)")
+
+def triad_finding(name, body):
+    """Return a reason string when a triad word is used against the wrong subject, else None."""
+    head = name.split("-")[0]
+    if head not in ("check", "verify", "validate") or not body:
+        return None
+    machine, live = bool(MACHINE_RE.search(body)), bool(LIVE_RE.search(body))
+    if head == "check" and live:
+        return "triad: `check` reads the TREE, but this task reaches a live target -- `validate`"
+    if head == "check" and machine:
+        return "triad: `check` reads the TREE, but this task inspects the MACHINE/history -- `verify`"
+    if head == "verify" and live:
+        return "triad: `verify` reads this machine and history, but this task reaches a live target -- `validate`"
+    if head == "validate" and not live:
+        return "triad: `validate` reads a DEPLOYED target, but this task reaches none"
+    return None
+
+
+ROW = re.compile(r"^\| `([a-z0-9-]+)`")
+TRIAD = re.compile(r"^\| `([a-z]+)` · `([a-z]+)` · `([a-z]+)` \|")
+
+
+def load_categories():
+    for cand in SKILL_CANDIDATES:
+        if cand.is_file():
+            cats = set()
+            for line in cand.read_text().splitlines():
+                m = TRIAD.match(line)
+                if m:
+                    cats.update(m.groups())
+                    continue
+                m = ROW.match(line)
+                if m:
+                    cats.add(m.group(1))
+            if cats:
+                return cats, cand
+            print(f"lint-tasknames: READER ERROR: no category rows parsed from {cand}",
+                  file=sys.stderr)
+            sys.exit(2)
+    print("lint-tasknames: READER ERROR: naming-build-tasks skill not found "
+          "(are the dotfiles applied on this machine?)", file=sys.stderr)
+    sys.exit(2)
+
+
+def run(cmd, cwd):
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120)
+
+
+# Pruned while walking: dependency/build/output trees whose task-shaped files are
+# not this repo's authored surface (a planted node_modules/package.json must never
+# count), plus VCS/agent internals.
+EXCLUDE_DIRS = {
+    "node_modules", ".git", ".claude", ".nx", ".angular", ".venv", "venv",
+    "__pycache__", "dist", "build", "out", "coverage", "vendor", "tmp",
+    ".cache", ".idea", ".vscode",
+    # Package-manager caches and language build sandboxes. Added 2026-09-04: a `~/Devel` run
+    # produced four READER ERRORs and every one was inside a third-party tree -- a Go module cache
+    # under an AUR build directory, and an upstream clone's schematics EXAMPLE whose package.json is
+    # deliberately unparseable because it is a template. None of it is code we own, none of it is
+    # ours to name, and their errors made the tool announce its own coverage was incomplete. A
+    # reader error has to mean "a repo you own could not be enumerated" or it stops meaning anything.
+    "gopath", "target", ".cargo", ".gradle", ".m2",
+}
+
+
+def find_dirs(repo, markers):
+    """Yield every dir under repo (repo first) containing one of the marker files."""
+    hits = []
+    for dirpath, dirnames, filenames in os.walk(repo):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_DIRS)
+        if any(m in filenames for m in markers):
+            hits.append(Path(dirpath))
+    return hits
+
+
+class ReaderError(Exception):
+    pass
+
+
+def read_just(repo):
+    if not any((repo / n).is_file() for n in ("justfile", "Justfile", ".justfile")):
+        return None
+    r = run(["just", "--summary"], repo)
+    if r.returncode != 0:
+        raise ReaderError(f"just --summary failed: {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else 'rc=' + str(r.returncode)}")
+    names = r.stdout.split()
+    # Recipe BODIES, for the triad check: the triad is defined by WHAT A TASK READS, so a name-only
+    # reader cannot judge it at all. `just --dump` is best-effort -- a repo whose justfile does not
+    # dump still gets its names linted, just not its triad usage.
+    bodies = {}
+    d = run(["just", "--dump"], repo)
+    if d.returncode == 0:
+        cur = None
+        for line in d.stdout.splitlines():
+            m = re.match(r"^([a-z][a-z0-9-]*)(?: [^:]*)?:", line)
+            if m and not line.startswith((" ", "\t")):
+                cur = m.group(1); bodies[cur] = []
+            elif cur and (line.startswith(" ") or line.startswith("\t")):
+                bodies[cur].append(line.strip())
+    return [(n, None, " ".join(bodies.get(n, []))) for n in names]
+
+
+def read_npm(repo):
+    pkg = repo / "package.json"
+    if not pkg.is_file():
+        return None
+    try:
+        scripts = json.loads(pkg.read_text()).get("scripts", {})
+    except json.JSONDecodeError as e:
+        raise ReaderError(f"package.json unparseable: {e}")
+    names = []
+    keys = set(scripts)
+    for name in scripts:
+        if name in NPM_LIFECYCLE or name in NPM_RESERVED_ALIASES:
+            continue
+        base = re.sub(r"^(pre|post)", "", name)
+        if base != name and base in keys:
+            continue  # pre/post hook of another script — npm-mandated shape
+        names.append((name, None))
+    return names
+
+
+MAKE_TARGET = re.compile(r"^([^#.\s$][^:=\s]*):(?:[^=]|$)")
+
+
+def read_make(repo):
+    if not any((repo / n).is_file() for n in ("Makefile", "makefile", "GNUmakefile")):
+        return None
+    r = run(["make", "-qp"], repo)
+    # make -q exits 1 for "targets not up to date" — only 2 is an error.
+    if r.returncode >= 2:
+        err = r.stderr.strip().splitlines()
+        raise ReaderError(f"make -qp failed: {err[-1] if err else 'rc=2'}")
+    names, in_db = set(), False
+    for line in r.stdout.splitlines():
+        if line.startswith("# Files"):
+            in_db = True
+        if not in_db:
+            continue
+        m = MAKE_TARGET.match(line)
+        if m and "/" not in m.group(1) and m.group(1) != "Makefile":
+            names.add(m.group(1))
+    return [(n, None) for n in sorted(names)]
+
+
+def read_nx(repo):
+    if not (repo / "nx.json").is_file():
+        return None
+    r = run(["npx", "--no-install", "nx", "show", "projects", "--json"], repo)
+    if r.returncode != 0:
+        err = r.stderr.strip().splitlines()
+        raise ReaderError(f"nx show projects failed: {err[-1] if err else 'rc=' + str(r.returncode)}")
+    names = []
+    for project in json.loads(r.stdout):
+        pr = run(["npx", "--no-install", "nx", "show", "project", project, "--json"], repo)
+        if pr.returncode != 0:
+            raise ReaderError(f"nx show project {project} failed")
+        for target in json.loads(pr.stdout).get("targets", {}):
+            names.append((target, project))
+    return names
+
+
+# (tool, reader, marker filenames) — markers None => root-only (nx: the workspace
+# graph already covers nested projects; walking would double-count).
+READERS = [
+    ("just", read_just, ("justfile", "Justfile", ".justfile")),
+    ("npm", read_npm, ("package.json",)),
+    ("make", read_make, ("Makefile", "makefile", "GNUmakefile")),
+    ("nx", read_nx, None),
+]
+
+
+# --- the fleet denominator -----------------------------------------------------------------------
+# WHY THIS EXISTS. Pointed at ~/Devel, this tool walks `external/` -- upstream clones and AUR build
+# trees -- and lints task names in other people's code. Measured 2026-09-04 that is 1,569 of 1,588
+# findings, none of them anybody's to rename here.
+#
+# It went unnoticed because a READER ERROR was hiding it: the make reader errored on a Go module
+# cache inside an AUR build dir, and an errored reader has ALL its findings discarded. Pruning the
+# cache fixed the error and the count went from 19 to 1,588 -- so the number being
+# reasoned about was correct only by accident, and would have become wrong the moment the error was
+# fixed. That is exactly why an errored reader must never be treated as a smaller clean run.
+#
+# The fix is to lint the FLEET (the repositories the mani manifest declares) rather than the
+# filesystem. If the manifest is unreadable this REFUSES rather than falling back to
+# a shorter list, for the same reason: the degraded reading is wrong in the direction that invites a
+# false all-clear.
+def fleet_paths(manifest):
+    if not manifest.is_file():
+        print(f"lint-tasknames: manifest unreadable: {manifest} -- refusing to lint a partial fleet",
+              file=sys.stderr)
+        sys.exit(2)
+    # Skip projects tagged `upstream`: they are somebody else's source, recorded in the manifest so
+    # the inventory is complete, and linting their task names measures nothing about this fleet while
+    # burying the real figure. Measured: sweeping them turns ~76 findings into ~1590, almost all from
+    # vendored build trees. NOT `external` — that tag also covers our own AUR package repos.
+    out, root, pending, is_up = [], manifest.parent, None, False
+    for line in manifest.read_text().splitlines():
+        m = re.match(r"^    path:\s*(\S+)", line)
+        if m:
+            if pending is not None and not is_up:
+                out.append(pending)
+            pending, is_up = Path(m.group(1)), False
+            continue
+        if re.match(r"^    tags:", line) and "upstream" in line:
+            is_up = True
+    if pending is not None and not is_up:
+        out.append(pending)
+    out = [p if p.is_absolute() else (root / p) for p in out]
+    return [p for p in out if p.is_dir()]
+
+
+def main():
+    global STRICT
+    argv = sys.argv[1:]
+    if "--strict" in argv:
+        STRICT = True
+        argv = [a for a in argv if a != "--strict"]
+    if argv and argv[0] == "--fleet":
+        manifest = Path(argv[1]) if len(argv) > 1 else Path.home() / "Devel" / "mani.yaml"
+        rc = 0
+        for p in fleet_paths(manifest):
+            rc = max(rc, lint_one(p))
+        return rc
+    return lint_one(Path(argv[0] if argv else ".").resolve())
+
+
+def lint_one(repo):
+    categories, skill = load_categories()
+
+    violations, tally, reader_errors = [], [], []
+    for tool, reader, markers in READERS:
+        dirs = [repo] if markers is None else find_dirs(repo, markers)
+        tasks, errored, applicable = [], False, 0
+        for d in dirs:
+            rel = None if d == repo else str(d.relative_to(repo))
+            try:
+                found = reader(d)
+            except ReaderError as e:
+                loc = rel or "."
+                reader_errors.append((tool, f"[{loc}] {e}"))
+                errored = True
+                continue
+            if found is None:
+                continue
+            applicable += 1
+            for item in found:
+                name, ctx = item[0], item[1]
+                body = item[2] if len(item) > 2 else ""
+                tasks.append((name, ctx if ctx is not None else rel, body))
+        if errored:
+            tally.append(f"{tool}(ERROR)")
+            continue
+        if applicable == 0:
+            tally.append(f"{tool}(-)")
+            continue
+        tally.append(f"{tool}({len(tasks)})" + (f"@{len(dirs)}d" if len(dirs) > 1 else ""))
+        for name, ctx, body in tasks:
+            if tool == "just" and name in JUST_IDIOM:
+                continue
+            if tool == "nx" and name in NX_PROVIDED:
+                continue
+            where = f"{tool}:{ctx}" if ctx else tool
+            if ":" in name:
+                violations.append((ERROR, where, name, "separator: colon (the shape is verb-qualifier, hyphen)"))
+                head = name.split(":")[0]
+            else:
+                head = name.split("-")[0]
+            if head not in categories:
+                violations.append((WARN, where, name, f"verb: leading token '{head}' is not a vocabulary category"))
+            t = triad_finding(name, body)
+            if t:
+                violations.append((ERROR, where, name, t))
+
+    print(f"lint-tasknames: {repo.name}  sources: {' '.join(tally)}  (vocabulary: {skill})")
+    # ERROR first: severity ordering is the whole point of the split, and a reader who stops after
+    # the first few lines should have seen the findings that actually mean something.
+    order = {ERROR: 0, WARN: 1, INFO: 2}
+    for sev, where, name, reason in sorted(violations, key=lambda v: order[v[0]]):
+        print(f"  {sev:<5} [{where}] {name}: {reason}")
+    for tool, msg in reader_errors:
+        print(f"  READER ERROR [{tool}]: {msg}", file=sys.stderr)
+
+    n_err = sum(1 for v in violations if v[0] == ERROR)
+    n_warn = sum(1 for v in violations if v[0] == WARN)
+
+    if reader_errors:
+        print(f"{n_err} ERROR, {n_warn} WARN; {len(reader_errors)} READER ERROR(S) — "
+              "coverage is incomplete, this run proves nothing for those sources", file=sys.stderr)
+        return 2
+    if violations:
+        print(f"{n_err} ERROR, {n_warn} WARN.")
+    else:
+        print("clean.")
+    # Gates on ERROR only: a leading token outside the vocabulary is worth SEEING,
+    # never worth blocking a commit over. --strict also fails on WARN.
+    if n_err:
+        return 1
+    return 1 if (n_warn and STRICT) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -50,3 +50,11 @@ setup-dev-tls.sh
 # Alacritty's config is deployed in the personal domain only.
 .config/alacritty
 {{ end }}
+
+# Per-machine skill exclusion: skills named in the skipSkills config value (a list in the [data] of
+# ~/.config/chezmoi/chezmoi.toml, kept across `chezmoi init`) do not deploy on this machine. Ignoring
+# stops future deploys only; a skill already deployed stays until removed by hand.
+{{- range (get . "skipSkills" | default list) }}
+.claude/skills/{{ . }}
+.claude/skills/{{ . }}/**
+{{- end }}

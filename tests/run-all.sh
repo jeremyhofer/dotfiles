@@ -26,7 +26,18 @@ for t in "$here"/test-*.sh; do
   if [ -n "$filter" ]; then
     case "$name" in *"$filter"*) ;; *) continue ;; esac
   fi
-  out=$(sh "$t" 2>&1); rc=$?
+  # The interpreter comes from the shebang (`#!/usr/bin/env X` and `#!/bin/X` both reduce to X):
+  # a zsh suite run through `sh` fails on zsh-only syntax, which reads like a broken test rather
+  # than a broken runner.
+  interp=$(sed -n '1s|^#!.*[/ ]||p' "$t")
+  case "$interp" in
+    sh|bash|zsh) ;;
+    *) printf 'SKIP   %s (unrecognised interpreter: %s)\n' "$name" "${interp:-none}" >&2; continue ;;
+  esac
+  if ! command -v "$interp" >/dev/null 2>&1; then
+    printf 'SKIP   %s (%s not installed)\n' "$name" "$interp" >&2; continue
+  fi
+  out=$("$interp" "$t" 2>&1); rc=$?
   if [ "$rc" -eq 0 ]; then
     printf 'PASS   %s\n' "$name"
     pass=$((pass + 1))

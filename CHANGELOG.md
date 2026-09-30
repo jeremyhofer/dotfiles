@@ -32,6 +32,20 @@ Entries are newest first.
 
 ## 2026-09-30
 
+**Five skills and a tool move into the base** from a private layer: skills `naming-build-tasks`,
+`cross-platform-tooling`, `fault-isolation`, `vetting-tooling`, `claude-config-layers`, and the tool
+`lint-tasknames`. Each skill ends by pointing at an optional
+`~/.dotlocal/skills/<name>.md` for what is specific to one domain. `tests/run-all.sh` now runs each
+suite with the interpreter its shebang names.
+
+**A machine can decline a base skill:** list it in `skipSkills` under `[data]` in
+`~/.config/chezmoi/chezmoi.toml` (`skipSkills = ["seo"]`). `chezmoi init` keeps the value. Ignoring
+stops future deploys only; remove an already-deployed skill by hand.
+
+*What changes for you:* if a private layer used to deploy any of these, pull and apply it in the same
+sitting, so both instances do not manage the same files. chezmoi will warn that the config template
+changed; `chezmoi init` clears the warning and changes nothing else.
+
 **ACTION — the base now owns `~/.claude/CLAUDE.md`.** It holds the operating standards true on any
 machine, then imports `~/.claude/tooling.md` and `~/.dotlocal/claude/CLAUDE.md`, the domain's own
 fragment: who the user is, whether usage is flat-rate or billed, how commits are signed, and any

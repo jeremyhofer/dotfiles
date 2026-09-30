@@ -1,5 +1,8 @@
 {{- $domain := promptStringOnce . "domain" "Domain (personal|work)" "personal" -}}
 {{- $overlayRepo := promptStringOnce . "overlayRepo" "Overlay repo git URL" -}}
+{{- /* skipSkills is never prompted: a machine lists base skills it does not want by editing this
+       value in its generated config; carrying it forward here keeps it across `chezmoi init`. */ -}}
+{{- $skipSkills := get . "skipSkills" | default list -}}
 {{- /* dpi is an X11/.Xresources concern (Linux only); with Wayland primary + X break-glass,
        macOS should never be prompted for it. .Xresources is darwin-ignored, so no consumer. */ -}}
 {{- if eq .chezmoi.os "linux" -}}
@@ -8,6 +11,7 @@
 [data]
     domain = {{ $domain | quote }}
     overlayRepo = {{ $overlayRepo | quote }}
+    skipSkills = [{{ range $i, $s := $skipSkills }}{{ if $i }}, {{ end }}{{ $s | quote }}{{ end }}]
 {{- if eq .chezmoi.os "linux" }}
     dpi = {{ .dpi | quote }}
 {{- end }}
