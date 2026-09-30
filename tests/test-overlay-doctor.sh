@@ -81,6 +81,23 @@ echo "$out" | grep -q "BADREASON   .dotlocal/Brewfile.role.*preference" || { ech
 echo "$out" | grep -q 'UNREASONED  .dotlocal/Brewfile.role' && { echo "FAIL(P3): bad-reason file also counted as unlisted"; echo "$out"; exit 1; }
 echo "ok:   a reason outside the five is reported"
 
+# Tier P and the collision check read TARGET paths: a source's `.tmpl` suffix is not part of the target,
+# and a `.`-prefixed source entry (the repository's .gitignore) is never deployed.
+mk "$tmp/ov"
+printf '.dotlocal/zshenv\tsecrets\tx\n' > "$tmp/ov/PRIVATE-REASONS"
+printf 'PRIVATE-REASONS\n' > "$tmp/ov/.chezmoiignore"
+printf 'node_modules\n' > "$tmp/ov/.gitignore"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) || true
+echo "$out" | grep -q 'UNREASONED  .dotlocal/zshenv' && { echo "FAIL(P4): a .tmpl source not matched by its target"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  .gitignore' && { echo "FAIL(P4): a dot-prefixed source entry counted"; echo "$out"; exit 1; }
+echo "ok:   a .tmpl source is matched by its target; dot-prefixed source entries are not deployed"
+mk "$tmp/ovt"; bst="$tmp/baset"; mkdir -p "$bst/dot_config/demo" "$tmp/ovt/dot_config/demo"
+echo 'base' > "$bst/dot_config/demo/thing.conf"
+echo 'overlay' > "$tmp/ovt/dot_config/demo/thing.conf.tmpl"
+out=$(OVERLAY_SRC="$tmp/ovt" BASE_SRC="$bst" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q "co-owned file '.config/demo/thing.conf'" || { echo "FAIL(P5): a plain file and a template of the same target not flagged"; echo "$out"; exit 1; }
+echo "ok:   a plain file in one layer and a template of the same target in the other are a collision"
+
 # Case E — no overlay source dir -> exit 2
 out=$(OVERLAY_SRC="$tmp/nope" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 2 ] || { echo "FAIL(E): missing overlay dir should exit 2, got ${rc:-0}"; echo "$out"; exit 1; }

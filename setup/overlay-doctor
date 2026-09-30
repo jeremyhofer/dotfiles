@@ -183,6 +183,10 @@ _totarget() {
     _tgt="$_tgt/$_r"; _la=$_a
   done
   IFS=$_oIFS
+  # A template's `.tmpl` suffix is not part of its target: ssh/config.tmpl deploys ~/.ssh/config.
+  # Keeping it made a plain file in one layer and a template of the same target in the other look
+  # like two different files, and a reason written for the target never matched its template.
+  _tgt=${_tgt%.tmpl}
   printf '%s\t%s\n' "${_tgt#/}" "$(printf '%s' "$_la" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/^ *//;s/ *$//')"
 }
 
@@ -197,7 +201,13 @@ _emit_files() {
       ! -name '.chezmoitemplates' ! -path './.chezmoitemplates/*' \
       ! -path './tests' ! -path './tests/*' ! -path './setup' ! -path './setup/*' \
       ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' -print ) \
-  | while IFS= read -r _pp; do [ "$_pp" = "." ] || _totarget "${_pp#./}"; done
+  | while IFS= read -r _pp; do
+      [ "$_pp" = "." ] && continue
+      # chezmoi never deploys a source entry whose name starts with `.` (the repository's
+      # .gitignore, say); dotfiles are spelled dot_ in a source tree.
+      case "/${_pp#./}" in */.*) continue ;; esac
+      _totarget "${_pp#./}"
+    done
 }
 
 _emit_dirs() {
@@ -207,7 +217,13 @@ _emit_dirs() {
       ! -name '.chezmoitemplates' ! -path './.chezmoitemplates/*' \
       ! -path './tests' ! -path './tests/*' ! -path './setup' ! -path './setup/*' \
       ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' -print ) \
-  | while IFS= read -r _pp; do [ "$_pp" = "." ] || _totarget "${_pp#./}"; done
+  | while IFS= read -r _pp; do
+      [ "$_pp" = "." ] && continue
+      # chezmoi never deploys a source entry whose name starts with `.` (the repository's
+      # .gitignore, say); dotfiles are spelled dot_ in a source tree.
+      case "/${_pp#./}" in */.*) continue ;; esac
+      _totarget "${_pp#./}"
+    done
 }
 
 echo
