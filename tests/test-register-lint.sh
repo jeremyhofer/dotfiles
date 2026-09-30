@@ -586,6 +586,16 @@ closed_entry "$r" "ABC-02" "2026-09-01" "It is finished.
 printf '# Register\n\nClosure review required from: 2026-08-01\n' > "$r/README.md"
 assert_lacks "a done entry closed after the floor WITH the review line is clean" "[closure-review]" "$(run "$r")"
 
+# The closing date is `closed:`, the field the contract requires on every closed entry -- not a
+# History heading or `verified:`, which say when something was written, not when it closed.
+r="$tmp/cr-field"; mkdir -p "$r/closed"
+entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
+closed_entry "$r" "ABC-02" "2026-07-01" "It is finished."
+sed 's/^closed: 2026-07-01$/closed: 2026-09-01/' "$r/closed/ABC-02-a-tracked-thing.md" > "$r/tmp.md"
+mv "$r/tmp.md" "$r/closed/ABC-02-a-tracked-thing.md"
+printf '# Register\n\nClosure review required from: 2026-08-01\n' > "$r/README.md"
+assert_has "the closing date is read from closed:, not from History or verified:" "[closure-review]" "$(run "$r")"
+
 r="$tmp/cr-before"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "" "The thing is measurably finished."
 closed_entry "$r" "ABC-02" "2026-07-01" "It is finished."

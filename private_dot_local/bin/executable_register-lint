@@ -268,19 +268,14 @@ def relations(entry):
 
 
 def closing_date(entry):
-    """The latest History heading date, else `verified:`, else None.
+    """The entry's `closed:` date, or None when it is absent or malformed.
 
-    Headings are read only AFTER the History heading, so a dated heading in the body does not
-    count as the day the entry closed.
+    `closed:` is the field the contract requires on every closed entry, and the only one that says
+    when it closed: a History heading or `verified:` says when something was written or confirmed.
+    A missing or malformed `closed:` is already its own finding, so it is not reported twice here.
     """
-    history = re.search(r"^#{1,6}\s+History\s*$", entry.text, re.M)
-    dates = []
-    if history:
-        dates = re.findall(r"^#{1,6}\s+(\d{4}-\d{2}-\d{2})\b", entry.text[history.end():], re.M)
-    if dates:
-        return max(dates)
-    verified = entry.meta.get("verified", "").strip().strip("'\"")
-    return verified if DATE_RE.match(verified) else None
+    closed = entry.meta.get("closed", "").strip().strip("'\"")
+    return closed if DATE_RE.match(closed) else None
 
 
 class Entry:
