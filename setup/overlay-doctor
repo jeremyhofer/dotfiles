@@ -252,6 +252,9 @@ _ignored() {  # _ignored <tree> <target-path>
 _emit_files "$BSRC" > "$bftmp"
 _emit_files "$OSRC" | while IFS="$TAB" read -r _otgt _oattr; do
   [ -n "$_otgt" ] || continue
+  # A run_ script is executed by its own instance and deployed nowhere, so a same-named script in
+  # each tree is two scripts, not one file with two owners. Counting it failed a correct overlay.
+  case "${_otgt##*/}" in run_*) continue ;; esac
   if awk -F"$TAB" -v t="$_otgt" '$1==t{f=1} END{exit !f}' "$bftmp"; then
     _ignored "$BSRC" "$_otgt" && continue
     _ignored "$OSRC" "$_otgt" && continue
@@ -285,6 +288,48 @@ for _pair in "base=$BSRC" "overlay=$OSRC"; do
 done
 
 if [ -s "$xmark" ]; then fail=1; else note "OK          no cross-layer conflicts"; fi
+
+# --- Tier P: a reason to be private (ADVISORY, never gating) ---
+# Public by default: every file the overlay deploys either carries one of five reasons to stay private,
+# or is a candidate to move to the base, with the private part supplied through a ~/.dotlocal fragment,
+# chezmoi data, the repository manifest or an environment variable. The reasons are listed in
+# PRIVATE-REASONS at the overlay source root, one "target-glob<TAB>reason<TAB>why" line each; the
+# glob is matched against the deployed path relative to $HOME, and `*` crosses `/`. Advisory, so an
+# overlay written before the list existed still passes, and its report is the list of what to move.
+echo
+echo "Tier P: reasons to stay private (advisory):"
+_reasons="$OSRC/PRIVATE-REASONS"
+if [ ! -f "$_reasons" ]; then
+  note "ADVISORY    Tier P: no PRIVATE-REASONS at the overlay root, so no file states why it is private"
+else
+  _ptmp=$(mktemp "$_TMP/xdoctor-p.XXXXXX")
+  _emit_files "$OSRC" | while IFS="$TAB" read -r _t _a; do
+    [ -n "$_t" ] || continue
+    _ignored "$OSRC" "$_t" && continue
+    _hit=""; _why=""
+    while IFS="$TAB" read -r _g _r _rest; do
+      case "$_g" in ''|'#'*) continue ;; esac
+      # shellcheck disable=SC2254 -- the glob is the point
+      case "$_t" in $_g) _hit=$_r; break ;; esac
+    done < "$_reasons"
+    if [ -z "$_hit" ]; then
+      printf '  UNREASONED  %s\n' "$_t"; printf 'u\n' >> "$_ptmp"
+    else
+      case "$_hit" in
+        secrets|identity|infra|domain-program|domain-context) ;;
+        *) printf '  BADREASON   %s  (%s is not one of: secrets identity infra domain-program domain-context)\n' "$_t" "$_hit"
+           printf 'b\n' >> "$_ptmp" ;;
+      esac
+    fi
+  done
+  _nu=$(grep -c u "$_ptmp" 2>/dev/null || true); _nb=$(grep -c b "$_ptmp" 2>/dev/null || true)
+  rm -f "$_ptmp"
+  if [ "${_nu:-0}" -eq 0 ] && [ "${_nb:-0}" -eq 0 ]; then
+    note "OK          Tier P: every overlay file states a reason to stay private"
+  else
+    note "ADVISORY    Tier P: ${_nu:-0} file(s) with no reason (candidates to move to the base), ${_nb:-0} with an unknown reason"
+  fi
+fi
 
 if [ "$fail" -ne 0 ]; then
   cat >&2 <<'MSG'

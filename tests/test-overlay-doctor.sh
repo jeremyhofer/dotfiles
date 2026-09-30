@@ -55,6 +55,32 @@ out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 echo "$out" | grep -q 'ensure-keys' || { echo "FAIL(D): ensure-keys not flagged"; echo "$out"; exit 1; }
 echo "ok:   gpgsign=true requires ensure-keys (exit 1)"
 
+# --- Tier P: every overlay file carries a reason to be private, or is reported as a candidate to move
+# to the base. ADVISORY: it never changes the exit code, so an overlay written before the list existed
+# keeps passing while its report doubles as the list of what to move.
+mk "$tmp/ov"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(P1): no reason list must not fail the doctor, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'Tier P.*no PRIVATE-REASONS' || { echo "FAIL(P1): missing list not reported"; echo "$out"; exit 1; }
+echo "ok:   no reason list is reported, not failed"
+
+mk "$tmp/ov"
+printf '# target-glob<TAB>reason<TAB>why\n.dotlocal/gitconfig\tidentity\tname and signing key\n.dotlocal/ssh/*\tinfra\thome hosts\n' > "$tmp/ov/PRIVATE-REASONS"
+printf 'PRIVATE-REASONS\n' > "$tmp/ov/.chezmoiignore"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(P2): unreasoned files must not fail the doctor, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  .dotlocal/Brewfile.role' || { echo "FAIL(P2): unlisted file not reported"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  .dotlocal/gitconfig' && { echo "FAIL(P2): listed file reported"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  .dotlocal/ssh/config' && { echo "FAIL(P2): glob-listed file reported"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  PRIVATE-REASONS' && { echo "FAIL(P2): the ignored list itself counted"; echo "$out"; exit 1; }
+echo "ok:   unlisted files reported; listed, glob-listed and ignored ones are not"
+
+printf '.dotlocal/Brewfile.role\tpreference\tnot a reason\n' >> "$tmp/ov/PRIVATE-REASONS"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q "BADREASON   .dotlocal/Brewfile.role.*preference" || { echo "FAIL(P3): unknown reason not reported"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  .dotlocal/Brewfile.role' && { echo "FAIL(P3): bad-reason file also counted as unlisted"; echo "$out"; exit 1; }
+echo "ok:   a reason outside the five is reported"
+
 # Case E — no overlay source dir -> exit 2
 out=$(OVERLAY_SRC="$tmp/nope" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 2 ] || { echo "FAIL(E): missing overlay dir should exit 2, got ${rc:-0}"; echo "$out"; exit 1; }
@@ -116,6 +142,17 @@ printf 'README.md\n' > "$bs2/.chezmoiignore"; printf 'README.md\n' > "$tmp/ovg/.
 out=$(OVERLAY_SRC="$tmp/ovg" BASE_SRC="$bs2" sh "$script" 2>&1) && rc=0 || rc=$?
 echo "$out" | grep -q 'co-owned file' && { echo "FAIL(G): metadata false-positived"; echo "$out"; exit 1; }
 echo "ok:   chezmoi metadata in both trees is not a collision"
+
+# Case G2 — a chezmoi SCRIPT of the same name in both trees is not a collision: a run_ script is
+# executed by its own instance and deployed nowhere. This false collision failed the real, correct
+# overlay (both trees carry run_onchange_after_generate-worktrunk-config.sh.tmpl).
+mk "$tmp/ovs"; bs4="$tmp/bases"; mkdir -p "$bs4"
+echo '#!/bin/sh' > "$bs4/run_onchange_after_generate-x.sh.tmpl"
+echo '#!/bin/sh' > "$tmp/ovs/run_onchange_after_generate-x.sh.tmpl"
+out=$(OVERLAY_SRC="$tmp/ovs" BASE_SRC="$bs4" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q 'co-owned file' && { echo "FAIL(G2): same-named run_ scripts false-positived"; echo "$out"; exit 1; }
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(G2): same-named run_ scripts should not fail the doctor, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "ok:   same-named run_ scripts in both trees are not a collision"
 
 # Case H — a file both trees carry but BOTH .chezmoiignore (agent context, repo docs) is not a
 # collision: it is never deployed, so there is nothing to win last. This false-positived on the
