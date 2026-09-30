@@ -9,7 +9,7 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-reg="$here/../private_dot_local/bin/executable_register"
+reg="${REGISTER_BIN:-$here/../private_dot_local/bin/executable_register}"
 pass=0
 fail=0
 ok()  { pass=$((pass + 1)); echo "ok:   $1"; }
@@ -200,6 +200,127 @@ fentry ABC-0006 active docs/initiatives/ABC-0006-gamma/ "" "New."
 mkdir -p "$g/docs/initiatives/ABC-0006-gamma"; echo r > "$g/docs/initiatives/ABC-0006-gamma/README.md"
 assert_has "an uncommitted folder counts as having no commit" "ABC-0006" "$(grun health | grep -i 'no commit')"
 assert_has "the same holds inside a hook's environment" "ABC-0006" "$(hookenv health | grep -i 'no commit')"
+
+# --- relations, `related`, and the cross-entry health reports
+# Each report is planted once and paired with a near miss that must stay quiet. The fixture is its
+# own register, so the bodies here name no ids unless a case is about a mention.
+rl="$tmp/rel/docs/register"; mkdir -p "$rl/closed"
+rentry() {  # $1 id  $2 status  $3 title  $4 extra frontmatter (may hold newlines)  $5 body  $6 dir
+  { echo "---"; echo "id: $1"; echo "title: $3"; echo "status: $2"; echo "owner: jeremy"
+    echo "verified: ${ver:-2026-09-22}"; [ -n "${4:-}" ] && printf '%s\n' "$4"
+    echo "---"; echo ""; echo "# $1"; echo ""; echo "${5:-Body.}"
+  } > "${6:-$rl}/$1-slug.md"
+}
+rrun() { python3 "$reg" "$@" --root "$rl" 2>&1 || true; }
+old=$(python3 -c 'import datetime;print(datetime.date.today()-datetime.timedelta(days=20))')
+recent=$(python3 -c 'import datetime;print(datetime.date.today()-datetime.timedelta(days=10))')
+
+rentry REL-01 active   "Parent initiative" "artifacts:
+  - spec:docs/specs/zebra-notes.md"
+rentry REL-02 active   "Child by scalar" "part-of: REL-01"
+rentry REL-03 active   "Blocks two" "blocks:
+  - REL-04
+  - REL-05"
+rentry REL-04 blocked  "Gated and typed" "gate: REL-03"
+rentry REL-05 held     "Gated on a closed one" "gate: REL-06 finishing"
+rentry REL-06 done    "The closed one" "" "Body." "$rl/closed"
+rentry REL-07 active   "Child of a closed parent" "part-of: REL-06"
+rentry REL-08 active   "Replaces the closed one" "supersedes: REL-06"
+rentry REL-09 active   "Split off the parent" "split-from: REL-01"
+rentry REL-10 dropped  "Duplicate of the parent" "duplicates: REL-01"
+rentry REL-11 active   "Related to the parent" "relates: REL-01"
+rentry REL-13 active   "Mentions a child in prose" "" "See REL-02 for the details."
+rentry REL-14 active   "Child that mentions its parent" "part-of: REL-01" "Parent is REL-01."
+ver=$old
+rentry REL-15 standing "Overdue and reporting" "cadence: fortnightly
+overdue: report"
+rentry REL-17 standing "Overdue, not reporting" "cadence: fortnightly"
+ver=$recent
+rentry REL-16 standing "Recent and reporting" "cadence: fortnightly
+overdue: report"
+ver=
+mv "$rl/REL-10-slug.md" "$rl/closed/"
+rentry REL-19 done "Closed child of a closed parent" "part-of: REL-06" "Body." "$rl/closed"
+
+# show: the relation an entry states, and the inverse of each kind, with the other entry's status
+out=$(rrun show REL-02)
+assert_has "show lists a stated scalar relation" "part-of" "$out"
+assert_has "show gives the relation's target with its status" "[active]  Parent initiative" "$out"
+out=$(rrun show REL-01)
+assert_has "show derives children from part-of" "children" "$(echo "$out" | grep REL-02)"
+assert_has "show derives split into from split-from" "split into" "$(echo "$out" | grep REL-09)"
+assert_has "show derives duplicated by from duplicates" "duplicated by" "$(echo "$out" | grep REL-10)"
+assert_has "show derives related by from relates" "related by" "$(echo "$out" | grep REL-11)"
+assert_has "a derived row carries the other entry's status" "[dropped]" "$(echo "$out" | grep REL-10)"
+assert_has "show derives superseded by" "superseded by" "$(rrun show REL-06 | grep REL-08)"
+out=$(rrun show REL-04)
+assert_has "show derives blocked by from blocks" "blocked by" "$(echo "$out" | grep REL-03)"
+assert_has "show reads a block list (first item)" "blocks" "$(rrun show REL-03 | grep REL-04)"
+assert_has "show reads a block list (second item)" "blocks" "$(rrun show REL-03 | grep REL-05)"
+assert_lacks "an entry with no relations has no Relations block" "Relations" "$(rrun show REL-13)"
+assert_lacks "a stated relation is not shown as an inverse on its own entry" "children" "$(rrun show REL-02)"
+
+# related: ranked by matches, closed entries included, no match is an answer not an error
+out=$(rrun related closed)
+assert_has "related finds a title match in a closed entry" "REL-06" "$out"
+assert_lacks "related leaves out an entry with no match" "REL-02" "$out"
+out=$(rrun related child parent)
+first=$(printf '%s\n' "$out" | head -1)
+assert_has "related lists id, status, title and count" "(3)" "$first"
+assert_has "related ranks the most matches first" "REL-14" "$first"
+assert_has "related searches the body" "REL-13" "$(rrun related details)"
+assert_has "related searches artifacts" "REL-01" "$(rrun related zebra)"
+out=$(rrun related qqqqqq)
+assert_has "related says so when nothing matches" "no match" "$out"
+python3 "$reg" related qqqqqq --root "$rl" >/dev/null 2>&1 && ok "related exits 0 on no match" || bad "related exits 0 on no match"
+python3 "$reg" related --root "$rl" >/dev/null 2>&1 && bad "related with no words is an error" || ok "related with no words is an error"
+
+# health reports (unset the folder repo, so only these reports are in play)
+out=$(rrun health)
+assert_has "untyped-mention counts a mention with no relation" "[untyped-mention] 1 " "$out"
+assert_lacks "untyped-mention does not count a mention already typed" "REL-14" "$out"
+out=$(rrun health --mentions)
+assert_has "--mentions lists the untyped mention" "REL-13 mentions REL-02" "$out"
+assert_lacks "--mentions leaves a typed pair out" "REL-14 mentions" "$out"
+out=$(rrun health)
+assert_has "gate-closed names a held entry gated on a closed one" "[gate-closed] REL-05" "$out"
+assert_lacks "gate-closed leaves a gate on an open entry alone" "[gate-closed] REL-04" "$out"
+assert_has "gate-untyped names a gate absent from blocks" "[gate-untyped] REL-05" "$out"
+assert_lacks "gate-untyped leaves a gate that is under blocks" "[gate-untyped] REL-04" "$out"
+assert_has "child-of-closed names an open entry part-of a closed one" "[child-of-closed] REL-07" "$out"
+assert_lacks "child-of-closed leaves a child of an open parent" "[child-of-closed] REL-02" "$out"
+assert_lacks "child-of-closed leaves a closed child" "[child-of-closed] REL-19" "$out"
+assert_has "standing-overdue names an overdue entry that reports" "REL-15: standing-overdue" "$out"
+assert_lacks "standing-overdue leaves a fortnightly entry inside 14 days" "REL-16" "$out"
+assert_lacks "an overdue entry without overdue: report keeps the ordinary line" "REL-17: standing-overdue" "$out"
+assert_has "an overdue entry without overdue: report is still reported" "REL-17: standing," "$out"
+python3 "$reg" health --root "$rl" >/dev/null 2>&1 && ok "health exits 0 with relation findings" || bad "health exits 0 with relation findings"
+
+# Foreign ids: resolved through fleet-decl and a manifest when both are present, else unresolved.
+rentry REL-18 active "Names other registers" "relates:
+  - FOO-0003
+supersedes: GAP-9"
+if command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -q mikefarah; then
+  mkdir -p "$tmp/bin" "$tmp/devel/foo/docs/register"
+  cp "$here/../private_dot_local/bin/executable_fleet-decl" "$tmp/bin/fleet-decl"; chmod +x "$tmp/bin/fleet-decl"
+  printf 'projects:\n  foo:\n    leakPrefix: FOO\n    leakPolicy: private\n    path: foo\n' > "$tmp/mani.yaml"
+  rentry FOO-0003 ready "Foreign entry" "" "Body." "$tmp/devel/foo/docs/register"
+  frun() { PATH="$tmp/bin:$PATH" FLEET_RECORD="$tmp/mani.yaml" FLEET_DEVEL_ROOT="$tmp/devel" python3 "$reg" "$@" --root "$rl" 2>&1 || true; }
+  out=$(frun show REL-18)
+  assert_has "show resolves a foreign id through the manifest" "[ready]  Foreign entry" "$out"
+  assert_has "show marks an unknown prefix unresolved" "GAP-9" "$(echo "$out" | grep unresolved)"
+  out=$(frun health)
+  assert_has "unresolved-foreign counts the ids that do not resolve, by prefix" "[unresolved-foreign] GAP: 1 " "$out"
+  assert_lacks "a foreign id that resolves is not reported" "FOO" "$out"
+  rm "$tmp/devel/foo/docs/register/FOO-0003-slug.md"
+  assert_has "a foreign id missing from its register is unresolved" "[unresolved-foreign] FOO: 1 " "$(frun health)"
+else
+  echo "skip: foreign-id resolution (needs the mikefarah yq)"
+fi
+out=$(FLEET_RECORD="$tmp/none.yaml" python3 "$reg" show REL-18 --root "$rl" 2>&1) && ok "show does not fail when the manifest is unreadable" || bad "show does not fail when the manifest is unreadable"
+assert_has "an unreadable manifest leaves the foreign id unresolved" "FOO-0003" "$(echo "$out" | grep unresolved)"
+out=$(PATH=/usr/bin:/bin FLEET_RECORD="$tmp/none.yaml" "$(command -v python3)" "$reg" health --root "$rl" 2>&1) && ok "health does not fail without fleet-decl" || bad "health does not fail without fleet-decl"
+assert_has "without fleet-decl every foreign id is unresolved" "[unresolved-foreign] FOO: 1 " "$out"
 
 # --- a wrong root is an ERROR, not an empty answer. Those look identical and only one is true.
 python3 "$reg" list --root "$tmp/nope" >/dev/null 2>&1 && bad "a missing root exits non-zero" || ok "a missing root exits non-zero"
