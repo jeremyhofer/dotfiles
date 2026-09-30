@@ -32,6 +32,18 @@ Entries are newest first.
 
 ## 2026-09-30
 
+**ACTION — the base now owns `~/.claude/CLAUDE.md`.** It holds the operating standards true on any
+machine, then imports `~/.claude/tooling.md` and `~/.dotlocal/claude/CLAUDE.md`, the domain's own
+fragment: who the user is, whether usage is flat-rate or billed, how commits are signed, and any
+further imports. A private overlay deploys that fragment; `overlay-skeleton/` has a stub for it.
+
+*What changes for you:* before its first write, the apply copies a `CLAUDE.md` the base did not write
+to `~/.claude/CLAUDE.md.before-base` and says so (chezmoi would otherwise replace it without asking).
+If that copy appears, move what is specific to this machine's domain into the fragment, through the
+overlay if the machine has one, then delete the copy. If an overlay used to manage
+`~/.claude/CLAUDE.md`, pull and apply the overlay in the same sitting: until it has stopped managing
+the file, both instances write it and the last apply wins.
+
 **`overlay-doctor` now assesses the machine it runs on** (advisory; `overlay-doctor --machine` runs it
 alone, with or without an overlay). It reports the git that runs and whether its configured hooks
 actually fire, measured in a throwaway repository; every `git` on `PATH`, in order; the tools the base

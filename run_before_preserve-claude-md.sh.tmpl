@@ -1,0 +1,6 @@
+#!/bin/sh
+# Before the apply writes ~/.claude/CLAUDE.md, save a copy the base did not write -- see
+# setup/preserve-claude-md for why chezmoi would otherwise replace it silently. A non-zero exit
+# aborts the apply, which it does only when saving would itself lose a file.
+set -eu
+exec sh "{{ .chezmoi.sourceDir }}/setup/preserve-claude-md"

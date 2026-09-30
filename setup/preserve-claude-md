@@ -1,0 +1,36 @@
+#!/bin/sh
+# preserve-claude-md -- save a ~/.claude/CLAUDE.md the base did not write, before the base's first
+# apply replaces it.
+#
+# WHY. The base owns ~/.claude/CLAUDE.md: generic operating standards, then an import of the
+# domain's own fragment, ~/.dotlocal/claude/CLAUDE.md. A machine adopting that may already have a
+# CLAUDE.md, kept by hand or rendered by a private chezmoi instance, and chezmoi overwrites a file
+# it has never managed WITHOUT prompting (measured, chezmoi 2.72). The domain content in it would
+# be gone with no copy. So before the apply writes anything, a file without the base's marker line
+# is copied to ~/.claude/CLAUDE.md.before-base, for its owner to move what is theirs into the
+# fragment.
+#
+# Refuses (exit 1), aborting the apply, when an earlier copy exists and differs from the current
+# file: overwriting the copy would lose the earlier file, and letting the apply proceed would lose
+# the current one. Moving the copy aside resolves it.
+set -eu
+target="$HOME/.claude/CLAUDE.md"
+copy="$target.before-base"
+marker='<!-- dotfiles-base: ~/.claude/CLAUDE.md -->'
+
+[ -f "$target" ] || exit 0
+grep -qF -- "$marker" "$target" && exit 0
+
+if [ -e "$copy" ]; then
+  cmp -s "$target" "$copy" && exit 0
+  printf '%s\n' "preserve-claude-md: $target was not written by the dotfiles base, and an earlier" \
+    "  copy, $copy, holds something else. Applying would replace the current file." \
+    "  Move $copy aside (or into ~/.dotlocal/claude/CLAUDE.md), then apply again." >&2
+  exit 1
+fi
+
+cp -p "$target" "$copy"
+printf '%s\n' "preserve-claude-md: the base now owns $target, which it did not write before." \
+  "  The previous file is saved as $copy." \
+  "  Move what belongs to this machine's domain into ~/.dotlocal/claude/CLAUDE.md, which the" \
+  "  base file imports; then delete the copy." >&2

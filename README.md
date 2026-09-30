@@ -129,6 +129,20 @@ skips silently on a machine that has none.
 guarded flow — audit what would be overwritten, back it up, diff, confirm. See
 [`setup/README.md`](setup/README.md); start there rather than applying straight onto existing files.
 
+## `dot_claude/CLAUDE.md.tmpl` — the global Claude instructions, and the domain's fragment
+
+This repo owns `~/.claude/CLAUDE.md`: the operating standards true on any machine, then two imports,
+`~/.claude/tooling.md` (below) and `~/.dotlocal/claude/CLAUDE.md`, the domain's own fragment, which a
+private overlay deploys with that domain's people, machines, plans, signing setup and any further
+imports. A machine with no fragment gets the generic standards alone; Claude Code skips an import that
+resolves to nothing. One owner per file keeps the two chezmoi instances disjoint, and imports resolve
+at session start, so no apply-time concatenation can drift from its parts.
+
+Taking the file over is the one risky moment: chezmoi replaces a file it has never managed without
+asking. `run_before_preserve-claude-md.sh.tmpl` runs `setup/preserve-claude-md` first, which copies a
+`CLAUDE.md` that lacks the base's marker line to `~/.claude/CLAUDE.md.before-base`, so a hand-kept file
+survives the first apply to be moved into the fragment. `tests/test-preserve-claude-md.sh` covers it.
+
 ## `dot_claude/tooling.md` — the always-on tooling inventory
 
 Shipped into `~/.claude/tooling.md` and imported by a machine's Claude config. It exists because a
@@ -137,7 +151,7 @@ on 2026-09-04 an agent searched for a binary called `worktrunk`, found none, and
 tool missing — including as a blocker to a change. It ships as `wt`. Hence the name-mismatch table.
 
 Two layers, so the split survives a machine that has only this repo: this file lists what the base
-installs and never names a private tool; the private overlay ships its own fragment and imports
-both. `tests/test-tooling-inventory.sh` fails when a tool here is undocumented, and warns when the
+installs and never names a private tool; the private overlay ships its own fragment, which the
+domain's `CLAUDE.md` fragment imports. `tests/test-tooling-inventory.sh` fails when a tool here is undocumented, and warns when the
 document names one this repo no longer ships — a stale inventory is worse than none, because it is
 believed.

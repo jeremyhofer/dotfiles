@@ -30,6 +30,10 @@ git -C ~/.local/share/chezmoi-overlay pull --ff-only     # if this machine has a
 #    CHANGELOG.md in the base — only the entries dated after your last apply.
 #    Entries marked ACTION need something done, usually in the overlay.
 
+# 3b. If a diff or apply warns "config file template has changed", regenerate that instance's
+#     config first (`chezmoi init`, `chezmoi-overlay init`): a template now reads a value the old
+#     config lacks, asked for once. Skipped, the apply stops on "map has no entry for key".
+
 # 4. See what would change, per instance — they are separate
 chezmoi diff
 chezmoi-overlay diff

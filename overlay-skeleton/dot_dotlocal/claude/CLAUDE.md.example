@@ -1,0 +1,9 @@
+# <domain> — the domain's half of ~/.claude/CLAUDE.md
+
+Optional. The base's `~/.claude/CLAUDE.md` holds the operating standards true on any machine and
+imports this file after them. Put here only what is true of this domain: who the user is and what
+"good" means here (understanding or throughput), whether usage is a flat subscription or billed, how
+commits are signed and what a signing failure looks like, and any further imports (a private tooling
+list, a knowledge-base projection) as `@/absolute/path` lines. A file already kept by hand at
+`~/.claude/CLAUDE.md` is saved as `~/.claude/CLAUDE.md.before-base` on the base's first apply; move
+its domain-specific parts here.
