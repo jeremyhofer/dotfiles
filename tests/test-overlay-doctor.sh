@@ -98,6 +98,33 @@ out=$(OVERLAY_SRC="$tmp/ovt" BASE_SRC="$bst" sh "$script" 2>&1) && rc=0 || rc=$?
 echo "$out" | grep -q "co-owned file '.config/demo/thing.conf'" || { echo "FAIL(P5): a plain file and a template of the same target not flagged"; echo "$out"; exit 1; }
 echo "ok:   a plain file in one layer and a template of the same target in the other are a collision"
 
+# --- Machine assessment (advisory): versions, tools and capabilities, never values or private paths.
+fakebin="$tmp/fakebin"; mkdir -p "$fakebin"
+printf '#!/bin/sh\n[ "$1" = "--version" ] && { echo "git version 2.50.1"; exit 0; }\nexec %s "$@"\n' "$(command -v git)" > "$fakebin/git"; chmod +x "$fakebin/git"
+out=$(OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(M1): --machine must run without an overlay and exit 0, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'machine assessment' || { echo "FAIL(M1): no assessment section"; echo "$out"; exit 1; }
+echo "ok:   --machine runs with no overlay"
+out=$(PATH="$fakebin:$PATH" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+echo "$out" | grep -q 'git .*2\.50\.1.*older than 2\.54' || { echo "FAIL(M2): an old git not flagged"; echo "$out"; exit 1; }
+echo "ok:   a git older than 2.54 is flagged (configured hooks skipped)"
+out=$(OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+echo "$out" | grep -q 'configured hooks fire *yes' || { echo "FAIL(M3): configured hooks not seen firing on this git"; echo "$out"; exit 1; }
+echo "ok:   configured hooks are seen firing"
+out=$(ASSESS_TOOLS="git no-such-tool-ccx" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+echo "$out" | grep -q 'missing *no-such-tool-ccx' || { echo "FAIL(M4): a missing tool not reported"; echo "$out"; exit 1; }
+echo "ok:   a missing tool is reported"
+printf '{"permissions":{"deny":["SECRETVALUE-ccx"]},"hooks":{},"env":{"X":"SECRETVALUE-ccx"}}\n' > "$tmp/managed.json"
+out=$(ASSESS_MANAGED_SETTINGS="$tmp/managed.json" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+echo "$out" | grep -q 'managed settings keys *env hooks permissions' || { echo "FAIL(M5): managed key names not listed"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'SECRETVALUE' && { echo "FAIL(M5): a managed value leaked into the report"; echo "$out"; exit 1; }
+echo "ok:   managed settings key names listed, values never"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) || true
+mk "$tmp/ov"; out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) || true
+echo "$out" | grep -q 'machine assessment' || { echo "FAIL(M6): the full run does not include the assessment"; echo "$out"; exit 1; }
+echo "$out" | grep -q "$HOME" && { echo "FAIL(M6): the home directory appears in the report"; echo "$out"; exit 1; }
+echo "ok:   the full run includes the assessment, with no home-directory paths"
+
 # Case E — no overlay source dir -> exit 2
 out=$(OVERLAY_SRC="$tmp/nope" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 2 ] || { echo "FAIL(E): missing overlay dir should exit 2, got ${rc:-0}"; echo "$out"; exit 1; }

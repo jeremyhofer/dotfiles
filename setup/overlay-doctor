@@ -24,6 +24,86 @@ note() { printf '  %s\n' "$*"; }
 miss() { printf '  MISSING     %s\n' "$*"; fail=1; }
 stub() { printf '  PLACEHOLDER %s\n' "$*"; fail=1; }
 
+# --- Machine assessment (ADVISORY, never gating) ---------------------------------------------
+# What this machine can do for the setup, measured rather than assumed: the git that runs and whether
+# its configured hooks fire, the tools the base expects, the shell, and Claude Code with the key names
+# of any managed policy. It prints versions, presence and key names only -- never a value, and never a
+# path under the home directory -- so the report can be read aloud or retyped off any machine.
+# `overlay-doctor --machine` runs this alone, with or without an overlay.
+_home_safe() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
+assess() {
+  echo
+  echo "machine assessment (advisory):"
+  # git: configured hooks (hook.<name>.command/.event) need 2.54+; an older git skips them silently.
+  if command -v git >/dev/null 2>&1; then
+    _gv=$(git --version 2>/dev/null | awk '{print $3}')
+    _maj=$(printf '%s' "$_gv" | cut -d. -f1); _min=$(printf '%s' "$_gv" | cut -d. -f2)
+    if [ "${_maj:-0}" -gt 2 ] 2>/dev/null || { [ "${_maj:-0}" -eq 2 ] && [ "${_min:-0}" -ge 54 ]; } 2>/dev/null; then
+      note "git                   $_gv (configured hooks supported)"
+    else
+      note "git                   $_gv -- older than 2.54: configured hooks (the secret scan, the co-author trailer) are skipped silently"
+    fi
+    _all=""; _oIFS=$IFS; IFS=:
+    for _d in $PATH; do [ -x "$_d/git" ] && _all="$_all $(_home_safe "$_d/git")"; done
+    IFS=$_oIFS
+    note "git on PATH, in order $_all"
+    # Fire one: a throwaway repository, no global or system config, one configured pre-commit hook
+    # that refuses. A commit that then fails, where the same commit without the hook succeeds, is a
+    # hook that fired. The control keeps "git could not commit at all" from reading as a yes.
+    _hr=$(mktemp -d "$_TMP/assess-hook.XXXXXX")
+    if ( cd "$_hr" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git init -q . >/dev/null 2>&1 ); then
+      _c() { ( cd "$_hr" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=a -c user.email=a@a \
+                 -c commit.gpgsign=false "$@" commit -q --allow-empty -m probe >/dev/null 2>&1 ); }
+      if ! _c; then note "configured hooks fire  INCONCLUSIVE (a plain commit failed)"
+      elif _c -c hook.assess.command=false -c hook.assess.event=pre-commit; then note "configured hooks fire  no"
+      else note "configured hooks fire  yes"
+      fi
+    else
+      note "configured hooks fire  INCONCLUSIVE (could not create a repository)"
+    fi
+    rm -rf "$_hr"
+    _gh=$(git config --global --get-regexp '^hook\..*\.event$' 2>/dev/null | sed 's/^hook\.//;s/\.event .*//' | tr '\n' ' ')
+    note "global configured hooks ${_gh:-none}"
+  else
+    note "git                   missing"
+  fi
+  # Tools the base expects. Override the list with ASSESS_TOOLS (space-separated).
+  for _t in ${ASSESS_TOOLS:-git zsh jq yq gitleaks chezmoi mani wt claude}; do
+    if command -v "$_t" >/dev/null 2>&1; then note "present               $_t"; else note "missing               $_t"; fi
+  done
+  _sh=${SHELL##*/}
+  if [ "$_sh" = zsh ] && command -v zsh >/dev/null 2>&1; then
+    note "login shell           zsh $(zsh --version 2>/dev/null | awk '{print $2}')"
+  else
+    note "login shell           ${_sh:-unknown}"
+  fi
+  note "operating system      $(uname -s) $( [ "$(uname -s)" = Darwin ] && sw_vers -productVersion 2>/dev/null || uname -r)"
+  if command -v claude >/dev/null 2>&1; then
+    note "Claude Code           $(claude --version 2>/dev/null | awk '{print $1}')"
+  else
+    note "Claude Code           not on PATH"
+  fi
+  # A managed policy an administrator installed. Key names only: they say which settings are enforced.
+  _ms=${ASSESS_MANAGED_SETTINGS:-}
+  if [ -z "$_ms" ]; then
+    for _c2 in "/Library/Application Support/ClaudeCode/managed-settings.json" /etc/claude-code/managed-settings.json; do
+      [ -f "$_c2" ] && { _ms=$_c2; break; }
+    done
+  fi
+  if [ -n "$_ms" ] && [ -f "$_ms" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      note "managed settings keys $(jq -r 'keys | join(" ")' "$_ms" 2>/dev/null || echo '(unreadable)')"
+    else
+      note "managed settings      present (install jq to list its key names)"
+    fi
+  else
+    note "managed settings      none"
+  fi
+  note "next: claude-context-probe (what Claude Code loads here); claude-context-probe --fleet (background-session features)"
+}
+
+if [ "${1:-}" = "--machine" ]; then assess; exit 0; fi
+
 [ -d "$OSRC" ] || {
   echo "overlay-doctor: no overlay source at $OSRC" >&2
   echo "  scaffold one first:  setup/scaffold-overlay $OSRC" >&2
@@ -346,6 +426,8 @@ else
     note "ADVISORY    Tier P: ${_nu:-0} file(s) with no reason (candidates to move to the base), ${_nb:-0} with an unknown reason"
   fi
 fi
+
+assess
 
 if [ "$fail" -ne 0 ]; then
   cat >&2 <<'MSG'
