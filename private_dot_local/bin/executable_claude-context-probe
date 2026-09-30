@@ -35,25 +35,241 @@ set -u
 
 CLAUDE_BIN=${CLAUDE_CONTEXT_PROBE_CLAUDE:-claude}
 KEEP=0
-case "${1:-}" in
-  --keep) KEEP=1 ;;
-  -h|--help)
-    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
-    printf '\nusage: claude-context-probe [--keep]\n  --keep  leave the temp tree in place and print its path\n'
-    exit 0 ;;
-  '') ;;
-  *) printf 'claude-context-probe: unknown argument %s\n' "$1" >&2; exit 2 ;;
-esac
+FLEET=0
+for arg in "$@"; do
+  case "$arg" in
+    --keep) KEEP=1 ;;
+    --fleet) FLEET=1 ;;
+    -h|--help)
+      sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+      printf '\nusage: claude-context-probe [--keep]\n       claude-context-probe --fleet [--keep]\n'
+      printf '  --keep   leave the temp tree in place and print its path\n'
+      printf '  --fleet  run ONLY the background-session checks (--bg, agents, attach, resume, rm,\n'
+      printf '           respawn, model aliases, tool names) instead of the context checks. It starts\n'
+      printf '           real background sessions and a few small model calls, and removes them again.\n'
+      exit 0 ;;
+    *) printf 'claude-context-probe: unknown argument %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
 
 command -v "$CLAUDE_BIN" >/dev/null 2>&1 || { printf 'claude-context-probe: %s not found on PATH\n' "$CLAUDE_BIN" >&2; exit 2; }
 command -v git >/dev/null 2>&1 || { printf 'claude-context-probe: git not found on PATH\n' >&2; exit 2; }
 
 tmpbase=${TMPDIR:-/tmp}; tmpbase=${tmpbase%/}   # macOS TMPDIR ends in a slash
 ROOT=$(mktemp -d "$tmpbase/claude-context-probe.XXXXXX") || exit 2
-if [ "$KEEP" -eq 0 ]; then trap 'rm -rf "$ROOT"' EXIT; fi
+if [ "$KEEP" -eq 0 ] && [ "$FLEET" -eq 0 ]; then trap 'rm -rf "$ROOT"' EXIT; fi
 NONCE="$(date +%s)$$"
 cw() { printf 'CCPROBE-%s-%s' "$1" "$NONCE"; }
 plant() { printf 'Codeword: %s\n' "$(cw "$2")" > "$1"; }
+
+# ---- --fleet: the background-session checks ---------------------------------------------------
+# A different question from the context checks above: not "what reaches the model" but "which of
+# the features a set of long-lived, named background sessions relies on work on this build and
+# policy". It starts real background sessions (haiku, one-line prompts) plus a few `-p` calls,
+# prints one row per check (yes, no, or INCONCLUSIVE with a fixed reason), and removes every
+# session it started, even on failure. Like the summary above it prints no paths, names or values.
+#
+# Guesses to verify on the first real run, all in this block: the `--allowedTools` spelling and
+# the `--` before the prompt, the field names in `claude agents --json` (id, name, pid, sessionId,
+# cwd), that `--all` is accepted, that `attach`/`rm` take the row id, and that `--resume` composes
+# with `--bg`.
+FLEET_WAIT=${CLAUDE_CONTEXT_PROBE_FLEET_WAIT:-30}                   # seconds to poll for a listing
+FLEET_ATTACH_WAIT=${CLAUDE_CONTEXT_PROBE_FLEET_ATTACH_WAIT:-15}     # seconds `attach` runs before it is killed
+# How the background session is allowed to run its one command without a prompt. Adjust if this
+# Claude Code build spells it differently; a launch that fails on it reads as bg-launch no.
+FLEET_ALLOW_FLAG=--allowedTools
+FLEET_ALLOWED_TOOLS='Bash(printenv:*)'
+FLEET_PROMPT='Run the shell command: printenv CCPROBE_ENV TMPDIR . Then reply with its output on one line, prefixed CCPROBE-FLEET: and nothing else.'
+
+alive() { # a pid that exists and is not a zombie
+  kill -0 "$1" 2>/dev/null || return 1
+  case $(ps -o stat= -p "$1" 2>/dev/null) in Z*|'') return 1 ;; esac
+  return 0
+}
+wait_for() { # <seconds> <command...>: run the command until it succeeds, once a second
+  local n=$1 i=0; shift
+  while :; do
+    "$@" && return 0
+    [ "$i" -ge "$n" ] && return 1
+    sleep 1; i=$((i+1))
+  done
+}
+rows_of() { # stdin: agents JSON. Prints id|name|pid|sessionId|cwd per row, '-' for a missing field.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)
+if isinstance(d, dict):
+    d = next((v for v in d.values() if isinstance(v, list)), [])
+for r in d:
+    if isinstance(r, dict):
+        print("|".join(str(r[k]) if r.get(k) not in (None, "") else "-" for k in ("id", "name", "pid", "sessionId", "cwd")).replace("\n", " "))
+'
+  else
+    jq -r 'if type == "object" then (([.[] | arrays] | first) // []) else . end | .[]
+           | [.id, .name, .pid, .sessionId, .cwd] | map(if . == null or . == "" then "-" else tostring end) | join("|")' 2>/dev/null
+  fi
+}
+fleet_rows() { # every listed row, from `agents --json` then `agents --all --json`
+  "$CLAUDE_BIN" agents --json 2>/dev/null </dev/null | rows_of
+  "$CLAUDE_BIN" agents --all --json 2>/dev/null </dev/null | rows_of
+}
+find_row() { # <name>: sets R_ID R_PID R_SID R_CWD from the first listed row with that name
+  local line
+  line=$(fleet_rows | awk -F'|' -v n="$1" '$2 == n { print; exit }')
+  [ -n "$line" ] || return 1
+  IFS='|' read -r R_ID _ R_PID R_SID R_CWD <<< "$line"
+  seen_names="$seen_names $1"
+}
+row_gone() { ! fleet_rows | awk -F'|' -v i="$1" '$1 == i { f = 1 } END { exit !f }'; }
+reply_line() { # the model's one-line answer from the transcript, cleaned of JSON punctuation
+  sed -n 's/.*CCPROBE-FLEET:[ ]*//p' "$TFILE" \
+    | awk -v n="$NONCE" '{ gsub(/\\n/, " "); gsub(/["\\,}`]/, " ")
+                           if ($1 ~ /^\// || $1 == n) { print; exit } }' > "$ROOT/reply"
+  [ -s "$ROOT/reply" ]
+}
+FLEET_CLEANED=0
+fleet_cleanup() {
+  [ "$FLEET_CLEANED" -eq 1 ] && return
+  FLEET_CLEANED=1
+  [ -n "${apid:-}" ] && kill "$apid" 2>/dev/null
+  local name
+  for name in $created_names; do
+    if find_row "$name"; then
+      "$CLAUDE_BIN" rm "$R_ID" >/dev/null 2>&1 </dev/null
+    else
+      case " $seen_names " in *" $name "*) ;; *) "$CLAUDE_BIN" rm "$name" >/dev/null 2>&1 </dev/null ;; esac
+    fi
+  done
+  # The transcripts the probe's own sessions wrote; nothing else is touched.
+  for sid in $created_sids; do
+    find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$sid.jsonl" -type f -exec rm -f {} + 2>/dev/null
+  done
+  [ "$KEEP" -eq 1 ] || rm -rf "$ROOT"
+}
+
+fleet_main() {
+  local NAME="ccprobe-fleet-$NONCE" INC='INCONCLUSIVE (needs an earlier check)' TD="$ROOT/sessiontmp"
+  local r_bg=$INC r_ag=$INC r_env=$INC r_tmp=$INC r_tr=$INC r_att=$INC r_res=$INC r_rm=$INC r_resp=$INC
+  local id2="" pid2="" oldpid alias out rc line t t2 td2 tool
+  created_names=""; seen_names=""; created_sids=""; apid=""; TFILE=""
+  mkdir -p "$ROOT/work" "$TD" || exit 2
+  trap fleet_cleanup EXIT
+  trap 'exit 130' INT TERM
+  printf 'claude-context-probe: --fleet starting real background sessions (a few minutes)...\n' >&2
+  local settings
+  settings=$(printf '{"env":{"CCPROBE_ENV":"%s","CLAUDE_CODE_TMPDIR":"%s"}}' "$NONCE" "$TD")
+
+  # 1. bg-launch. --allowedTools takes several values, so the prompt follows a `--`.
+  ( cd "$ROOT/work" && "$CLAUDE_BIN" --bg -n "$NAME" --model haiku --settings "$settings" \
+      "$FLEET_ALLOW_FLAG" "$FLEET_ALLOWED_TOOLS" -- "$FLEET_PROMPT" ) >/dev/null 2>&1 </dev/null
+  if [ $? -eq 0 ]; then
+    r_bg=yes; created_names="$NAME"
+    # 2. agents-json
+    if ! command -v python3 >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
+      r_ag='INCONCLUSIVE (needs python3 or jq)'
+    elif wait_for "$FLEET_WAIT" find_row "$NAME"; then
+      if [ "$R_ID" != - ] && [ "$R_PID" != - ] && [ "$R_SID" != - ] && [ "$R_CWD" != - ]; then
+        r_ag=yes
+      else
+        r_ag='no (row lacks id, pid, sessionId or cwd)'
+      fi
+    else
+      r_ag=no
+    fi
+  else
+    r_bg=no
+  fi
+
+  if [ "$r_ag" = yes ]; then
+    SID=$R_SID; ID=$R_ID; PID=$R_PID; created_sids="$SID"
+    # 5. transcript (read first: 3 and 4 come from it)
+    tfind() { TFILE=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$SID.jsonl" -type f 2>/dev/null | head -n 1); [ -n "$TFILE" ]; }
+    if wait_for "$FLEET_WAIT" tfind; then r_tr=yes; else r_tr=no; fi
+    # 3. settings-env and 4. tmpdir
+    if [ "$r_tr" = yes ]; then
+      if wait_for $((FLEET_WAIT * 2)) reply_line; then
+        line=$(cat "$ROOT/reply")
+        r_env=no; r_tmp=no
+        td2=${TD#/private}
+        for t in $line; do
+          [ "$t" = "$NONCE" ] && r_env=yes
+          t2=${t#/private}
+          case "$t2" in "$td2"|"$td2"/*) r_tmp=yes ;; esac
+        done
+      else
+        r_env='INCONCLUSIVE (no reply in the transcript)'; r_tmp=$r_env
+      fi
+    else
+      r_env='INCONCLUSIVE (no transcript)'; r_tmp=$r_env
+    fi
+    # 6. attach: run it detached, kill it, and see whether the session survived
+    "$CLAUDE_BIN" attach "$ID" </dev/null >/dev/null 2>&1 &
+    apid=$!
+    sleep "$FLEET_ATTACH_WAIT"
+    kill "$apid" 2>/dev/null; wait "$apid" 2>/dev/null; apid=""
+    if find_row "$NAME" && alive "$R_PID"; then r_att=yes; else r_att=no; fi
+    # 7. resume-bg
+    created_names="$created_names $NAME-r"
+    if ( cd "$ROOT/work" && "$CLAUDE_BIN" --bg -n "$NAME-r" --model haiku --resume "$SID" -- 'reply OK' ) >/dev/null 2>&1 </dev/null \
+       && wait_for "$FLEET_WAIT" find_row "$NAME-r"; then
+      r_res=yes; id2=$R_ID; pid2=$R_PID
+      created_sids="$created_sids $R_SID"
+    else
+      r_res=no
+    fi
+    # 8. rm: the row goes, the transcript stays
+    if "$CLAUDE_BIN" rm "$ID" >/dev/null 2>&1 </dev/null && wait_for "$FLEET_WAIT" row_gone "$ID" && [ -f "$TFILE" ]; then
+      r_rm=yes
+    else
+      r_rm=no
+    fi
+    # 9. respawn: kill the resumed session's process and see whether it comes back on a new one
+    if [ "$r_res" = yes ]; then
+      oldpid=$pid2
+      kill "$oldpid" 2>/dev/null
+      respawned() { find_row "$NAME-r" && [ "$R_PID" != "$oldpid" ] && alive "$R_PID"; }
+      if wait_for "$FLEET_WAIT" respawned; then r_resp=yes; else r_resp=no; fi
+    fi
+  fi
+
+  # 10. models
+  local mrows=""
+  for alias in haiku sonnet opus 'opus[1m]'; do
+    out=$( cd "$ROOT/work" && "$CLAUDE_BIN" -p --model "$alias" --max-turns 1 --no-session-persistence \
+             'Reply with the single word OK.' 2>/dev/null </dev/null ); rc=$?
+    if [ "$rc" -eq 0 ] && grep -qw OK <<< "$out"; then mrows="$mrows$alias=yes;"; else mrows="$mrows$alias=no;"; fi
+  done
+  # 11. tools: names only, from a session told not to use any
+  out=$( cd "$ROOT/work" && "$CLAUDE_BIN" -p --model haiku --max-turns 1 --no-session-persistence \
+           'List the names of your available tools, comma separated, and nothing else. Do not use any tool.' 2>/dev/null </dev/null ); rc=$?
+
+  fleet_cleanup
+  local version notok=0 row_
+  version=$("$CLAUDE_BIN" --version 2>/dev/null | head -n 1)
+  row_() { printf '  %-18s %s\n' "$1" "$2"; [ "$2" = yes ] || notok=1; }
+  printf 'claude-context-probe --fleet: Claude Code %s, %s\n' "${version%% *}" "$(uname -s)"
+  row_ bg-launch "$r_bg"; row_ agents-json "$r_ag"; row_ settings-env "$r_env"; row_ tmpdir "$r_tmp"
+  row_ transcript "$r_tr"; row_ attach "$r_att"; row_ resume-bg "$r_res"; row_ rm "$r_rm"; row_ respawn "$r_resp"
+  for alias in haiku sonnet opus 'opus[1m]'; do
+    case "$mrows" in *"$alias=yes;"*) row_ "model $alias" yes ;; *) row_ "model $alias" no ;; esac
+  done
+  for tool in Agent Workflow EnterWorktree SendMessage ListAgents; do
+    if [ "$rc" -ne 0 ]; then printf '  %-18s %s\n' "tool $tool" 'INCONCLUSIVE (session failed)'
+    elif grep -qw "$tool" <<< "$out"; then printf '  %-18s %s\n' "tool $tool" present
+    else printf '  %-18s %s\n' "tool $tool" absent; fi
+  done
+  if [ "$rc" -ne 0 ]; then printf '  %-18s %s\n' 'tool Bash' 'INCONCLUSIVE (session failed)'
+  elif grep -qw Bash <<< "$out"; then printf '  %-18s %s\n' 'tool Bash' 'present (run_in_background is a Bash parameter; not checked)'
+  else printf '  %-18s %s\n' 'tool Bash' absent; fi
+  printf 'run with: claude-context-probe --fleet\n'
+  [ "$KEEP" -eq 1 ] && printf '\nkept: %s\n' "$ROOT"
+  return "$notok"
+}
+if [ "$FLEET" -eq 1 ]; then fleet_main; exit $?; fi
 
 # ---- layout A: a bare-container repository with a worktree (the .git inside is a FILE) --------
 A="$ROOT/container"
