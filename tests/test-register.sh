@@ -299,15 +299,23 @@ python3 "$reg" health --root "$rl" >/dev/null 2>&1 && ok "health exits 0 with re
 # Foreign ids: resolved through fleet-decl and a manifest when both are present, else unresolved.
 rentry REL-18 active "Names other registers" "relates:
   - FOO-0003
+  - OLDA-0007
+  - OLDB-0009
 supersedes: GAP-9"
 if command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -q mikefarah; then
-  mkdir -p "$tmp/bin" "$tmp/devel/foo/docs/register"
+  mkdir -p "$tmp/bin" "$tmp/devel/foo/docs/register" "$tmp/devel/alpha/docs/register"
   cp "$here/../private_dot_local/bin/executable_fleet-decl" "$tmp/bin/fleet-decl"; chmod +x "$tmp/bin/fleet-decl"
-  printf 'projects:\n  foo:\n    leakPrefix: FOO\n    leakPolicy: private\n    path: foo\n' > "$tmp/mani.yaml"
+  printf 'projects:\n  foo:\n    leakPrefix: FOO\n    leakPolicy: private\n    path: foo\n  alpha:\n    leakPrefix: "ALPHA, OLDA"\n    leakPolicy: private\n    path: alpha\n' > "$tmp/mani.yaml"
+  rentry ALPHA-0007 done "Renamed entry" "" "Body." "$tmp/devel/alpha/docs/register"
+  rentry ALPHA-0009 done "Other number" "" "Body." "$tmp/devel/alpha/docs/register"
   rentry FOO-0003 ready "Foreign entry" "" "Body." "$tmp/devel/foo/docs/register"
   frun() { PATH="$tmp/bin:$PATH" FLEET_RECORD="$tmp/mani.yaml" FLEET_DEVEL_ROOT="$tmp/devel" python3 "$reg" "$@" --root "$rl" 2>&1 || true; }
   out=$(frun show REL-18)
   assert_has "show resolves a foreign id through the manifest" "[ready]  Foreign entry" "$out"
+  assert_has "show resolves an old prefix declared beside the new one, by number" "[done]  Renamed entry" "$out"
+  assert_has "an old prefix that is not declared stays unresolved" "OLDB-0009" "$(echo "$out" | grep unresolved)"
+  assert_lacks "an undeclared old prefix does not find the entry by number" "Other number" "$out"
+  assert_lacks "a declared old prefix is not reported" "OLDA" "$(frun health)"
   assert_has "show marks an unknown prefix unresolved" "GAP-9" "$(echo "$out" | grep unresolved)"
   out=$(frun health)
   assert_has "unresolved-foreign counts the ids that do not resolve, by prefix" "[unresolved-foreign] GAP: 1 " "$out"

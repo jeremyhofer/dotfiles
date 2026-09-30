@@ -56,8 +56,9 @@ RELATIONS. An entry states a relation once, in its frontmatter, under one of six
     states and each one another entry states about it (children, blocked by, duplicated by, split
     into, superseded by, related by), each with the other entry's status. An id with a prefix other
     than this register's is looked up through the fleet manifest (`fleet-decl`: the project whose
-    `leakPrefix` matches, with `GRV` read as `KEY`, and its `path`), when that tool and the manifest
-    are present; otherwise it is shown as unresolved, and nothing fails because it could not be.
+    `leakPrefix` lists the prefix, and its `path`), when that tool and the manifest are present. A
+    renamed register declares its old prefix beside its new one (`NEW,OLD`), and an id under either
+    is matched by number, since a rename keeps numbers; otherwise it is shown as unresolved, and nothing fails because it could not be.
 
 RELATED. `related <words...>` searches every entry, open and closed, for the words in its title,
     body and `artifacts:`, and prints id, status, title and the number of matches, most first. It is
@@ -104,8 +105,6 @@ TYPE_DIRS = ("specs", "plans", "runbooks", "research", "reference", "policies", 
 RELATION_KEYS = ("part-of", "blocks", "duplicates", "split-from", "supersedes", "relates")
 INVERSE = {"part-of": "children", "blocks": "blocked by", "duplicates": "duplicated by",
            "split-from": "split into", "supersedes": "superseded by", "relates": "related by"}
-# A prefix the manifest declares under another name: a register's older prefix.
-PREFIX_ALIAS = {"GRV": "KEY"}
 ID_TOKEN = re.compile(r"(?<![\w-])([A-Z][A-Z0-9]*-)(\d+)(?![\w])")
 ORDER = ("active", "ready", "blocked", "held", "standing", "scoped", "idea", "done", "dropped")
 
@@ -283,21 +282,23 @@ class Resolver:
                 devel = pathlib.Path(os.environ.get("FLEET_DEVEL_ROOT") or
                                      pathlib.Path.home() / "Devel")
                 for project in self._decl("--projects-with", "leakPrefix").split():
-                    prefix = self._decl("--entry", project, "leakPrefix")
+                    prefixes = self._decl("--entry", project, "leakPrefix")
                     path = self._decl("--entry", project, "path")
-                    if prefix and path:
-                        self.paths[prefix] = devel / path / "docs" / "register"
+                    for prefix in prefixes.replace(",", " ").split():
+                        if path:
+                            self.paths[prefix] = devel / path / "docs" / "register"
         return self.paths
 
     def foreign_register(self, prefix):
-        """The entries of the register that owns `prefix` ("GRV-" style), or None."""
-        name = PREFIX_ALIAS.get(prefix.rstrip("-"), prefix.rstrip("-"))
+        """The register that owns `prefix` ("ABC-" style), as {number: entry}, or None. Keyed by
+        number alone, so an id under a renamed register's old prefix finds the entry."""
+        name = prefix.rstrip("-")
         if name not in self.loaded:
             path = self._paths().get(name)
             found = None
             if path is not None and path.is_dir():
                 try:
-                    found = {key_of(e.id): e for e in load(path) if key_of(e.id)}
+                    found = {key_of(e.id)[1]: e for e in load(path) if key_of(e.id)}
                 except OSError:
                     found = None
             self.loaded[name] = found
@@ -312,8 +313,7 @@ class Resolver:
         if k[0] in self.prefixes:
             return ("own", self.own.get(k))
         reg = self.foreign_register(k[0])
-        alias = PREFIX_ALIAS.get(k[0].rstrip("-"), k[0].rstrip("-")) + "-"
-        return ("foreign", reg.get((alias, k[1])) if reg else None)
+        return ("foreign", reg.get(k[1]) if reg else None)
 
 
 def is_closed(e):
