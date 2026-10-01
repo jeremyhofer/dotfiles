@@ -8,7 +8,7 @@ description: Use when installing, adding, or removing software on a Homebrew-man
 ## 0. First question, before any install: is this brew's to install?
 
 Not every tool on a Mac is Homebrew's to manage. Some are owned by **another channel** — a managed
-managed machine's software portal, a vendor's native installer, a per-project version manager. The
+a managed machine's software portal, a vendor's native installer, a per-project version manager. The
 base Brewfile itself carries one example: **node is never `brew "node"`** — it is installed
 per-project via fnm.
 

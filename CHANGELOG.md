@@ -24,7 +24,9 @@ that expects a piece its overlay never grew.
 
 **A machine that is weeks behind** should not apply in one step. Skill `dotfiles-update` has the
 walk: read every entry since the commit you have, install what the Brewfile now requires before
-applying, then let `overlay-doctor` assess the machine and report what it found.
+applying, then let `overlay-doctor` assess the machine and report what it found. On such a machine the
+*deployed* copy of that skill predates the walk until the apply, so read it from the pulled source:
+`~/.local/share/chezmoi/dot_claude/skills/dotfiles-update/SKILL.md`.
 
 Entries are newest first.
 
@@ -48,8 +50,9 @@ also add `probe-marker=<token>` to `~/.dotlocal/git-leak-policy` (a token its ma
 `hook-doctor` plants to prove the guard live). `overlay-skeleton/README.md` shows the four files, and
 `overlay-doctor` reports the guard as Tier H.
 
-**Before supplying patterns, run `fleet-decl --check`.** The guard and `run-repo-gates` read each
-repository's declarations from the manifest and refuse every commit when it is unreadable.
+**Run `fleet-decl --check` before applying.** `run-repo-gates` reads the manifest for any repository
+that tracks its own gates (`.githooks/` or `.husky/`) and refuses a commit there when the manifest is
+missing or unreadable; once the domain supplies patterns, the guard does the same for every commit.
 
 `run-repo-gates` no longer runs a gate that git already runs natively: when the repository's hooks
 directory (`core.hooksPath`, as husky sets it) is the gate's own directory or husky's `_` inside it,

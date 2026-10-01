@@ -242,9 +242,8 @@ fi
 # way it reports a missing signer file.
 #
 # REPORTED, NEVER ENFORCED, and that is a deliberate constraint rather than laziness: signing is
-# legitimately disabled in some environments. Where an agent's sandbox cannot
-# reach ~/.ssh at all, even for a signing key, so requiring signers there would turn a correct
-# setup into a hard failure -- exactly the cry-wolf failure the `require` helper above already
+# legitimately disabled in some environments. Where an agent's sandbox cannot reach ~/.ssh at all,
+# even for a signing key, requiring signers would turn a correct setup into a hard failure -- exactly the cry-wolf failure the `require` helper above already
 # documents for templated files. An advisory line is useful; a gate here would be wrong.
 _as=$(git config --get gpg.ssh.allowedSignersFile 2>/dev/null || true)
 case "$_as" in "~/"*) _as="$HOME/${_as#\~/}" ;; esac

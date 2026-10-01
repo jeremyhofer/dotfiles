@@ -68,6 +68,7 @@ git -C ~/.local/share/chezmoi pull --ff-only
 # Read CHANGELOG.md from the top down to that date. List every ACTION before touching anything.
 brew bundle --file ~/.local/share/chezmoi/Brewfile    # macOS: install what the Brewfile now requires
 exec zsh -l                                           # a new login shell, so PATH changes take effect
+sh ~/.local/share/chezmoi/private_dot_local/bin/executable_fleet-decl --check   # the manifest the git hooks read
 sh ~/.local/share/chezmoi/setup/overlay-doctor --machine   # BEFORE the apply: what can this machine do?
 chezmoi diff        # read it; a long diff is expected after weeks
 chezmoi apply
@@ -78,6 +79,21 @@ sh ~/.local/share/chezmoi/setup/overlay-doctor        # overlay compliance, then
 **Why the Brewfile comes first:** the base can start requiring a tool (`gitleaks` for the secret scan
 on every commit, `yq` for the apply itself), and applying before installing it either stops the apply
 or blocks every commit afterwards.
+
+**Why the manifest check comes before the apply:** the base's commit hooks read the repository manifest
+(`~/Devel/mani.yaml`) through `fleet-decl`, and refuse a commit they cannot classify. A manifest on an
+older schema, or none at all, then shows up as refused commits rather than as one clear report. Both
+commands run from the pulled source, because the deployed copies are the old ones until the apply.
+
+**If `~/.claude/CLAUDE.md.before-base` appears after the apply,** the base has replaced a hand-kept
+global `CLAUDE.md`. Move what belongs to this machine's domain into `~/.dotlocal/claude/CLAUDE.md`
+(through the overlay, if there is one), which the base file imports, then delete the copy. Until then
+those instructions are not loaded.
+
+**Who runs what, when an agent is helping.** Claude Code's sandbox normally write-protects its own
+configuration (`~/.claude/settings.json`, `~/.claude/CLAUDE.md` and similar), which the apply writes. So
+an agent session reads the changelog, runs the read-only checks, reads the diffs and drafts the domain
+fragments; the human runs `brew bundle`, both applies and the two probes in an ordinary terminal.
 
 **Why the assessment runs twice:** before the apply it shows what the machine brings (which git runs,
 whether its configured hooks fire, which tools are missing); after, it confirms the apply changed what
