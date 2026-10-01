@@ -91,6 +91,20 @@ printf 'second\n' > "$r/a.txt"; bash "$SNAP" -C "$r" >/dev/null 2>&1
 eq "two distinct refs" "$(nrefs "$r")" "2"
 rm -rf "$r"
 
+echo "== an intent-to-add entry does not stop the snapshot =="
+# `git add -N` leaves an index entry `git stash create` refuses ("not uptodate. Cannot merge"),
+# and a session's leftover worktree is exactly where one sits before a forced removal.
+r=$(newrepo)
+printf 'EDITED\n' > "$r/a.txt"
+printf 'NEW\n' > "$r/n.txt"; git -C "$r" add -N n.txt
+bash "$SNAP" -C "$r" >/dev/null 2>&1
+eq "exit 0" "$?" "0"
+ref=$(refs "$r" | head -1)
+eq "the tracked edit is in it" "$(git -C "$r" show "$ref":a.txt 2>/dev/null)" "EDITED"
+eq "the intent-to-add file is in it" "$(git -C "$r" show "$ref":n.txt 2>/dev/null)" "NEW"
+eq "the intent-to-add entry is still in the index" "$(git -C "$r" diff --name-only --diff-filter=A)" "n.txt"
+rm -rf "$r"
+
 echo "== escape hatch and non-repo =="
 r=$(newrepo)
 printf 'dirty\n' > "$r/a.txt"

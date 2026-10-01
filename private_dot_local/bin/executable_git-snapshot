@@ -70,6 +70,21 @@ made_any=0
 if [ "$has_head" = 1 ] && ! git -C "$repo" diff --quiet HEAD 2>/dev/null; then
   sha=$(git -C "$repo" stash create "$label $stamp" 2>/dev/null || true)
   if [ -z "$sha" ]; then
+    # `stash create` refuses an index holding an intent-to-add entry (`git add -N`): "Entry
+    # '<path>' not uptodate. Cannot merge." Fall back to a plain commit on HEAD built in a COPY
+    # of the index, so the real index keeps its entries. Not stash-shaped: restore it with
+    # `git checkout <ref> -- <path>`, not `git stash apply`.
+    sha=$(
+      t=${TMPDIR:-/tmp}; t=${t%/}
+      idx=$(mktemp "$t/git-snapshot-index.XXXXXX") || exit 1
+      trap 'rm -f "$idx"' EXIT
+      cp "$(git -C "$repo" rev-parse --path-format=absolute --git-path index)" "$idx" &&
+        GIT_INDEX_FILE=$idx git -C "$repo" add -u 2>/dev/null &&
+        tree=$(GIT_INDEX_FILE=$idx git -C "$repo" write-tree) &&
+        git -C "$repo" commit-tree "$tree" -p HEAD -m "$label $stamp (plain commit, not a stash)"
+    ) || sha=""
+  fi
+  if [ -z "$sha" ]; then
     printf 'git-snapshot: FAILED to create a snapshot of tracked changes\n' >&2
     exit 1
   fi
