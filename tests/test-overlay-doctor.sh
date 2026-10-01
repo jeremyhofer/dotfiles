@@ -9,6 +9,10 @@ _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../setup/overlay-doctor"
 tmp=$(mktemp -d "$_TMP/test-overlay-doctor.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+# The manifest check reads a DEPLOYED record; point every case at a clean one so the suite never
+# depends on this machine's own manifest.
+printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n' > "$tmp/mani-clean.yaml"
+FLEET_RECORD="$tmp/mani-clean.yaml"; export FLEET_RECORD
 
 mk() { # build a COMPLETE, compliant fake overlay source at $1
   ov="$1"; rm -rf "$ov"
@@ -26,6 +30,7 @@ mk() { # build a COMPLETE, compliant fake overlay source at $1
   mkdir -p "$ov/Devel"
   echo '[data]'              > "$ov/.chezmoi.toml.tmpl"
   echo 'projects: []'        > "$ov/Devel/mani.yaml.tmpl"
+  cp "$here/../overlay-skeleton/dot_gitignore_global.example" "$ov/dot_gitignore_global"
 }
 
 # Case A — complete overlay -> exit 0
@@ -89,7 +94,7 @@ printf 'PRIVATE-REASONS\n' > "$tmp/ov/.chezmoiignore"
 printf 'node_modules\n' > "$tmp/ov/.gitignore"
 out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) || true
 echo "$out" | grep -q 'UNREASONED  .dotlocal/zshenv' && { echo "FAIL(P4): a .tmpl source not matched by its target"; echo "$out"; exit 1; }
-echo "$out" | grep -q 'UNREASONED  .gitignore' && { echo "FAIL(P4): a dot-prefixed source entry counted"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'UNREASONED  \.gitignore$' && { echo "FAIL(P4): a dot-prefixed source entry counted"; echo "$out"; exit 1; }
 echo "ok:   a .tmpl source is matched by its target; dot-prefixed source entries are not deployed"
 mk "$tmp/ovt"; bst="$tmp/baset"; mkdir -p "$bst/dot_config/demo" "$tmp/ovt/dot_config/demo"
 echo 'base' > "$bst/dot_config/demo/thing.conf"
@@ -253,4 +258,27 @@ printf 'ssh SEKRITHOST for the thing\n' >> "$bl/dot_claude/skills/demo/SKILL.md"
 out=$(OVERLAY_SRC="$tmp/ovl" BASE_SRC="$bl" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL(L): private vocab in a public skill must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
 echo "ok:   private vocabulary in a public base skill is a hard failure"
+
+# ---- the manifest's schema, through fleet-decl --check on the deployed record ----
+mk "$tmp/ovm"
+printf 'projects:\n  alpha:\n    scope: internal/alpha\n' > "$tmp/mani-bad.yaml"
+out=$(FLEET_RECORD="$tmp/mani-bad.yaml" OVERLAY_SRC="$tmp/ovm" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(M1): a manifest finding must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'policy-missing' || { echo "FAIL(M1): the finding is not named"; echo "$out"; exit 1; }
+echo "ok:   a manifest schema finding gates, and is named"
+out=$(FLEET_RECORD="$tmp/no-such.yaml" OVERLAY_SRC="$tmp/ovm" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(M2): an undeployed manifest must not gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'manifest' || { echo "FAIL(M2): an undeployed manifest must be reported"; echo "$out"; exit 1; }
+echo "ok:   an undeployed manifest is reported, not gated"
+
+# ---- the global gitignore carries every base default (the skeleton's example is the list) ----
+mk "$tmp/ovg2"; grep -vx '.envrc' "$tmp/ovg2/dot_gitignore_global" > "$tmp/gi" && mv "$tmp/gi" "$tmp/ovg2/dot_gitignore_global"
+out=$(OVERLAY_SRC="$tmp/ovg2" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(G1): a missing default ignore must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q '\.envrc' || { echo "FAIL(G1): the missing line is not named"; echo "$out"; exit 1; }
+echo "ok:   a global gitignore missing a base default gates, naming the line"
+mk "$tmp/ovg3"; rm "$tmp/ovg3/dot_gitignore_global"
+out=$(OVERLAY_SRC="$tmp/ovg3" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(G2): no global gitignore must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "ok:   an overlay with no global gitignore gates"
 echo "PASS"

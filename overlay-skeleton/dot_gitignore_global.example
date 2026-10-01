@@ -1,6 +1,27 @@
 # Global gitignore for this domain — deploys to ~/.gitignore_global (the base's
-# core.excludesfile points here). Seeded with the base defaults; APPEND your domain-specific
-# ignores below (e.g. work tooling artifacts). Overlay-owned so the public base stays generic.
+# core.excludesfile points here). Overlay-owned because git reads exactly one global ignore
+# file, so a domain's additions and the defaults have to live in the same one.
+#
+# THE LINES ABOVE THE MARKER ARE THE BASE'S DEFAULTS, and overlay-doctor fails an overlay whose
+# ~/.gitignore_global lacks any of them (this file is its list). Keep them; APPEND your domain's
+# own ignores below the marker.
 .exrc
 .envrc
+
+# AI agent state: per-user and per-machine, never a project's to carry. Enumerated by filename
+# rather than a `*.local.*` glob, which would also swallow unrelated project files. The test: would
+# this file be wrong on another machine, or for another person? Per-user permission grants and
+# harness-created worktrees are; shared agent context (CLAUDE.md, AGENTS.md,
+# .claude/settings.json, authored project skills) is committed instead.
+.claude/settings.local.json
+.claude/*.local.json
+.claude/worktrees/
+CLAUDE.local.md
+AGENTS.local.md
+**/.claude/.cc-writes/
+# A parked session's relaunch script, rewritten at every park (ignored by exact name, since
+# .claude/ itself carries tracked files in many repos).
+.claude/canonical-kickoff.sh
+# Worktrunk's worktrees for an ordinary (non-bare) checkout, which nest inside the repo.
+.worktrees/
 # --- domain-specific additions below ---

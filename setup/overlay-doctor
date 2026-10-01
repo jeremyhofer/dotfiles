@@ -153,6 +153,46 @@ fi
 require dot_dotlocal/Brewfile.role "role Brewfile (private additions; the base self-includes it)"
 require dot_dotlocal/ssh/config    "ssh host config"
 require Devel/mani.yaml.tmpl       "fleet repo manifest (mani clones/syncs ~/Devel)"
+# The manifest's SCHEMA, checked on the DEPLOYED record (the source is a template): the same
+# `fleet-decl --check` every reader of the record trusts, so a typo'd key, a missing policy or a
+# half-declared canonical gates here rather than surfacing later as a guard quietly using its
+# default. Not yet deployed is reported, not gated: apply the overlay and re-run.
+_rec="${FLEET_RECORD:-$HOME/Devel/mani.yaml}"
+_fd="$BSRC/private_dot_local/bin/executable_fleet-decl"
+if [ ! -f "$_rec" ]; then
+  note "WARN        manifest: $(_home_safe "$_rec") is not deployed yet; apply the overlay, then re-run"
+elif [ ! -f "$_fd" ]; then
+  note "WARN        manifest: no fleet-decl in the base checkout, so its schema is not checked"
+else
+  _mo=$(FLEET_RECORD="$_rec" sh "$_fd" --check 2>&1) && _mrc=0 || _mrc=$?
+  case "$_mrc" in
+    0) note "OK          manifest: $(_home_safe "$_rec") passes fleet-decl --check" ;;
+    1) printf '%s\n' "$_mo" | grep '^\[' | while IFS= read -r _l; do printf '  MISSING     manifest: %s\n' "$_l"; done
+       fail=1 ;;
+    *) miss "manifest: fleet-decl --check cannot read $(_home_safe "$_rec"): $(printf '%s' "$_mo" | head -1)" ;;
+  esac
+fi
+
+# The global gitignore must carry the base's defaults. git reads ONE global ignore file, so the
+# overlay owns it and the defaults have to be copied in; this keeps the copy from drifting. The list
+# is the skeleton's example, every non-comment line above its domain-additions marker.
+_gdef="$BSRC/overlay-skeleton/dot_gitignore_global.example"
+_gi="$OSRC/dot_gitignore_global"; [ -f "$_gi" ] || _gi="$_gi.tmpl"
+if [ ! -f "$_gdef" ]; then
+  note "WARN        gitignore: the base has no default list ($_gdef), so none is checked"
+elif [ ! -f "$_gi" ]; then
+  miss "dot_gitignore_global (the global gitignore; it must carry the base defaults in $_gdef)"
+else
+  _gm=$(sed '/^# --- domain-specific additions below ---/,$d' "$_gdef" \
+        | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' \
+        | while IFS= read -r _l; do grep -qxF -- "$_l" "$_gi" || printf '%s\n' "$_l"; done)
+  if [ -n "$_gm" ]; then
+    printf '%s\n' "$_gm" | while IFS= read -r _l; do printf '  MISSING     dot_gitignore_global lacks the base default: %s\n' "$_l"; done
+    fail=1
+  else
+    note "OK          gitignore: every base default is in dot_gitignore_global"
+  fi
+fi
 ls "$OSRC"/dot_dotlocal/bootstrap.d/*.sh >/dev/null 2>&1 \
   || miss "dot_dotlocal/bootstrap.d/*.sh (at least one stage)"
 

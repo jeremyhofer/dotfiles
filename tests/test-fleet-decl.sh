@@ -193,6 +193,35 @@ out=$(FLEET_RECORD="$TMP/missing-policy.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" -
 [ "$rc" -eq 1 ] && [[ "$out" == *"policy-missing"* ]] \
   && ok "--check fails a project with no leakPolicy" || bad "--check policy-missing" "rc=$rc $out"
 
+# A FLEET-ONLY project: it declares a canonical session (or worktrunk settings) and no scope, so
+# the leak guard can never resolve a path to it and a policy would govern nothing. Exempt -- but only
+# that shape: the untagged path-only project above still needs one.
+cat > "$TMP/fleet-only.yaml" <<'YAML'
+projects:
+  hub:
+    path: internal/hub
+    canonical: hub-canonical
+    canonicalIdentity: hub
+    canonicalLaunchDir: internal/hub
+    canonicalLaunchModel: opus
+    canonicalMachines: [one]
+YAML
+out=$(FLEET_RECORD="$TMP/fleet-only.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "--check exempts a scope-less project that declares only fleet keys" || bad "--check fleet-only" "rc=$rc $out"
+cat > "$TMP/fleet-scoped.yaml" <<'YAML'
+projects:
+  hub:
+    scope: internal/hub
+    canonical: hub-canonical
+    canonicalIdentity: hub
+    canonicalLaunchDir: internal/hub
+    canonicalLaunchModel: opus
+    canonicalMachines: [one]
+YAML
+out=$(FLEET_RECORD="$TMP/fleet-scoped.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"policy-missing"* ]] \
+  && ok "--check still requires a policy once the project declares a scope" || bad "--check fleet-scoped" "rc=$rc $out"
+
 # THE TYPO ARM. The record silently ignores unknown keys, so a near-miss spelling is invisible to
 # every other reader and the guard quietly uses its default. Nothing but this check sees it.
 cat > "$TMP/typo.yaml" <<'YAML'

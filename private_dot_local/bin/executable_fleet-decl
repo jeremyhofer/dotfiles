@@ -202,9 +202,15 @@ case "${1:-}" in
     # Upstream clones are excluded: they are somebody else's repositories, mirrored here and not
     # authored, so a policy declaration about them would be asserting something we do not decide.
     # The tag is the fleet's existing exclusion and is used by every other reader of this record.
+    # Also exempt: a FLEET-ONLY project, one with no scope that declares a canonical session or
+    # worktrunk settings. With no scope the guard can never resolve a path to it, so a policy would
+    # govern nothing. Narrow on purpose: a project with no declarations at all still needs one.
     missing=$(yq -r '.projects | to_entries[]
                      | select([(.value.tags // [])[] | select(. == "upstream")] | length == 0)
-                     | select(.value.leakPolicy == null) | .key' "$RECORD" 2>/dev/null || true)
+                     | select((.value.scope == null
+                               and ([.value | keys | .[] | select(test("^canonical") or . == "worktrunk")] | length > 0)) | not)
+                     | select(.value.leakPolicy == null) | .key' "$RECORD" 2>/dev/null) \
+      || die_unusable "--check: the policy query failed on $RECORD -- refusing to report it clean"
     for p in $missing; do printf '[policy-missing] %s: no leakPolicy declared\n' "$p"; rc=1; done
     # A near-miss key name is silently ignored by the record's own reader, so it cannot be left
     # to a human to spot. Only the spellings we own are checked; unknown keys in general are
