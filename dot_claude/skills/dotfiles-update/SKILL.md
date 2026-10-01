@@ -23,7 +23,7 @@ That is what this walk is for.
 git -C ~/.local/share/chezmoi log -1 --format='%h %ad' --date=short
 
 # 2. Pull both layers
-git -C ~/.local/share/chezmoi pull --ff-only
+git -C ~/.local/share/chezmoi pull --ff-only    # refused? the history was rewritten 2026-10-01: see the changelog's top entry
 git -C ~/.local/share/chezmoi-overlay pull --ff-only     # if this machine has an overlay
 
 # 3. Read what changed FOR YOU

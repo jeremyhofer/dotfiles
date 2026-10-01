@@ -34,6 +34,18 @@ Entries are newest first.
 
 ## 2026-10-01
 
+**ACTION (every clone made before this entry) — the history of `main` was rewritten.** Old commits
+were reworded to remove machine- and project-specific details. The final files are unchanged, but
+every commit from early on has a new id, so `git pull` refuses ("divergent branches" or "not possible
+to fast-forward"). Check for local work, then move to the new history:
+
+```sh
+chezmoi git -- fetch origin
+chezmoi git -- status --short          # anything listed is local work: keep it first
+chezmoi git -- reset --keep origin/main
+```
+
+
 **ACTION (if a private layer deployed a leak-guard) — the leak-guard, `run-repo-gates` and
 `hook-doctor` move into the base, with their git wiring.** `~/.gitconfig` now declares the six
 configured hooks `hook.publish-guard-<event>` (to `~/.local/bin/leak-guard`) and
