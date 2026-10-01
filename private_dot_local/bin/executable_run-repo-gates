@@ -1,0 +1,101 @@
+#!/bin/sh
+# run-repo-gates — runs a repository's own tracked commit gates, `.githooks/<event>`, with no
+# per-clone install step. Registered as a git configured hook (hook.repo-gates-<event>.command in
+# the base ~/.gitconfig), after the leak-guard's entries, so git runs it on every commit and push.
+# Usage: run-repo-gates <event> [the hook's own arguments]   (a pre-push hook's refs on stdin)
+#
+# WHY A TRACKED DIRECTORY. A gate that lives in the untracked .git/hooks exists only in the clone
+# where someone once installed it: a fresh clone or a new machine runs none of it and nothing says
+# so. A tracked `.githooks/<event>` travels with every clone and worktree.
+#
+# WHOSE HOOKS RUN. Only a repository listed in the fleet manifest and not tagged `upstream`. A
+# third-party clone's tracked hooks are somebody else's code; a project that wants its hooks run
+# ships its own install step, and following it produces an ordinary hook that git runs anyway.
+# Tagged `upstream`, NOT `external`: the external tag also covers our own packaging repos, which
+# we author and whose gates must run.
+#
+# NOT THE GUARD. The leak-guard is a separate configured hook that runs whatever
+# this script decides, so nothing here can switch it off.
+#
+# Kept from the old dispatcher's bridge to .husky/<name>: node_modules/.bin on PATH; a warning and
+# a skip when package.json exists without node_modules (a quality gate's absence is visible in the
+# diff, and a fresh worktree should not need a full install before its first commit); HUSKY=0
+# skips this script only; the hook gets its arguments and stdin.
+set -u
+
+event=${1:-}
+[ -n "$event" ] || { printf 'run-repo-gates: usage: run-repo-gates <event> [args]\n' >&2; exit 2; }
+shift
+
+# A bare container or any other context without a work tree has nothing to commit and no gates.
+top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+# `.husky/<event>` is the same contract under its older name: the files the retired dispatcher's
+# bridge ran, in repositories that dropped husky itself but kept the directory. Accepted so those
+# repositories keep their gates without renaming first; `.githooks/` wins when both exist.
+hook="$top/.githooks/$event"
+[ -f "$hook" ] || hook="$top/.husky/$event"
+# Checked BEFORE asking the manifest: most repositories have no gate for most events, and this
+# runs on every commit and push in every repository.
+[ -f "$hook" ] || exit 0
+dir=$(basename "$(dirname "$hook")")
+
+# GIT ALREADY RUNS IT. When the repository's own hooks directory (core.hooksPath, which husky sets on
+# install) is the gate's directory, or husky's generated `_` inside it, and holds an executable hook
+# for this event, git runs the gate natively as the repository's own hook. Running it here as well
+# ran it twice per commit: measured 2026-10-01 in a fleet repository with husky installed, whose
+# lint-staged ran once from husky and once from here.
+native=$(git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || native=""
+if [ -n "$native" ] && [ -x "$native/$event" ]; then
+  gdir=$(cd "$(dirname "$hook")" && pwd -P)
+  ndir=$(cd "$native" 2>/dev/null && pwd -P) || ndir=""
+  case "$ndir" in "$gdir"|"$gdir/_") exit 0 ;; esac
+fi
+
+[ "${HUSKY:-}" = 0 ] && exit 0
+
+command -v fleet-decl >/dev/null 2>&1 || {
+  printf 'run-repo-gates: fleet-decl is not installed, so %s cannot be classified; its %s gate did not run.\n' "$top" "$event" >&2
+  printf '  It ships with the public dotfiles base; apply that.\n' >&2
+  exit 1; }
+
+# Membership first, by --project: `fleet-decl <path> tags` also exits 1 for a listed repository
+# that simply declares no tags, so it cannot answer "is this repository in the manifest". fleet-decl
+# resolves a path through an entry's `scope:`, so an entry without one (most upstream clones) is
+# not found here either, and its hooks are not run.
+# fleet-decl: 0 = found, 1 = not found, 2 = manifest unreadable. The last must not be read as "not
+# found": that would quietly stop every repository's gates at once.
+fleet-decl --project "$top" >/dev/null 2>&1
+rc=$?
+case $rc in
+  0) ;;
+  1) printf 'run-repo-gates: %s is not in the fleet manifest; %s/%s not run.\n' "$top" "$dir" "$event" >&2
+     exit 0 ;;
+  *) printf 'run-repo-gates: the fleet manifest could not be read (fleet-decl exit %s); %s/%s not run -- refusing.\n' "$rc" "$dir" "$event" >&2
+     exit 1 ;;
+esac
+tags=$(fleet-decl "$top" tags 2>/dev/null) || tags=""
+
+# Tags arrive as a YAML flow list, "[internal, web, active]". Match whole words only.
+case " $(printf '%s' "$tags" | tr '[],' '   ') " in
+  *" upstream "*)
+    printf 'run-repo-gates: %s is an upstream clone; its %s/%s is not run (follow its own hook setup instead).\n' "$top" "$dir" "$event" >&2
+    exit 0 ;;
+esac
+
+if [ -f "$top/package.json" ] && [ ! -d "$top/node_modules" ]; then
+  printf 'run-repo-gates: %s has no node_modules, so its %s gate was skipped.\n' "$top" "$event" >&2
+  printf '  Install its dependencies to run it.\n' >&2
+  exit 0
+fi
+[ -d "$top/node_modules/.bin" ] && PATH="$top/node_modules/.bin:$PATH" && export PATH
+
+# .husky/ files keep husky's contract exactly: a plain sh fragment run under `sh -e`, so a failing
+# line fails the hook, whatever the file's mode or #! line says. Measured 2026-09-24: one repository's files were
+# not executable, and another repository's executable pre-commit was written for `sh -e` -- run directly it
+# would lose the -e, and a failing step mid-script could fall through to a passing exit.
+# .githooks/ is this runner's own contract: an executable file runs under the interpreter its #!
+# names, so it may be bash, python, anything; a non-executable one runs under `sh -e`.
+if [ "$dir" = .githooks ] && [ -x "$hook" ] && [ "$(head -c 2 "$hook" 2>/dev/null)" = '#!' ]; then
+  exec "$hook" "$@"
+fi
+exec sh -e "$hook" "$@"

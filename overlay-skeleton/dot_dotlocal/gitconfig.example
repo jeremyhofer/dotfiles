@@ -1,7 +1,6 @@
 # vim: ft=gitconfig
 # FIXME(overlay-doctor): fill in THIS domain's identity + signing, then delete this line.
-# Included by the base-managed ~/.gitconfig. Identity + signing only. Any leak-guard
-# hook wiring is domain-specific and deliberately NOT part of a fresh overlay.
+# Included by the base-managed ~/.gitconfig. Identity + signing only: the base wires the hooks.
 [user]
 	email = you@example.com
 	name = Your Name

@@ -52,3 +52,29 @@
 	format = ssh
 # NOTE: commit.gpgsign is set per-domain in the overlay gitconfig (~/.dotlocal/gitconfig),
 # NOT here — a domain whose machines cannot reach a signing key sets it off.
+# The leak-guard, then each repository's own tracked gates (.githooks/<event>, or .husky/<event>)
+# through run-repo-gates. Order is the order of the `event` lines, so the guard runs first. The guard
+# reads its patterns from the domain's ~/.dotlocal/git-leak-* files and passes everything when the
+# domain supplies none; run-repo-gates runs only for repositories the fleet manifest lists.
+# A repository's own core.hooksPath does not bypass configured hooks; `hook-doctor` reports whether
+# each one is live. Needs git 2.54+, like every configured hook.
+# EDIT THESE WITH `git config --file <this source file>`, never by hand: in a git config file `;` and
+# `#` start a comment and an unescaped `"` is dropped, so a hand-typed value is not what git reads.
+[hook "publish-guard-pre-commit"]
+	command = sh \"$HOME/.local/bin/leak-guard\" pre-commit
+	event = pre-commit
+[hook "publish-guard-commit-msg"]
+	command = sh \"$HOME/.local/bin/leak-guard\" commit-msg
+	event = commit-msg
+[hook "publish-guard-pre-push"]
+	command = sh \"$HOME/.local/bin/leak-guard\" pre-push
+	event = pre-push
+[hook "repo-gates-pre-commit"]
+	command = sh \"$HOME/.local/bin/run-repo-gates\" pre-commit
+	event = pre-commit
+[hook "repo-gates-commit-msg"]
+	command = sh \"$HOME/.local/bin/run-repo-gates\" commit-msg
+	event = commit-msg
+[hook "repo-gates-pre-push"]
+	command = sh \"$HOME/.local/bin/run-repo-gates\" pre-push
+	event = pre-push

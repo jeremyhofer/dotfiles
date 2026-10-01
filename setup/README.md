@@ -78,7 +78,8 @@ An overlay created earlier can lack pieces added since. Bring it current without
    `chezmoi --source <overlay> … add`/commit it. Never copy another domain's private values.
 4. **Re-run** `overlay-doctor` until it reports `compliant`.
 
-The publish-boundary leak-guard is home-only and intentionally out of this flow.
+The leak-guard ships in the base and is off until a domain supplies its own pattern files; the
+overlay skeleton's README shows how. `overlay-doctor` reports it as Tier H, never as required.
 
 ## Safety guarantees
 

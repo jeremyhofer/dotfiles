@@ -207,6 +207,8 @@ if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)
 
 [ -f "$HOME/.dotlocal/zshrc" ] && source "$HOME/.dotlocal/zshrc"
 
+{{ includeTemplate "zshrc.guard-check" . }}
+
 # --- Machine tag at the head of the prompt ----------------------------------------------------
 # A short marker so the machine a terminal is on is identifiable at a glance. This costs nothing
 # for SSH: a remote shell's prompt is rendered on the REMOTE host, so it tags itself correctly

@@ -30,6 +30,31 @@ Entries are newest first.
 
 ---
 
+## 2026-10-01
+
+**ACTION (if a private layer deployed a leak-guard) — the leak-guard, `run-repo-gates` and
+`hook-doctor` move into the base, with their git wiring.** `~/.gitconfig` now declares the six
+configured hooks `hook.publish-guard-<event>` (to `~/.local/bin/leak-guard`) and
+`hook.repo-gates-<event>` (to `~/.local/bin/run-repo-gates`) for pre-commit, commit-msg and pre-push,
+and `~/.zshrc` runs `hook-doctor check --path <worktree> --quiet` once per worktree per day on `cd`.
+An overlay that shipped its own copies must stop: remove its scripts and the cd-time check, delete
+the same-named `hook.*` entries from `~/.dotlocal/gitconfig`, list the old script paths in its
+`.chezmoiremove`, and apply the overlay **before** the base, so no machine runs two copies.
+
+The guard is **off until the domain supplies patterns.** With neither
+`~/.dotlocal/git-leak-markers` nor `~/.dotlocal/git-leak-sensitive` present it passes every commit;
+with either, a missing or empty file for an active gate refuses. A domain that supplies them should
+also add `probe-marker=<token>` to `~/.dotlocal/git-leak-policy` (a token its markers match, which
+`hook-doctor` plants to prove the guard live). `overlay-skeleton/README.md` shows the four files, and
+`overlay-doctor` reports the guard as Tier H.
+
+**Before supplying patterns, run `fleet-decl --check`.** The guard and `run-repo-gates` read each
+repository's declarations from the manifest and refuse every commit when it is unreadable.
+
+`run-repo-gates` no longer runs a gate that git already runs natively: when the repository's hooks
+directory (`core.hooksPath`, as husky sets it) is the gate's own directory or husky's `_` inside it,
+it leaves the gate to git. Before this, such a repository ran its pre-commit twice.
+
 ## 2026-09-30
 
 **ACTION (if a private layer managed `~/.claude/settings.json` or the status line) — the base now

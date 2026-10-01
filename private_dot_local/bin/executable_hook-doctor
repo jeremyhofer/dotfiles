@@ -1,0 +1,725 @@
+#!/usr/bin/env bash
+# hook-doctor — report whether the leak-guard is actually live, per worktree.
+# It also probes the global secret scan (hook.secret-scan, from the public base) the same way.
+#
+# WHY. The guard is client-side, per-worktree and per-machine, and it is INVISIBLE WHEN ABSENT: git
+# runs no hook and says nothing when a hook is missing or switched off -- not an error, not a
+# warning. Twice on 2026-08-31 a repo was found with the guard silently off, and both were found by
+# accident during unrelated work.
+#
+# THE MECHANISM IT CHECKS. The leak-guard runs as git CONFIGURED hooks (git 2.54+): three entries,
+# hook.publish-guard-<event>, in the base ~/.gitconfig, one per guarded event. A
+# repository's own core.hooksPath cannot remove them -- the failure that caused both outages under
+# the dispatcher this replaced -- but a repository CAN switch one off deliberately, per event, with
+# local config. So every guarded event is probed separately, by execution: a single probe proves
+# nothing about the other two.
+#
+# THE RULE THIS TOOL WILL NOT LET YOU BREAK. A refusal is not a verdict on its own: `git hook run`
+# returns non-zero both when the guard refuses and when something else does, and a gate that
+# refuses everything protects nothing it can tell apart. So every event is classified on a clean/
+# planted control PAIR, and a planted refusal counts only when it carries the leak-guard's own
+# refusal text. One reading is not a measurement.
+#
+# AND IT NEVER ASSUMES THE EXPECTED VERDICT IS UNIFORM. Markers are LEGAL in the domain's notes
+# repository and in its private overlay -- that is the entire point of the boundary -- so those two
+# correctly accept a planted marker. A naive check reports a fleet's two most-committed repos as
+# unguarded holes. The expectation is derived per repo from
+# `leakPolicy`, and an exemption is PRINTED WITH THE VALUE THAT CAUSED IT, because that same
+# mechanism is also how a repo could be silently disarmed.
+#
+# REPORT-ONLY. It never installs, heals, or writes to a repo. Deployed to Linux and darwin, so every
+# spelling here is two-userland safe.
+
+set -uo pipefail
+
+DOT="$HOME/.dotlocal"
+HOOKS_DIR=${HOOK_DOCTOR_HOOKS_DIR:-"$HOME/.local/bin"}
+MANIFEST=${HOOK_DOCTOR_MANIFEST:-"$HOME/Devel/mani.yaml"}
+DEVEL_ROOT=${HOOK_DOCTOR_DEVEL_ROOT:-"$HOME/Devel"}
+CHEZMOI_SRC=${HOOK_DOCTOR_CHEZMOI_SRC:-"$HOME/.local/share/chezmoi"}
+OVERLAY_SRC=${HOOK_DOCTOR_OVERLAY_SRC:-"$HOME/.local/share/chezmoi-overlay"}
+
+# The marker planted into the discrimination probe: the domain's own choice, a `probe-marker=` line
+# in its ~/.dotlocal/git-leak-policy, since only the domain knows what its markers match. It should
+# be an id that cannot collide with a real one, so a probe transcript is never mistaken for content.
+PLANT_MARKER=${HOOK_DOCTOR_MARKER:-$(sed -n 's/^probe-marker=//p' "$DOT/git-leak-policy" 2>/dev/null | head -1)}
+
+# The guard is configured by the domain supplying a pattern file; with neither, the leak-guard
+# passes every commit by design, and there is nothing here to probe. Same test as the guard's.
+guard_configured() { [ -e "$DOT/git-leak-markers" ] || [ -e "$DOT/git-leak-sensitive" ]; }
+
+ONLY_REPO=""
+ONE_PATH=""
+QUIET=0
+
+die() { printf 'hook-doctor: %s\n' "$1" >&2; exit "${2:-2}"; }
+say() { printf '%s\n' "$*"; }
+
+# --- the denominator ----------------------------------------------------------------------------
+# Built by LISTING, never by a guessed pattern, and every entry carries the source that contributed
+# it so the denominator can be audited without reading this code. A coverage tool's worst failure is
+# a confident report over a set that quietly omits the repo that was broken.
+#
+# mani.yaml EXCLUDES the two chezmoi sources by design ("not in ~/Devel"). They are not optional
+# additions here: the public base is the ONLY public repo in the set, and therefore the highest
+# consequence place for the boundary to be dark. A denominator taken from the manifest alone omits
+# exactly the repo with the worst blast radius.
+# A project's own path: sits at one indent level; a NESTED worktrees: entry's path: sits deeper and
+# is relative to the PROJECT, not to $DEVEL_ROOT. Resolving the two the same way is wrong, and it is
+# wrong SILENTLY -- the loose pattern produced `$DEVEL_ROOT/../devel` on the first run here.
+# Nested worktrees are already found by `git worktree list`, so excluding them loses nothing.
+# `enumerate` runs inside a command substitution, so a `die` there exits the SUBSHELL and the caller
+# sails on to print a TRUNCATED denominator at rc=0 -- a short green run, the exact failure this
+# tool's own spec forbids. Caught by acceptance criterion A5 on 2026-09-04. The readability check
+# therefore has to happen in the PARENT shell, before any subshell is entered.
+require_manifest() {
+  [ -r "$MANIFEST" ] || die "manifest unreadable: $MANIFEST -- refusing to report over a partial denominator" 2
+}
+
+manifest_paths() {
+  [ -r "$MANIFEST" ] || return 1
+  sed -n 's/^    path:[[:space:]]*//p' "$MANIFEST" | sed 's/[[:space:]]*$//' | grep -v '^$'
+}
+
+# The looser control, per verification-discipline rule 2: an anchored pattern fails by matching a
+# SUBSET at exit 0, indistinguishable from a complete sweep. So the anchor's cost is MEASURED and
+# printed rather than assumed -- `list` reports how many entries the loose pattern saw that the
+# anchored one dropped, and why.
+manifest_paths_loose() {
+  [ -r "$MANIFEST" ] || return 1
+  sed -n 's/^[[:space:]]*path:[[:space:]]*//p' "$MANIFEST" | sed 's/[[:space:]]*$//' | grep -v '^$'
+}
+
+# Paths of projects tagged `upstream` in the manifest. Classified on the TAG, never on membership
+# in the file: every external repo used to be ABSENT from mani.yaml, so absence meant "external" by
+# coincidence. Recording them (2026-09-15) destroyed that coincidence and any membership test with
+# it -- a presence-based check would have silently changed meaning with no change to its own code.
+manifest_external_paths() {
+  [ -r "$MANIFEST" ] || return 1
+  awk '
+    /^  [A-Za-z0-9._-]+:[[:space:]]*$/ { pth=""; next }
+    /^    path:/ { v=$0; sub(/^    path:[[:space:]]*/,"",v); sub(/[[:space:]]*$/,"",v); pth=v; next }
+    # `upstream`, NOT `external`: the external tag also covers OUR OWN AUR package repos
+    # (tagged external, packaging), which we author and which must stay guarded. Only an
+    # upstream clone is genuinely not ours to change.
+    /^    tags:/ { if ($0 ~ /upstream/ && pth != "") print pth }
+  ' "$MANIFEST"
+}
+
+# is_external <worktree> -> 0 if it lives under an external-tagged project path
+is_external() {
+  local wt=$1 ep abs
+  manifest_external_paths 2>/dev/null | while IFS= read -r ep; do
+    case "$ep" in /*) abs=$ep ;; *) abs="$DEVEL_ROOT/$ep" ;; esac
+    case "$wt" in "$abs"|"$abs"/*) exit 9 ;; esac
+  done
+  [ $? -eq 9 ]
+}
+
+# enumerate -> "<worktree>\t<source>" per line. Each manifest path names a WORKTREE, not a
+# container, so `git worktree list` is what turns one project into its N worktrees -- and that step
+# is the ONLY one that can see the fresh-worktree defect at all.
+# enumerate -> each worktree ONCE. The manifest now lists the two chezmoi sources itself, and the
+# additions above list them again, so without this they were probed, counted and reported twice.
+# First occurrence wins, keeping the manifest's source label.
+enumerate() { enumerate_all | awk -F'\t' '!seen[$1]++'; }
+
+enumerate_all() {
+  local p abs wt
+  if ! manifest_paths > /dev/null 2>&1; then
+    die "manifest unreadable: $MANIFEST -- refusing to report over a partial denominator" 2
+  fi
+  manifest_paths | while IFS= read -r p; do
+    case "$p" in /*) abs=$p ;; *) abs="$DEVEL_ROOT/$p" ;; esac
+    [ -d "$abs" ] || { printf '%s\t%s\n' "$abs" "mani.yaml (MISSING ON DISK)"; continue; }
+    # 2>/dev/null, never 2>&1: an ensure-keys line folded into a git listing once manufactured a
+    # phantom branch in this fleet. Never fold stderr into something you are about to parse.
+    # Skip BARE containers: `git worktree list` includes <container>/.bare, which has no working
+    # tree at all, so every probe against it would be measuring nothing and reporting a verdict.
+    git -C "$abs" worktree list --porcelain 2>/dev/null \
+      | awk -v src="mani.yaml:$p" '
+          /^worktree /{ wt=substr($0,10); bare=0; next }
+          /^bare$/    { bare=1 }
+          /^$/        { if (wt != "" && !bare) print wt "\t" src; wt=""; bare=0 }
+          END         { if (wt != "" && !bare) print wt "\t" src }
+        '
+  done
+  for src in "$CHEZMOI_SRC" "$OVERLAY_SRC"; do
+    [ -d "$src" ] && printf '%s\t%s\n' "$src" "chezmoi source (excluded from mani.yaml by design)"
+  done
+}
+
+# --- C7: infrastructure, and it runs FIRST -------------------------------------------------------
+# If the guard's configured entries are missing, or git is too old to read them, every repo is dark
+# SIMULTANEOUSLY and per-repo probes would still produce plausible-looking output. Missing
+# infrastructure means REFUSE TO REPORT, not report a long list of findings -- a tool that prints
+# "17 repos DARK" here has inverted its own severity and sends someone chasing seventeen phantom
+# repairs instead of one real one.
+check_infrastructure() {
+  local missing=0 e v
+  # git older than 2.54 ignores configured hooks without a word, so this is the one check that
+  # names the machine-wide cause rather than leaving it to show up as every repo going dark.
+  v=$(git --version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
+  set -- $v
+  if [ -z "${1:-}" ] || [ "$1" -lt 2 ] || { [ "$1" -eq 2 ] && [ "${2:-0}" -lt 54 ]; }; then
+    printf '  MISSING  git 2.54 or later (%s) -- older git ignores configured hooks\n' "$(git --version 2>/dev/null)"; missing=1
+  fi
+  [ -x "$HOOKS_DIR/leak-guard" ]     || { printf '  MISSING  %s/leak-guard\n' "$HOOKS_DIR"; missing=1; }
+  [ -x "$HOOKS_DIR/run-repo-gates" ] || { printf '  MISSING  %s/run-repo-gates\n' "$HOOKS_DIR"; missing=1; }
+  for e in $CFG_EVENTS; do
+    git config --get "hook.publish-guard-$e.command" >/dev/null 2>&1 \
+      || { printf '  MISSING  global config entry hook.publish-guard-%s (is the base ~/.gitconfig applied?)\n' "$e"; missing=1; }
+  done
+  for f in git-leak-markers git-leak-sensitive git-leak-policy; do
+    [ -r "$DOT/$f" ] || { printf '  MISSING  %s/%s (leak-guard pattern/policy file)\n' "$DOT" "$f"; missing=1; }
+  done
+  # The probe needs a token the domain's markers MATCH. One they do not match is let through by a
+  # healthy guard, and every repository would read DARK at once.
+  local mre; mre=$(grep -vE '^[[:space:]]*(#|$)' "$DOT/git-leak-markers" 2>/dev/null | head -1)
+  if [ -z "$PLANT_MARKER" ]; then
+    printf '  MISSING  probe-marker= in %s/git-leak-policy (a token the markers match, planted only in probes)\n' "$DOT"; missing=1
+  elif [ -n "$mre" ] && ! printf '%s\n' "$PLANT_MARKER" | grep -qE "$mre"; then
+    printf '  MISSING  a probe marker the markers match: %s does not match git-leak-markers\n' "$PLANT_MARKER"; missing=1
+  fi
+  return $missing
+}
+
+# A scratch hooks directory with nothing in it, pointed at by core.hooksPath during a probe so that
+# only configured hooks can answer. Created once per run.
+CFG_EMPTY_HOOKS=${CFG_EMPTY_HOOKS:-}   # inherited by parallel workers, so they share the parent's
+ensure_empty_hooks() {
+  [ -n "$CFG_EMPTY_HOOKS" ] && return 0
+  CFG_EMPTY_HOOKS=$(mktemp -d "${TMPDIR:-/tmp}/hook-doctor-nohooks.XXXXXX") || die "could not create a scratch directory" 2
+  trap 'rm -rf "$CFG_EMPTY_HOOKS"' EXIT
+}
+
+
+# --- the guard, probed per event -----------------------------------------------------------------
+# The leak-guard is three configured hooks (hook.publish-guard-<event>.* in ~/.dotlocal/gitconfig),
+# one per event. A repository can disable one entry without the others, so a probe of one event
+# proves nothing about another: all three are probed, each with a clean input that must pass and a
+# planted marker that must be refused BY THE LEAK-GUARD.
+#
+# ISOLATION. Each probe runs with core.hooksPath pointed at an empty directory, so the repo's own
+# traditional hooks cannot answer, and with the repo-gates entries switched off, so a repository's
+# own gate (a commit-message linter, say) cannot produce a refusal that reads as the guard's. The
+# refusal must also carry the leak-guard's refusal text on stderr.
+#
+# NOTHING IN THE REPOSITORY CHANGES. The pre-commit and pre-push plants are built in a temporary
+# index and a temporary object directory, with the repository's own objects reachable read-only as
+# an alternate. No ref, index or object in the repository is written.
+CFG_EVENTS="commit-msg pre-commit pre-push"
+
+# cfg_hook_run <worktree> <event> [<stdin file> | ""] [-- hook args...] -- prints "rc<TAB>SIG",
+# SIG being GUARD when the leak-guard's refusal text appears on stderr, else OTHER.
+# `git hook run` gives the hook an EMPTY stdin unless told otherwise (--to-stdin), so a pre-push
+# refs line piped into it never reaches the guard -- which then scans nothing and passes. That
+# made the first version of this probe report every repository's pre-push as dark.
+cfg_hook_run() {
+  local wt=$1 ev=$2 in=${3:-} err rc e; shift 2; [ $# -gt 0 ] && shift
+  local tostdin=(); [ -n "$in" ] && tostdin=(--to-stdin="$in")
+  local off=""
+  for e in $CFG_EVENTS; do off="$off -c hook.repo-gates-$e.enabled=false"; done
+  # $off is word-split on purpose: it is a list of `-c key=value` pairs with no spaces inside.
+  # shellcheck disable=SC2086
+  err=$(cd "$wt" 2>/dev/null && git -c core.hooksPath="$CFG_EMPTY_HOOKS" $off hook run ${tostdin[@]+"${tostdin[@]}"} "$ev" ${1+"$@"} 2>&1 >/dev/null </dev/null)
+  rc=$?
+  case "$err" in *"leak-guard: BLOCKED"*) printf '%s\tGUARD\n' "$rc" ;; *) printf '%s\tOTHER\n' "$rc" ;; esac
+}
+
+# cfg_probe_event <worktree> <event> -> "clean_rc<TAB>plant_rc<TAB>plant_sig"
+cfg_probe_event() {
+  local wt=$1 ev=$2 tmpd crc psig prc objs head tree blob pc cc
+  tmpd=$(mktemp -d "${TMPDIR:-/tmp}/hook-doctor-cfg.XXXXXX") || { printf 'x\tx\tOTHER\n'; return; }
+  case "$ev" in
+    commit-msg)
+      printf 'chore: hook-doctor probe (no commit is created)\n' > "$tmpd/clean"
+      printf 'chore: hook-doctor probe %s (no commit is created)\n' "$PLANT_MARKER" > "$tmpd/plant"
+      IFS=$'\t' read -r crc _ <<<"$(cfg_hook_run "$wt" commit-msg "" -- "$tmpd/clean")"
+      IFS=$'\t' read -r prc psig <<<"$(cfg_hook_run "$wt" commit-msg "" -- "$tmpd/plant")"
+      ;;
+    pre-commit|pre-push)
+      objs=$(git -C "$wt" rev-parse --path-format=absolute --git-path objects 2>/dev/null)
+      head=$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null || true)
+      mkdir -p "$tmpd/objects"
+      # Everything below writes only under $tmpd: objects to the temporary object directory,
+      # index entries to the temporary index.
+      export GIT_OBJECT_DIRECTORY="$tmpd/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objs" GIT_INDEX_FILE="$tmpd/index"
+      if [ -n "$head" ]; then git -C "$wt" read-tree "$head" 2>/dev/null; else git -C "$wt" read-tree --empty 2>/dev/null; fi
+      if [ "$ev" = pre-commit ]; then
+        IFS=$'\t' read -r crc _ <<<"$(cfg_hook_run "$wt" pre-commit "")"
+        blob=$(printf 'hook-doctor probe %s\n' "$PLANT_MARKER" | git -C "$wt" hash-object -w --stdin 2>/dev/null)
+        git -C "$wt" update-index --add --cacheinfo "100644,$blob,hook-doctor-probe.txt" 2>/dev/null
+        IFS=$'\t' read -r prc psig <<<"$(cfg_hook_run "$wt" pre-commit "")"
+      else
+        local id=(-c user.name=hook-doctor -c user.email=hook-doctor@invalid)
+        local par=(); [ -n "$head" ] && par=(-p "$head")
+        tree=$(git -C "$wt" write-tree 2>/dev/null)
+        cc=$(git -C "$wt" "${id[@]}" commit-tree "$tree" ${par[@]+"${par[@]}"} -m 'chore: hook-doctor probe' 2>/dev/null)
+        blob=$(printf 'hook-doctor probe %s\n' "$PLANT_MARKER" | git -C "$wt" hash-object -w --stdin 2>/dev/null)
+        git -C "$wt" update-index --add --cacheinfo "100644,$blob,hook-doctor-probe.txt" 2>/dev/null
+        tree=$(git -C "$wt" write-tree 2>/dev/null)
+        pc=$(git -C "$wt" "${id[@]}" commit-tree "$tree" ${par[@]+"${par[@]}"} -m 'chore: hook-doctor probe' 2>/dev/null)
+        # An update of an existing ref from HEAD, to a remote name that does not exist: the guard
+        # then scans exactly HEAD..<probe> and treats the destination as public (its strict case),
+        # with no network call.
+        local base=${head:-0000000000000000000000000000000000000000}
+        printf 'refs/heads/hook-doctor-probe %s refs/heads/hook-doctor-probe %s\n' "$cc" "$base" > "$tmpd/refs-clean"
+        printf 'refs/heads/hook-doctor-probe %s refs/heads/hook-doctor-probe %s\n' "$pc" "$base" > "$tmpd/refs-plant"
+        IFS=$'\t' read -r crc _ <<<"$(cfg_hook_run "$wt" pre-push "$tmpd/refs-clean" -- hook-doctor-probe https://hook-doctor.invalid/probe)"
+        IFS=$'\t' read -r prc psig <<<"$(cfg_hook_run "$wt" pre-push "$tmpd/refs-plant" -- hook-doctor-probe https://hook-doctor.invalid/probe)"
+      fi
+      unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_INDEX_FILE
+      ;;
+  esac
+  rm -rf "$tmpd"
+  printf '%s\t%s\t%s\n' "${crc:-x}" "${prc:-x}" "${psig:-OTHER}"
+}
+
+# classify <worktree> -> "VERDICT<TAB>detail"
+#   GUARDED  every event: clean input passed, planted marker refused by the leak-guard
+#   DARK     some event let a planted marker through, or refused it only by something other than
+#            the leak-guard (named per event). FAIL-OPEN: commits carrying markers land.
+#   BLOCKED  some event refused BOTH the clean and the planted input. FAIL-CLOSED: nothing leaks,
+#            nothing commits.
+#   UNKNOWN  a clean input refused but a planted one accepted: incoherent, never counted as clean
+#   EXEMPT   the fleet record exempts this repo (markers are legal here), with the value printed
+#   EXTERNAL an upstream clone;  SKIP  no work tree
+classify() {
+  local wt=$1 ev c p s dark="" blocked="" unknown="" policy disabled exempt=""
+  # NO WORK TREE, NOTHING TO GUARD. In the bare-container layout the container ROOT is a valid git
+  # context but has no work tree, so nothing can ever be committed from it, and a probe there would
+  # measure nothing while still returning a verdict. You pass through container roots on the way to
+  # every worktree, so a false verdict here would be frequent. Measured 2026-09-04 in a bare-container repository.
+  if [ "$(git -C "$wt" rev-parse --is-bare-repository 2>/dev/null)" = true ]; then
+    printf 'SKIP\tbare container (no work tree): nothing commits from here\n'; return
+  fi
+  if is_external "$wt"; then
+    printf 'EXTERNAL\tupstream clone (mani tag: upstream) -- ships its own hook setup, not ours to change\n'; return
+  fi
+  # READ FROM THE FLEET RECORD, not the repo's own config: an auditor that reads the audited thing's
+  # claim about itself is not auditing. The guard asks the same reader the same question, so the two
+  # cannot disagree about which repo a path belongs to.
+  policy=$(fleet-decl "$wt" leakPolicy 2>/dev/null || true)
+  disabled=$(fleet-decl "$wt" leakDisable 2>/dev/null || true)
+  case "$policy" in notes|internal) exempt="leakPolicy=$policy" ;; esac
+  case "$disabled" in true|1|yes) exempt="leakDisable=$disabled" ;; esac
+  ensure_empty_hooks
+  # The three events are independent -- each builds its plants in its own scratch directories and
+  # only reads the repository -- so they run concurrently. Each writes its own file; nothing is read
+  # until all three have finished.
+  local pdir; pdir=$(mktemp -d "${TMPDIR:-/tmp}/hook-doctor-ev.XXXXXX") || { printf 'UNKNOWN\tcould not create a scratch directory\n'; return; }
+  for ev in $CFG_EVENTS; do cfg_probe_event "$wt" "$ev" > "$pdir/$ev" & done
+  wait
+  for ev in $CFG_EVENTS; do
+    c=x; p=x; s=OTHER
+    [ -s "$pdir/$ev" ] && IFS=$'\t' read -r c p s < "$pdir/$ev"
+    if [ "$c" != 0 ] && [ "$p" != 0 ]; then
+      blocked="${blocked:+$blocked, }$ev (clean rc=$c)"
+    elif [ "$c" != 0 ]; then
+      unknown="${unknown:+$unknown, }$ev (clean rc=$c, planted rc=$p)"
+    elif [ -z "$exempt" ] && { [ "$p" = 0 ] || [ "$s" != GUARD ]; }; then
+      dark="${dark:+$dark, }$ev (planted rc=$p, $s)"
+    fi
+  done
+  rm -rf "$pdir"
+  if [ -n "$dark" ];    then printf 'DARK\tplanted %s not refused by the leak-guard on: %s\n' "$PLANT_MARKER" "$dark"; return; fi
+  if [ -n "$blocked" ]; then printf 'BLOCKED\ta CLEAN input was refused on: %s -- nothing leaks, nothing commits\n' "$blocked"; return; fi
+  if [ -n "$unknown" ]; then printf 'UNKNOWN\tincoherent on: %s -- do not treat as clean\n' "$unknown"; return; fi
+  if [ -n "$exempt" ];  then printf 'EXEMPT\t%s (markers are legal here)\n' "$exempt"; return; fi
+  printf 'GUARDED\tcommit-msg, pre-commit and pre-push each refused a planted %s\n' "$PLANT_MARKER"
+}
+
+# --- the global secret scan, probed on pre-commit ------------------------------------------------
+# A second configured hook, hook.secret-scan, ships from the PUBLIC base's ~/.gitconfig and runs
+# git-secret-scan (gitleaks) on every commit in every repository. A repository can switch it off
+# with one local setting, exactly as it can the guard, so it is probed the same way: a clean input
+# must pass and a planted fake token must be refused BY the scan, with the guard, the repo's own
+# gates and its traditional hooks all switched off. Nothing in the repository changes.
+#
+# The token is assembled at runtime so that this file never holds a whole one: the scan it probes
+# would otherwise refuse this file's own commit.
+SCAN_PLANT="gh""p_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3z5A"
+
+scan_configured() { git config --global --includes --get hook.secret-scan.command >/dev/null 2>&1; }
+
+# scan_run <worktree> -> "rc<TAB>SIG", SIG being SCAN when git-secret-scan's refusal text appears.
+scan_run() {
+  local wt=$1 err rc
+  err=$(cd "$wt" 2>/dev/null && git -c core.hooksPath="$CFG_EMPTY_HOOKS" \
+        -c hook.publish-guard-pre-commit.enabled=false -c hook.repo-gates-pre-commit.enabled=false \
+        hook run pre-commit 2>&1 >/dev/null </dev/null)
+  rc=$?
+  case "$err" in *"git-secret-scan:"*) printf '%s\tSCAN\n' "$rc" ;; *) printf '%s\tOTHER\n' "$rc" ;; esac
+}
+
+# scan_probe <worktree> -> "VERDICT<TAB>detail", VERDICT one of
+#   SCANNED       a clean input passed and the planted token was refused by the scan
+#   SCAN-DARK     the planted token was not refused, or only by something other than the scan
+#   SCAN-BLOCKED  the scan refused a CLEAN input: nothing leaks, nothing commits (gitleaks or its
+#                 floor config missing, usually)
+#   SCAN-OFF      no hook.secret-scan entry in global config on this machine
+scan_probe() {
+  local wt=$1 tmpd objs head crc prc psig blob
+  scan_configured || { printf 'SCAN-OFF\tno hook.secret-scan entry in global config\n'; return; }
+  tmpd=$(mktemp -d "${TMPDIR:-/tmp}/hook-doctor-scan.XXXXXX") || { printf 'SCAN-BLOCKED\tcould not create a scratch directory\n'; return; }
+  objs=$(git -C "$wt" rev-parse --path-format=absolute --git-path objects 2>/dev/null)
+  head=$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null || true)
+  mkdir -p "$tmpd/objects"
+  export GIT_OBJECT_DIRECTORY="$tmpd/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objs" GIT_INDEX_FILE="$tmpd/index"
+  if [ -n "$head" ]; then git -C "$wt" read-tree "$head" 2>/dev/null; else git -C "$wt" read-tree --empty 2>/dev/null; fi
+  IFS=$'\t' read -r crc _ <<<"$(scan_run "$wt")"
+  blob=$(printf 'token = "%s"\n' "$SCAN_PLANT" | git -C "$wt" hash-object -w --stdin 2>/dev/null)
+  git -C "$wt" update-index --add --cacheinfo "100644,$blob,hook-doctor-scan-probe.txt" 2>/dev/null
+  IFS=$'\t' read -r prc psig <<<"$(scan_run "$wt")"
+  unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_INDEX_FILE
+  rm -rf "$tmpd"
+  if [ "${crc:-x}" != 0 ]; then printf 'SCAN-BLOCKED\tthe scan refused a clean input (rc=%s)\n' "${crc:-x}"; return; fi
+  if [ "${prc:-x}" = 0 ] || [ "${psig:-OTHER}" != SCAN ]; then
+    printf 'SCAN-DARK\tplanted token not refused by git-secret-scan (rc=%s, %s)\n' "${prc:-x}" "${psig:-OTHER}"; return
+  fi
+  printf 'SCANNED\ta planted token was refused by git-secret-scan\n'
+}
+
+# hookspath_local <worktree> -> the repo's OWN core.hooksPath, if it sets one. Not a guard failure
+# any more -- configured hooks run regardless -- but it still hides the repo's traditional hooks in
+# .git/hooks from git, so it is reported as a warning.
+hookspath_local() { git -C "$1" config --local --get core.hooksPath 2>/dev/null || true; }
+
+
+# --- repository gates: declared vs wired --------------------------------------------------------
+# The guard above is the fleet's; a repo's OWN commit gates are a second question. They are reached
+# two ways: tracked in .githooks/<event> (or the older .husky/<event>) and run by run-repo-gates for
+# a manifest repo that is not an upstream clone; or an executable hook in the shared hooks directory,
+# written once per clone by hand. A missing one is skipped WITHOUT A WORD, so this names the shape.
+gates_status() { # <worktree> -> "WIRED\t<how>" | "UNWIRED\t<why>" | nothing when no gates are tracked
+  local wt="$1" declared="" runner="" f common
+  for f in .githooks/pre-commit .husky/pre-commit tools/hooks/pre-commit .pre-commit-config.yaml; do
+    [ -n "$(git -C "$wt" ls-files -- "$f" 2>/dev/null)" ] && declared="${declared:+$declared, }$f"
+  done
+  [ -z "$declared" ] && return 0
+  # Run natively when the repo's own hooks directory is its tracked gates' (run-repo-gates then
+  # defers to git rather than running them twice).
+  local nat; nat=$(git -C "$wt" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)
+  if [ -n "$nat" ] && [ -x "$nat/pre-commit" ]; then
+    case "$nat" in "$wt/.githooks"|"$wt/.husky"|"$wt/.husky/_")
+      printf 'WIRED\tnatively, core.hooksPath=%s\n' "${nat#"$wt"/}"; return 0 ;;
+    esac
+  fi
+  case "$declared" in *.githooks/pre-commit*|*.husky/pre-commit*) runner=yes ;; esac
+  if [ "$runner" = yes ] && fleet-decl --project "$wt" >/dev/null 2>&1 && ! is_external "$wt"; then
+    if [ -f "$wt/package.json" ] && [ ! -d "$wt/node_modules" ]; then
+      printf 'UNWIRED\ttracks %s, but node_modules is missing, so run-repo-gates skips it here\n' "$declared"; return 0
+    fi
+    printf 'WIRED\trun-repo-gates\n'; return 0
+  fi
+  common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [ -n "$common" ] && [ -x "$common/hooks/pre-commit" ]; then
+    printf 'WIRED\t%s\n' "$common/hooks/pre-commit"; return 0
+  fi
+  printf 'UNWIRED\ttracks %s, but nothing runs it in this worktree\n' "$declared"
+}
+
+
+# one_result <worktree> -> "VERDICT<US>detail<US>local hooksPath<US>gates verdict<US>gates detail", US being
+# the ASCII unit separator. NOT a tab: tab is whitespace to `read`, which merges two in a row, so an
+# empty field (no local hooksPath, the usual case) shifted every later field left -- measured on the
+# first parallel run, which reported seven repos as core.hooksPath=WIRED.
+one_result() {
+  local wt=$1 v d lhp="" gv="" gd="" sv="" sd=""
+  IFS=$'\t' read -r v d <<<"$(classify "$wt")"
+  if [ "$v" != EXTERNAL ] && [ "$v" != SKIP ]; then
+    lhp=$(hookspath_local "$wt")
+    IFS=$'\t' read -r gv gd <<<"$(gates_status "$wt")"
+    ensure_empty_hooks
+    IFS=$'\t' read -r sv sd <<<"$(scan_probe "$wt")"
+  fi
+  printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$v" "$d" "$lhp" "$gv" "$gd" "$sv" "$sd"
+}
+
+# __one <outdir> <index>: the parallel worker. Reads its worktree from <outdir>/in.<index>, writes its
+# result to <outdir>/out.<index>. One file per worker, so results cannot interleave, and a worker that
+# dies leaves no out file -- which the aggregation reports, never skips.
+cmd_one() {
+  local od=$1 i=${2:-} wt
+  [ -n "$i" ] || return 0   # GNU xargs runs the command once with no argument when there is no work
+  IFS= read -r wt < "$od/in.$i" || return 1
+  one_result "$wt" > "$od/out.$i.tmp" && mv "$od/out.$i.tmp" "$od/out.$i"
+  [ "${HOOK_DOCTOR_PROGRESS:-0}" = 1 ] && printf '  done  %s\n' "$wt" >&2
+  return 0
+}
+
+# How many worktrees to probe at once: HOOK_DOCTOR_JOBS, else the CPU count, capped at 8 (each
+# worktree already runs three probes at once). getconf answers on Linux and macOS alike.
+parallel_jobs() {
+  local n=${HOOK_DOCTOR_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+  case "$n" in ''|*[!0-9]*) n=4 ;; esac
+  [ "$n" -gt 8 ] && [ -z "${HOOK_DOCTOR_JOBS:-}" ] && n=8
+  [ "$n" -lt 1 ] && n=1
+  printf '%s' "$n"
+}
+
+# --- commands -------------------------------------------------------------------------------------
+
+cmd_list() {
+  require_manifest
+  say "hook-doctor list — the denominator, on $(uname -n 2>/dev/null || hostname)"
+  say ""
+  local n=0
+  while IFS=$'\t' read -r wt src; do
+    printf '  %-58s %s\n' "$wt" "$src"; n=$((n+1))
+  done <<EOF
+$(enumerate)
+EOF
+  say ""
+  say "  $n worktree(s). Sources are printed so the denominator can be audited without reading the code."
+  local strict loose
+  strict=$(manifest_paths | grep -c . || true)
+  loose=$(manifest_paths_loose | grep -c . || true)
+  if [ "$loose" -gt "$strict" ]; then
+    say "  $((loose - strict)) nested worktrees: entry/entries in the manifest are NOT resolved here —"
+    say "  they are relative to their project, not to $DEVEL_ROOT, and git worktree list already finds them."
+  fi
+  say "  Bare containers (<project>/.bare) are excluded: no working tree, so no probe means anything there."
+}
+
+# One directory, no enumeration and no manifest -- so it stays fast enough for a shell hook and does
+# not depend on the repo being in mani.yaml at all (a brand-new worktree will not be).
+cmd_check_path() {
+  local d=$1 v det lhp
+  [ -d "$d" ] || die "no such directory: $d" 2
+  if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+    [ "$QUIET" = 1 ] && return 0
+    say "hook-doctor: $d is not a git repository"; return 0
+  fi
+  if ! guard_configured; then
+    [ "$QUIET" = 1 ] && return 0
+    say "hook-doctor: NOT-CONFIGURED — this domain supplies no leak-guard patterns (hook-doctor explain NOT-CONFIGURED)"; return 0
+  fi
+  if ! check_infrastructure >/dev/null 2>&1; then
+    say "hook-doctor: guard infrastructure incomplete on this machine -- cannot judge $d (run: hook-doctor check)"; return 2
+  fi
+  local line; line=$(classify "$d")
+  v=${line%%	*}; det=${line#*	}
+  case "$v" in
+    GUARDED|EXEMPT|SKIP|EXTERNAL)
+      # The repo's OWN gates are reported here too, as warnings that do not fail the check: this
+      # path blocks worktree creation, and unwired gates can be legitimately transient (a fresh
+      # worktree before its dependency install). Without this line a GUARDED here said nothing about
+      # them, and read as if it did -- reported 2026-09-24.
+      local gv="" gd="" sv="" sd=""
+      lhp=$(hookspath_local "$d")
+      if [ "$v" = GUARDED ] || [ "$v" = EXEMPT ]; then
+        IFS=$'\t' read -r gv gd <<<"$(gates_status "$d")"
+        ensure_empty_hooks
+        IFS=$'\t' read -r sv sd <<<"$(scan_probe "$d")"
+      fi
+      # SCAN-DARK fails the check like DARK: commits land unscanned. SCAN-BLOCKED and SCAN-OFF are
+      # warnings here, since this path runs at worktree creation and a machine still being set up can
+      # legitimately lack gitleaks for a moment; `check` reports all three as holes.
+      [ "$QUIET" = 1 ] && [ -z "$lhp" ] && [ "$gv" != UNWIRED ] && { [ -z "$sv" ] || [ "$sv" = SCANNED ]; } && return 0
+      [ "$QUIET" = 1 ] || say "hook-doctor: $v — $det"
+      [ -n "$lhp" ] && say "hook-doctor: HOOKSPATH-LOCAL — $d sets core.hooksPath=$lhp; its .git/hooks are not run (hook-doctor explain HOOKSPATH-LOCAL)"
+      [ "$gv" = UNWIRED ] && say "hook-doctor: GATES-UNWIRED — $gd (hook-doctor explain GATES-UNWIRED)"
+      case "$sv" in
+        SCAN-DARK) say "hook-doctor: SCAN-DARK — $sd (hook-doctor explain SCAN-DARK)"; return 1 ;;
+        SCAN-BLOCKED|SCAN-OFF) say "hook-doctor: $sv — $sd (hook-doctor explain $sv)" ;;
+      esac
+      return 0 ;;
+  esac
+  say ""
+  say "  !! hook-doctor: $v — $d"
+  say "     $det"
+  say "     hook-doctor explain $v"
+  say ""
+  return 1
+}
+
+cmd_check() {
+  if [ -n "$ONE_PATH" ]; then cmd_check_path "$ONE_PATH"; return $?; fi
+  require_manifest
+  local host; host=$(uname -n 2>/dev/null || hostname)
+  say "hook-doctor — $host"
+  say ""
+  if ! guard_configured; then
+    say "NOT-CONFIGURED — this domain supplies no leak-guard patterns, so there is no guard to probe."
+    say "  hook-doctor explain NOT-CONFIGURED"
+    return 0
+  fi
+  say "Infrastructure (C7):"
+  if ! check_infrastructure; then
+    say ""
+    die "the guard's infrastructure is incomplete -- every repo is dark at once.
+    Refusing to report per-repo findings: they would be seventeen phantom repairs for one real
+    cause. Fix the above, then re-run." 2
+  fi
+  say "  ok — $(git --version), leak-guard, run-repo-gates, the three configured entries and the policy files"
+  # A GLOBAL core.hooksPath left behind by the retired dispatcher (or set by anything else) does not
+  # touch the guard, which is configured hooks -- but git then looks for every repository's own
+  # hooks in that directory instead of .git/hooks, so every hand-installed gate on the machine stops
+  # running at once, silently. A machine-wide finding, stated once rather than per repository.
+  local ghp; ghp=$(git config --global --get core.hooksPath 2>/dev/null || true)
+  if [ -n "$ghp" ]; then
+    say "  !! global core.hooksPath=$ghp -- git reads every repo's own hooks from there, not .git/hooks;"
+    say "     each repo's hand-installed gates are skipped. Remove it: git config --global --unset core.hooksPath"
+  fi
+  say ""
+
+  # The scan's entry is machine-wide: stated once here rather than as one finding per repository.
+  local scanoff=""
+  if ! scan_configured; then
+    scanoff=1
+    say "  !! SCAN-OFF — no hook.secret-scan entry in global config: commits here are not scanned for"
+    say "     secrets. It ships in the public base's ~/.gitconfig; apply that. (hook-doctor explain SCAN-OFF)"
+  fi
+  local dark="" blocked="" unknown="" viol="" unwired="" exempt_lines="" guarded=0 exempt=0 total=0 external=0
+  local scandark="" scanblocked="" scanned=0
+  # PARALLEL. Worktrees are independent, so they are probed several at a time (xargs -P, which GNU
+  # and BSD both have; bash 3.2 on macOS has no `wait -n`). Results are collected per worktree and
+  # reported in denominator order, so the output does not depend on which probe finished first.
+  #
+  # PROGRESS, on stderr and only to a terminal: nothing else is printed until every probe finishes,
+  # and a silent run and a hung one look identical. It did, on 2026-09-23, and was interrupted.
+  local denom od n_all=0 idx=0 jobs line i
+  denom=$(enumerate)
+  od=$(mktemp -d "${TMPDIR:-/tmp}/hook-doctor-run.XXXXXX") || die "could not create a scratch directory" 2
+  ensure_empty_hooks
+  HD_RUN_DIR=$od   # global: the EXIT trap runs after this function's locals are gone
+  trap 'rm -rf "$CFG_EMPTY_HOOKS" "$HD_RUN_DIR"' EXIT
+  export CFG_EMPTY_HOOKS
+  while IFS=$'\t' read -r wt src; do
+    [ -n "$wt" ] || continue
+    [ -n "$ONLY_REPO" ] && case "$wt" in *"$ONLY_REPO"*) : ;; *) continue ;; esac
+    idx=$((idx+1))
+    printf '%s\t%s\n' "$wt" "$src" > "$od/meta.$idx"
+    case "$src" in *"MISSING ON DISK"*) continue ;; esac
+    printf '%s\n' "$wt" > "$od/in.$idx"
+  done <<EOF
+$denom
+EOF
+  n_all=$idx
+  jobs=$(parallel_jobs)
+  [ -t 2 ] && { printf '  probing %s worktree(s), %s at a time\n' "$n_all" "$jobs" >&2; export HOOK_DOCTOR_PROGRESS=1; }
+  ls "$od" | sed -n 's/^in\.//p' | xargs -P "$jobs" -n 1 "${BASH:-bash}" "$0" __one "$od"
+  [ -t 2 ] && printf '\n' >&2
+
+  i=0
+  while [ "$i" -lt "$n_all" ]; do
+    i=$((i+1))
+    IFS=$'\t' read -r wt src < "$od/meta.$i"
+    total=$((total+1))
+    case "$src" in *"MISSING ON DISK"*) unknown="$unknown  $wt — declared in mani.yaml but absent on disk\n"; continue ;; esac
+    if [ ! -s "$od/out.$i" ]; then unknown="$unknown  $wt — the probe did not complete; NOT counted as clean\n"; continue; fi
+    local v d lhp gv gd sv sd
+    IFS=$'\037' read -r v d lhp gv gd sv sd < "$od/out.$i"
+    case "$sv" in
+      SCANNED)      scanned=$((scanned+1)) ;;
+      SCAN-DARK)    scandark="$scandark  $wt — $sd\n" ;;
+      SCAN-BLOCKED) scanblocked="$scanblocked  $wt — $sd\n" ;;
+    esac
+    case "$v" in
+      GUARDED)  guarded=$((guarded+1)) ;;
+      EXEMPT)   exempt=$((exempt+1)); exempt_lines="$exempt_lines  $wt — $d\n" ;;
+      DARK)     dark="$dark  $wt — $d\n" ;;
+      BLOCKED)  blocked="$blocked  $wt — $d\n" ;;
+      EXTERNAL) external=$((external+1)) ;;
+      SKIP)     : ;;
+      *)        unknown="$unknown  $wt — $d\n" ;;
+    esac
+    [ -n "$lhp" ] && viol="$viol  $wt — core.hooksPath=$lhp\n"
+    [ "$gv" = UNWIRED ] && unwired="$unwired  $wt — $gd\n"
+  done
+
+  # LOUD is a requirement, not a tone: this whole defect class is silent, so the count of DARK
+  # worktrees leads and is never buried under per-repo detail. A fail-OPEN worktree outranks a
+  # fail-closed one, because only one of them lets content land.
+  local ndark; ndark=$(printf '%b' "$dark" | grep -c . || true)
+  say "SUMMARY: $ndark DARK (fail-open, commits land ungated) of $total worktree(s) checked"
+  say ""
+  [ -n "$dark" ]    && { say "DARK — fail-open, highest severity:";      printf '%b' "$dark"; say ""; }
+  [ -n "$blocked" ] && { say "BLOCKED — fail-closed, nothing leaks but nothing commits:"; printf '%b' "$blocked"; say ""; }
+  [ -n "$unknown" ] && { say "UNKNOWN — unclassifiable; NOT counted as clean:";  printf '%b' "$unknown"; say ""; }
+  [ -n "$unwired" ] && { say "GATES-UNWIRED — the repo tracks commit gates that will not run in this worktree:"; printf '%b' "$unwired"; say ""; }
+  [ -n "$viol" ]    && { say "HOOKSPATH-LOCAL (warning) — the repo sets its own core.hooksPath; the guard still runs, its .git/hooks do not:"; printf '%b' "$viol"; say ""; }
+  [ -n "$exempt_lines" ] && { say "EXEMPT — legitimately unguarded, with the value that caused it:"; printf '%b' "$exempt_lines"; say ""; }
+  [ -n "$scandark" ]    && { say "SCAN-DARK: commits here are NOT scanned for secrets (hook-doctor explain SCAN-DARK)"; printf '%b' "$scandark"; say ""; }
+  [ -n "$scanblocked" ] && { say "SCAN-BLOCKED: the secret scan refuses even a clean commit here"; printf '%b' "$scanblocked"; say ""; }
+  say "  GUARDED $guarded   EXEMPT $exempt   EXTERNAL $external   of $total"
+  [ -z "$scanoff" ] && say "  SCANNED $scanned of $total (the global secret scan, probed on pre-commit)"
+  say ""
+  say "  This report covers $host ONLY. Git config and hooks are per-machine, so a green run here"
+  say "  says nothing about any other machine."
+
+  [ -n "$dark$blocked$unknown$unwired$ghp$scanoff$scandark$scanblocked" ] && return 1
+  return 0
+}
+
+cmd_explain() {
+  case "${1:-}" in
+    GUARDED) say "GUARDED — on commit-msg, pre-commit and pre-push the leak-guard's configured hook passed a clean input and refused a planted marker, each probed with the repo's own hooks switched off. Nothing to do." ;;
+    DARK)    say "DARK — FAIL-OPEN on the named event(s): a planted marker was not refused by the leak-guard. Commits land unguarded there.
+  Causes, most likely first: the repo disables or redefines the entry locally (git config --show-origin --get-regexp '^hook\\.' names it -- remove it); the base ~/.gitconfig is stale on this machine (apply it).
+  A refusal by something other than the leak-guard is still DARK: that gate is not the guard and can change without anyone noticing." ;;
+    BLOCKED) say "BLOCKED — FAIL-CLOSED on the named event(s): the guard refuses even a clean input, so nothing leaks but nothing commits either.
+  Usually the leak-guard refusing to classify the repo (read its message: an unreadable fleet record, a missing policy file)." ;;
+    EXEMPT)  say "EXEMPT — markers are LEGAL here (leakPolicy=notes|internal, or leakDisable, DECLARED in the fleet record). Correct for the domain's notes repository and its private overlay.
+  Check the printed value is the one you intended: this is also the shape a silently disarmed repo would take." ;;
+    UNKNOWN) say "UNKNOWN — a clean input was refused while a planted one passed, or the repo is declared but absent. It is a VERDICT, not a silence: never counted as clean. Read the printed codes." ;;
+    "HOOKSPATH-LOCAL"|"D2-VIOLATION") say "HOOKSPATH-LOCAL — a WARNING. This repo sets its own core.hooksPath. The publish guard still runs (configured hooks ignore core.hooksPath), but git no longer runs the repo's traditional hooks in .git/hooks.
+  When the repo's own tooling set it to its tracked gates (husky's .husky/_ is the usual case), those gates run natively and run-repo-gates leaves them to git; nothing needs changing unless something in .git/hooks was meant to run too.
+  When it is a leftover: git config --unset core.hooksPath, AND remove whatever re-writes it; unsetting alone reverts at the next install." ;;
+    GATES-UNWIRED) say "GATES-UNWIRED — the repo TRACKS its own commit gates, but nothing runs them in this worktree, so commits skip them silently. The publish guard is a separate verdict.
+  .githooks/<event> or .husky/<event>: run-repo-gates runs them for a repo in the fleet manifest (with a scope:) that is not tagged upstream; add it there, or install node_modules if that is what is missing.
+  tools/hooks/pre-commit or .pre-commit-config.yaml: wire the shared hooks directory once per clone (the repo's README or justfile names the step), or move the gate to .githooks/." ;;
+    NOT-CONFIGURED) say "NOT-CONFIGURED — neither ~/.dotlocal/git-leak-markers nor ~/.dotlocal/git-leak-sensitive exists, so the leak-guard passes every commit on this machine by design: the domain has declared nothing to keep out. A domain enables it by supplying those files from its overlay, with git-leak-policy (private-url= and probe-marker=); the base's overlay skeleton has examples.
+  If this machine's domain DOES supply them, its overlay is not applied here." ;;
+    EXTERNAL) say "EXTERNAL — an upstream clone tagged 'upstream' in the manifest. Not ours to change and not probed. Nothing to do." ;;
+    SCANNED) say "SCANNED — the global secret scan (hook.secret-scan, from the public base) passed a clean commit and refused a planted fake token, probed on pre-commit with the guard and the repo's own hooks switched off. Nothing to do." ;;
+    SCAN-DARK) say "SCAN-DARK — FAIL-OPEN: a planted fake token was not refused by git-secret-scan, so commits here are not scanned for secrets.
+  Causes, most likely first: the repo disables or redefines the entry locally (git config --show-origin --get-regexp '^hook\\.' names it -- remove it); hook.pre-commit.enabled=false switches off every pre-commit hook.
+  A refusal by some other hook is still SCAN-DARK: that hook is not the scan and can change without anyone noticing." ;;
+    SCAN-BLOCKED) say "SCAN-BLOCKED — FAIL-CLOSED: the secret scan refuses even a clean commit, so nothing commits here. Usually gitleaks is not on PATH or ~/.config/gitleaks/floor.toml is missing: install gitleaks and apply the public base." ;;
+    SCAN-OFF) say "SCAN-OFF — this machine's global git config has no hook.secret-scan entry, so no commit on it is scanned for secrets. It ships in the public base's ~/.gitconfig; apply that (git 2.54+ needed for configured hooks)." ;;
+    *) die "unknown verdict '${1:-}'. One of: GUARDED DARK BLOCKED EXEMPT UNKNOWN NOT-CONFIGURED EXTERNAL HOOKSPATH-LOCAL GATES-UNWIRED SCANNED SCAN-DARK SCAN-BLOCKED SCAN-OFF" 2 ;;
+  esac
+}
+
+usage() {
+  cat <<'USAGE'
+usage: hook-doctor <command>
+
+  list                    the denominator, each entry with the source that contributed it
+  check --path <dir>      classify EXACTLY this directory, no enumeration (the primitive a
+                          per-worktree trigger needs: chpwd, or worktree creation)
+  check --path <dir> --quiet
+                          print nothing and exit 0 when clean; a check that speaks every time
+                          becomes wallpaper, which is "report loud" failing in a new costume
+  check [--repo <substr>] every worktree: commit-msg, pre-commit and pre-push each probed
+  explain <verdict>       what GUARDED/DARK/BLOCKED/EXEMPT/UNKNOWN/EXTERNAL/HOOKSPATH-LOCAL mean,
+                          and SCANNED/SCAN-DARK/SCAN-BLOCKED/SCAN-OFF for the global secret scan
+
+exit: 0 all GUARDED or EXEMPT | 1 a hole was found | 2 refused to report (believe nothing above)
+
+Report-only. It never installs, heals, or writes to a repo.
+USAGE
+}
+
+cmd=${1:-check}; shift 2>/dev/null || true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) ONLY_REPO=$2; shift 2 ;;
+    --path) ONE_PATH=$2; shift 2 ;;
+    --quiet) QUIET=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) break ;;
+  esac
+done
+
+case "$cmd" in
+  list)    cmd_list ;;
+  check)   cmd_check ;;
+  explain) cmd_explain "${1:-}" ;;
+  __one)   cmd_one "$@" ;;          # internal: one parallel worker (see cmd_check)
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

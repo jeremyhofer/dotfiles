@@ -1,8 +1,8 @@
 #!/bin/sh
-# Installs the FALLBACK pre-push leak-guard floor into the chezmoi SOURCE repo
-# (.git/hooks/pre-push). The FULL publish-boundary guard (markers + sensitive terms) is
-# provided globally by the overlay when present; this floor is what a public-base-only
-# clone (no overlay) still gets. The hook lives in .git/hooks (never pushed), so it may
+# Installs the FALLBACK pre-push leak floor into the chezmoi SOURCE repo
+# (.git/hooks/pre-push). The full leak-guard (markers + sensitive terms) runs globally
+# when the domain supplies its pattern files; this floor is what a clone without them
+# still gets. The hook lives in .git/hooks (never pushed), so it may
 # hold the literal overlay URL; THIS installer is committed+public, so it injects that URL
 # via the {{ "{{ .overlayRepo }}" }} template var rather than a literal.
 set -eu
@@ -14,9 +14,9 @@ mkdir -p "$src/.git/hooks"
 
 cat > "$hook" <<'HOOK'
 #!/bin/sh
-# Generic pre-push floor for a public-base-only clone (no overlay). The FULL
-# publish-boundary guard (markers + sensitive terms) is provided by the overlay's
-# global git hooks when present; this is only the fallback for a bare clone.
+# Generic pre-push floor for a clone whose domain supplies no leak-guard patterns.
+# The full leak-guard (markers + sensitive terms) runs as a global configured hook
+# when it has them; this is only the fallback.
 KEY_RE='-----BEGIN[ A-Z]*PRIVATE KEY-----'
 OVERLAY='{{ .overlayRepo }}'
 zero=0000000000000000000000000000000000000000

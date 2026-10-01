@@ -25,4 +25,22 @@ non-publishable config on top of the public `dotfiles` base.
 3. Run `setup/overlay-doctor` — it fails loudly until every required Tier-B/C piece is present and filled.
 4. `git init`, add your (machine-local) overlay remote, and point `overlayRepo` at it during the base's `chezmoi init`.
 
-The publish-boundary leak-guard is a **home-only** component and is intentionally not scaffolded here.
+## Optional: the leak-guard
+
+The base wires `~/.local/bin/leak-guard` into every commit and push, and it passes everything until
+this domain says what to keep out. It is deliberately not scaffolded: a placeholder pattern would
+start refusing commits. To turn it on, add to the overlay's `dot_dotlocal/`:
+
+- `git-leak-markers`: one extended regex on the first non-comment line. Identifiers that must stay
+  in this domain's notes repository (its program ids, paths into that repository). Blocked in every
+  repository except those the fleet record declares `leakPolicy: notes` or `internal`.
+- `git-leak-sensitive`: one extended regex, matched case-insensitively. Terms that must not reach a
+  public destination (hostnames, internal service names). Blocked except in `private` repositories
+  and on pushes to a private destination.
+- `git-leak-policy`: `private-url=<regex>` naming the push destinations that are private (anything
+  else is public), and `probe-marker=<token>`, a token the markers match that `hook-doctor` plants
+  to prove the guard is live.
+- `git-leak-allow` (optional): one regex matched whole-line against `<path>:<added line>`, exempting
+  a known generated line from the sensitive gate.
+
+Then declare each repository's `leakPolicy` in the manifest, apply, and run `hook-doctor check`.

@@ -1,0 +1,32 @@
+# --- Leak-guard check on entering a worktree ---------------------------------------------------
+# The point-of-use trigger. Creation time catches a worktree born dark; this catches DRIFT -- a repo
+# whose configured guard was switched off, which has no creation moment to hook and was found once
+# already only by a full audit. hook-doctor stays silent where the domain configured no guard.
+#
+# SILENT WHEN CLEAN, and that is a requirement rather than politeness. A check that speaks on every
+# cd becomes wallpaper, which is the same silence the guard's whole defect class is made of, just
+# one layer up. `--quiet` prints nothing and exits 0 unless there is a finding.
+#
+# CACHED PER WORKTREE PER DAY. Without it this runs on every directory change, and the check spawns
+# two `git hook run` probes. Once a day per worktree is enough for drift and cheap enough to ignore.
+#
+# NOT A GATE. It cannot block anything; it prints and returns.
+_hook_doctor_chpwd() {
+    command -v hook-doctor >/dev/null 2>&1 || return 0
+    local top; top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+    [ -n "$top" ] || return 0
+
+    # Once per worktree per day. The stamp file CONTAINS the date it was written and we compare
+    # strings -- deliberately not `find -newermt` (GNU-only; absent on macOS's BSD find, where it
+    # would fail silently and either never or always refresh) and not `stat`, whose flags differ
+    # between the two userlands. A date string compares identically everywhere.
+    local state="${XDG_STATE_HOME:-$HOME/.local/state}/hook-doctor"
+    local stamp="$state/${${top//\//_}#_}.checked"
+    local today; today=$(date +%Y%m%d)
+    [ -d "$state" ] || mkdir -p "$state" 2>/dev/null || return 0
+    [ "$(cat "$stamp" 2>/dev/null)" = "$today" ] && return 0
+    printf '%s' "$today" > "$stamp" 2>/dev/null
+
+    hook-doctor check --path "$top" --quiet
+}
+autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook chpwd _hook_doctor_chpwd

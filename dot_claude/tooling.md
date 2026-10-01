@@ -28,6 +28,10 @@ only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under
 `git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
 since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
 `git-secret-scan` (gitconfig pre-commit hook: gitleaks on staged changes, every repo) ·
+`leak-guard` (gitconfig commit and push hooks: refuses the domain's private vocabulary, from its
+`~/.dotlocal/git-leak-*` files, outside the repos the fleet record allows it in; passes everything
+where the domain supplies none) · `run-repo-gates` (runs a manifest repo's tracked `.githooks/<event>`)
+· `hook-doctor` (is the leak-guard live per worktree; `--path <dir>`) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review) ·

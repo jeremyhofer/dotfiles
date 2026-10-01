@@ -1,0 +1,384 @@
+#!/bin/sh
+# leak-guard — keeps a domain's private vocabulary out of the repositories that must not carry it.
+# Invoked by git as configured hooks, hook.publish-guard-<event> in the base ~/.gitconfig, one per
+# guarded event.
+# Usage: leak-guard pre-commit | commit-msg <msgfile> | pre-push <remote> <url>  (refs on stdin)
+# Exit 0 = allowed; 1 = leak (blocks).
+#
+# THE MECHANISM IS PUBLIC; WHAT IT GUARDS IS EACH DOMAIN'S OWN. The patterns and the push policy are
+# files the domain's overlay supplies under ~/.dotlocal: git-leak-markers (program identifiers and
+# pointers into the domain's notes, blocked everywhere but the repos allowed them), git-leak-sensitive
+# (terms blocked from anything public), git-leak-allow (narrow path-anchored exemptions from the
+# sensitive gate) and git-leak-policy (which push destinations are private). A domain that supplies
+# NEITHER pattern file has configured no guard, and every commit passes; one that supplies either
+# has, and a missing or empty file for an active gate then refuses rather than passes.
+#
+# WHAT IT IS FOR, despite the name: not only a public/private publish boundary. It keeps program
+# markers and personal references out of EVERY repository, so each project stays isolated and
+# self-contained. Only the repos the fleet record declares `notes`, `internal` or `private` may carry
+# them, and that list is meant to stay small: widening it for convenience defeats the point.
+set -eu
+# macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
+# path containing "//". Harmless for file I/O and fatal the moment such a path is compared
+# textually against one a tool reports back normalized. Strip it once, here.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
+MODE="${1:-}"
+DOT="$HOME/.dotlocal"
+
+# No pattern file at all: this domain has configured no guard. Checked by existence, not content, so
+# a configured domain whose file was emptied still reaches the fail-closed branches below.
+[ -e "$DOT/git-leak-markers" ] || [ -e "$DOT/git-leak-sensitive" ] || exit 0
+
+first_re() { [ -f "$1" ] && grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null | head -1 || true; }
+MARK_RE=$(first_re "$DOT/git-leak-markers")
+SENS_RE=$(first_re "$DOT/git-leak-sensitive")
+ALLOW_RE=$(first_re "$DOT/git-leak-allow")
+PRIV_URL_RE=$(grep -E '^private-url=' "$DOT/git-leak-policy" 2>/dev/null | head -1 | sed 's/^private-url=//' || true)
+
+# EVERY PER-REPO DECLARATION IS READ FROM THE FLEET RECORD, not from the repo being guarded.
+#
+# CORRECTED 2026-09-22, and the correction matters more than the refactor. The comment that stood
+# here justified keeping the program-prefix grant central with: "A rule a guarded repo can grant
+# itself is not a guard -- and every existing repo-local value only ever WIDENS enforcement, while
+# this is the first that would narrow it."
+#
+# THE SECOND CLAUSE WAS FALSE. `leakguard.policy` and `leakguard.disable` were both read with
+# `git config --get`, which searches repo-local config first, and both narrow enforcement to
+# nothing. Measured in a scratch repo with a control, staging content carrying program markers:
+# with nothing set the guard blocked (rc=1); with a repo-local `leakguard.policy=internal` it
+# exited 0 before scanning; with a repo-local `leakguard.disable=true` it exited 0. The guarded
+# thing owned its own off switch, in state that is untracked, undeployed, and invisible to any
+# audit that reads files.
+#
+# The first clause was right all along, so it is now applied to every declaration rather than one:
+# policy, disable and prefix all come from the fleet record, which the working session does not own.
+#
+# READ FAILURE IS A REFUSAL, NEVER A DEFAULT. fleet-decl separates "this repo declares nothing"
+# (exit 1) from "the record is unusable" (exit 2). The first is ordinary -- most repos on a machine
+# are not fleet repos, and they get the strictest treatment, which is what an unset value already
+# did. The second means every answer is unfounded, and treating it as "nothing declared" would
+# silently downgrade this guard for every repo at once, on every commit, with nothing to see.
+REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null \
+           || git rev-parse --absolute-git-dir 2>/dev/null || pwd)
+
+command -v fleet-decl >/dev/null 2>&1 || {
+  printf 'leak-guard: fleet-decl is not installed, so no repo can be classified — refusing.\n' >&2
+  printf '  It ships with the public dotfiles base; apply that.\n' >&2
+  exit 1; }
+
+# PROBE THE RECORD ONCE, HERE, OUTSIDE ANY SUBSTITUTION.
+#
+# This is deliberately not folded into the per-key reader below, and the reason is a real bug that
+# shape had: a reader that refuses by calling `exit` from inside `$(...)` exits the SUBSHELL, not
+# the guard. The guard carried on with an empty value and only failed by accident of `set -e`,
+# with a status nobody chose. A refusal has to happen where the refusing code is actually running.
+# `|| _prc=$?` rather than `; _prc=$?`: this script runs under `set -e`, so an untested failing
+# command aborts it BEFORE the status can be read -- the guard would die with whatever status the
+# probe returned and print none of the explanation below. Making it a tested command is what lets
+# the refusal be the one written here.
+_prc=0
+fleet-decl --project "$REPO_TOP" >/dev/null 2>&1 || _prc=$?
+if [ "$_prc" -ge 2 ]; then
+  printf 'leak-guard: the fleet record is unusable, so this repo cannot be classified.\n' >&2
+  printf '  Refusing rather than guessing: a wrong classification here is a published leak.\n' >&2
+  printf '  Run: fleet-decl --check\n' >&2
+  exit 1
+fi
+
+# With the record proven readable, a per-key read has only two outcomes: declared, or not. "Not"
+# means this is not a fleet repo, or the key is absent -- and both take the strictest treatment,
+# which is exactly what an unset git config already did.
+decl() { fleet-decl "$REPO_TOP" "$1" 2>/dev/null || true; }
+
+# EVERY prefix declared, not just the first. A repo mid-rename holds two: the one it is moving to
+# and the one it still has to be able to NAME, including in the single sentence recording the
+# rename. Granting only the new one would refuse that sentence in the repo the sentence is about.
+OWN=$(decl leakPrefix | tr ',' ' ')
+
+POLICY=$(decl leakPolicy)
+[ "$(decl leakDisable)" = "true" ] && exit 0
+# `strict` is an explicit synonym for the former unset default: not exempt, and sensitive content
+# blocked. It exists so a repo that IS strict says so, and an absent declaration becomes a lint
+# finding rather than an invisible fallback that reads identically to a deliberate choice.
+case "$POLICY" in notes|internal) exit 0;; esac        # the domain's notes repo or another internal one: both classes allowed
+
+# Paths never scanned: the pattern/policy files themselves + license/vendored trees.
+IGNORE_RE='(^|/)git-leak-(markers|sensitive|policy|allow)$|(^|/)LICENSE$|(^|/)(node_modules|vendor|third[-_]party)/'
+
+# commit-time sensitive keying: allowed only in a known-private repo.
+block_sensitive_commit() { case "$POLICY" in private|notes) return 1;; *) return 0;; esac; }   # strict/unset -> block
+
+# Scan text on stdin; $1=label $2=block_markers $3=block_sensitive $4=optional sentinel
+# file. Return 1 on hit. When $4 is given, a hit also appends to that file — needed by
+# pre-push, whose ref-loop calls this at the tail of a piped subshell (POSIX sh forks a
+# subshell for every pipeline stage, so `scan_text ... || rc=1` right there would set
+# rc in a throwaway process and never be visible after the loop). A sentinel FILE
+# crosses that process boundary; the loop's caller checks `[ -s "$sentinel" ]` once,
+# after the loop, back in the main shell.
+# Parse a unified diff on stdin; emit "N:content" for each ADDED line, N = its line number
+# in the NEW file (tracked from each hunk header's +start). Only added content is emitted —
+# a change is judged by what it INTRODUCES, not pre-existing content it merely touches (like
+# gitleaks/git-secrets scan the staged diff) — and the real N makes clear the hit is in the
+# STAGED change, not just somewhere in the file.
+diff_added_numbered() {
+  awk '
+    /^@@/      { if (match($0, /\+[0-9]+/)) ln = substr($0, RSTART+1, RLENGTH-1)+0; next }
+    /^\+\+\+/  { next }
+    /^\+/      { print ln ":" substr($0,2); ln++; next }
+  '
+}
+
+# Read "N:content" lines; for each line carrying a blocked token, emit
+#   leak-guard: <label>:<N>:  marker: <tok…>  sensitive: <tok…>
+# naming the exact matched TOKEN(s) (grep -o, deduped per line) — never the pattern itself,
+# and never a pre-existing match (only added lines reach here). Fail CLOSED if a gate is
+# ACTIVE but its pattern file is missing/empty. Any hit appends to the sentinel file (the
+# ref/file loops run this at the tail of a subshell, so the caller tests -s once after).
+# $1=label $2=block_markers $3=block_sensitive $4=sentinel-file $5=repo path (allowlist keying;
+# empty = no allowlisting, which is the STRICT direction — see the allowlist block below)
+scan_lines() {
+  label="$1"; bm="$2"; bs="$3"; sentinel="$4"; apath="${5:-}"
+  if [ "$bm" = 1 ] && [ -z "$MARK_RE" ]; then
+    printf 'leak-guard: %s: FAIL-CLOSED — git-leak-markers pattern file missing/empty; markers gate cannot run\n' "$label" >&2
+    printf 'x\n' >> "$sentinel"
+  fi
+  if [ "$bs" = 1 ] && [ -z "$SENS_RE" ]; then
+    printf 'leak-guard: %s: FAIL-CLOSED — git-leak-sensitive pattern file missing/empty; sensitive gate cannot run\n' "$label" >&2
+    printf 'x\n' >> "$sentinel"
+  fi
+  # Matching is BATCHED: one grep pass per ACTIVE gate over the WHOLE numbered stream,
+  # rather than two greps forked PER INPUT LINE. The per-line form cost ~2 forks/line —
+  # ~14s for a single 3.3k-line file, and minutes across a fresh repo's first push (where
+  # every commit legitimately IS new), which is what read as the pre-push "hang". Kept on
+  # grep -E deliberately: the private pattern files are POSIX ERE, so reusing the exact
+  # same matcher keeps their semantics bit-identical. A faster engine (ripgrep) would mean
+  # a different regex dialect under a fail-closed security gate — not worth the risk here,
+  # since the fork-per-line cost, not grep itself, was the bottleneck.
+  buf=$(mktemp "$_TMP/leak-guard.XXXXXX")
+  cat > "$buf"
+  [ -s "$buf" ] || { rm -f "$buf"; return 0; }
+
+  TAB=$(printf '\t')
+  # One fixed string per granted prefix, newline-separated: grep -F treats each line of the
+  # pattern as its own literal. Built once per buffer rather than per line, for the same reason
+  # the matching above is buffered: fork-per-line cost, not grep itself, is the bottleneck here.
+  # Newline is a SEPARATOR here, never a terminator: a trailing newline leaves an EMPTY pattern
+  # in the list, and an empty fixed pattern matches every line -- which silently turns this
+  # exemption into a blanket disable for the repo. Caught by the foreign-prefix arm of the tests.
+  OWN_PAT=''
+  for _p in $OWN; do
+    if [ -n "$OWN_PAT" ]; then
+      OWN_PAT="$OWN_PAT
+${TAB}marker${TAB}${_p}-"
+    else
+      OWN_PAT="${TAB}marker${TAB}${_p}-"
+    fi
+  done
+  hits=$(mktemp "$_TMP/leak-guard.XXXXXX")
+  # The "N:" prefix is stripped BEFORE matching so a pattern can only ever see CONTENT
+  # (as the per-line form did, which matched $c). Stripping preserves the line ordering,
+  # so grep -n's stream-line number k still indexes back into record k of "$buf".
+  content=$(mktemp "$_TMP/leak-guard.XXXXXX")
+  sed 's/^[0-9]*://' "$buf" > "$content"
+
+  # ---------------------------------------------------------------------------
+  # SENSITIVE allowlist — a narrow, PATH-ANCHORED exemption. Read before editing.
+  # ---------------------------------------------------------------------------
+  # Exists because some sensitive-looking strings are MACHINE-GENERATED and correct:
+  # an npm lockfile records the resolved tarball URL of the self-hosted registry, so
+  # a repo installing a first-party package cannot commit its own lockfile. The wrong
+  # fix is flagging the whole repo private — that permits every OTHER sensitive term
+  # in it forever. This permits one known line SHAPE in one known FILE.
+  #
+  # The rule is ONE ERE matched WHOLE-LINE (grep -x) against "<path>:<added line>".
+  # Path and content in a single pattern is the load-bearing part: a rule can never be
+  # a bare content match, it is always anchored to a file, and multiple rules compose
+  # as alternation branches without cross-matching one rule's path to another's line.
+  # Whole-line is what makes blanking lossless — the pattern must describe the ENTIRE
+  # line, so nothing can ride along hidden on an allowed line.
+  #
+  # Deliberately NOT allowlistable: the MARKERS gate. Markers are dangling cross-repo
+  # pointers with no legitimate generated form; only $sens is filtered, so a marker on
+  # an allowed line still blocks.
+  #
+  # Fail-closed by construction: an absent/empty git-leak-allow yields no exemptions,
+  # which is the STRICT direction — so unlike the two pattern files it needs no
+  # fail-closed branch. Same for an empty $apath (commit messages), which get none.
+  sens=$(mktemp "$_TMP/leak-guard.XXXXXX")
+  cp "$content" "$sens"
+  if [ "$bs" = 1 ] && [ -n "$ALLOW_RE" ] && [ -n "$apath" ]; then
+    allowed=$(mktemp "$_TMP/leak-guard.XXXXXX")
+    # awk builds "<path>:<content>" per record; grep -nxE reports the stream line
+    # numbers of the records the rule fully describes.
+    awk -v p="$apath" '{ print p ":" $0 }' "$content" | grep -nxE "$ALLOW_RE" | cut -d: -f1 > "$allowed" || true
+    if [ -s "$allowed" ]; then
+      # Blank the allowed records rather than dropping them: the record COUNT must be
+      # preserved or grep -n's stream line k stops indexing back into record k of "$buf"
+      # and every reported line number after the first exemption is wrong.
+      awk 'NR==FNR { a[$1]=1; next } { print (FNR in a) ? "" : $0 }' "$allowed" "$content" > "$sens"
+    fi
+    rm -f "$allowed"
+  fi
+
+  # STRING-ESCAPE NEUTRALIZATION — match what content MEANS, not how it is
+  # encoded. Generated single-line files (a site's generated post bundle and
+  # friends) encode line breaks as the two-character sequences \n / \t / \r, and
+  # a token match can START INSIDE one: "…done.\n\nIn short…" contains the
+  # literal chars "nIn", which a case-insensitive vocabulary branch like "nin"
+  # flags — but the RENDERED text has a line break there and never contains the
+  # token (first hit 2026-08-11: a generated bundle blocked on exactly this
+  # artifact, and every regeneration would have re-tripped it). Tokenize
+  # escapes the way a string codec does — '\\' (a literal backslash) FIRST, then
+  # \n/\t/\r — each becoming one space, so line numbering is preserved, no token
+  # can be CREATED by joining fragments, and real leaks that merely follow a
+  # doubled backslash survive: a UNC path "\\nin\share" reduces to " nin\share"
+  # and still matches. Known, accepted blind spot: a SINGLE-backslash form like
+  # "C:\nin" is indistinguishable from an escaped newline and is skipped — in
+  # scanned text backslash-n is overwhelmingly an escape, and an actual leak
+  # rarely appears ONLY there.
+  esc_neutralize() { sed 's/\\\\/ /g; s/\\[ntr]/ /g' "$1" > "$1.esc"; }
+  esc_neutralize "$content"
+  esc_neutralize "$sens"
+
+  # grep -o prints one match per line as "k:token"; grep exits 1 on no match, hence || true.
+  # The own-prefix exemption filters EXTRACTED TOKENS rather than rewriting MARK_RE. Two reasons:
+  # the pattern file stays bit-identical for every repo without a rule, and rebuilding the
+  # alternation to drop one branch is how a pattern acquires a second, subtly different meaning.
+  # The filter is anchored to the token field, so it can never match file content.
+  if [ "$bm" = 1 ] && [ -n "$MARK_RE" ]; then
+    { grep -noE "$MARK_RE" "$content.esc" || true; } \
+      | sed "s/^\([0-9][0-9]*\):/\1${TAB}marker${TAB}/" \
+      | if [ -n "$OWN_PAT" ]; then grep -vF "$OWN_PAT" || true; else cat; fi \
+      >> "$hits"
+  fi
+  if [ "$bs" = 1 ] && [ -n "$SENS_RE" ]; then
+    { grep -noEi "$SENS_RE" "$sens.esc" || true; } \
+      | sed "s/^\([0-9][0-9]*\):/\1${TAB}sensitive${TAB}/" >> "$hits"
+  fi
+  rm -f "$content" "$content.esc" "$sens" "$sens.esc"
+
+  if [ -s "$hits" ]; then
+    printf 'x\n' >> "$sentinel"
+    # sort -u reproduces the old per-line `sort -u` dedup, and the key order gives the old
+    # output order for free: numeric by stream line, then class ("marker" sorts before
+    # "sensitive"), then token. awk then folds each line's tokens into ONE report line,
+    # mapping stream line k back to the record's real file line number via "$buf".
+    # Deliberately NOT LC_ALL=C: the old per-line dedup used a locale-aware `sort -u`,
+    # which case-folds (so "ABC" and "abc" order as the user's locale collates them).
+    # Forcing the C locale here would reorder tokens within a line vs. the old output.
+    # ("marker" < "sensitive" holds under either collation, so class order is unaffected.)
+    sort -u -t"$TAB" -k1,1n -k2,2 -k3,3 "$hits" > "$hits.s"
+    awk -v label="$label" '
+      function emit() {
+        if (!have) return
+        line = "leak-guard: " label ":" num[curk] ":"
+        if (m != "") line = line "  marker: " m
+        if (s != "") line = line "  sensitive: " s
+        print line
+      }
+      NR==FNR { i = index($0, ":"); num[FNR] = substr($0, 1, i-1); next }
+      {
+        split($0, f, "\t"); k = f[1] + 0
+        if (have && k != curk) { emit(); m = ""; s = "" }
+        curk = k; have = 1
+        if (f[2] == "marker") m = m f[3] " "; else s = s f[3] " "
+      }
+      END { emit() }
+    ' "$buf" "$hits.s" >&2
+    rm -f "$hits.s"
+  fi
+  rm -f "$buf" "$hits"
+  return 0   # block signal travels via the sentinel FILE, not this exit code; a non-zero
+             # here would trip `set -e`.
+}
+
+rc=0
+case "$MODE" in
+  pre-commit)
+    bs=0; block_sensitive_commit && bs=1
+    sfile=$(mktemp "$_TMP/leak-guard.XXXXXX")
+    git diff --cached --name-only -z | while IFS= read -r -d '' p; do
+      printf '%s' "$p" | grep -qE "$IGNORE_RE" && continue
+      git diff --cached -U0 -- "$p" | diff_added_numbered | scan_lines "staged $p" 1 "$bs" "$sfile" "$p"
+    done
+    [ -s "$sfile" ] && rc=1
+    rm -f "$sfile"
+    ;;
+  commit-msg)
+    bs=0; block_sensitive_commit && bs=1
+    sfile=$(mktemp "$_TMP/leak-guard.XXXXXX")
+    awk '{print NR":"$0}' "$2" | scan_lines "commit message" 1 "$bs" "$sfile"
+    [ -s "$sfile" ] && rc=1
+    rm -f "$sfile"
+    ;;
+  pre-push)
+    REMOTE="${2:-}"; DEST_URL="${3:-}"
+    # Destination public unless EVERY pushurl of the remote matches the private
+    # allowlist. Fail CLOSED: default to public (1) and only clear to private
+    # (0) when there IS a private allowlist AND a non-empty resolved url set
+    # AND every url in that set matches it. An unresolved destination (no
+    # pushurl, no remote.url, empty passed-in url) must never be treated as
+    # private just because the loop that would flip it to public never ran.
+    is_public=1
+    urls=$(git config --get-all "remote.$REMOTE.pushurl" 2>/dev/null || true)
+    [ -z "$urls" ] && urls=$(git config --get "remote.$REMOTE.url" 2>/dev/null || true)
+    [ -z "$urls" ] && urls="$DEST_URL"
+    if [ -n "$PRIV_URL_RE" ] && [ -n "$urls" ]; then
+      is_public=0
+      # Unquoted $urls is INTENTIONAL: word-splits the multi-value `--get-all
+      # pushurl` set (space-joined) so every pushurl is checked individually.
+      # Do not quote it — that would collapse multi-pushurl detection.
+      for u in $urls; do printf '%s' "$u" | grep -qE "$PRIV_URL_RE" || is_public=1; done
+    fi
+    bs=0; [ "$is_public" = 1 ] && bs=1
+    # Scan each pushed range's content + messages. See scan_lines' comment: the ref-loop's
+    # pipelines run scan_lines as the tail of a subshell, so we hand it a sentinel file and
+    # test that ONCE after the loop, rather than trusting `rc=1` set inside the pipe.
+    hit_sentinel=$(mktemp "$_TMP/leak-guard.XXXXXX")
+    while read -r lref lsha rref rsha; do
+      [ "$lsha" = "0000000000000000000000000000000000000000" ] && continue   # deletion
+      # Build the revision set as one arg per LINE (fed to rev-list/log via --stdin),
+      # so bounding never depends on the shell word-splitting a big string:
+      #  - update: the single "<old>..<new>" range;
+      #  - new branch ($rsha all-zero): the tip MINUS every commit the remote
+      #    ALREADY holds (a "^<sha>" line per remote ref we can resolve locally).
+      #    Without this bound a new-branch push re-walks ALL shared history the
+      #    remote already has (e.g. the whole default branch) and re-flags content
+      #    THIS push never introduced. Fail-closed: if the remote is unreachable the
+      #    exclude set is empty and we scan the full history (over-scan, never under).
+      revs=$(mktemp "$_TMP/leak-guard.XXXXXX")
+      if [ "$rsha" = "0000000000000000000000000000000000000000" ]; then
+        printf '%s\n' "$lsha" > "$revs"
+        git ls-remote "$REMOTE" 2>/dev/null | awk '{print $1}' | sort -u | while read -r s; do
+          git cat-file -e "$s" 2>/dev/null && printf '^%s\n' "$s"
+        done >> "$revs"
+      else
+        printf '%s..%s\n' "$rsha" "$lsha" > "$revs"
+      fi
+      # content of changed blobs across every commit in the range (skip ignored paths).
+      # NOTE: can't diff directly against $rsha when it's the all-zero SHA (new-branch
+      # push) — that's not a resolvable object (nor the empty tree), so `git diff
+      # --name-only "$rsha" "$lsha"` silently yields nothing. Walk via rev-list +
+      # diff-tree --root, which handles both the new-ref and update cases.
+      git rev-list --stdin < "$revs" 2>/dev/null | while read -r c; do
+        short=$(git rev-parse --short "$c" 2>/dev/null || printf '%s' "$c")
+        git diff-tree --no-commit-id --name-only -r --root "$c" 2>/dev/null | grep -vE "$IGNORE_RE" | while read -r p; do
+          git diff-tree --no-commit-id -r --root -p "$c" -- "$p" 2>/dev/null | diff_added_numbered \
+            | scan_lines "pushed $p @$short" 1 "$bs" "$hit_sentinel" "$p"
+        done
+      done
+      # commit messages in the range (line-numbered within the concatenated log)
+      git log --format='%H %s%n%b' --stdin < "$revs" 2>/dev/null | awk '{print NR":"$0}' \
+        | scan_lines "pushed message ($lref)" 1 "$bs" "$hit_sentinel"
+      rm -f "$revs"
+    done
+    [ -s "$hit_sentinel" ] && rc=1
+    rm -f "$hit_sentinel"
+    ;;
+  *) echo "leak-guard: unknown mode '$MODE'" >&2; exit 2;;
+esac
+# The remediation line names the CURRENT mechanism. It used to say `git config leakguard.disable
+# true`, which stopped being true the moment these declarations moved into the fleet record --
+# and wrong advice in a blocking message is worse than none, because it is followed.
+[ "$rc" = 0 ] || echo "leak-guard: BLOCKED — the token(s) named above are being ADDED here; remove or abstract them (for a genuine false positive, declare leakDisable or a wider leakPolicy for this repo in the fleet record, then re-run)." >&2
+exit "$rc"

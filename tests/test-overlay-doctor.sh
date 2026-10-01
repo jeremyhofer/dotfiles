@@ -281,4 +281,20 @@ mk "$tmp/ovg3"; rm "$tmp/ovg3/dot_gitignore_global"
 out=$(OVERLAY_SRC="$tmp/ovg3" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL(G2): no global gitignore must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
 echo "ok:   an overlay with no global gitignore gates"
+# ---- Tier H: the leak-guard is the base's; a domain enables it by supplying its pattern files ----
+mk "$tmp/ovh1"
+out=$(OVERLAY_SRC="$tmp/ovh1" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'Tier H: leak-guard not configured' || { echo "FAIL(H1): an overlay with no pattern files is not reported as unconfigured"; echo "$out"; exit 1; }
+echo "ok:   Tier H: no pattern files reads as not configured"
+mk "$tmp/ovh2"; printf '\\bZZP-[0-9]+\n' > "$tmp/ovh2/dot_dotlocal/git-leak-markers"
+printf 'private-url=^/srv/private/\nprobe-marker=ZZP-999\n' > "$tmp/ovh2/dot_dotlocal/git-leak-policy"
+out=$(OVERLAY_SRC="$tmp/ovh2" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(H2): a configured guard must not gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'OK .*Tier H: leak-guard configured' || { echo "FAIL(H2): a configured guard is not reported"; echo "$out"; exit 1; }
+echo "ok:   Tier H: pattern files read as configured"
+mk "$tmp/ovh3"; printf '\\bZZP-[0-9]+\n' > "$tmp/ovh3/dot_dotlocal/git-leak-markers"
+printf 'private-url=^/srv/private/\n' > "$tmp/ovh3/dot_dotlocal/git-leak-policy"
+out=$(OVERLAY_SRC="$tmp/ovh3" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'advisory .*Tier H.*probe-marker' || { echo "FAIL(H3): a configured guard without a probe marker is not flagged"; echo "$out"; exit 1; }
+echo "ok:   Tier H: a configured guard without probe-marker= is flagged"
 echo "PASS"

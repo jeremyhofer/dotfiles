@@ -7,7 +7,7 @@
 #
 # Tiers: A generic (from the base, auto-propagated) · B private-vocab (authored per-domain
 # from THAT domain's own vault — never copied from another domain) · C domain-specific ·
-# H leak-guard (OPTIONAL, home-only by design) · V signing-verification material
+# H leak-guard (OPTIONAL: on when the domain supplies pattern files) · V signing-verification material
 # (ADVISORY). Only required A/B/C pieces gate the exit; Tiers H and V are reported, never
 # enforced -- signing is legitimately disabled where an agent sandbox cannot reach ~/.ssh.
 set -eu
@@ -264,11 +264,21 @@ else
   fi
 fi
 
-# --- Tier H: leak-guard (optional, home-only) ---
-if [ -d "$OSRC/dot_dotlocal/git-hooks" ]; then
-  note "OK          Tier H: leak-guard present (home profile)"
+# --- Tier H: leak-guard (optional, per domain) ---
+# The guard and its git wiring ship in the base; a domain turns it on by supplying its own pattern
+# files (~/.dotlocal/git-leak-markers and/or git-leak-sensitive). Without them the guard passes every
+# commit, which is correct for a domain that has nothing to keep out. hook-doctor plants a token the
+# markers match to prove the guard live, and only the domain knows one: `probe-marker=` in its
+# git-leak-policy.
+_lk=$(find "$OSRC/dot_dotlocal" -maxdepth 1 \( -name '*git-leak-markers*' -o -name '*git-leak-sensitive*' \) 2>/dev/null | head -1)
+if [ -z "$_lk" ]; then
+  note "info        Tier H: leak-guard not configured (optional; this domain supplies no pattern files)"
 else
-  note "info        Tier H: leak-guard not installed (optional; home-only by design)"
+  note "OK          Tier H: leak-guard configured by this domain's pattern files"
+  _lp=$(find "$OSRC/dot_dotlocal" -maxdepth 1 -name '*git-leak-policy*' 2>/dev/null | head -1)
+  if [ -z "$_lp" ] || ! grep -q '^probe-marker=' "$_lp" 2>/dev/null; then
+    note "advisory    Tier H: no probe-marker= in git-leak-policy, so hook-doctor cannot prove the guard live"
+  fi
 fi
 
 # ============================================================================================
