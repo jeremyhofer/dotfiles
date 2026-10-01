@@ -1,6 +1,6 @@
 ---
 name: mani-and-worktrunk
-description: Use when working across several repos at once — cloning a machine's repo set, running the same command in many repos, or finding which repo something lives in — and when creating, switching, listing or removing git worktrees for parallel branches. Fires on `mani`, `mani sync`, `mani run`, `mani exec`, `wt`, `wt switch`, `worktrunk`, and when `wt` reports "command not found" over SSH or in a script, or a worktree command seems not to change directory.
+description: Use when working across several repos at once — cloning a machine's repo set, running the same command in many repos, or finding which repo something lives in — and for how the `wt` tool itself behaves: why `wt switch` is a shell function, calling it from a script or over SSH, and reading `wt list`. Fires on `mani`, `mani sync`, `mani run`, `mani exec`, `wt`, `worktrunk`, and when `wt` reports "command not found" over SSH or in a script, or a worktree command seems not to change directory. For deciding on, creating, landing or removing a worktree, use skill `working-in-worktrees`.
 ---
 
 # Multi-repo with `mani`, worktrees with `worktrunk`
