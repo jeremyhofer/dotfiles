@@ -1,157 +1,85 @@
 # dotfiles
 
-Jeremy Hofer's personal dotfiles, managed with [chezmoi](https://www.chezmoi.io).
+**One public base for every machine I use, home or work. Each domain plugs in only what is its own.**
 
-This repository is the **public base layer** — generic, machine-agnostic configuration only.
-It contains **no secrets and no machine-specific URLs**; private and per-domain config is
-layered on at apply time (see *Architecture*).
+Jeremy Hofer's dotfiles, managed with [chezmoi](https://www.chezmoi.io). This repository is the
+public half: shell, editor, git, Claude Code and a set of command-line tools, written so they work
+on any machine. Identity, secrets, hosts and each domain's own context live in a separate private
+layer that plugs into this one, and never appear here.
 
-## What is in here
+![managed with chezmoi](https://img.shields.io/badge/managed%20with-chezmoi-4B91E2)
+![Linux and macOS](https://img.shields.io/badge/runs%20on-Linux%20%C2%B7%20macOS-555)
+![tests on every commit](https://img.shields.io/badge/tests-on%20every%20commit-2DA44E)
 
-This is the public base of a two-layer chezmoi setup, along with the command-line tools, agent
-skills and tests behind a governed fleet of AI coding agents.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/reference/architecture-dark.svg">
+  <img src="docs/reference/architecture-light.svg" alt="Two chezmoi sources apply into one home directory. The public base supplies every mechanism: shell, editor, git, Claude Code configuration and tools. A private layer, one per domain and never published, supplies identity, secrets, hosts and its own context through four seams: fragment files under ~/.dotlocal, chezmoi data, the repository manifest and environment variables. System packages are installed first, underneath both, and checks run on every commit and on each machine." width="100%">
+</picture>
 
-### Command-line tools
+## The idea
 
-Installed to `~/.local/bin`.
+A dotfiles repository that mixes the generic with the personal either stays private or leaks.
+This one splits them along a single line: **mechanism here, content there.** Anything true of any
+machine (how the shell starts, how git hooks run, how Claude Code's settings are merged) lives in
+this public base. Anything only one domain has (who signs commits, which hosts exist, which projects
+are private) lives in that domain's private layer, a second chezmoi instance that plugs into the base
+through four seams: fragment files under `~/.dotlocal/`, chezmoi data, a repository manifest, and
+environment variables.
 
-- `chezmoi-overlay` runs a second, independent chezmoi instance for private configuration, with its
-  own config, state and cache. Both instances target the same home directory, so their managed file
-  sets have to stay disjoint.
-- `claude-context-probe` measures which context Claude Code actually loads on the machine it runs
-  on: instruction files above and below a repository, imports, hooks and their injected context,
-  skills, skill dynamic context (`` !`command` `` lines) and MCP servers. Managed machines can differ from the documented defaults, so this is
-  measured before designing how context reaches sessions there.
-- `claude-scratch-hook` is a set of Claude Code lifecycle hooks (SubagentStart, SubagentStop, Stop,
-  SessionEnd) that watch a session's scratch temp directory and delete it outright once the session
-  is gone. It acts only when `CLAUDE_CODE_TMPDIR` resolves to a `c-*` directory that is a direct
-  child of `/tmp` — the shape a launcher sets for a sandboxed session — and never follows a symlink
-  while measuring or deleting.
-- `git-clone-worktree` clones a repository as a bare repo with worktrees as sibling directories, so
-  several branches can be checked out at the same time.
-- `git-merge-diff` shows the diff a merge would introduce, computed from the merge base rather than
-  from the branch tips. Commits that landed on the base branch since you forked do not show up as
-  part of your change.
-- `git-snapshot` captures uncommitted work before a command that would discard it. `git checkout`,
-  `git restore`, `git reset --hard` and `git clean -fd` all discard silently and exit 0, so there is
-  no error to notice and nothing left to recover from.
-- `kb` is a CLI for a markdown knowledge base whose records carry typed relationship edges. It
-  scaffolds records, lints them for dangling and orphaned links, and regenerates the derived indexes,
-  so a stale index cannot be committed alongside a changed record.
-- `nvim-healthdump` captures a Neovim health and plugin inventory report for comparing two machines.
-  It runs Neovim headless, so it works over SSH on a machine with no display.
-- `portability-lint` fails a commit that contains GNU-only shell spellings. Those spellings work on
-  Linux and break on macOS, so without this the failure appears only on the other machine, usually
-  long after the change was written.
-- `spell-capture` re-imports a Neovim spell wordlist back into the private source layer, so applying
-  configuration later does not clobber a word that was added interactively.
-- `ui-shot` renders a page headless and captures it for visual review, including cropping to a region
-  at native scale. A full-page screenshot is scaled down, which is enough to hide a one-pixel border.
+A machine with only this repository is a complete, generic machine. Add a private layer and it
+becomes yours. [The architecture page](docs/reference/architecture.md) has the whole picture.
 
-### Agent skills
+## What's inside
 
-Installed to `~/.claude/skills`. An agent skill is an on-demand procedure document that a coding
-agent loads by name when its trigger applies, rather than something kept in context all the time.
+| | |
+| --- | --- |
+| 🐚 **Shell** | zsh with oh-my-zsh, tmux, and a prompt that tags which machine you are on |
+| ✏️ **Editor** | Neovim on LazyVim, with diagram, PDF and LaTeX rendering |
+| 🌿 **Git** | delta, sensible defaults, and hooks that run in every repository: a secret scan, a leak guard for each domain's private terms, a repository's own tracked gates, and a co-author trailer for commits an AI agent made |
+| 🤖 **Claude Code** | global operating standards, a settings merge that coexists with the app writing the same file, a status line, and a library of agent skills loaded on demand |
+| 🧰 **Tools** | linters for docs, comments, decision records and agent context files; doctors that check a machine's private layer and its git hooks; a knowledge-base CLI; worktree helpers. The full list is [`dot_claude/tooling.md`](dot_claude/tooling.md) |
+| ✅ **Tests** | a suite per tool and script, run before every commit that touches one |
 
-- `brew-and-brewfiles` covers installing and removing software on a Homebrew-managed Mac, which
-  Brewfile layer an entry belongs in, and the failure signatures where a declared package silently
-  did not install.
-- `claude-context-probe` covers running the probe above, reading each verdict and its controls,
-  and relaying the summary off a managed machine without copying files from it.
-- `dotfiles-layout-and-bootstrap` covers the two-instance model, deciding which layer a file belongs
-  in, and the rule that you edit the source and apply rather than editing the deployed file.
-- `dotfiles-update` covers pulling and applying an update, catching up a machine that has been
-  dormant, and why one layer can be left behind by an update to the other.
-- `filing-bug-reports` covers reproducing a bug in isolated scratch before reporting it, writing the
-  report from that clean reproduction only, and never attaching a session transcript.
-- `mani-and-worktrunk` covers working across several repositories at once and managing git worktrees
-  for parallel branches.
-- `overlay-doctor` covers setting up and auditing the private layer, and what to provision for each
-  finding the checker reports.
-- `project-context-file` covers a repository's agent context file: `AGENTS.md` as the source in six
-  fixed sections, `CLAUDE.md` importing it, the 200-line and 14,000-byte caps on what loads
-  unconditionally, and the on-demand patterns that keep situational content out of every session.
-- `project-documentation` covers a repository's `docs/` tree: the layout and its index, filing each
-  document by the initiative or subject it serves and then by type, closing an initiative, and
-  adopting the layout in an existing notes repository.
-- `recording-what-you-learn` covers where a lesson, correction or preference belongs instead of
-  Claude Code's machine-local memory store, which is unversioned and read by no other session in
-  the project. A machine's private layer can add its own homes in a `fleet.md` beside it.
-- `register-standard` covers a work register: the entry's shape, its nine statuses, the closure
-  condition and the sentinels that declare one absent, who may file, and the initiative folder an
-  entry names. A machine's private layer can name its own registers in
-  `~/.dotlocal/skills/register-standard.md`.
-- `scratch-copies` covers making scratch copies small (a worktree or `git archive` instead of copying
-  a repository), and deleting them when their result is recorded, because `$TMPDIR` is shared by
-  every agent session and its quota can fill in a day.
-- `tuicr-code-review` covers driving a local code review and, more often, picking up a review a human
-  already made so the comments can be acted on.
-- `visual-review` covers verifying a UI change before claiming it looks right, and why a screenshot
-  has to be cropped at native scale to show what changed.
-- `writing-zsh-commands` covers the ways zsh differs from bash. The differences fail silently and
-  return an empty result or a false success rather than an error, so they are read before writing a
-  shell command rather than after one misbehaves.
+## Getting started
 
-### Tests
+**A fresh machine:**
 
-Run them with `sh tests/run-all.sh`, optionally with a filter argument to run one suite.
-
-There are 37 test scripts plus the runner. They cover each of the tools above and each subcommand of
-`kb`, and they run as a pre-commit gate in this repository.
-
-## Layout
-- Managed files use chezmoi source-state naming — e.g. `dot_zshrc.tmpl` → `~/.zshrc`,
-  `dot_config/i3/config` → `~/.config/i3/config`.
-- **OS differences** are handled generically via `.chezmoi.os` templating (Linux / macOS),
-  not per-OS forks. **Per-machine** values (e.g. display DPI) come from machine-local chezmoi data.
-- Third-party, non-package content (oh-my-zsh, tmux TPM, …) is fetched via `.chezmoiexternal`.
-
-## Architecture (base + overlay)
-- **This repo (base):** public, generic config + OS templates + the external/ignore manifests.
-- **Private overlay:** per-domain (personal / work) config, held in a **second, independent chezmoi
-  instance** with its own source, config, state and cache. It targets the same `$HOME`, so the two
-  instances' managed file sets must stay **disjoint** — the base owns public files, the overlay owns
-  private ones plus the `~/.dotlocal/*` fragments that public files include (`source ~/.dotlocal/zshrc`,
-  ssh `Include`, …). The overlay's location lives only in machine-local chezmoi config and never
-  appears in this repo. Run it with the `chezmoi-overlay` wrapper; plain `chezmoi` is the base only.
-- **System/package layer:** packages — and chezmoi itself — are installed by the system layer
-  (konfigkoll on Arch, Homebrew Bundle on macOS), not by chezmoi. This repo is dotfiles only.
-
-## Bootstrap a machine
 ```sh
-chezmoi init --apply <this-repo>
+chezmoi init --apply jeremyhofer/dotfiles
 ```
-chezmoi renders the machine config (prompting for domain + the overlay repo, if any), fetches the
-externals, applies the dotfiles, and then a `run_once` script clones and applies the overlay — or
-skips silently on a machine that has none.
 
-**Adopting a machine that already has config** (stow, hand-placed, or a managed install) has its own
-guarded flow — audit what would be overwritten, back it up, diff, confirm. See
-[`setup/README.md`](setup/README.md); start there rather than applying straight onto existing files.
+chezmoi asks for the domain and the private layer's address (leave it blank for none), applies the
+base, then clones and applies the private layer.
 
-## `dot_claude/CLAUDE.md.tmpl` — the global Claude instructions, and the domain's fragment
+**A machine that already has configuration:** follow [`setup/README.md`](setup/README.md). It
+audits what an apply would overwrite, backs it up, shows the diff and asks before changing anything.
 
-This repo owns `~/.claude/CLAUDE.md`: the operating standards true on any machine, then two imports,
-`~/.claude/tooling.md` (below) and `~/.dotlocal/claude/CLAUDE.md`, the domain's own fragment, which a
-private overlay deploys with that domain's people, machines, plans, signing setup and any further
-imports. A machine with no fragment gets the generic standards alone; Claude Code skips an import that
-resolves to nothing. One owner per file keeps the two chezmoi instances disjoint, and imports resolve
-at session start, so no apply-time concatenation can drift from its parts.
+**Starting your own private layer:** `sh setup/scaffold-overlay <dir>` copies
+[`overlay-skeleton/`](overlay-skeleton/) with a stub for every piece, and `sh setup/overlay-doctor`
+reports what is still missing.
 
-Taking the file over is the one risky moment: chezmoi replaces a file it has never managed without
-asking. `run_before_preserve-claude-md.sh.tmpl` runs `setup/preserve-claude-md` first, which copies a
-`CLAUDE.md` that lacks the base's marker line to `~/.claude/CLAUDE.md.before-base`, so a hand-kept file
-survives the first apply to be moved into the fragment. `tests/test-preserve-claude-md.sh` covers it.
+## Keeping a machine current
 
-## `dot_claude/tooling.md` — the always-on tooling inventory
+```sh
+chezmoi git -- pull --ff-only
+chezmoi diff && chezmoi apply
+chezmoi-overlay diff && chezmoi-overlay apply
+```
 
-Shipped into `~/.claude/tooling.md` and imported by a machine's Claude config. It exists because a
-session that knows the wrong *binary name* concludes a tool is absent and reasons on from there:
-on 2026-09-04 an agent searched for a binary called `worktrunk`, found none, and twice reported the
-tool missing — including as a blocker to a change. It ships as `wt`. Hence the name-mismatch table.
+Before applying, read [`CHANGELOG.md`](CHANGELOG.md) from the top down to your last update. It
+lists only what an adopted machine has to know, and marks **ACTION** where a private layer has to
+change too, because the base propagates on its own and a private layer does not.
 
-Two layers, so the split survives a machine that has only this repo: this file lists what the base
-installs and never names a private tool; the private overlay ships its own fragment, which the
-domain's `CLAUDE.md` fragment imports. `tests/test-tooling-inventory.sh` fails when a tool here is undocumented, and warns when the
-document names one this repo no longer ships — a stale inventory is worse than none, because it is
-believed.
+## Repository map
+
+```text
+dot_*  private_dot_local/   deployed to ~ (chezmoi source-state names)
+.chezmoitemplates/          shared template fragments, named <topic>.<scope>
+docs/                       architecture and reference
+setup/                      adoption and audit tools, run from the checkout
+overlay-skeleton/           what a new private layer starts from
+tests/                      the suites; tests/run-all.sh runs them
+```
+
+Working on the repository itself, as a person or an agent: [`AGENTS.md`](AGENTS.md) has the rules,
+the commands and where to read first.
