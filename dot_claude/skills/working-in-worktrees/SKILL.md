@@ -68,6 +68,10 @@ says so.
   the pattern is in `pkill`'s own command line, so it kills itself.
 - **Gitignored inputs are invisible.** A linter or cache that skips ignored paths can go quiet in a
   worktree without failing. When a gate passes suspiciously fast, check that it saw the files.
+- **A shared build cache replays other worktrees' results.** When worktrees share a task cache, a
+  gate in one can report green from tasks that ran in another, which is sound only if the inputs are
+  identical. For a run that has to prove something, read which tasks executed and which were
+  replayed, or bypass the cache for it.
 - **Stage explicit paths.** `git add -A` in a shared checkout sweeps up whatever else is uncommitted.
 - **Read the command's own output, not a pipeline's status.** `<tests> | tail` reports `tail`'s
   status, which hides a failure.
