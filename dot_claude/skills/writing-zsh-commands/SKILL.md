@@ -1,6 +1,6 @@
 ---
 name: writing-zsh-commands
-description: LOAD THIS BEFORE WRITING ANY SHELL COMMAND ON THIS MACHINE. The shell is zsh, not bash, and the differences fail SILENTLY — wrong output, not an error. Do NOT skip it because the command "looks simple" or because the shell is incidental to some larger task: the traps fire on one-liners (a glob that matches nothing, a loop over a variable, a `local` parameter named `path`, a directory whose name starts with `-`) and typically return an empty result, a zero count, or a false success rather than failing. If you are about to run Bash, this applies. Also use when a command fails with "no matches found", "bad option", "parse error near", or "command not found" for a tool that plainly exists (usually PATH clobbered by a variable named `path`), or when a command "worked" but returned nothing, matched nothing, counted zero, or reported success it should not have.
+description: LOAD THIS BEFORE WRITING ANY SHELL COMMAND ON THIS MACHINE. The shell is zsh, not bash, and the differences fail SILENTLY — wrong output, not an error. Do NOT skip it because the command "looks simple" or because the shell is incidental to some larger task: the traps fire on one-liners (a glob that matches nothing, a loop over a variable, a `local` parameter named `path`, a directory whose name starts with `-`) and typically return an empty result, a zero count, or a false success rather than failing. If you are about to run Bash, this applies. Also use when a command fails with "no matches found", "bad option", "parse error near", or "command not found" for a tool that plainly exists (usually PATH clobbered by a variable named `path`), "Blocked: sleep", a command that hangs after its jobs have finished, or when a command "worked" but returned nothing, matched nothing, counted zero, or reported success it should not have.
 ---
 
 # Writing shell commands under zsh
@@ -356,6 +356,29 @@ which costs context and can bury the one line you wanted. Bound it before runnin
 `rg -m 20 --max-columns 200 …`, `… | head -50`, `wc -c` first when unsure. For a file you will query
 more than once, extract once to a text file and search that.
 
+## 17. SILENT — waiting: a bare `wait` never returns in the sandbox, and a leading `sleep` is refused
+
+Inside the agent's Bash sandbox, the wrapper starts its network proxies (two `socat` processes) as
+background jobs of the same shell your command runs in; `jobs -l` lists them. A bare `wait` waits for
+every job, those included, so it hangs until the call's timeout kills it, and whatever follows it
+never runs. Wait on the processes you started, by id:
+
+```zsh
+cmd-one & p1=$!; cmd-two & p2=$!
+wait $p1 $p2
+```
+
+Waiting for something to finish is not a foreground `sleep`. The tool refuses a long leading
+`sleep N` (`Blocked: sleep … followed by …`), and chaining shorter ones to get under the limit is
+the same refusal deferred. Instead:
+
+- **A command you start:** run it with `run_in_background: true`. You are told when it exits, and
+  its output is captured to a file you can read any number of times.
+- **A condition you wait for** (a server comes up, a file appears, a remote run ends): a
+  background command that exits when the condition holds, `until <check>; do sleep 2; done`. Use
+  the Monitor tool only when you want an event per occurrence rather than one at the end, and make
+  its filter match the failure states too, or a crash reads as "still running".
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
@@ -378,3 +401,6 @@ more than once, extract once to a text file and search that.
 - **`defining function based on alias`** — the function name is an alias (§13).
 - **`read-only file system: /tmp/…`** — write to `$TMPDIR` (§14).
 - **`unmatched '`** — an apostrophe in prose closed a single-quoted string (§15).
+- **A command that runs jobs in parallel finishes them but never prints what follows `wait`**, or a
+  background task hits its time limit after its work is done — a bare `wait` (§17).
+- **`Blocked: sleep …`** — wait in the background, not in the foreground (§17).
