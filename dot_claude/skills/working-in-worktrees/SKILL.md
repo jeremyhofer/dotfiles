@@ -1,6 +1,6 @@
 ---
 name: working-in-worktrees
-description: Use when deciding whether to work in a git worktree, and whenever creating, entering, landing, cleaning up or removing one — `wt switch --create`, `git worktree add`, the EnterWorktree or ExitWorktree tools, giving a subagent `isolation: worktree`, merging or cherry-picking a finished branch back, deleting it on the remotes, or a worktree left behind. Also fires on the failure signatures — "is already used by worktree", "contains modified or untracked files", "Read-only file system" after leaving a worktree, a new worktree that starts weeks behind, tests that pass in one worktree and fail in another, a port already in use by another worktree, and a cherry-picked branch that still reads as unmerged. Covers when a worktree is warranted, one per stream of work, a named fresh base, a frozen install before any gate, landing by the repository's own route, removing only what is provably elsewhere, and how this differs inside a sandboxed Claude Code session from a plain shell with no hooks.
+description: Use when deciding whether to work in a git worktree, and whenever creating, entering, landing, cleaning up or removing one — `wt switch --create`, `git worktree add`, the EnterWorktree or ExitWorktree tools, giving a subagent `isolation: worktree`, merging, cherry-picking or opening a pull request for a finished branch, deleting it on the remotes, or a worktree left behind. Also fires on the failure signatures — "is already used by worktree", "contains modified or untracked files", "Read-only file system" after leaving a worktree, a new worktree that starts weeks behind, tests that pass in one worktree and fail in another, a port already in use by another worktree, and a cherry-picked branch that still reads as unmerged. Covers when a worktree is warranted, one per stream of work, a named fresh base, a frozen install before any gate, landing into the branch it was cut from and only where a direct merge is allowed (a pull request otherwise), removing only what is provably elsewhere, and how this differs inside a sandboxed Claude Code session from a plain shell with no hooks.
 ---
 
 # Working in worktrees
@@ -95,7 +95,23 @@ says so.
 
 ## Landing it
 
-**Land by the repository's own route**, which this domain's half names: a fast-forward into the main
+**First, which branch does this land in, and may you merge into it yourself?**
+
+- **The target is the branch you cut from.** A worktree branched off `main` lands in `main`. A
+  worktree branched off a feature branch lands back in that feature branch, never past it into
+  `main`: the feature branch reaches `main` by its own route later. Name the base when you create
+  the worktree (`--base <branch>`) and land into that same branch.
+- **Many shared branches cannot be merged into locally at all.** Where a branch requires a reviewed
+  pull request (common for `main` in a team repository), the route is: push the worktree's branch,
+  open a pull request against the target, and stop. The review and the merge happen there, by the
+  people allowed to do them. A direct merge and push to such a branch is either refused by the
+  server or, worse, accepted and bypasses review.
+- **How to know:** the repository's context file or this domain's half says which branches take a
+  direct merge. Where neither says, assume a pull request: a pushed branch can always be merged
+  later, a direct push to a reviewed branch cannot be undone cleanly. Only a branch you created
+  yourself in this stream (a feature branch, a sub-branch of it) is always yours to merge into.
+
+**Then land by the repository's own route**, which this domain's half names: a fast-forward into the main
 branch, a merge commit, a cherry-pick of reviewed commits, or a separate integration branch with the
 main branch reserved for releases. `wt merge` squashes, rebases and removes the worktree by default,
 so use it only where that is the route, or with the flags that make it so.
@@ -119,7 +135,9 @@ target (`git merge --ff-only <target>` inside it).
 ## Removing it
 
 Only when its stream is finished, its work is on the target branch, and you are not inside it.
-Run these from where the layout says to stand.
+Under a pull-request route the stream finishes when the pull request merges; keep the worktree until
+then for review changes, and expect the server may already have deleted the remote branch. Run these
+from where the layout says to stand.
 
 1. **Prove the work landed.** For a merged branch, `git branch --merged <target>` lists it. For
    cherry-picked work, use `git cherry -v <target> <branch>`: a `-` line is a commit whose change is
@@ -190,6 +208,7 @@ machine where Claude Code's hooks are not available, has none of them.
 
 | You see | It means | Do |
 | --- | --- | --- |
+| `protected branch`, `GH006`, `pre-receive hook declined` or "changes must be made through a pull request" on push | the target requires a reviewed pull request | push your branch and open a pull request against the target instead |
 | `fatal: '<branch>' is already used by worktree at …` | that branch is checked out elsewhere | work in that worktree, or operate the other branch through its own worktree |
 | `contains modified or untracked files` on a clean worktree | sandbox placeholders | hand the removal to the person |
 | `Read-only file system` after leaving a worktree | the session is not where the layout says to stand | stop; restore any half-written files; give the person the commands |
