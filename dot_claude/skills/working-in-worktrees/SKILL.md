@@ -15,6 +15,22 @@ mechanics, such as why `wt switch` must be a shell function.
 **Read this domain's half too:** `~/.dotlocal/skills/working-in-worktrees.md`, if it exists, lists
 each repository's layout, landing branch, install steps and ports.
 
+## Two layouts
+
+A repository is in one of two shapes, and four steps below depend on which:
+
+| | Plain clone | Bare container |
+| --- | --- | --- |
+| On disk | `<repo>/` is a checkout; worktrees nest at `<repo>/.worktrees/<branch>` | `<repo>/.bare` holds the git data, `<repo>/.git` is a file saying `gitdir: ./.bare`, and every branch, the default one included, is a sibling worktree: `<repo>/main/`, `<repo>/<branch>/` |
+| How to tell | `.git` is a directory | `.bare` sits beside a `.git` file; `git rev-parse --is-bare-repository` prints `true` at `<repo>/` |
+| Where you stand to create, land and remove | the main checkout, `<repo>/` | the default branch's worktree, `<repo>/main/`. Never `<repo>/` itself: it has no working tree, so `git status` fails there and gates skip it |
+| Reach another branch | `git -C <repo>/.worktrees/<branch>`, or from inside one, `git -C ../..` for the main checkout | `git -C ../<branch>` from any sibling |
+| Its cost | the worktrees live inside a working tree: `.worktrees/` must be ignored (globally), and tools that walk the tree (formatters, linters, `rg`, build graphs) each need it excluded, or they scan every worktree too | every sibling sits at the container root, outside the default branch's directory, which matters inside a sandbox (below) |
+| Why choose it | one less directory level; fine for a repository with one writer and an occasional worktree | removing any one directory, `main/` included, cannot break the others, and no branch is privileged. In a plain clone every nested worktree's git data lives in the main checkout's `.git`, so losing that checkout loses them all |
+
+`wt switch --create` places a worktree correctly in either shape once the repository's layout is
+configured. `git-clone-worktree` clones a repository straight into the bare shape.
+
 ## Do you need one?
 
 Work in a worktree when **either** holds:
@@ -35,8 +51,9 @@ says so.
 
 ## Creating one
 
-1. **Start from the repository's root**: the main checkout, or the container of a bare repository.
-   Never from inside another worktree or a subdirectory. A session that leaves a worktree returns to
+1. **Start from where the layout says** (the table above): the main checkout of a plain clone, or
+   the default branch's worktree of a bare container. Never from inside another worktree, from a
+   subdirectory, or from a bare container's root. A session that leaves a worktree returns to
    where it entered from, and if that place is gone or read-only, the next step fails.
 2. **Refresh every remote first**, so the base is current: `git fetch --all`. A push through a
    multi-URL remote does not update the other remotes' tracking refs, so a base taken without a
@@ -83,7 +100,9 @@ branch, a merge commit, a cherry-pick of reviewed commits, or a separate integra
 main branch reserved for releases. `wt merge` squashes, rebases and removes the worktree by default,
 so use it only where that is the route, or with the flags that make it so.
 
-- **Land from the root checkout**, not from inside the worktree: leave it first.
+- **Land from the checkout of the target branch**: the main checkout of a plain clone, or the
+  target branch's own worktree in a bare container (`<repo>/main/`). Leave the worktree you worked
+  in first.
 - **Never reach the main branch another way**: not by pushing the branch to the remote's main branch,
   and not by moving the main branch's ref from inside the worktree. Both skip the checkout that
   serves it.
@@ -100,6 +119,7 @@ target (`git merge --ff-only <target>` inside it).
 ## Removing it
 
 Only when its stream is finished, its work is on the target branch, and you are not inside it.
+Run these from where the layout says to stand.
 
 1. **Prove the work landed.** For a merged branch, `git branch --merged <target>` lists it. For
    cherry-picked work, use `git cherry -v <target> <branch>`: a `-` line is a commit whose change is
@@ -146,7 +166,13 @@ machine where Claude Code's hooks are not available, has none of them.
   create with `wt switch --create` (above), then enter by path.** ExitWorktree with "keep" returns
   the session to where it entered from.
 - **One directory is writable.** The session may write only under its current directory, so the
-  root checkout is read-only from inside a worktree. A fast-forward run from the wrong place fails
+  checkout you entered from is read-only from inside a worktree. In a bare container this bites at creation
+  too: a new sibling worktree sits at the container root, outside the default branch's directory,
+  so `wt switch --create` fails with `could not create leading directories … Read-only file system`
+  unless the sandbox settings grant the container root as writable. That grant is a deliberate
+  settings change, and it also lets the session write every other branch's worktree there; if it is
+  absent, the creation is the person's step. A plain clone's nested worktrees sit inside the
+  checkout and need no grant. A fast-forward run from the wrong place fails
   with `Read-only file system`, sometimes after writing part of the change under a writable
   subdirectory: check `git status` and restore those files.
 - **Protected paths show as untracked files.** The sandbox mounts empty placeholders over paths it
@@ -166,7 +192,9 @@ machine where Claude Code's hooks are not available, has none of them.
 | --- | --- | --- |
 | `fatal: '<branch>' is already used by worktree at …` | that branch is checked out elsewhere | work in that worktree, or operate the other branch through its own worktree |
 | `contains modified or untracked files` on a clean worktree | sandbox placeholders | hand the removal to the person |
-| `Read-only file system` after leaving a worktree | the session is not at the root checkout | stop; restore any half-written files; give the person the commands |
+| `Read-only file system` after leaving a worktree | the session is not where the layout says to stand | stop; restore any half-written files; give the person the commands |
+| `could not create leading directories … Read-only file system` creating a worktree | a bare container's root is not writable from the sandbox | the person creates it, or grants the container root in the sandbox settings |
+| `fatal: this operation must be run in a work tree` | you are at a bare container's root | stand in the default branch's worktree |
 | A new worktree far behind | its base was a stale tracking ref | fetch every remote, recreate from a named base |
 | Tests pass here and fail there, or pass suspiciously fast | a borrowed install, missing build output, or an ignored input | install and build in this worktree |
 | `address already in use` | another worktree's server | use this worktree's ports; stop the server by its pid |
