@@ -49,6 +49,10 @@ Many short-lived worktrees for one stream each leave a removal behind, and remov
 person's job (below). A stream that never ends, such as a daily log, keeps one standing worktree, and
 says so.
 
+**Reading or comparing code is not a stream.** Review a branch with `git diff <base>...<branch>`,
+`git log -p` or `git show`, not by staging its diff onto a detached checkout. A worktree made only
+to run or compare an older commit holds no edits and is removed in the sitting that made it.
+
 ## Creating one
 
 1. **Start from where the layout says** (the table above): the main checkout of a plain clone, or
@@ -109,7 +113,12 @@ says so.
 - **How to know:** the repository's context file or this domain's half says which branches take a
   direct merge. Where neither says, assume a pull request: a pushed branch can always be merged
   later, a direct push to a reviewed branch cannot be undone cleanly. Only a branch you created
-  yourself in this stream (a feature branch, a sub-branch of it) is always yours to merge into.
+  yourself in this stream (a feature branch, a sub-branch of it) is always yours to merge into, and
+  so is every branch of a repository with no remote at all.
+- **A pull request you cannot open yourself is still the route.** With no forge CLI, no web access,
+  or a remote that has no pull requests, push the branch, tell the person which branch to open it
+  from and against which target, and stop. Do not merge into the target locally because the pull
+  request is out of reach: that commits the local target to a history the review has not seen.
 
 **Then land by the repository's own route**, which this domain's half names: a fast-forward into the main
 branch, a merge commit, a cherry-pick of reviewed commits, or a separate integration branch with the
@@ -152,15 +161,26 @@ from where the layout says to stand.
    ```
 
    Move anything it prints somewhere durable first.
-3. **Remove it without force**: `wt remove <branch> --foreground -y --format=json`, then read
+3. **Prove it is clean**: `git -C <path> status --porcelain` prints nothing but the sandbox's
+   placeholders (below). Staged, unstaged and intent-to-add (`git add -N`) leftovers all make the
+   removal refuse, and they are exactly what that refusal exists to surface. In a worktree you made,
+   resolve every line by committing it to the branch, or by reviewing it and reverting it. In one
+   another session left behind, revert nothing you did not write: report what is there and hand it
+   to the person.
+4. **Remove it without force**: `wt remove <branch> --foreground -y --format=json`, then read
    `branch_outcome`: `deleted` means done, and a `retained_*` value says why the branch was kept.
    Without `--foreground` the removal runs in the background and its result goes to a log. Never
    `--force`, `-D` or `rm -rf`: a refusal means something is still there, and forcing it loses it.
-4. **Delete the branch on every remote it reached** (`git push <remote> --delete <branch>` for each),
+5. **Delete the branch on every remote it reached** (`git push <remote> --delete <branch>` for each),
    then confirm with `git ls-remote`. A branch only ever local needs nothing.
 
 If a removal is refused and you cannot see why, stop and hand it to the person, with the exact plain
 command to run. Do not look for a way around the refusal.
+
+**Before handing any removal to a person, run steps 1 to 3 yourself.** Hand over only a command
+those checks say will succeed, or say what is still in the worktree; a command that will be refused
+moves the investigation onto them. If a leftover genuinely has to be forced, snapshot it first
+(`git-snapshot --untracked -C <path>`) and name the ref it prints alongside the command.
 
 ## Subagents in worktrees
 
