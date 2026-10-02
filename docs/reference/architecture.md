@@ -55,7 +55,7 @@ generic machine.
 | `~/.claude/settings.json` | runs `~/.dotlocal/claude/settings-declared` for the domain's keys | the base's keys only |
 | Skills | each reads `~/.dotlocal/skills/<skill>.md` for the domain's specifics | the generic procedure |
 | `leak-guard`, `hook-doctor` | `~/.dotlocal/git-leak-*`: the terms to keep out, the private push destinations, a probe token | the guard passes every commit; hook-doctor reports `NOT-CONFIGURED` |
-| `fleet-decl` and its callers | the repository manifest, `~/Devel/mani.yaml` (or `$FLEET_RECORD`) | callers that need it refuse; the others skip their per-repository step |
+| `fleet-decl` and its callers | the repository manifest, `~/Devel/mani.yaml` (or `$FLEET_RECORD`); schema in [`fleet-manifest.md`](fleet-manifest.md) | callers that need it refuse; the others skip their per-repository step |
 | Templates | chezmoi data: `domain`, `overlayRepo`, `skipSkills`, `dpi` | prompted at `chezmoi init`; `skipSkills` defaults to none |
 | Many tools | an environment variable with a documented default (`CLAUDE_SETTINGS_FRAGMENT`, `HOOK_DOCTOR_*`, `MEMORY_DOCTOR_*`, …) | the default |
 

@@ -1,5 +1,9 @@
 # Fleet repo manifest — `mani` clones/syncs these repos into ~/Devel. (Scaffold stub — fill in.)
 # FIXME(overlay-doctor): replace the example below with THIS domain's real repo set, then delete this line.
+#
+# Every key is documented, with what reads it and whether it is required, in the base's
+# docs/reference/fleet-manifest.md. Validate after editing: `fleet-decl --check` (exit 0 = clean).
+#
 # URLs are whatever this domain's git host uses — plain literals are fine (a domain where everything
 # lives on one hosted service needs nothing more). Only if many URLs share a host root this domain
 # wants factored out: define an overlay [data] value (named in this domain's terms) and reference it
@@ -8,7 +12,43 @@
 # (e.g. `mani sync --tags active`). Exclude chezmoi-source dirs and retired repos.
 
 projects:
+  # A repository this domain authors.
   example-repo:
-    path: internal/example-repo
+    path: internal/example-repo                   # relative to ~/Devel (mani)
     url: https://git.example.com/org/example-repo.git
+    tags: [internal, active]                       # mani selects by tag; `upstream` and `external` also change tool behaviour
+    scope: internal/example-repo                   # path prefix that resolves a checkout to this entry (fleet-decl)
+    leakPolicy: strict                             # strict | private | notes | internal — required unless tagged upstream
+    # leakPrefix: EXR                              # this repo's own program id prefix(es), comma-separated
+    # clone: git-clone-worktree --mani-project example-repo   # bare clone with sibling worktrees
+    # worktrunk:
+    #   layout: bare                               # bare | nested
+    #   bootstrap: true                            # install dependencies in each new worktree
+
+  # This domain's notes repository: the one place program ids and notes pointers may appear.
+  journal:
+    path: internal/journal
+    url: https://git.example.com/org/journal.git
     tags: [internal, active]
+    scope: internal/journal
+    leakPolicy: notes
+    # canonical: journal-canonical                 # a long-running agent session for this project;
+    # canonicalIdentity: "..."                     #   with `canonical`, all four companions are required
+    # canonicalLaunchDir: internal/journal
+    # canonicalLaunchModel: claude-opus-5-5
+    # canonicalMachines: [workstation]
+
+  # Somebody else's repository, cloned to read or build: no policy needed, its hooks are not run.
+  some-upstream-tool:
+    path: external/some-upstream-tool
+    url: https://github.com/someone/some-upstream-tool.git
+    tags: [external, upstream]
+    # sync: false                                  # leave it out of `mani sync`
+
+# Optional, fleet-level: how a domain's own remote-setup tool wires remotes.
+# remoteConvention:
+#   remotes:
+#     origin: {from: url, required: true}
+#     backup: {from: env.BACKUP_URL, required: false}   # per project: env: {BACKUP_URL: ...}
+#   fanout: {name: all, fetch: origin, push: [origin, backup]}
+#   retire: [old-host]

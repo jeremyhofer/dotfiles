@@ -48,6 +48,11 @@ layer declares it if it wants it. A machine where the base set it keeps the valu
 the whole machine through `~/.dotlocal/gitconfig`, or the repo gates for one command):
 `docs/reference/architecture.md`, under Git.
 
+**The fleet manifest's schema is written down:** `docs/reference/fleet-manifest.md` lists every key in
+`~/Devel/mani.yaml`, what reads it, what is required, and the allowed values, and the overlay
+skeleton's `Devel/mani.yaml.tmpl.example` now carries every key, commented. ACTION only if your
+manifest predates this: run `fleet-decl --check` and fix what it reports.
+
 ## 2026-10-01
 
 **ACTION (every clone made before this entry) — the history of `main` was rewritten.** Old commits
