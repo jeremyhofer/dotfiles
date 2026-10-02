@@ -19,9 +19,6 @@
 CLAUDE.local.md
 AGENTS.local.md
 **/.claude/.cc-writes/
-# A parked session's relaunch script, rewritten at every park (ignored by exact name, since
-# .claude/ itself carries tracked files in many repos).
-.claude/canonical-kickoff.sh
 # Worktrunk's worktrees for an ordinary (non-bare) checkout, which nest inside the repo.
 .worktrees/
 # --- domain-specific additions below ---
