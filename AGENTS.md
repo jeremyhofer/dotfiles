@@ -35,6 +35,8 @@ No task runner; the commands are plain.
 - `docs/reference/private-layer.md`: read before configuring anything a private layer supplies,
   including skills installed from the domain's own repositories (`skill-externals-sync`).
 - `docs/reference/fleet-manifest.md`: read before editing or validating a `mani.yaml`.
+- `docs/reference/replacing-your-own-tooling.md`: read before migrating a machine that has its own
+  clone, worktree, skill or context tooling; it links `knowledge-base.md` and `repository-layouts.md`.
 - `CHANGELOG.md`: read before a change an adopted machine must act on. Its head explains the ACTION
   convention.
 - `setup/README.md`: read before bringing a new or already-configured machine into this setup.

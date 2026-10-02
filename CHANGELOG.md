@@ -41,6 +41,11 @@ machine's own credentials), pinned to its tag, after every base apply; it never 
 did not install and uninstalls one removed from the list. The overlay skeleton has the list and a
 script that re-runs the sync when the list changes. Details: `docs/reference/private-layer.md`.
 
+**Three new reference pages** under `docs/reference/`: `knowledge-base.md` (standing up `kb` and
+loading its rules into sessions), `repository-layouts.md` (plain clone or bare container, and a tested
+procedure to convert an existing clone), and `replacing-your-own-tooling.md` (mapping a machine's own
+clone, worktree, skill and context scripts onto this setup, with a migration order).
+
 **The private git config now overrides the base.** `~/.dotlocal/gitconfig` is included at the END
 of `~/.gitconfig` instead of the start, so for any single-valued key the private value wins. Nothing
 changes unless the private file sets a key the base also sets. One use: a domain whose commits already
