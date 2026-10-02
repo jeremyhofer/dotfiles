@@ -1,6 +1,6 @@
 ---
 name: claude-config-layers
-description: Use when changing ANY Claude Code setting, permission, hook, plugin toggle or model default — deciding which of the four layers a setting belongs in, adding a permission, wiring a hook, or making a preference apply on every machine. Also fires on the failure signatures: a setting that will not stick or silently reverts, a preference that works on one machine and not another, a background/agent session coming up on the wrong model, or a settings file that was overwritten instead of merged, a background session that will not start until the workspace trust prompt is accepted, or any thought of editing `~/.claude.json`. Covers the precedence order, the never-blind-overwrite rule, and why the user settings file is only PARTIALLY managed.
+description: Use when changing ANY Claude Code setting, permission, hook, plugin toggle or model default — deciding which of the four layers a setting belongs in, adding a permission, wiring a hook, or making a preference apply on every machine. Also fires on the failure signatures: a setting that will not stick or silently reverts, a preference that works on one machine and not another, a background/agent session coming up on the wrong model, or a settings file that was overwritten instead of merged, a background session that will not start until the workspace trust prompt is accepted, or any thought of editing `~/.claude.json`; and whenever a tool call is refused — `Read-only file system`, a `<sandbox_violations>` block, "Permission to use … has been denied", a `PreToolUse` hook error, or auto mode declining a command. Covers the precedence order, the never-blind-overwrite rule, why the user settings file is only PARTIALLY managed, and which layer a refusal came from and what may be done about it.
 ---
 
 # Claude Code config: four layers, and which one a thing belongs in
@@ -145,6 +145,31 @@ from. The obvious edit does not work either: setting `hasTrustDialogAccepted` do
 non-interactive background launch fails there with the CLI's own message. The fix is for the human owner to
 run `claude` once in that directory and accept. Trust is kept per path, so a session or worktree
 started from a new path needs it again. Do not build tooling around it.
+
+## 8. A denial is a decision: name the layer, report it, do not route around it
+
+Five things can refuse a tool call, and each is a setting someone chose. Say which one refused,
+what you were trying to do, and who can change it; then stop, unless the refusal itself names a
+sanctioned next step.
+
+| You see | Which layer | What is sanctioned |
+| --- | --- | --- |
+| `Read-only file system` or `Operation not permitted` on a write | the Bash sandbox's filesystem allow-list (`sandbox` in a settings layer) | write where the session was given (the working directory, `$TMPDIR`), or tell the person which path the work needs |
+| a `<sandbox_violations>` block naming a host | the sandbox's network proxy | in auto mode, re-run with that host in `allowed_domains`, when the task needs it; otherwise report |
+| `Permission to use … has been denied`, or a prompt the person declined | a `permissions.deny` rule, or the person | nothing: ask, naming the rule if you can see it |
+| `PreToolUse:… hook error:` with a reason | a hook (a shell or secret guard, say) | the alternative form the reason names, when your command really is that case |
+| `The user doesn't want to proceed`, or a refusal naming the risk (`Dangerous rm operation …`) | auto mode's permission check, or the person | rewrite the command so the risk is gone (§18 of `writing-zsh-commands` for `rm`), or ask |
+
+**What routing around looks like**, and why it is out: the same content sent through a different
+tool (a `Write` where `Bash` was refused, a script file where a heredoc was refused), another path
+to the same place, a broader permission requested to clear a narrow refusal. Each defeats a check
+someone put there on purpose, and the refusal stops being a signal. **When you believe a refusal is
+a false positive,** say so and propose a fix to the check, with the command that tripped it; the
+person or the check's owner decides. A check that misfires often gets fixed; one that is quietly
+dodged gets trusted while it protects nothing.
+
+Changing what a layer allows is a settings change like any other: it belongs in the right layer (§1)
+and, for permissions and the sandbox, needs the person's explicit yes for that change.
 
 ---
 
