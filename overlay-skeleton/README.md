@@ -18,6 +18,8 @@ non-publishable config on top of the public `dotfiles` base.
 `Brewfile.role` holds ONLY this domain's additions — the base Brewfile includes it (never
 `instance_eval` the base from the role file; that inverted shape double-evaluates).
 
+Every seam, with its format and an example: the base's `docs/reference/private-layer.md`.
+
 ## Setting up
 
 1. `setup/scaffold-overlay <dir>` copies these stubs (renaming `.example` off).

@@ -6,3 +6,5 @@
   `architecture-light.svg` and `architecture-dark.svg`, drawn from one layout.
   [`fleet-manifest.md`](reference/fleet-manifest.md) is the schema of `~/Devel/mani.yaml`: every key,
   what reads it, what is required, and how to validate it.
+  [`private-layer.md`](reference/private-layer.md) is the how-to for every seam a private layer
+  configures: the file, its format, an example, what happens without it, and how to check it.

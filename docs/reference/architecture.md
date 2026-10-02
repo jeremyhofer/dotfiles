@@ -40,7 +40,8 @@ the private part reaches it through a seam.
 
 ## Seams: how a domain plugs in
 
-A seam is a place where a base file reads something the private layer may supply. Every base file
+A seam is a place where a base file reads something the private layer may supply. How to configure
+each one, with formats and examples, is [`private-layer.md`](private-layer.md). Every base file
 works when the private layer supplies nothing, so a machine with only the base is a working,
 generic machine.
 

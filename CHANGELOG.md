@@ -53,6 +53,11 @@ the whole machine through `~/.dotlocal/gitconfig`, or the repo gates for one com
 skeleton's `Devel/mani.yaml.tmpl.example` now carries every key, commented. ACTION only if your
 manifest predates this: run `fleet-decl --check` and fix what it reports.
 
+**Every private seam is documented in one place:** `docs/reference/private-layer.md` covers machine
+data, the shell, git, ssh, packages, bootstrap stages, Claude Code (instructions, the settings
+fragment and its merge rules, skill fragments), worktrees, the publish guard, the manifest, spelling,
+the checks, and what a private layer cannot change.
+
 ## 2026-10-01
 
 **ACTION (every clone made before this entry) — the history of `main` was rewritten.** Old commits
