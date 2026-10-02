@@ -36,7 +36,9 @@ No task runner; the commands are plain.
   convention.
 - `setup/README.md`: read before bringing a new or already-configured machine into this setup.
 - Skills: `dotfiles-layout-and-bootstrap` (which layer a file belongs in), `dotfiles-update`
-  (catching a machine up), `overlay-doctor` (the private layer's checks), `cross-platform-tooling`
+  (catching a machine up; after a pull, read it from this checkout at
+  `dot_claude/skills/dotfiles-update/SKILL.md`, because the deployed skill of the same name outranks
+  the project copy and is as old as the last apply), `overlay-doctor` (the private layer's checks), `cross-platform-tooling`
   (any script that runs on both Linux and macOS).
 
 ## Rules
