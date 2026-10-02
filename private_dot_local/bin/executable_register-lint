@@ -742,7 +742,10 @@ def check(entries, closed_dir, root=None, today=None):
             base_dir = top / tree
             if not base_dir.is_dir():
                 continue
-            for d in sorted(p for p in base_dir.iterdir() if p.is_dir()):
+            # Dot-directories are not initiatives: the Claude Code sandbox leaves a `.claude/`
+            # placeholder in any cwd a sandboxed shell used, undeletable while that session lives.
+            for d in sorted(p for p in base_dir.iterdir()
+                            if p.is_dir() and not p.name.startswith(".")):
                 rel = "%s/%s" % (tree, d.name)
                 lead = re.match(r"^([A-Z][A-Z0-9]*-[0-9]+)(?:-|$)", d.name)
                 owner = by_id.get(lead.group(1)) if lead else None

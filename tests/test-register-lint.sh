@@ -324,6 +324,13 @@ f="$tmp/f-noprefix"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/just-a-name"
 entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
 assert_has "a folder with no id at the start of its name is reported" "[initiative-id]" "$(run_r "$f")"
 
+# A dot-directory is not an initiative folder. The Claude Code Bash sandbox leaves a `.claude/`
+# placeholder in any directory a sandboxed shell used as its cwd, and it cannot be removed while
+# that session lives; it blocked a commit this way (2026-10-02).
+f="$tmp/f-dotdir"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/.claude"
+entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
+assert_lacks "a dot-directory under docs/initiatives/ is not an initiative folder" "[initiative-id]" "$(run_r "$f")"
+
 f="$tmp/f-unnamed"; mkrepo "$f"; mkdir -p "$f/docs/initiatives/ABC-01-thing"
 entry "$f/docs/register" "ABC-01" "active" "" "The thing is measurably finished."
 assert_has "a folder its entry does not name is reported" "[initiative-folder]" "$(run_r "$f")"
