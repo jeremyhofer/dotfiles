@@ -1,6 +1,6 @@
 ---
 name: working-in-worktrees
-description: Use when deciding whether to work in a git worktree, and whenever creating, entering, landing, cleaning up or removing one — `wt switch --create`, `git worktree add`, the EnterWorktree or ExitWorktree tools, giving a subagent `isolation: worktree`, merging, cherry-picking or opening a pull request for a finished branch, deleting it on the remotes, or a worktree left behind. Also fires on the failure signatures — "is already used by worktree", "contains modified or untracked files", "Read-only file system" after leaving a worktree, a new worktree that starts weeks behind, tests that pass in one worktree and fail in another, a port already in use by another worktree, and a cherry-picked branch that still reads as unmerged. Covers when a worktree is warranted, one per stream of work, a named fresh base, a frozen install before any gate, landing into the branch it was cut from and only where a direct merge is allowed (a pull request otherwise), removing only what is provably elsewhere, and how this differs inside a sandboxed Claude Code session from a plain shell with no hooks.
+description: Use when deciding whether to work in a git worktree, and whenever creating, entering, landing, cleaning up or removing one — `wt switch --create`, `git worktree add`, the EnterWorktree or ExitWorktree tools, giving a subagent `isolation: worktree`, merging, cherry-picking or opening a pull request for a finished branch, deleting it on the remotes, or a worktree left behind. Also fires on the failure signatures — "is already used by worktree", "contains modified or untracked files", "Read-only file system" after leaving a worktree, a new worktree that starts weeks behind, tests that pass in one worktree and fail in another, a port already in use by another worktree, and a cherry-picked branch that still reads as unmerged. Covers when a worktree is warranted, one per stream of work, a named fresh base, a frozen install before any gate, landing into the branch it was cut from, by a local merge or a pull request as the repository, the domain or the host of `origin` decides, removing only what is provably elsewhere, and how this differs inside a sandboxed Claude Code session from a plain shell with no hooks.
 ---
 
 # Working in worktrees
@@ -110,15 +110,22 @@ to run or compare an older commit holds no edits and is removed in the sitting t
   open a pull request against the target, and stop. The review and the merge happen there, by the
   people allowed to do them. A direct merge and push to such a branch is either refused by the
   server or, worse, accepted and bypasses review.
-- **How to know:** the repository's context file or this domain's half says which branches take a
-  direct merge. Where neither says, assume a pull request: a pushed branch can always be merged
-  later, a direct push to a reviewed branch cannot be undone cleanly. Only a branch you created
-  yourself in this stream (a feature branch, a sub-branch of it) is always yours to merge into, and
-  so is every branch of a repository with no remote at all.
-- **A pull request you cannot open yourself is still the route.** With no forge CLI, no web access,
-  or a remote that has no pull requests, push the branch, tell the person which branch to open it
-  from and against which target, and stop. Do not merge into the target locally because the pull
-  request is out of reach: that commits the local target to a history the review has not seen.
+- **How to know, in this order; the first that answers decides:**
+  1. **The repository's context file** (`AGENTS.md`, `CLAUDE.md`), where it says how work lands.
+  2. **This domain's half**, which says whether this machine's repositories use pull requests at
+     all, and names any review forge by host.
+  3. **Where `origin` lives** (`git remote get-url origin`). On a hosted review forge (`github.com`,
+     `gitlab.com`, `bitbucket.org`, or a host the domain half names), the target takes a pull
+     request. On anything else (a self-hosted forge, a network or local path, no remote at all),
+     merge locally.
+  4. **Still unclear: ask** before merging into a branch you did not create.
+
+  A branch you created yourself in this stream (a feature branch, a sub-branch of it) is always
+  yours to merge into.
+- **When the answer is a pull request, it holds even if you cannot open one.** With no forge CLI or
+  no web access, push the branch, tell the person which branch to open it from and against which
+  target, and stop. Being asked to "land" the work does not change the route; merging into the
+  target locally instead commits it to a history the review has not seen.
 
 **Then land by the repository's own route**, which this domain's half names: a fast-forward into the main
 branch, a merge commit, a cherry-pick of reviewed commits, or a separate integration branch with the
