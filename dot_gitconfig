@@ -1,5 +1,3 @@
-[include]
-    path = "~/.dotlocal/gitconfig"
 [alias]
     lg = log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --all
 #[sendemail]
@@ -78,3 +76,8 @@
 [hook "repo-gates-pre-push"]
 	command = sh \"$HOME/.local/bin/run-repo-gates\" pre-push
 	event = pre-push
+# The private layer is included LAST so it can override anything above: git expands an include where
+# it appears, and for a single-valued key the last value read wins. A domain can therefore change a
+# base default (for example `ai-coauthor.enabled = false`) without editing this file.
+[include]
+    path = "~/.dotlocal/gitconfig"

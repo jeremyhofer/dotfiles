@@ -32,6 +32,14 @@ Entries are newest first.
 
 ---
 
+## 2026-10-02
+
+**The private git config now overrides the base.** `~/.dotlocal/gitconfig` is included at the END
+of `~/.gitconfig` instead of the start, so for any single-valued key the private value wins. Nothing
+changes unless the private file sets a key the base also sets. One use: a domain whose commits already
+carry its own AI attribution can turn off the base's co-author hook everywhere with
+`[ai-coauthor] enabled = false` in `~/.dotlocal/gitconfig`.
+
 ## 2026-10-01
 
 **ACTION (every clone made before this entry) — the history of `main` was rewritten.** Old commits
