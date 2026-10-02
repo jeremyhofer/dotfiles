@@ -379,6 +379,21 @@ the same refusal deferred. Instead:
   the Monitor tool only when you want an event per occurrence rather than one at the end, and make
   its filter match the failure states too, or a crash reads as "still running".
 
+## 18. LOUD — `rm` on a path built from a variable is refused, and should be
+
+`rm -rf $B/build` is `rm -rf /build` the moment `B` is empty, and auto mode's permission check refuses it on sight ("Dangerous rm operation on
+possibly-empty variable path"). That a variable happens to be set this time is exactly the
+assumption the check exists to refuse, so do not argue with it. In order of preference:
+
+- **Do not delete.** Give each run a fresh name and refuse one that exists
+  (`[ -e "$d" ] && { echo "$d exists" >&2; exit 1; }`); let the session's scratch directory go
+  with the session.
+- **Name the path literally**, when it is one known directory.
+- **Make an empty variable an error:** `rm -rf -- "${B:?}/${n:?}-origin.git"`. `${var:?}` stops
+  the command when the variable is unset or empty.
+
+`set -u` does not cover it: it catches an unset variable, not an empty one.
+
 ## How you can tell it went wrong
 
 - **`no matches found: <thing>`** — an unquoted glob, often inside an option value (§2).
@@ -404,3 +419,5 @@ the same refusal deferred. Instead:
 - **A command that runs jobs in parallel finishes them but never prints what follows `wait`**, or a
   background task hits its time limit after its work is done — a bare `wait` (§17).
 - **`Blocked: sleep …`** — wait in the background, not in the foreground (§17).
+- **`Dangerous rm operation on possibly-empty variable path`** — do not delete, or guard with
+  `${var:?}` (§18).
