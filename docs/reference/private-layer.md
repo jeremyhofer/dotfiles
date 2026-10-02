@@ -172,6 +172,50 @@ incidents). Currently: `brew-and-brewfiles`, `claude-config-layers`, `cross-plat
 markdown that completes the skill; do not restate it. Leave a skill out on one machine with
 `skipSkills`.
 
+### Skills from other repositories
+
+A skill can be installed from a repository rather than written here, pinned to a tag so it cannot
+change unreviewed. There are two lists, one per layer, and they work the same way:
+
+| List | Fetched by | Holds |
+| --- | --- | --- |
+| `skill_externals` in the base's `.chezmoidata.yaml` | chezmoi, as a release archive from public GitHub, checked by `run_onchange_after_verify-skill-externals.sh` | public third-party skills every machine gets |
+| `~/.dotlocal/skill-externals.yaml` | `skill-externals-sync`, with plain git and this machine's own credentials | the domain's own skills, private repositories included |
+
+The private list uses the same fields, plus `url` and `ref` for a repository that is not on GitHub or
+a tag not named `v<version>`:
+
+```yaml
+skill_externals:
+  - name: team-runbook              # must equal SKILL.md's `name:`; also the directory name
+    repo: my-org/team-skills        # -> https://github.com/my-org/team-skills.git
+    version: "1.4.0"                # -> tag v1.4.0; checked against SKILL.md's `version:` if present
+    subtree: skills/team-runbook    # the directory holding SKILL.md ("" for the repository root)
+  - name: other-skill
+    url: https://git.example.com/team/other.git
+    ref: release-2026-09
+    subtree: ""
+```
+
+What `skill-externals-sync` does, per entry:
+
+- installs the subtree into `~/.claude/skills/<name>`, staged and swapped so a session never sees a
+  half-copied skill, and records it in `~/.local/state/skill-externals/installed.tsv`;
+- does not fetch again while the recorded url and ref match, so it costs no network on an ordinary
+  apply;
+- refuses, keeping whatever was installed before: a name that is not a plain skill name, a subtree
+  outside the repository, a fetched tree with no `SKILL.md` at the subtree's root, a frontmatter
+  `name` that differs from the entry, a frontmatter `version` that contradicts the pin, and any
+  existing `~/.claude/skills/<name>` it did not install (a base skill or a public external is never
+  overwritten);
+- uninstalls a skill removed from the list, and only skills it recorded;
+- treats an unreadable list as an error and changes nothing, rather than as an empty list.
+
+One failed entry never stops the others or fails the apply. It runs after every base apply; because
+the private layer applies after the base, the overlay also re-runs it when its list changes
+(`run_onchange_after_sync-skill-externals.sh` in the skeleton). Run it by hand with
+`skill-externals-sync`, and `skill-externals-sync --status` lists what it installed.
+
 ## Worktrees
 
 ### `~/.dotlocal/worktrunk.toml`

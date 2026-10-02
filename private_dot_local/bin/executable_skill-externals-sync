@@ -1,0 +1,165 @@
+#!/bin/sh
+# skill-externals-sync -- install the pinned skills a PRIVATE layer declares, fetched with git.
+#
+#   usage: skill-externals-sync          install, update and prune to match the list
+#          skill-externals-sync --status print what is installed, from the record
+#
+# WHY THIS EXISTS. The base pins public third-party skills in its own `.chezmoidata.yaml`
+# (`skill_externals`), and chezmoi downloads each release archive. That list is public by
+# construction, and a private layer cannot add to it: each chezmoi instance has its own data. A
+# domain that wants skills from its OWN repositories (private ones included) declares them here
+# instead, in the same shape, and this tool installs them the same way: pinned to a tag, one skill
+# directory per entry, checked after it lands.
+#
+# THE LIST: ~/.dotlocal/skill-externals.yaml (or $SKILL_EXTERNALS_LIST), deployed by the private layer.
+#     skill_externals:
+#       - name: team-runbook                 # the skill's name; also its directory under ~/.claude/skills
+#         repo: my-org/team-skills           # GitHub owner/repo, fetched as https://github.com/<repo>.git
+#         version: "1.4.0"                   # fetched as tag v<version>
+#         subtree: skills/team-runbook       # the directory inside the repository that holds SKILL.md
+#       - name: other-skill
+#         url: https://git.example.com/team/other.git   # any git URL, instead of repo
+#         ref: release-2026-09                          # any tag, instead of version
+#         subtree: ""                                   # SKILL.md at the repository root
+#
+# FETCHED WITH PLAIN GIT, so each machine's own credentials apply (a credential helper, or a URL
+# rewrite to SSH); nothing here handles secrets. GIT_TERMINAL_PROMPT=0: a missing credential fails
+# the entry instead of hanging an apply on a prompt nobody sees.
+#
+# WHAT IT REFUSES, per entry, leaving whatever was installed before in place:
+#   - a name that is not a plain skill name, or a subtree that escapes the repository;
+#   - a directory already at ~/.claude/skills/<name> that this tool did not install (a base skill,
+#     a public external, or one placed by hand): it is never overwritten;
+#   - a fetched tree with no SKILL.md at the subtree's root, or whose frontmatter `name` differs
+#     from the entry's, or whose frontmatter `version` (when it has one) differs from the pin.
+# One failed entry never stops the others. Exit 1 if any entry failed, 2 if the list itself cannot be
+# read (and then NOTHING is pruned: an unreadable list is not an empty one), else 0.
+#
+# PRUNING. Every install is recorded in $SKILL_EXTERNALS_STATE/installed.tsv (default
+# ~/.local/state/skill-externals). An entry removed from the list is uninstalled; only directories
+# this tool recorded are ever removed.
+#
+# CHEAP WHEN NOTHING CHANGED. An entry whose url and ref match the record, and whose directory still
+# has its SKILL.md, is not fetched again, so running this on every apply costs no network.
+set -u
+
+LIST=${SKILL_EXTERNALS_LIST:-$HOME/.dotlocal/skill-externals.yaml}
+SKILLS=${SKILL_EXTERNALS_DIR:-$HOME/.claude/skills}
+STATE_DIR=${SKILL_EXTERNALS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/skill-externals}
+STATE=$STATE_DIR/installed.tsv
+TAB=$(printf '\t')
+# `read` treats a tab as whitespace and collapses two in a row, so an EMPTY field (a `repo` left
+# out because `url` is given) would shift every later field into the wrong variable. So the list is
+# read with every empty field written as `~`, and `~` is turned back into empty after reading.
+
+say() { printf 'skill-externals: %s\n' "$*"; }
+err() { printf 'skill-externals: %s\n' "$*" >&2; }
+
+if [ "${1:-}" = "--status" ]; then
+  [ -s "$STATE" ] || { say "nothing installed"; exit 0; }
+  while IFS="$TAB" read -r n u r c; do say "$n  $r  ${c%"${c#???????}"}  $u"; done < "$STATE"
+  exit 0
+fi
+
+# Nothing declared now and nothing installed before: nothing to do, and no tools needed.
+[ -e "$LIST" ] || [ -s "$STATE" ] || exit 0
+
+command -v git >/dev/null 2>&1 || { err "git is not installed"; exit 2; }
+# Two incompatible programs install as `yq`; only the Go implementation reads this syntax.
+yq --version 2>/dev/null | grep -q 'mikefarah' \
+  || { err "needs the Go yq (github.com/mikefarah/yq); the yq on PATH is another program or missing"; exit 2; }
+
+entries=""
+if [ -e "$LIST" ]; then
+  entries=$(yq -r '(.skill_externals // [])[] | [.name, .url, .repo, .ref, .version, .subtree]
+                   | map(. // "" | tostring | sub("^$"; "~")) | @tsv' "$LIST" 2>/dev/null) \
+    || { err "$LIST cannot be read as a skill_externals list; nothing changed"; exit 2; }
+fi
+
+mkdir -p "$STATE_DIR" "$SKILLS" || { err "cannot create $STATE_DIR or $SKILLS"; exit 2; }
+work=$(mktemp -d "$STATE_DIR/work.XXXXXX") || { err "cannot create a work directory"; exit 2; }
+trap 'rm -rf "$work"' EXIT INT TERM
+touch "$STATE"
+: > "$work/state.new"
+fail=0
+
+recorded() { awk -F'\t' -v n="$1" '$1 == n' "$STATE"; }        # the record's row for a name, if any
+front() {                                                      # a frontmatter field of a SKILL.md
+  awk -v k="$2" 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit }
+    NR > 1 { if (index($0, k ":") == 1) { v = substr($0, length(k) + 2); gsub(/^[ \t"'\'']+|[ \t"'\'']+$/, "", v); print v; exit } }' "$1"
+}
+
+if [ -n "$entries" ]; then
+  printf '%s\n' "$entries" > "$work/entries"
+  while IFS="$TAB" read -r name url repo ref version subtree; do
+    for v in name url repo ref version subtree; do eval "[ \"\$$v\" = '~' ] && $v=''"; done
+    case $name in ''|.*|*[!a-z0-9._-]*) err "entry '$name': not a plain skill name; skipped"; fail=1; continue ;; esac
+    [ -n "$url" ] || { [ -n "$repo" ] && url="https://github.com/$repo.git"; }
+    [ -n "$ref" ] || { [ -n "$version" ] && ref="v$version"; }
+    old=$(recorded "$name")
+    if [ -z "$url" ] || [ -z "$ref" ]; then
+      err "$name: needs url or repo, and ref or version; skipped"; fail=1
+      [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"; continue
+    fi
+    case /$subtree/ in */../*) err "$name: subtree '$subtree' leaves the repository; skipped"; fail=1
+      [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"; continue ;; esac
+    subtree=${subtree#/}
+    target=$SKILLS/$name
+
+    if [ -z "$old" ] && { [ -e "$target" ] || [ -L "$target" ]; }; then
+      err "$name: $target already exists and was not installed by this tool (a base skill, a public external, or one placed by hand); left alone"
+      fail=1; continue
+    fi
+    if [ -n "$old" ] && [ -f "$target/SKILL.md" ] \
+       && [ "$(printf '%s' "$old" | cut -f2)" = "$url" ] && [ "$(printf '%s' "$old" | cut -f3)" = "$ref" ]; then
+      printf '%s\n' "$old" >> "$work/state.new"; continue                   # up to date: no fetch
+    fi
+
+    src=$work/src-$name
+    if ! GIT_TERMINAL_PROMPT=0 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" \
+           "$url" "$src" 2> "$work/err-$name"; then
+      err "$name: could not fetch $ref from $url: $(tail -1 "$work/err-$name")"; fail=1
+      [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"; continue
+    fi
+    commit=$(git -C "$src" rev-parse HEAD)
+    tree=$src${subtree:+/$subtree}
+    reason=""
+    if [ ! -f "$tree/SKILL.md" ]; then reason="no SKILL.md at '${subtree:-the repository root}'"
+    elif [ "$(front "$tree/SKILL.md" name)" != "$name" ]; then
+      reason="SKILL.md's frontmatter name is '$(front "$tree/SKILL.md" name)', not '$name'"
+    else
+      fv=$(front "$tree/SKILL.md" version)
+      [ -n "$version" ] && [ -n "$fv" ] && [ "$fv" != "$version" ] \
+        && reason="SKILL.md declares version $fv, but $version is pinned"
+    fi
+    if [ -n "$reason" ]; then
+      err "$name: $reason; nothing installed"; fail=1
+      [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"; continue
+    fi
+
+    # Stage beside the target, then swap, so a session never sees a half-copied skill.
+    stage=$work/stage-$name
+    cp -R "$tree" "$stage" && rm -rf "$stage/.git"
+    if [ -e "$target" ]; then mv "$target" "$work/old-$name"; fi
+    if mv "$stage" "$target"; then
+      say "$name: installed $ref ($(printf '%s' "$commit" | cut -c1-7))"
+      printf '%s\t%s\t%s\t%s\n' "$name" "$url" "$ref" "$commit" >> "$work/state.new"
+    else
+      [ -e "$work/old-$name" ] && mv "$work/old-$name" "$target"
+      err "$name: could not move the new copy into $target; the previous one is kept"; fail=1
+      [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"
+    fi
+  done < "$work/entries"
+fi
+
+# Prune what the record holds and the list no longer names. Only recorded, plain names are touched.
+while IFS="$TAB" read -r name _rest; do
+  [ -n "$name" ] || continue
+  awk -F'\t' -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$work/state.new" && continue
+  [ -e "$work/entries" ] && awk -F'\t' -v n="$name" '$1 == n { found = 1 } END { exit !found }' "$work/entries" && continue
+  case $name in ''|.*|*[!a-z0-9._-]*) continue ;; esac
+  rm -rf "${SKILLS:?}/$name" && say "$name: removed (no longer in the list)"
+done < "$STATE"
+
+mv "$work/state.new" "$STATE"
+exit "$fail"

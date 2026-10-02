@@ -1,0 +1,11 @@
+#!/bin/sh
+# Re-run the base's skill-externals-sync whenever this overlay's skill list changes.
+#
+# The base runs the sync after its own apply, but the base applies FIRST, so without this a changed
+# list would only take effect on the next base apply. The hash below makes chezmoi re-run this
+# script exactly when the list's content changes.
+# list hash: {{ if stat (joinPath .chezmoi.sourceDir "dot_dotlocal/skill-externals.yaml") }}{{ include "dot_dotlocal/skill-externals.yaml" | sha256sum }}{{ else }}none{{ end }}
+tool="$HOME/.local/bin/skill-externals-sync"
+[ -x "$tool" ] || exit 0
+"$tool" || printf 'skill-externals: one or more private skills did not install (reasons above).\n' >&2
+exit 0

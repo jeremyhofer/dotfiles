@@ -18,7 +18,9 @@ non-publishable config on top of the public `dotfiles` base.
 `Brewfile.role` holds ONLY this domain's additions — the base Brewfile includes it (never
 `instance_eval` the base from the role file; that inverted shape double-evaluates).
 
-Every seam, with its format and an example: the base's `docs/reference/private-layer.md`.
+Every seam, with its format and an example: the base's `docs/reference/private-layer.md`. Optional
+stubs: `dot_dotlocal/skill-externals.yaml` with `run_onchange_after_sync-skill-externals.sh.tmpl`
+(skills installed from this domain's own repositories); delete both if the domain has none.
 
 ## Setting up
 

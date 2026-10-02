@@ -34,6 +34,13 @@ Entries are newest first.
 
 ## 2026-10-02
 
+**A private layer can now install skills from its own repositories.** List them in
+`~/.dotlocal/skill-externals.yaml`, in the same shape as the base's public `skill_externals`, plus
+`url` and `ref` for other hosts and tag names. `skill-externals-sync` installs each with git (this
+machine's own credentials), pinned to its tag, after every base apply; it never overwrites a skill it
+did not install and uninstalls one removed from the list. The overlay skeleton has the list and a
+script that re-runs the sync when the list changes. Details: `docs/reference/private-layer.md`.
+
 **The private git config now overrides the base.** `~/.dotlocal/gitconfig` is included at the END
 of `~/.gitconfig` instead of the start, so for any single-valued key the private value wins. Nothing
 changes unless the private file sets a key the base also sets. One use: a domain whose commits already

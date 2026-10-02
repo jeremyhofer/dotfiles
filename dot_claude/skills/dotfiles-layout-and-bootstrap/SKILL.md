@@ -48,6 +48,12 @@ private: hosts, keys, stores, remote URLs, employer or machine names, or per-dom
 The base is **public**. Nothing private may reach it — in content, in comments, or in commit
 messages. When in doubt, overlay: moving a file base→overlay later is easy, un-publishing is not.
 
+**A skill from another repository** is pinned, never copied in by hand. A public third-party one goes
+in the base's `skill_externals` (`.chezmoidata.yaml`); one from the domain's own repositories,
+private ones included, goes in the overlay's `~/.dotlocal/skill-externals.yaml`, which
+`skill-externals-sync` installs with git after every apply. Format and refusals: the base's
+`docs/reference/private-layer.md`.
+
 OS differences belong in `.chezmoi.os` templates, not per-OS forks. Per-machine values come from
 machine-local chezmoi data, not from committed conditionals on hostnames.
 

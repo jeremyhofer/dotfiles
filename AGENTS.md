@@ -32,6 +32,9 @@ No task runner; the commands are plain.
 
 - `docs/reference/architecture.md`: read before adding a file, a tool or a seam. How the layers
   fit, how content reaches a machine, and where each kind of content belongs.
+- `docs/reference/private-layer.md`: read before configuring anything a private layer supplies,
+  including skills installed from the domain's own repositories (`skill-externals-sync`).
+- `docs/reference/fleet-manifest.md`: read before editing or validating a `mani.yaml`.
 - `CHANGELOG.md`: read before a change an adopted machine must act on. Its head explains the ACTION
   convention.
 - `setup/README.md`: read before bringing a new or already-configured machine into this setup.

@@ -1,0 +1,17 @@
+# Skills this domain installs from its own repositories, pinned to a tag.
+# Optional: delete this file if the domain has none. Read by the base's `skill-externals-sync`, which
+# runs after every base apply (and from run_onchange_after_sync-skill-externals.sh in this overlay).
+# Format, rules and checks: the base's docs/reference/private-layer.md, "Skills from your own
+# repositories".
+#
+# Fetched with plain git, so this machine's own credentials apply. Each entry lands in
+# ~/.claude/skills/<name>; a name already used by a base skill is refused, never overwritten.
+skill_externals:
+  - name: team-runbook                 # must equal the `name:` in the fetched SKILL.md
+    repo: my-org/team-skills           # GitHub owner/repo -> https://github.com/my-org/team-skills.git
+    version: "1.4.0"                   # -> tag v1.4.0; checked against SKILL.md's `version:` if it has one
+    subtree: skills/team-runbook       # the directory holding SKILL.md ("" for the repository root)
+  # - name: other-skill
+  #   url: https://git.example.com/team/other.git   # any git URL, instead of repo
+  #   ref: release-2026-09                          # any tag, instead of version
+  #   subtree: ""
