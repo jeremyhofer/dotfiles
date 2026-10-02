@@ -125,6 +125,16 @@ echo ${pipestatus[1]}                # zsh spells it $pipestatus, and it is 1-IN
 Never write `cmd | head && echo FOUND` and read it as "cmd succeeded" — `head` almost always
 succeeds, so that prints FOUND regardless.
 
+**The commonest shape, and the shell guard refuses it:** `just test 2>&1 | tail -30; echo
+"rc=${PIPESTATUS[0]}"`, written to see a long run's last lines and its status at once. Under zsh,
+`${PIPESTATUS[0]}` is empty, so the line prints `rc=` whatever happened. Better than respelling it
+as `${pipestatus[1]}`: do not pipe a long run at all. Run it with `run_in_background: true`, which
+captures the whole output and reports the real exit status, then read the end of the file (§17).
+
+**Write a search pattern in single quotes** when it names `mapfile`, `PIPESTATUS` or `path=`. The
+shell guard ignores what is inside single quotes, which expand nothing, but scans double-quoted
+text, so `rg "x|mapfile"` is refused and `rg 'x|mapfile'` is not.
+
 ## 4. SILENT — arrays are 1-indexed
 
 ```zsh
