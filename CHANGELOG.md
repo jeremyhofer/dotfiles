@@ -40,6 +40,14 @@ changes unless the private file sets a key the base also sets. One use: a domain
 carry its own AI attribution can turn off the base's co-author hook everywhere with
 `[ai-coauthor] enabled = false` in `~/.dotlocal/gitconfig`.
 
+**`remoteControlAtStartup` is no longer set by the base.** It is a per-domain choice, so a private
+layer declares it if it wants it. A machine where the base set it keeps the value already in
+`~/.claude/settings.json`; nothing to do unless you want it changed.
+
+**The configured git hooks are documented by name, with how to switch each off** (per repository, for
+the whole machine through `~/.dotlocal/gitconfig`, or the repo gates for one command):
+`docs/reference/architecture.md`, under Git.
+
 ## 2026-10-01
 
 **ACTION (every clone made before this entry) — the history of `main` was rewritten.** Old commits

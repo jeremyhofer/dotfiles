@@ -47,7 +47,7 @@ generic machine.
 | Base file or tool | Reads | When the domain supplies nothing |
 | --- | --- | --- |
 | `~/.zshenv`, `~/.zprofile`, `~/.zshrc` | sources `~/.dotlocal/zshenv`, `zprofile`, `zshrc` | skipped; the prompt's machine tag falls back to the host name's first letter |
-| `~/.gitconfig` | includes `~/.dotlocal/gitconfig`: identity, signing key, whether to sign | git ignores a missing include; commits carry no configured identity |
+| `~/.gitconfig` | includes `~/.dotlocal/gitconfig` last, so it can override any base key: identity, signing key, whether to sign, a hook switched off | git ignores a missing include; commits carry no configured identity |
 | `~/.ssh/config` | `Include ~/.dotlocal/ssh/config`: hosts and keys | only the generic `Host *` defaults |
 | `Brewfile` | evaluates `~/.dotlocal/Brewfile.role` | the base packages only |
 | `bootstrap-mac.sh` | runs `~/.dotlocal/bootstrap.d/*.sh` in order, after the apply | reports "core only" |
@@ -106,13 +106,42 @@ later; older git ignores them without a word):
 
 | Hook | Event | Does |
 | --- | --- | --- |
-| `ai-coauthor` | prepare-commit-msg | adds a co-author trailer to a commit made from a Claude Code session |
-| `secret-scan` | pre-commit | gitleaks over the staged changes, with a floor no repository config can weaken |
-| `publish-guard-<event>` | pre-commit, commit-msg, pre-push | `leak-guard`: the domain's private terms, outside the repositories allowed them |
-| `repo-gates-<event>` | pre-commit, commit-msg, pre-push | `run-repo-gates`: a manifest repository's own tracked `.githooks/<event>` |
+| Hook name | Event | Does |
+| --- | --- | --- |
+| `ai-coauthor` | prepare-commit-msg | adds a co-author trailer, naming the model when it can, to a commit made from a Claude Code session; leaves a message that already has one alone |
+| `secret-scan` | pre-commit | gitleaks over the staged changes, with a floor no repository config can weaken; refuses the commit if gitleaks is missing |
+| `publish-guard-pre-commit`, `publish-guard-commit-msg`, `publish-guard-pre-push` | as named | `leak-guard`: the domain's private terms, outside the repositories allowed them; passes everything where the domain supplies no terms |
+| `repo-gates-pre-commit`, `repo-gates-commit-msg`, `repo-gates-pre-push` | as named | `run-repo-gates`: a manifest repository's own tracked `.githooks/<event>` (or `.husky/<event>`) |
 
-A repository can switch one entry off with `hook.<name>.enabled false`, and `hook-doctor` reports
-whether each is live per worktree.
+`hook-doctor` reports whether each is live per worktree.
+
+**They run alongside a repository's own hooks, never instead of them.** A repository's hook
+directory (`.git/hooks`, or the `core.hooksPath` husky sets) still runs as it always has. Where that
+directory is the same gate `run-repo-gates` would run, the runner steps aside, so the gate runs once.
+A repository with no `.githooks/<event>` or `.husky/<event>` gets nothing from `repo-gates-*`.
+
+**Known edge:** for a repository that has a `.githooks/<event>` or `.husky/<event>` file not already
+run by husky itself, `run-repo-gates` asks the fleet manifest (`~/Devel/mani.yaml`) whether to run it.
+A repository not listed there is skipped with a one-line note. A machine with no manifest at all is
+treated as an unreadable manifest, and the commit is refused (to be fixed: an absent manifest should
+mean "nothing declared").
+
+#### Switching a hook off
+
+Every entry above can be switched off by name with `hook.<name>.enabled = false` (git 2.54+). The
+scope decides how far it reaches:
+
+| Reach | How |
+| --- | --- |
+| One repository | `git config hook.<name>.enabled false`, run inside it (undo with `git config --unset hook.<name>.enabled`) |
+| Every repository on the machine | in `~/.dotlocal/gitconfig`, a `[hook "<name>"]` section with `enabled = false`. The private file is included at the END of `~/.gitconfig`, so it overrides the base |
+| `repo-gates-*` for one command | `HUSKY=0 git commit …` (skips `run-repo-gates` only; the guard and the scan still run) |
+| `ai-coauthor`, by its own switch | `ai-coauthor.enabled = false`, per repository or in `~/.dotlocal/gitconfig` for the whole machine. A domain whose commits already carry its own AI attribution turns it off this way |
+
+Switching off a `publish-guard-*` entry removes the domain's publish guard for that scope: do it
+deliberately, and switch it back on. Measured 2026-10-02 on git 2.55: a configured hook fired when
+enabled, and did not fire with `enabled = false` set in the repository or in an included file read
+after it.
 
 ### Claude Code
 

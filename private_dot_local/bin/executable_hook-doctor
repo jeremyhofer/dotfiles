@@ -195,7 +195,7 @@ ensure_empty_hooks() {
 
 
 # --- the guard, probed per event -----------------------------------------------------------------
-# The leak-guard is three configured hooks (hook.publish-guard-<event>.* in ~/.dotlocal/gitconfig),
+# The leak-guard is three configured hooks (hook.publish-guard-<event>.* in ~/.gitconfig),
 # one per event. A repository can disable one entry without the others, so a probe of one event
 # proves nothing about another: all three are probed, each with a clean input that must pass and a
 # planted marker that must be refused BY THE LEAK-GUARD.
