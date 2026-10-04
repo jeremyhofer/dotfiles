@@ -1,0 +1,102 @@
+#!/bin/sh
+# claude-mask-sweep — find, and with --remove delete, sandbox mask files that no running Claude Code
+# session is using.
+#
+# WHAT A MASK FILE IS. On Linux, Claude Code's Bash sandbox (bubblewrap) protects paths that must not
+# be written: settings files, hooks, `.bashrc`, `.git/config` and about fifty more, in `~/.claude` and
+# in the project a session works in. When such a path does not exist, the sandbox creates an empty
+# read-only file there to mount over, for the length of one command, and deletes it when the command
+# ends. A session killed while a command is running (`kill -KILL`, a crash, a reboot) never deletes
+# it. The file then sits on the real filesystem: 0 bytes, no write bits, where a settings file or a
+# directory belongs. `claude update` and `claude doctor` warn about them, and a stale one where a
+# settings file belongs makes "Yes, and don't ask again" fail to save.
+#
+# WHY NOT JUST `rm` WHAT THE WARNING LISTS. Claude Code's check (read from the 2.1.289 binary) is
+# "regular file, 0 bytes, no write bits". It cannot tell a stale mask from one a running session is
+# mounting right now, so the warning lists both, and removing a live one makes that session's next
+# command fail with `bwrap: Can't bind mount … No such file or directory`. Measured 2026-10-04: a
+# cleanup run from a terminal did exactly that to a running session. A mask in use is a mount point
+# in that session's mount namespace, so this tool reads every process's /proc/<pid>/mountinfo and
+# leaves alone any path that appears there.
+#
+# WHY IT REFUSES TO RUN INSIDE A SANDBOX. Inside bubblewrap, /proc shows only the sandbox's own
+# processes, so other sessions' mounts are invisible and every one of their masks would look stale.
+# And the paths this sandbox masks show up as its own mounts, not as the files on disk.
+#
+# Usage:
+#   claude-mask-sweep [--remove] [--under DIR] [ROOT]...
+#
+#   Scans $HOME/.claude, and every project under DIR (default $HOME/Devel, at most four levels down;
+#   a project is a directory holding `.git`), plus any ROOT given. Within each root it looks only
+#   where masks are created: the root itself, its `.claude/` and its `.git/`, one level deep.
+#   Without --remove it only reports.
+#
+# Exit: 0 nothing stale left; 1 stale masks found and not removed; 2 usage error or refused.
+#
+# Linux only: the macOS sandbox (Seatbelt) creates no mask files, so elsewhere this reports that and
+# exits 0.
+set -u
+
+PROC=${CLAUDE_MASK_SWEEP_PROC:-/proc}   # overridable for the test suite only
+remove=0; under=$HOME/Devel; roots=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --remove) remove=1; shift ;;
+    --under) [ $# -ge 2 ] || { echo "claude-mask-sweep: --under needs a directory" >&2; exit 2; }
+             under=$2; shift 2 ;;
+    -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "claude-mask-sweep: unknown option $1" >&2; exit 2 ;;
+    *) roots="$roots
+$1"; shift ;;
+  esac
+done
+
+if [ "$(uname -s)" != Linux ]; then
+  echo "claude-mask-sweep: nothing to do on $(uname -s); only the Linux sandbox creates mask files"
+  exit 0
+fi
+if [ "$(cat "$PROC/1/comm" 2>/dev/null)" = bwrap ]; then
+  echo "claude-mask-sweep: refusing to run inside a sandbox: other sessions' mounts are invisible" >&2
+  echo "  from here, so masks they are using would read as stale. Run it from a plain terminal." >&2
+  exit 2
+fi
+
+tmp=$(mktemp -d) || exit 2
+trap 'rm -rf "$tmp"' EXIT
+
+# Every mount point of every process we can read. mountinfo field 5 is the mount point, with a space
+# written as \040; candidates are escaped the same way before comparing.
+for m in "$PROC"/[0-9]*/mountinfo; do
+  [ -r "$m" ] && awk '{print $5}' "$m" 2>/dev/null
+done | sort -u > "$tmp/mounted"
+
+{
+  printf '%s\n' "$HOME/.claude"
+  [ -d "$under" ] && find "$under" -maxdepth 4 -name .git 2>/dev/null | sed 's|/\.git$||'
+  printf '%s\n' "$roots" | sed '/^$/d'
+} | sort -u > "$tmp/roots"
+
+# Claude Code's own test: a regular file, 0 bytes, no write bit for anyone.
+while IFS= read -r r; do
+  [ -d "$r" ] || continue
+  for d in "$r" "$r/.claude" "$r/.git"; do
+    [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -type f -size 0 ! -perm -u+w ! -perm -g+w ! -perm -o+w 2>/dev/null
+  done
+done < "$tmp/roots" | sort -u > "$tmp/candidates"
+
+stale=0; inuse=0; removed=0
+while IFS= read -r f; do
+  esc=$(printf '%s' "$f" | sed 's/ /\\040/g')
+  if grep -qxF "$esc" "$tmp/mounted"; then
+    printf 'in use   %s\n' "$f"; inuse=$((inuse + 1))
+  elif [ "$remove" = 1 ]; then
+    if rm -f "$f"; then printf 'removed  %s\n' "$f"; removed=$((removed + 1))
+    else printf 'FAILED   %s\n' "$f"; stale=$((stale + 1)); fi
+  else
+    printf 'stale    %s\n' "$f"; stale=$((stale + 1))
+  fi
+done < "$tmp/candidates"
+
+printf '%s stale, %s removed, %s in use by a running session (left alone)\n' "$stale" "$removed" "$inuse"
+[ "$stale" -eq 0 ] || { [ "$remove" = 1 ] || echo "run again with --remove to delete the stale ones"; exit 1; }
+exit 0

@@ -85,8 +85,12 @@ fact about your probe. Both read as "fine".
   `.gitconfig`, `.claude/agents`, and about twenty more), so `git status --porcelain` lists them as
   untracked on a clean tree. They are character devices (`ls -l` shows `c`), not files. `git add -A`
   fails on them with rc=128, so stage explicit paths; a dirty-tree check must use `-uno`. Do not
-  "clean them up": they exist only inside the sandbox. `test -w` calls such a path writable (mode
-  666), so it cannot detect the mask.
+  "clean them up" from inside a session: on disk each is an empty read-only placeholder that the
+  sandbox creates for one command and deletes after it, and removing one another session is using
+  breaks that session's next command. A session killed mid-command leaves its placeholders behind
+  for good; the human sweeps those from a terminal with `claude-mask-sweep`, which keeps any a
+  running session has mounted. `test -w` calls such a path writable (mode 666), so it cannot
+  detect the mask.
 - **`fatal: Unable to create '.../index.lock': Read-only file system` is not the signing lock.** It comes
   through the same `git` wrapper and reads like a key failure, but unlocking does nothing: the repo's
   bare container is missing from the sandbox's `allowWrite`. Adding that path is permission config, so it

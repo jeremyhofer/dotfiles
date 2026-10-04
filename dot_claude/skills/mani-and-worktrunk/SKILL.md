@@ -49,9 +49,11 @@ unmerged". A merged branch is not gone until it is also deleted on every remote 
 worktree** with "contains modified or untracked files". The sandbox puts placeholders at the paths it
 write-protects (shell rc files, `.gitconfig`, `.mcp.json`, `.claude/settings.json`, `.claude/hooks`
 and similar), and git lists them as untracked. Seen both ways in 2026-10: as `/dev/null` mounts that
-exist only inside the sandbox, and as real empty files left on disk. Do not reach for `--force`,
-which would also discard anything real. Hand the removal to the human: from a normal shell,
-`git status --short` shows what is actually there, and the plain remove succeeds when it is clean.
+exist only inside the sandbox, and as real empty files left on disk by a session killed mid-command.
+Do not reach for `--force`, which would also discard anything real. Hand the removal to the human:
+from a normal shell, `claude-mask-sweep --remove` deletes the leftover placeholders (and keeps any a
+running session is using), `git status --short` then shows what is actually there, and the plain
+remove succeeds when it is clean.
 
 ## `mani` — the manifest is the whole model
 

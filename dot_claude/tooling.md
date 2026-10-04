@@ -17,6 +17,8 @@ view on demand) ·
 `claude-scratch-hook` (Claude Code lifecycle hooks — SubagentStart/SubagentStop/Stop/SessionEnd —
 that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
 only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
+`claude-mask-sweep` (stale Claude Code sandbox placeholder files, the ones `claude update` warns
+about; `--remove` deletes those no running session has mounted; a terminal tool, refuses in a sandbox) ·
 `claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·
 `memory-doctor` (health of Claude Code's auto-memory stores: index size against the silent-truncation cliff, stale project memories, orphans and dangling links; `usage` needs a read-log hook) ·
 `context-footprint` (bytes of always-on context per component — CLAUDE.md files and their imports, memory index, skill and agent descriptions, plugins — against a token budget; reports, `--check` to gate) ·
