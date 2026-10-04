@@ -76,7 +76,7 @@ Written before the first effect run (2026-10-04), so a result cannot move it.
 - **Effect, per claim:** first, 5 trials with the skill removed. If all 5 pass, the claim cannot
   show an effect and its text is a candidate to cut from the body. Otherwise, 10 trials with the
   skill as deployed against 10 without, started together. The claim holds when the deployed arm passes
-  more often, with Fisher's exact test one-sided p < 0.05. Split the deployed arm by whether the
+  more often, with Fisher's exact test one-sided p < 0.05. If the arm without the skill passes 7 or more of 10, both arms are rerun together at 30 each, because 10 per arm cannot reach the line there (added 2026-10-04, after the first runs found it). Split the deployed arm by whether the
   session invoked the skill: a body can work while the listing keeps sessions from reaching it.
 - **Field:** invocations against sessions that hit a timeout, a refused connection, an unreachable
   host or a "slow" report, counted from session transcripts at each periodic review. The first count,

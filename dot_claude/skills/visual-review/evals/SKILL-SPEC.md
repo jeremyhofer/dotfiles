@@ -79,7 +79,7 @@ Written before the first effect run (2026-10-04), so a result cannot move it.
   gets this right without the skill; the claim cannot show an effect and is a candidate to cut from
   the body. Otherwise, 10 trials with the skill as deployed against 10 without, started together. The
   claim holds when the deployed arm passes more often, with Fisher's exact test one-sided p < 0.05
-  (for example 8 of 10 against 3 of 10). Report counts with exact intervals.
+  (for example 8 of 10 against 3 of 10). Report counts with exact intervals. If the arm without the skill passes 7 or more of 10, both arms are rerun together at 30 each, because 10 per arm cannot reach the line there (added 2026-10-04, after the first runs found it).
 - **Field:** invocations against sessions that render pages (Playwright, `ui-shot`, ImageMagick),
   counted from session transcripts at each periodic review. The first count, over September 2026,
   was 15 invocations against about 170 such calls. A fall below that is a finding.
