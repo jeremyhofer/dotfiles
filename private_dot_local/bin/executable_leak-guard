@@ -128,6 +128,23 @@ diff_added_numbered() {
   '
 }
 
+# The refusal for an active gate whose pattern file yields no pattern. Two causes, told apart,
+# because the fix differs: the file is absent (a partial apply), or it EXISTS but holds only
+# comments and blank lines. The second is the trap: it reads as "configured nothing" yet activates
+# the guard, so it refuses every commit. It still refuses, and does not mean "no markers": were an
+# empty file to disable the gate, a truncated file would switch the guard off unnoticed.
+# $1=label $2=file name under ~/.dotlocal $3=gate name
+refuse_no_pattern() {
+  if [ -e "$DOT/$2" ]; then
+    printf 'leak-guard: %s: FAIL-CLOSED — %s exists but holds no patterns (only comments or blank lines); the %s gate cannot run\n' "$1" "$DOT/$2" "$3" >&2
+    printf '  Fix: delete the file if this machine has no %s to guard, or add a pattern (first non-comment line, one extended regex).\n' "$3" >&2
+    printf '  An empty file is refused rather than read as "no patterns" so that a truncated file cannot silently switch the guard off.\n' >&2
+  else
+    printf 'leak-guard: %s: FAIL-CLOSED — %s is missing; the %s gate cannot run\n' "$1" "$DOT/$2" "$3" >&2
+    printf '  Fix: supply the file from the private layer (apply it), or remove the other git-leak-* files if this machine configures no guard.\n' >&2
+  fi
+}
+
 # Read "N:content" lines; for each line carrying a blocked token, emit
 #   leak-guard: <label>:<N>:  marker: <tok…>  sensitive: <tok…>
 # naming the exact matched TOKEN(s) (grep -o, deduped per line) — never the pattern itself,
@@ -139,11 +156,11 @@ diff_added_numbered() {
 scan_lines() {
   label="$1"; bm="$2"; bs="$3"; sentinel="$4"; apath="${5:-}"
   if [ "$bm" = 1 ] && [ -z "$MARK_RE" ]; then
-    printf 'leak-guard: %s: FAIL-CLOSED — git-leak-markers pattern file missing/empty; markers gate cannot run\n' "$label" >&2
+    refuse_no_pattern "$label" git-leak-markers markers
     printf 'x\n' >> "$sentinel"
   fi
   if [ "$bs" = 1 ] && [ -z "$SENS_RE" ]; then
-    printf 'leak-guard: %s: FAIL-CLOSED — git-leak-sensitive pattern file missing/empty; sensitive gate cannot run\n' "$label" >&2
+    refuse_no_pattern "$label" git-leak-sensitive sensitive
     printf 'x\n' >> "$sentinel"
   fi
   # Matching is BATCHED: one grep pass per ACTIVE gate over the WHOLE numbered stream,

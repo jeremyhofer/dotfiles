@@ -34,6 +34,19 @@ Entries are newest first.
 
 ## 2026-10-05
 
+### leak-guard names a present-but-patternless pattern file — ACTION if `~/.dotlocal/git-leak-*` holds only comments
+
+A `git-leak-markers` or `git-leak-sensitive` file counts as configured by existing, so one holding
+only comments and blank lines (a scaffold left behind) has always made the guard refuse every commit
+in every strict repository on the machine, the dotfiles repositories included. The guard still
+refuses, deliberately: reading an empty file as "no patterns" would let a truncated file switch it
+off unnoticed. What changed is the message, which now names the file, says it holds no patterns, and
+gives the fixes. `sh setup/overlay-doctor` also flags such a file in the overlay source.
+
+- **ACTION, if the overlay ships a comment-only `git-leak-markers` or `git-leak-sensitive`:** either
+  delete it (this machine has nothing to keep out; with no pattern file at all the guard passes
+  everything) or add a pattern on its first non-comment line. Commit that in the overlay, apply it.
+
 ### Skill `working-across-repos` (formerly `mani-and-worktrunk`) is retired
 
 Tested before retiring: sessions rarely reached for it, and with it loaded they did nothing

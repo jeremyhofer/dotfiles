@@ -402,6 +402,24 @@ if HOME="$guardedhome" sh -c "cd '$r' && sh '$guard' pre-commit" 2>&1; then echo
 emptyhome="$tmp/empty-home"; mkdir -p "$emptyhome/.dotlocal"; : > "$emptyhome/.dotlocal/git-leak-markers"
 if HOME="$emptyhome" sh -c "cd '$r' && sh '$guard' pre-commit" 2>/dev/null; then echo "FAIL: an EMPTY markers file was treated as no guard (must fail closed)"; exit 1; fi
 
+# N4) A PRESENT-BUT-PATTERNLESS file (only comments and blank lines, such as a scaffold left behind)
+# is a trap if the refusal is vague: it activates the guard, fails closed on every commit, and the
+# old message ("missing/empty") did not say which file or what to do. The refusal stays (N3), but
+# must name the file, say it holds no patterns, and give both fixes.
+commhome="$tmp/comment-home"; mkdir -p "$commhome/.dotlocal"
+printf '# only a comment\n\n   \n# and another\n' > "$commhome/.dotlocal/git-leak-markers"
+cp "$tmp/.dotlocal/git-leak-policy" "$commhome/.dotlocal/git-leak-policy"
+r=$(newrepo commentonly); stage "$r" "innocent text"
+cout="$tmp/comment-out.txt"
+if HOME="$commhome" sh -c "cd '$r' && sh '$guard' pre-commit" 2> "$cout"; then
+  echo "FAIL: a comment-only markers file did not refuse (must fail closed)"; exit 1; fi
+for want in "$commhome/.dotlocal/git-leak-markers" "no patterns" "delete the file" "add a pattern"; do
+  grep -qF -- "$want" "$cout" || { echo "FAIL: comment-only refusal does not say '$want':"; cat "$cout"; exit 1; }
+done
+# and the ABSENT form says missing, not "no patterns", so the two causes stay distinguishable
+HOME="$nomarkhome" sh -c "cd '$r' && sh '$guard' pre-commit" 2> "$cout" || true
+grep -qF "is missing" "$cout" || { echo "FAIL: absent markers file refusal does not say it is missing:"; cat "$cout"; exit 1; }
+
 # CONFIGURED-HOOK FIXTURE. The guard runs as git configured hooks from the base gitconfig. The
 # fixture's global config is rebuilt from the SHIPPED entries (extracted, not hand-copied, so a
 # changed entry is what gets tested) and $HOME carries the SOURCE guard and runner under
