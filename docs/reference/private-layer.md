@@ -166,8 +166,8 @@ target: `chezmoi apply ~/.claude/settings.json`.
 
 Some base skills end by pointing at a fragment with this domain's specifics (its hosts, layout,
 incidents). Currently: `brew-and-brewfiles`, `claude-config-layers`, `cross-platform-tooling`,
-`dotfiles-layout-and-bootstrap`, `dotfiles-update`, `fault-isolation`, `mani-and-worktrunk`,
-`naming-build-tasks`, `overlay-doctor`, `register-standard`, `vetting-tooling`,
+`dotfiles-layout-and-bootstrap`, `dotfiles-update`, `fault-isolation`, `naming-build-tasks`,
+`overlay-doctor`, `register-standard`, `vetting-tooling`, `working-across-repos`,
 `working-in-worktrees`. A missing fragment means the generic skill stands alone. Write it as plain
 markdown that completes the skill; do not restate it. Leave a skill out on one machine with
 `skipSkills`.

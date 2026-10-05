@@ -9,8 +9,13 @@ A git *worktree* is a second working directory attached to the same repository, 
 checked out. Several branches can then be open at once without stashing, and two writers (an agent
 and a person, or two agents) do not edit the same files under each other. This skill is the
 procedure for the whole life of one: whether to make it, making it, working in it, landing it and
-removing it. `worktrunk` (`wt`) manages the lifecycle; skill `mani-and-worktrunk` covers the tool's
-mechanics, such as why `wt switch` must be a shell function.
+removing it. `worktrunk` (`wt`) manages the lifecycle.
+
+**`wt` is a shell function as well as a binary, and only the function can change directory.** A
+program cannot move its parent shell, so `wt switch` is a function the shell rc defines around the
+binary. A non-interactive shell (a script, a CI step, `ssh host '…'`) does not read the rc, so there
+`wt` is `command not found`, or the binary runs and leaves you where you were. In those contexts call
+`command wt … --no-cd` and `cd` to the path yourself; `command wt list` prints each worktree's path.
 
 **Read this domain's half too:** `~/.dotlocal/skills/working-in-worktrees.md`, if it exists, lists
 each repository's layout, landing branch, install steps and ports.
@@ -224,7 +229,10 @@ machine where Claude Code's hooks are not available, has none of them.
   protects (settings files, shell profiles and similar), and git lists them as untracked, so
   `git worktree remove` and `wt remove` refuse a clean worktree. Do not force it and do not add an
   ignore rule for them: removal is the person's step, or the step of a settings exception that lets
-  exactly that command run outside the sandbox.
+  exactly that command run outside the sandbox. A session killed mid-command leaves them on disk as
+  real empty files, outside any sandbox; from a normal shell, `claude-mask-sweep --remove` deletes
+  those (keeping any a running session still uses), then `git status --short` shows what is really
+  there and the plain remove succeeds.
 - **The isolation guard refuses compound commands** in a worktree: a git command inside `&&`, a
   path in a variable, a loop, a heredoc that touches git. Run single commands, and name paths with
   `git -C <path>` rather than relying on the current directory, which can drift after leaving.
@@ -245,4 +253,5 @@ machine where Claude Code's hooks are not available, has none of them.
 | Tests pass here and fail there, or pass suspiciously fast | a borrowed install, missing build output, or an ignored input | install and build in this worktree |
 | `address already in use` | another worktree's server | use this worktree's ports; stop the server by its pid |
 | A cherry-picked branch reads as unmerged | ancestry cannot see a cherry-pick | `git cherry -v <target> <branch>` |
+| `wt: command not found` in a script or over SSH, or `wt switch` leaves you in the old directory | the shell function is absent; only the binary ran | `command wt … --no-cd`, then `cd` yourself |
 | `git commit` exits non-zero but the commit is there | a stale lock after the commit was written | check `git log` before retrying |

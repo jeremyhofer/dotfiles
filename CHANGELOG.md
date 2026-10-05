@@ -32,6 +32,18 @@ Entries are newest first.
 
 ---
 
+## 2026-10-04
+
+### Skill `mani-and-worktrunk` is now `working-across-repos` — ACTION on a machine with a private layer
+
+The skill now covers `mani` and the repo manifest only. Its `wt` material moved into
+`working-in-worktrees`, which already carried most of it. Applying removes the old deployed directory
+(`.chezmoiremove`).
+
+- **ACTION, if a private layer ships `~/.dotlocal/skills/mani-and-worktrunk.md`:** rename it to
+  `working-across-repos.md`, or the skill stops reading it.
+- **ACTION, if `skipSkills` lists `mani-and-worktrunk`:** list `working-across-repos` instead.
+
 ## 2026-10-02
 
 **A private layer can now install skills from its own repositories.** List them in

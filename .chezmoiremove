@@ -8,3 +8,7 @@
 # after the retiring apply: `chezmoi managed` no longer listed it and ~/.local/bin/git-nb was still
 # there. Retiring a tool therefore takes TWO edits, and this file is the second one.
 .local/bin/git-nb
+
+# mani-and-worktrunk renamed 2026-10-04 to working-across-repos (its `wt` half moved into
+# working-in-worktrees); the old deployed directory would otherwise stay listed as a second skill.
+.claude/skills/mani-and-worktrunk
