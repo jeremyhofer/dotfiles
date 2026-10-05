@@ -62,7 +62,20 @@ assess() {
       note "configured hooks fire  INCONCLUSIVE (could not create a repository)"
     fi
     rm -rf "$_hr"
-    _gh=$(git config --global --get-regexp '^hook\..*\.event$' 2>/dev/null | sed 's/^hook\.//;s/\.event .*//' | tr '\n' ' ')
+    # A hook wired in the config can still be switched off, and a bare name reads as "the disable
+    # did not take". Say which setting turned it off: git's own hook.<name>.enabled, or the hook's
+    # own opt-out (ai-coauthor reads ai-coauthor.enabled). --includes because the private layer's
+    # gitconfig is included, and --global alone does not follow includes.
+    _gh=""
+    for _hn in $(git config --global --includes --get-regexp '^hook\..*\.event$' 2>/dev/null | sed 's/^hook\.//;s/\.event .*//'); do
+      _off=""
+      [ "$(git config --global --includes --type=bool --get "hook.$_hn.enabled" 2>/dev/null)" = false ] && _off="hook.$_hn.enabled=false"
+      if [ -z "$_off" ] && [ "$_hn" = ai-coauthor ] \
+         && [ "$(git config --global --includes --type=bool --get ai-coauthor.enabled 2>/dev/null)" = false ]; then
+        _off="ai-coauthor.enabled=false"
+      fi
+      if [ -n "$_off" ]; then _gh="$_gh$_hn (disabled by $_off) "; else _gh="$_gh$_hn "; fi
+    done
     note "global configured hooks ${_gh:-none}"
   else
     note "git                   missing"

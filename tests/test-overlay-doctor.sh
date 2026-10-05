@@ -347,4 +347,27 @@ out=$(FLEET_RECORD="$tmp/mani-bad.yaml" OVERLAY_SRC="$tmp/ovd1" FLEET_DEVEL_ROOT
 printf '%s\n' "$out" | grep -q 'WARN .*fleet record is unreadable' || { echo "FAIL(D4): an unreadable record is not reported as such"; echo "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q 'CONSIDER .*not declared' && { echo "FAIL(D4): an unreadable record was reported as undeclared"; echo "$out"; exit 1; }
 echo "ok:   Tier H: an unreadable record is reported, not guessed at"
+# ---- a configured hook that is switched off reads as configured but disabled, naming the switch ----
+# `ai-coauthor` is wired in the base gitconfig and opted out with ai-coauthor.enabled=false. Listing
+# it bare read as "the disable did not take".
+cat > "$tmp/gc-hooks" <<'EOF2'
+[hook "ai-coauthor"]
+	command = true
+	event = prepare-commit-msg
+[hook "other-hook"]
+	command = true
+	event = pre-commit
+EOF2
+out=$(GIT_CONFIG_GLOBAL="$tmp/gc-hooks" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+printf '%s\n' "$out" | grep -q 'global configured hooks.*ai-coauthor' || { echo "FAIL(K1): fixture hooks not listed"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'disabled' && { echo "FAIL(K1): an enabled hook is shown as disabled"; echo "$out"; exit 1; }
+printf '[ai-coauthor]\n\tenabled = false\n' >> "$tmp/gc-hooks"
+out=$(GIT_CONFIG_GLOBAL="$tmp/gc-hooks" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'ai-coauthor (disabled by ai-coauthor.enabled=false)' || { echo "FAIL(K2): a disabled ai-coauthor is not shown as disabled"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'other-hook' || { echo "FAIL(K2): the other hook vanished from the list"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep 'global configured hooks' | grep 'other-hook (' && { echo "FAIL(K2): an unrelated hook was annotated"; echo "$out"; exit 1; }
+printf '[hook "other-hook"]\n\tenabled = false\n' >> "$tmp/gc-hooks"
+out=$(GIT_CONFIG_GLOBAL="$tmp/gc-hooks" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'other-hook (disabled by hook.other-hook.enabled=false)' || { echo "FAIL(K3): git's own hook.<name>.enabled=false is not shown"; echo "$out"; exit 1; }
+echo "ok:   a configured hook that is switched off is listed as disabled, naming the setting"
 echo "PASS"
