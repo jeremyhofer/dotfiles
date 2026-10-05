@@ -296,6 +296,29 @@ else
   fi
 fi
 
+# The overlay is itself a repository the leak-guard classifies, from the same fleet record as every
+# other. An overlay the record does not declare gets the strict default: program markers and
+# sensitive terms are refused in it, so legitimate internal content passes only while the patterns
+# stay narrow. Declaring it makes that a decision instead of luck. Reported when the guard is
+# configured; never gating, since the machine chooses (`internal` or `private`, or leaving it strict).
+if [ -n "$_lk" ] && [ -f "$_fd" ]; then
+  _drc=0; _dv=$(FLEET_RECORD="$_rec" sh "$_fd" "$OSRC" leakPolicy 2>/dev/null) || _drc=$?
+  _prc=0; _dp=$(FLEET_RECORD="$_rec" sh "$_fd" --project "$OSRC" 2>/dev/null) || _prc=$?
+  if [ "$_drc" -ge 2 ] || [ "$_prc" -ge 2 ]; then
+    note "WARN        Tier H: the fleet record is unreadable (fleet-decl exit 2), so whether the overlay repository is declared in it is unknown; run: fleet-decl --check"
+  elif [ "$_drc" -eq 0 ] && [ -n "$_dv" ]; then
+    note "OK          Tier H: the overlay repository is declared in the fleet record (leakPolicy: $_dv)"
+  else
+    if [ "$_prc" -eq 0 ] && [ -n "$_dp" ]; then
+      _why="the overlay repository's record entry ($_dp) declares no leakPolicy"
+    else
+      _why="the overlay repository is not declared in the fleet record"
+    fi
+    note "CONSIDER    Tier H: $_why, so leak-guard treats it as strict: markers and sensitive terms are refused in it, and internal content passes only while the patterns stay narrow"
+    note "            if this repository is internal or private, add an entry whose scope covers it with leakPolicy: internal (or private) to the manifest; strict stays correct if you want it guarded (see docs/reference/fleet-manifest.md)"
+  fi
+fi
+
 # ============================================================================================
 # Cross-layer safety — base <-> overlay are two chezmoi instances both targeting ~. Their managed
 # sets must stay disjoint (no co-owned target FILE) and neither may put a DELETING attribute (exact_/remove_) on a co-owned or

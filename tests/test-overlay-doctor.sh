@@ -323,4 +323,28 @@ out=$(OVERLAY_SRC="$tmp/ovh5" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'WARN .*Tier H.*git-leak-sensitive.*no patterns' || { echo "FAIL(H5): an empty sensitive file is not flagged"; echo "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q 'WARN .*Tier H.*git-leak-markers.*no patterns' && { echo "FAIL(H5): a populated markers file was flagged"; echo "$out"; exit 1; }
 echo "ok:   Tier H: only the patternless file is flagged"
+# ---- Tier H: the overlay's own repository should be declared in the fleet record ----
+# Undeclared means strict-by-default: legitimate internal content is let through only while the
+# patterns stay narrow. The doctor says so at CONSIDER level and leaves the choice to the machine.
+mk "$tmp/ovd1"; printf '\\bZZP-[0-9]+\n' > "$tmp/ovd1/dot_dotlocal/git-leak-markers"
+printf 'private-url=^/srv/private/\nprobe-marker=ZZP-999\n' > "$tmp/ovd1/dot_dotlocal/git-leak-policy"
+out=$(OVERLAY_SRC="$tmp/ovd1" FLEET_DEVEL_ROOT="$tmp" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'CONSIDER .*overlay repository is not declared in the fleet record' || { echo "FAIL(D1): an undeclared overlay is not flagged"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'leakPolicy: internal' || { echo "FAIL(D1): the note does not say how to declare it"; echo "$out"; exit 1; }
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(D1): the note must not gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "ok:   Tier H: an undeclared overlay repository is a CONSIDER note, not a failure"
+printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n  ovl:\n    scope: ovd1\n    leakPolicy: internal\n' > "$tmp/mani-decl.yaml"
+out=$(FLEET_RECORD="$tmp/mani-decl.yaml" OVERLAY_SRC="$tmp/ovd1" FLEET_DEVEL_ROOT="$tmp" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'CONSIDER .*overlay repository' && { echo "FAIL(D2): a declared overlay is still flagged"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'OK .*overlay repository is declared in the fleet record' || { echo "FAIL(D2): a declared overlay is not confirmed"; echo "$out"; exit 1; }
+echo "ok:   Tier H: a declared overlay repository is not flagged"
+printf 'projects:\n  ovl:\n    scope: ovd1\n' > "$tmp/mani-nopolicy.yaml"
+out=$(FLEET_RECORD="$tmp/mani-nopolicy.yaml" OVERLAY_SRC="$tmp/ovd1" FLEET_DEVEL_ROOT="$tmp" sh "$script" 2>&1) || true
+printf '%s\n' "$out" | grep -q 'CONSIDER .*declares no leakPolicy' || { echo "FAIL(D3): an entry without leakPolicy is not flagged"; echo "$out"; exit 1; }
+echo "ok:   Tier H: an overlay entry with no leakPolicy is flagged"
+printf 'not: a record\n' > "$tmp/mani-bad.yaml"
+out=$(FLEET_RECORD="$tmp/mani-bad.yaml" OVERLAY_SRC="$tmp/ovd1" FLEET_DEVEL_ROOT="$tmp" sh "$script" 2>&1) || true
+printf '%s\n' "$out" | grep -q 'WARN .*fleet record is unreadable' || { echo "FAIL(D4): an unreadable record is not reported as such"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'CONSIDER .*not declared' && { echo "FAIL(D4): an unreadable record was reported as undeclared"; echo "$out"; exit 1; }
+echo "ok:   Tier H: an unreadable record is reported, not guessed at"
 echo "PASS"
