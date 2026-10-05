@@ -37,7 +37,12 @@ mode=${FAKE_MODE:-normal}
 if [ "${1:-}" = --version ]; then echo "9.9.9 (Claude Code)"; exit 0; fi
 settings=""
 while [ $# -gt 0 ]; do
-  case "$1" in --settings) settings=$2; shift 2 ;; *) shift ;; esac
+  case "$1" in
+    --settings) settings=$2; shift 2 ;;
+    # Under disableSideloadFlags the real client rejects this flag at startup, ending the session.
+    --mcp-config) [ -n "${FAKE_REJECT_MCP:-}" ] && { echo "--mcp-config is rejected by managed policy" >&2; exit 2; }; shift ;;
+    *) shift ;;
+  esac
 done
 ask=$(cat)
 [ "$mode" = fail ] && exit 3
@@ -158,6 +163,54 @@ printf '\n== hooks that never run ==\n'
 out=$(run nohooks); rc=$?
 has "$out" 'SessionStart hook *ran=no, delivered=no' \
   && ok "ran=no when the hook's marker was never written" || bad "a hook that never ran read as ran" "$out"
+
+# ---- managed policy: rows the policy makes unmeasurable read POLICY, not INCONCLUSIVE ----------------
+# The fixture stands in for /etc/claude-code/managed-settings.json; the probe reads the path from
+# CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS so no test depends on a real managed machine.
+prun() { # <fixture json> <fake mode> [extra env as VAR=value...]
+  local json=$1 mode=$2; shift 2
+  printf '%s\n' "$json" > "$TMP/managed.json"
+  env CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS="$TMP/managed.json" FAKE_MODE=$mode "$@" bash "$PROBE" 2>/dev/null
+}
+
+printf '\n== no policy keys: no banner, rows as before ==\n'
+out=$(prun '{"env":{"X":"1"},"allowManagedHooksOnly":false}' normal)
+! has "$out" 'POLICY' && has "$out" 'SessionStart hook *ran=yes, delivered=yes' \
+  && ok "a false or absent policy key adds no banner and no POLICY row" || bad "policy output without a policy key" "$out"
+
+printf '\n== allowManagedHooksOnly ==\n'
+out=$(prun '{ "allowManagedHooksOnly" : true }' nohooks)
+has "$out" 'allowManagedHooksOnly *hooks passed with --settings do not run' \
+  && ok "the banner names the key and what it makes unmeasurable" || bad "banner missing or wrong" "$out"
+has "$out" '4 rows suppressed as POLICY' && ok "the banner counts the suppressed rows" || bad "row count missing" "$out"
+has "$out" 'SessionStart hook *POLICY (allowManagedHooksOnly)' && has "$out" 'hook context (UserPromptSubmit): end *POLICY' \
+  && ok "the four hook rows read POLICY, not ran=no" || bad "hook rows not POLICY" "$out"
+! has "$out" 'ran=no' && ok "no hook row reads as a failure" || bad "a hook row still reads ran=no" "$out"
+bl=$(grep -n 'POLICY: managed settings' <<< "$out" | head -1 | cut -d: -f1); fl=$(grep -n 'Instruction files' <<< "$out" | head -1 | cut -d: -f1)
+[ -n "$bl" ] && [ -n "$fl" ] && [ "$bl" -lt "$fl" ] && ok "the banner comes before the first row" || bad "banner not at the top" "banner line ${bl:-none}, rows line ${fl:-none}"
+has "$out" 'positive control) *loaded' && has "$out" 'bare-container=OK' \
+  && ok "rows the policy does not touch are still measured" || bad "unaffected rows lost" "$out"
+
+printf '\n== disableAllHooks ==\n'
+out=$(prun '{"disableAllHooks":true}' nohooks)
+has "$out" 'disableAllHooks *hooks passed with --settings' && has "$out" 'UserPromptSubmit hook *POLICY (disableAllHooks)' \
+  && ok "disableAllHooks marks the hook rows POLICY too" || bad "disableAllHooks not handled" "$out"
+
+printf '\n== disableSideloadFlags ==\n'
+# CONTROL: the fake rejects --mcp-config like the real client does; with no policy file the probe
+# passes the flag, session A dies, and the run is a wall of INCONCLUSIVE. This shows the fake can fail.
+out=$(prun '{}' normal FAKE_REJECT_MCP=1)
+has "$out" 'bare-container=INCONCLUSIVE' && ok "control: a rejected --mcp-config makes the session INCONCLUSIVE" || bad "control did not fail" "$out"
+out=$(prun '{"disableSideloadFlags": true}' normal FAKE_REJECT_MCP=1)
+has "$out" 'disableSideloadFlags *--mcp-config is rejected at startup' && ok "the banner names disableSideloadFlags" || bad "sideload banner missing" "$out"
+has "$out" 'stdio MCP server tool listed (--mcp-config) *POLICY (disableSideloadFlags)' && ok "the MCP row reads POLICY" || bad "MCP row not POLICY" "$out"
+has "$out" 'bare-container=OK' && has "$out" '1 rows suppressed as POLICY' \
+  && ok "the flag is left off, so the other rows are still measured, and the count is 1" || bad "session A still died or count wrong" "$out"
+
+printf '\n== both, and the exit status ==\n'
+out=$(prun '{"allowManagedHooksOnly":true,"disableSideloadFlags":true}' nohooks FAKE_REJECT_MCP=1); rc=$?
+has "$out" '5 rows suppressed as POLICY' && [ "$rc" -eq 0 ] \
+  && ok "two keys: five rows, and POLICY rows do not fail the run" || bad "combined policy wrong" "rc=$rc: $out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

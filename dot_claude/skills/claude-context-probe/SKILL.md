@@ -36,6 +36,13 @@ the machine. `--keep` output is for debugging on that machine and should not lea
 
 ## Read it
 
+**A `POLICY:` banner above the first line** means managed settings switched off a channel the
+probe measures, so the rows it names read `POLICY (<key>)` instead of a failure, and the banner
+counts them. `allowManagedHooksOnly` and `disableAllHooks` make the four hook rows `POLICY` (hooks
+passed with `--settings` do not run). `disableSideloadFlags` makes the MCP row `POLICY`: the client
+rejects `--mcp-config` at startup, so the probe leaves the flag off and the other rows still run.
+`POLICY` is a measured answer about the machine, not something to re-run.
+
 **First line: the five sessions.** Each must say `OK` before any of its rows mean anything.
 
 - `INCONCLUSIVE`: the session failed, or the model did not report the repository-root CLAUDE.md

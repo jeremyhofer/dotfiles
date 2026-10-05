@@ -294,6 +294,47 @@ fleet_main() {
 }
 if [ "$FLEET" -eq 1 ]; then fleet_main; exit $?; fi
 
+# ---- managed policy that makes some rows unmeasurable, as opposed to failed -----------------------
+# A managed machine can switch off the very channels this probe measures. Without this, the rows
+# they feed read INCONCLUSIVE or "ran=no", which looks the same as a transient failure and sends the
+# reader to the skill to work out that it is policy. Three keys matter, from Claude Code 2.1.289:
+#   allowManagedHooksOnly  only managed hooks run, so the hooks passed with --settings never do
+#   disableAllHooks        no hook runs at all
+#   disableSideloadFlags   --plugin-dir, --plugin-url, --agents and non-sdk --mcp-config are REJECTED
+#                          at startup; the probe's MCP row passes --mcp-config
+# Only "true" counts, read from the managed settings file(s). CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS
+# replaces the default locations (a path list separated by colons), for tests.
+managed_files() {
+  if [ -n "${CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS:-}" ]; then
+    printf '%s\n' "$CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS" | tr ':' '\n'
+    return
+  fi
+  local f
+  for f in /etc/claude-code/managed-settings.json /etc/claude-code/managed-settings.d/*.json \
+           "/Library/Application Support/ClaudeCode/managed-settings.json" \
+           "/Library/Application Support/ClaudeCode/managed-settings.d/"*.json; do
+    [ -r "$f" ] && printf '%s\n' "$f"
+  done
+}
+policy_true() { # <key>: set to true in any managed settings file (whitespace-insensitive)
+  local f
+  while IFS= read -r f; do
+    [ -r "$f" ] || continue
+    tr -d ' \t\r\n' < "$f" | grep -q "\"$1\":true" && return 0
+  done <<EOF_MF
+$(managed_files)
+EOF_MF
+  return 1
+}
+POLICY_HOOKS=""; POLICY_SIDELOAD=0
+for k in allowManagedHooksOnly disableAllHooks; do
+  policy_true "$k" && POLICY_HOOKS="$POLICY_HOOKS${POLICY_HOOKS:+, }$k"
+done
+policy_true disableSideloadFlags && POLICY_SIDELOAD=1
+POLICY_ROWS=0
+[ -n "$POLICY_HOOKS" ] && POLICY_ROWS=$((POLICY_ROWS + 4))
+[ "$POLICY_SIDELOAD" -eq 1 ] && POLICY_ROWS=$((POLICY_ROWS + 1))
+
 # ---- layout A: a bare-container repository with a worktree (the .git inside is a FILE) --------
 A="$ROOT/container"
 mkdir -p "$A"
@@ -395,6 +436,9 @@ EOF
   printf '{"mcpServers": {"probe": {"command": "python3", "args": ["%s"]}}}\n' "$ROOT/mcp.py" > "$ROOT/mcp.json"
   mcp_args="--mcp-config $ROOT/mcp.json"
 fi
+# Under disableSideloadFlags the flag is rejected at startup and would end the whole session, taking
+# every row it feeds down with it. Leave it off so those rows are still measured; the MCP row is POLICY.
+if [ "$POLICY_SIDELOAD" -eq 1 ]; then mcp_args=""; fi
 
 # ---- layout B: a plain clone (the .git is a DIRECTORY) with an instruction file above it, and a
 # CLAUDE.md one level higher that is a SYMLINK to a file elsewhere. A symlink surfaces a generated
@@ -462,6 +506,7 @@ verdict() { # <outfile> <label> <session state>
 }
 hookline() { # <marker> <outfile> <label> <session state>
   local ran=no
+  if [ -n "$POLICY_HOOKS" ]; then printf 'POLICY (%s)' "$POLICY_HOOKS"; return; fi
   [ -e "$1" ] && ran=yes
   if [ "$4" != OK ]; then printf 'ran=%s, delivered=%s' "$ran" "$4"; return; fi
   if seen "$2" "$3"; then printf 'ran=%s, delivered=yes' "$ran"; else printf 'ran=%s, delivered=no' "$ran"; fi
@@ -501,6 +546,12 @@ version=$("$CLAUDE_BIN" --version 2>/dev/null | head -n 1)
 row() { printf '  %-58s %s\n' "$1" "$2"; }
 
 printf '\nclaude-context-probe 1 -- %s -- %s\n' "${version:-unknown version}" "$(uname -s)"
+if [ "$POLICY_ROWS" -gt 0 ]; then
+  printf '\nPOLICY: managed settings on this machine make some rows unmeasurable. That is policy, not a failure.\n'
+  [ -n "$POLICY_HOOKS" ] && printf '  %-22s hooks passed with --settings do not run here: the 4 hook rows read POLICY\n' "$POLICY_HOOKS"
+  [ "$POLICY_SIDELOAD" -eq 1 ] && printf '  %-22s --mcp-config is rejected at startup: the MCP row reads POLICY (the probe leaves the flag off so the other rows still run)\n' disableSideloadFlags
+  printf '  %d rows suppressed as POLICY; every other row is measured as usual.\n\n' "$POLICY_ROWS"
+fi
 printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s  on-demand=%s\n' "$sa" "$sb" "$sc" "$sd" "$se"
 printf '\nInstruction files\n'
 row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-a" REPOROOT "$sa")"
@@ -538,8 +589,9 @@ elif grep -q 'disabled by policy' "$ROOT/out-d" "$ROOT/out-d.err" 2>/dev/null; t
 elif grep -q 'permission check failed' "$ROOT/out-d" "$ROOT/out-d.err" 2>/dev/null; then dynline='NOT delivered (permission check failed)'
 else dynline='NOT delivered'; fi
 row 'skill dynamic context (!`command` in SKILL.md)'               "$dynline"
-if [ -n "$mcp_args" ]; then
-  row 'stdio MCP server tool listed (--mcp-config)'             "$(verdict "$ROOT/out-a" MCP "$sa")"
+if [ -n "$mcp_args" ] || [ "$POLICY_SIDELOAD" -eq 1 ]; then
+  if [ "$POLICY_SIDELOAD" -eq 1 ]; then row 'stdio MCP server tool listed (--mcp-config)' 'POLICY (disableSideloadFlags)'
+  else row 'stdio MCP server tool listed (--mcp-config)'             "$(verdict "$ROOT/out-a" MCP "$sa")"; fi
 else
   row 'stdio MCP server tool listed (--mcp-config)'             'not tested (no python3)'
 fi
