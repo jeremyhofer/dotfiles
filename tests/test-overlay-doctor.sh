@@ -277,6 +277,17 @@ out=$(OVERLAY_SRC="$tmp/ovg2" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL(G1): a missing default ignore must gate (exit ${rc:-0})"; echo "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q '\.envrc' || { echo "FAIL(G1): the missing line is not named"; echo "$out"; exit 1; }
 echo "ok:   a global gitignore missing a base default gates, naming the line"
+# The report must be actionable: it prints the exact lines to append, and appending exactly those
+# brings the overlay to the default set. (The drift went unnoticed when it only named each line.)
+mk "$tmp/ovg4"; grep -vxE '\.envrc|\.worktrees/' "$tmp/ovg4/dot_gitignore_global" > "$tmp/gi" && mv "$tmp/gi" "$tmp/ovg4/dot_gitignore_global"
+out=$(OVERLAY_SRC="$tmp/ovg4" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'fix: append these lines to dot_gitignore_global' || { echo "FAIL(G4): no fix is given for missing defaults"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | awk '/fix: append these lines/ {f=1; next} f && /^    [^ ]/ {sub(/^    /, ""); print; next} f {exit}' > "$tmp/append.txt"
+[ "$(wc -l < "$tmp/append.txt" | tr -d ' ')" -eq 2 ] || { echo "FAIL(G4): expected exactly the 2 missing lines to be printed"; cat "$tmp/append.txt"; exit 1; }
+cat "$tmp/append.txt" >> "$tmp/ovg4/dot_gitignore_global"
+out=$(OVERLAY_SRC="$tmp/ovg4" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(G4): appending the printed lines did not satisfy the check (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "ok:   the missing defaults are printed as lines to append, and appending them satisfies the check"
 mk "$tmp/ovg3"; rm "$tmp/ovg3/dot_gitignore_global"
 out=$(OVERLAY_SRC="$tmp/ovg3" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL(G2): no global gitignore must gate (exit ${rc:-0})"; echo "$out"; exit 1; }

@@ -34,6 +34,21 @@ Entries are newest first.
 
 ## 2026-10-05
 
+### The overlay's global gitignore must carry the base's defaults — ACTION, and it has since 2026-09-30
+
+`~/.gitignore_global` is overlay-owned (git reads one global ignore file), so the base's default
+ignores only reach a machine by being copied into the overlay's `dot_gitignore_global`. On 2026-09-30
+the defaults grew (per-user agent state such as `.claude/settings.local.json`, `.claude/worktrees/`,
+`CLAUDE.local.md`, `AGENTS.local.md`, `**/.claude/.cc-writes/`, and `.worktrees/`) and
+`overlay-doctor` began checking for them, with no entry here, so an overlay written earlier drifted
+without anything saying so.
+
+- **ACTION, on every machine with a private layer:** run `sh setup/overlay-doctor`. If it reports
+  `dot_gitignore_global lacks the base default`, it now prints the exact lines under `fix: append
+  these lines`. Append them to the overlay's `dot_gitignore_global`, commit, apply the overlay.
+  The authoritative list is every non-comment line above the marker in
+  `overlay-skeleton/dot_gitignore_global.example`; future additions to it get an entry here.
+
 ### leak-guard names a present-but-patternless pattern file — ACTION if `~/.dotlocal/git-leak-*` holds only comments
 
 A `git-leak-markers` or `git-leak-sensitive` file counts as configured by existing, so one holding

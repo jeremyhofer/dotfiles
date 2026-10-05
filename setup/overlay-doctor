@@ -188,6 +188,11 @@ else
         | while IFS= read -r _l; do grep -qxF -- "$_l" "$_gi" || printf '%s\n' "$_l"; done)
   if [ -n "$_gm" ]; then
     printf '%s\n' "$_gm" | while IFS= read -r _l; do printf '  MISSING     dot_gitignore_global lacks the base default: %s\n' "$_l"; done
+    # The lines themselves, ready to append: the base adds defaults over time, and a reader who is
+    # only told one name per line has to work out where the list lives and what to do with it.
+    printf '  (the base default list is overlay-skeleton/dot_gitignore_global.example)\n'
+    printf '  fix: append these lines to dot_gitignore_global in the overlay source, then apply the overlay:\n'
+    printf '%s\n' "$_gm" | while IFS= read -r _l; do printf '    %s\n' "$_l"; done
     fail=1
   else
     note "OK          gitignore: every base default is in dot_gitignore_global"
