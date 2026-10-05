@@ -274,6 +274,17 @@ if [ -z "$_lk" ]; then
   note "info        Tier H: leak-guard not configured (optional; this domain supplies no pattern files)"
 else
   note "OK          Tier H: leak-guard configured by this domain's pattern files"
+  # A pattern file that EXISTS but holds no pattern (only comments and blank lines, or zero bytes)
+  # counts as configured, so the deployed guard refuses every commit in every strict repository on
+  # the machine. It fails closed on purpose: reading it as "no patterns" would let a truncated file
+  # switch the guard off. Reported here, before it deploys. Advisory like the rest of Tier H.
+  for _pf in $(find "$OSRC/dot_dotlocal" -maxdepth 1 \( -name '*git-leak-markers*' -o -name '*git-leak-sensitive*' \) 2>/dev/null | sort); do
+    [ -f "$_pf" ] || continue
+    if ! grep -qvE '^[[:space:]]*(#|$)' "$_pf" 2>/dev/null; then
+      note "WARN        Tier H: $(basename "$_pf") exists but holds no patterns (only comments or blank lines); once deployed, leak-guard refuses every commit in every strict repository"
+      note "            fix: delete it if this domain has none of that vocabulary to keep out, or add a pattern on its first non-comment line"
+    fi
+  done
   _lp=$(find "$OSRC/dot_dotlocal" -maxdepth 1 -name '*git-leak-policy*' 2>/dev/null | head -1)
   if [ -z "$_lp" ] || ! grep -q '^probe-marker=' "$_lp" 2>/dev/null; then
     note "advisory    Tier H: no probe-marker= in git-leak-policy, so hook-doctor cannot prove the guard live"

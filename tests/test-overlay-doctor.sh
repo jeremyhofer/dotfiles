@@ -297,4 +297,19 @@ printf 'private-url=^/srv/private/\n' > "$tmp/ovh3/dot_dotlocal/git-leak-policy"
 out=$(OVERLAY_SRC="$tmp/ovh3" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'advisory .*Tier H.*probe-marker' || { echo "FAIL(H3): a configured guard without a probe marker is not flagged"; echo "$out"; exit 1; }
 echo "ok:   Tier H: a configured guard without probe-marker= is flagged"
+# ---- Tier H: a pattern file that exists but holds no pattern refuses every commit once deployed ----
+mk "$tmp/ovh4"; printf '# a scaffold comment\n\n   \n# another\n' > "$tmp/ovh4/dot_dotlocal/git-leak-markers"
+printf 'private-url=^/srv/private/\nprobe-marker=ZZP-999\n' > "$tmp/ovh4/dot_dotlocal/git-leak-policy"
+out=$(OVERLAY_SRC="$tmp/ovh4" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'WARN .*Tier H.*git-leak-markers.*no patterns' || { echo "FAIL(H4): a comment-only markers file is not flagged"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'delete it' || { echo "FAIL(H4): the flag does not give the fix"; echo "$out"; exit 1; }
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(H4): the flag is advisory and must not gate (exit ${rc:-0})"; echo "$out"; exit 1; }
+echo "ok:   Tier H: a comment-only pattern file is flagged with its fix"
+# a zero-byte sensitive file is the same trap; a populated markers file beside it is not flagged
+mk "$tmp/ovh5"; printf '\\bZZP-[0-9]+\n' > "$tmp/ovh5/dot_dotlocal/git-leak-markers"; : > "$tmp/ovh5/dot_dotlocal/git-leak-sensitive"
+printf 'private-url=^/srv/private/\nprobe-marker=ZZP-999\n' > "$tmp/ovh5/dot_dotlocal/git-leak-policy"
+out=$(OVERLAY_SRC="$tmp/ovh5" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'WARN .*Tier H.*git-leak-sensitive.*no patterns' || { echo "FAIL(H5): an empty sensitive file is not flagged"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'WARN .*Tier H.*git-leak-markers.*no patterns' && { echo "FAIL(H5): a populated markers file was flagged"; echo "$out"; exit 1; }
+echo "ok:   Tier H: only the patternless file is flagged"
 echo "PASS"
