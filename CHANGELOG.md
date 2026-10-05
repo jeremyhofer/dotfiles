@@ -32,6 +32,19 @@ Entries are newest first.
 
 ---
 
+## 2026-10-05
+
+### Skill `working-across-repos` (formerly `mani-and-worktrunk`) is retired
+
+Tested before retiring: sessions rarely reached for it, and with it loaded they did nothing
+differently on the tasks it covered. Its `wt` material stays in `working-in-worktrees`. Applying
+removes the deployed directory (`.chezmoiremove`).
+
+- **If a private layer ships `~/.dotlocal/skills/working-across-repos.md`** (or the older
+  `mani-and-worktrunk.md`), nothing reads it any more: move what it says to where it is met, such as
+  a comment in the manifest it describes, and delete it.
+- **If `skipSkills` lists either name,** the entry is now inert and can go.
+
 ## 2026-10-04
 
 ### Skill `mani-and-worktrunk` is now `working-across-repos` — ACTION on a machine with a private layer

@@ -12,3 +12,7 @@
 # mani-and-worktrunk renamed 2026-10-04 to working-across-repos (its `wt` half moved into
 # working-in-worktrees); the old deployed directory would otherwise stay listed as a second skill.
 .claude/skills/mani-and-worktrunk
+
+# working-across-repos retired 2026-10-05: as deployed it was not reached for, and when reached for
+# it changed nothing measurable; its working-in-worktrees half had already moved there.
+.claude/skills/working-across-repos
