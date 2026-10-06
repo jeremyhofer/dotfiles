@@ -62,8 +62,8 @@ yq -e '.projects' "$RECORD" >/dev/null 2>&1 \
 # accidentally match an unrelated repo the way an unanchored expression can.
 # Normalise a path so a prefix comparison means what it looks like.
 #
-# NEEDED BECAUSE A SCOPE MAY POINT OUTSIDE THE TREE. The record's paths are relative to the
-# manifest's own directory, and two managed repos legitimately sit outside it -- reached as
+# NEEDED BECAUSE A SCOPE MAY POINT OUTSIDE THE TREE. A relative scope is relative to the
+# manifest's own directory (an absolute one is used as written), and two managed repos legitimately sit outside it -- reached as
 # `../.local/share/...`. Joined naively that yields `<root>/../.local/share/...`, which is the
 # correct location and the WRONG STRING: it shares no prefix with the resolved path the caller
 # passes in, so the repo silently resolves to nothing and falls to the default. Comparing paths
@@ -82,7 +82,12 @@ project_for() {
   yq -r '.projects | to_entries[] | select(.value.scope != null) | .key + "\t" + .value.scope' \
      "$RECORD" 2>/dev/null | while IFS="$(printf '\t')" read -r _k _scope; do
     [ -n "$_k" ] && [ -n "$_scope" ] || continue
-    _abs=$(norm_path "$DEVEL_ROOT/$_scope")
+    # An absolute scope is used as written; joined onto the root it names a directory that does not
+    # exist, and the repo is skipped as if it were not checked out.
+    case "$_scope" in
+      /*) _abs=$(norm_path "$_scope") ;;
+      *)  _abs=$(norm_path "$DEVEL_ROOT/$_scope") ;;
+    esac
     [ -n "$_abs" ] || continue
     case "$_rp/" in
       "$_abs"/*) printf '%s\t%s\n' "${#_abs}" "$_k" ;;

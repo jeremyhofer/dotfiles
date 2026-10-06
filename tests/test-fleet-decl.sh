@@ -141,6 +141,21 @@ YAML
 FLEET_RECORD="$TMP/ghost.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" "$ROOT/internal/alpha" leakPolicy >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "a scope not checked out here is skipped, not matched" || bad "ghost scope" "rc=$rc"
 
+# AN ABSOLUTE SCOPE, which the manifest reference allows. Joined onto the root it becomes
+# "<root>//abs/path", a directory that does not exist, so the repo was skipped as not checked out
+# and resolved to nothing. A record on a machine whose repositories sit outside ~/Devel declares
+# them this way.
+mkdir -p "$TMP/elsewhere/repo/wt"
+cat > "$TMP/abs.yaml" <<YAML
+projects:
+  absolute:
+    scope: $TMP/elsewhere/repo
+    leakPolicy: private
+YAML
+out=$(FLEET_RECORD="$TMP/abs.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" "$TMP/elsewhere/repo/wt" leakPolicy 2>/dev/null); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "private" ] \
+  && ok "an absolute scope resolves, not joined onto the root" || bad "absolute scope" "rc=$rc out=$out"
+
 # --- the 1-vs-2 distinction, which is the point -------------------------------------------------
 run "$ROOT/somewhere/unknown" leakPolicy >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "an unknown repo is exit 1 (no declaration), not 2" || bad "unknown repo rc" "rc=$rc"
