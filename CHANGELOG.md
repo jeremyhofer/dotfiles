@@ -85,6 +85,62 @@ nested layout, with nothing to say so.
   copy: some machines may not install plugins or run custom git hooks. The doctor requires the plugin
   trigger only where the fragment declares plugins, and only notes a layer test suite without a gate.
 
+### Bringing a machine set up before these changes to the current shape — ACTION
+
+For a machine whose containers, manifest or skill list predate 2026-10-07 (the changes of
+2026-10-06 below and the two entries above). In order, after updating and applying the base:
+
+1. `sh ~/.local/share/chezmoi/setup/overlay-doctor`, and fix what it gates. A layer that ships a
+   manifest now needs the worktrunk trigger (entry above).
+2. `fleet-decl --check`, then `fleet-repo check`, from `~/Devel`. For each finding, `fleet-repo clone
+   <name>` repairs the container. That covers a default branch with no upstream (any container
+   cloned before 2026-10-06 22:10, where `git pull` stops at "There is no tracking information"),
+   refspecs that differ from the declaration, and missing worktrees. `check` never changes
+   anything, and `clone` on an existing container never deletes a local branch or worktree.
+3. Move each `clone:` line to `fleet-repo clone <name>`, and any `--filter=` on it into
+   `container.filter`. For a repository with thousands of branches, declare `container.branches`
+   (`default`, or a list) before cloning it, or set `containerDefaults.branches` for the domain.
+4. `wt-config-gen`, then confirm a bare entry's `worktree-path` in `~/.config/worktrunk/config.toml`
+   is `{{ repo_path }}/../{{ branch | sanitize }}`.
+5. `bash ~/.local/share/chezmoi/tests/test-fleet-repo.sh` once on a Mac: `fleet-repo` has not yet run
+   under the stock bash 3.2 that `/usr/bin/env bash` finds there.
+
+## 2026-10-06
+
+### `skill-externals-sync`: one clone per repository, and `--force`
+
+- Entries that share a url and ref share one clone, so twenty skills from one repository's release
+  are one fetch, not twenty.
+- `--force` replaces what is already at a listed name that this tool did not install: a symlink is
+  removed (its target untouched), a real directory is moved to the state directory's `displaced/`,
+  never deleted. A name either chezmoi instance manages is refused even then. Use it once to adopt
+  skills first installed by hand or by a symlink into a clone; later runs need no flag.
+
+### `git-clone-worktree` fixes, now carried by `fleet-repo`
+
+Found on a work machine's first bare clones; all in `fleet-repo` too, so a machine that moves its
+`clone:` lines inherits them.
+
+- `--mani-project` read only the scheme of any url with a colon (`https://`, `ssh://host:port`,
+  `git@host:org/x`), failing with "repository 'https' does not exist".
+- A `path:` naming the container instead of its default-branch worktree built the container in the
+  parent; a populated non-container directory is now refused.
+- `--help` printed `mkdir`'s help; it prints its own, and unknown options are refused.
+- Many-branch repositories: the extra local branches are deleted in one transaction (8.9 s to 0.35 s
+  at 3,000 branches), and a fresh clone is one transfer instead of a clone and a fetch.
+- A container's default branch now tracks its remote, so `mani exec --all 'git pull --ff-only'`
+  updates containers as well as plain clones. Before this, every container was skipped.
+- `--filter=<spec>` for a partial clone; `container.filter` is the declared form now.
+
+### Skill `fleet-manifest`, and the layout references corrected
+
+A new skill for writing and checking `~/Devel/mani.yaml`: its two readers (`mani`, and the base's
+tools through `fleet-decl`), why `mani describe` is not the effective configuration (it omits
+`clone:`), adding a repository with a one-project proof, the rules that fail silently, and
+`mani sync --parallel`. `docs/reference/repository-layouts.md`'s example had named the container in
+`path:`; `path:` names `<container>/<default-branch>`. `sync: false` is documented as what it is:
+`mani` never clones such an entry, not even by name, and treats it as ordinary once it exists.
+
 ## 2026-10-05
 
 ### The overlay's global gitignore must carry the base's defaults — ACTION, and it has since 2026-09-30
