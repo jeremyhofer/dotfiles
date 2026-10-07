@@ -46,8 +46,10 @@ if [ "${1:-}" = "--mani-project" ]; then
   # turn it into an error rather than a clone into a guessed location.
   desc=$(NO_COLOR=1 mani describe projects "$project" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g') \
     || die "no such mani project: $project"
-  url=$(printf '%s\n' "$desc" | awk -F': *' '$1=="url"{print $2; exit}')
-  mpath=$(printf '%s\n' "$desc" | awk -F': *' '$1=="path"{print $2; exit}')
+  # Strip the key rather than splitting on ':' -- a url carries colons of its own (https://,
+  # ssh://host:port), and a field split returned only its scheme.
+  url=$(printf '%s\n' "$desc" | awk '/^url:/ { sub(/^url:[ \t]*/, ""); print; exit }')
+  mpath=$(printf '%s\n' "$desc" | awk '/^path:/ { sub(/^path:[ \t]*/, ""); print; exit }')
   [ -n "$url" ]   || die "mani project '$project' has no url"
   [ -n "$mpath" ] || die "mani project '$project' has no path"
   # mani's path points at the DEFAULT-BRANCH WORKTREE inside the container, so the container is its

@@ -96,6 +96,10 @@ projects:
     path: c3/main
     url: $TMP/mas.git
     clone: git-clone-worktree --mani-project mismatch
+  colonurl:
+    path: c5/develop
+    url: file://$TMP/dev.git
+    clone: git-clone-worktree --mani-project colonurl
   toplevel:
     path: c4
     url: $TMP/mas.git
@@ -107,6 +111,9 @@ EOF
     '[ "$(cd c1/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd c1 && pwd)/.bare" ]'
   rm -rf c1/feature; git -C c1 worktree prune; NO_COLOR=1 mani sync good > "$TMP/out" 2>&1
   check "mani: a re-sync restores a deleted sibling worktree" '[ -d c1/feature ]'
+
+  NO_COLOR=1 mani sync colonurl > "$TMP/out" 2>&1
+  check "mani: a url containing a colon (file://, https://, ssh://) is read whole" '[ "$(cat c5/.git 2>/dev/null)" = "gitdir: ./.bare" ] && [ -d c5/develop ]'
 
   NO_COLOR=1 mani sync noclone > "$TMP/out" 2>&1
   check "mani, no clone: line: an ORDINARY checkout, siblings' git data inside it (the silent trap)" \
