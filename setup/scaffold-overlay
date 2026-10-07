@@ -11,7 +11,9 @@ if [ -e "$DEST" ] && [ -n "$(ls -A "$DEST" 2>/dev/null)" ]; then
   echo "scaffold-overlay: $DEST is not empty — refusing to scaffold over it" >&2; exit 1
 fi
 mkdir -p "$DEST"
-( cd "$SKEL" && find . -type f ) | while IFS= read -r f; do
+# opt-in/ holds triggers a layer adopts deliberately (a plugin installer, a commit gate writing a
+# custom git hook); a machine that may not run them must not get them by scaffolding. Copy by hand.
+( cd "$SKEL" && find . -path ./opt-in -prune -o -type f -print ) | while IFS= read -r f; do
   rel=${f#./}
   out=$(printf '%s' "$rel" | sed -e 's/\.example$//' -e 's#^dot-#.#' -e 's#/dot-#/.#')
   mkdir -p "$DEST/$(dirname "$out")"
@@ -19,3 +21,4 @@ mkdir -p "$DEST"
 done
 echo "scaffold-overlay: wrote skeleton -> $DEST"
 echo "next: fill in the files, then 'git init' + add your remote, and set overlayRepo to it at chezmoi init."
+echo "opt-in triggers (not copied): $SKEL/opt-in/"

@@ -27,8 +27,7 @@ about; `--remove` deletes those no running session has mounted; a terminal tool,
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·
 `context-lint` (a repository's `AGENTS.md`/`CLAUDE.md` against the context-file standard: sections, size caps counting imports; skill `project-context-file`) ·
 `git-ai-coauthor` (prepare-commit-msg hook: adds a Claude co-author trailer, naming the session's model when it can, to commits made from a Claude Code session; wired in `~/.gitconfig`, per-repo opt-out `ai-coauthor.enabled false`) ·
-`git-clone-worktree` (clone as bare + sibling worktrees; bootstraps the layout `wt` then manages,
-since worktrunk has no clone verb) · `git-merge-diff` (diff a merge would introduce) ·
+`git-clone-worktree` (the old name for `fleet-repo clone`; a forwarding shim, removed once no manifest names it) · `git-merge-diff` (diff a merge would introduce) ·
 `git-secret-scan` (gitconfig pre-commit hook: gitleaks on staged changes, every repo) ·
 `leak-guard` (gitconfig commit and push hooks: refuses the domain's private vocabulary, from its
 `~/.dotlocal/git-leak-*` files, outside the repos the fleet record allows it in; passes everything
@@ -38,8 +37,10 @@ where the domain supplies none) · `run-repo-gates` (runs a manifest repo's trac
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review) ·
 `skill-externals-sync` (installs the pinned skills a private layer lists in `~/.dotlocal/skill-externals.yaml`, by git; runs after every apply) ·
+`fleet-repo` (makes a repository on disk match its manifest entry: `clone` as a bare container plus sibling worktrees, reconciling an existing one, `update` for fast-forwards, `check` for drift; bootstraps the layout `wt` then manages, since worktrunk has no clone verb) ·
 `fleet-decl` (reads one declaration from the per-repo record, a mani.yaml; exit 2 means the record is unreadable, never "not declared") ·
 `wt-bootstrap` (installs a fresh worktree's dependencies from whichever lockfile it finds, frozen; wired in as worktrunk's `pre-start` hook) ·
+`install-claude-plugins` (installs the Claude Code plugins a private layer's settings fragment declares; opt-in, run from that layer's trigger) · `install-test-gate` (installs a test-suite commit gate into a chezmoi source repo, refusing a pre-commit it did not write; opt-in) ·
 `wt-config-gen` (generates worktrunk's user config from `base.toml`, an optional private fragment, and each repo's `worktrunk:` block in the manifest).
 
 **Assumed third-party:** `chezmoi` (two instances) · `wt` (worktree lifecycle; `wt switch --create`

@@ -22,6 +22,11 @@ Every seam, with its format and an example: the base's `docs/reference/private-l
 stubs: `dot_dotlocal/skill-externals.yaml` with `run_onchange_after_sync-skill-externals.sh.tmpl`
 (skills installed from this domain's own repositories); delete both if the domain has none.
 
+The `run_onchange_` scripts here re-run a base mechanism when an input this layer ships changes;
+keep each one whose input you keep. `opt-in/` holds two more, a plugin installer and a commit gate
+for this repository, which `scaffold-overlay` does not copy: adopt them by hand where the machine
+allows it. Which trigger each input needs: the base's `docs/reference/private-layer.md`, "Triggers".
+
 ## Setting up
 
 1. `setup/scaffold-overlay <dir>` copies these stubs (renaming `.example` off).

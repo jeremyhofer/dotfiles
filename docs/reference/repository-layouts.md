@@ -24,14 +24,21 @@ projects:
     path: work/my-service/main                            # the DEFAULT-BRANCH WORKTREE, not the container
     url: https://github.com/my-org/my-service.git
     scope: work/my-service                                # the container: every worktree resolves to this entry
-    clone: git-clone-worktree --mani-project my-service   # mani sync clones it as a bare container
+    clone: fleet-repo clone my-service                    # mani sync clones it as a bare container
     worktrees:                                            # optional: further durable worktrees, relative to path
       - name: develop
         path: ../develop
+    container:                                            # optional: what the container fetches
+      branches: default                                   # all | default | [names]; default: all
+      filter: blob:none                                   # optional partial clone, fresh clones only
     worktrunk:
-      layout: bare                                        # wt places new worktrees beside main/
-      bootstrap: true                                     # and installs dependencies in each
+      bootstrap: true                                     # install dependencies in each worktree
 ```
+
+A `container:` block, or a `clone:` that runs `fleet-repo`, already says the entry is a bare container,
+so `wt-config-gen` places new worktrees beside `main/` without `worktrunk: {layout: bare}`; an explicit
+`worktrunk.layout` still wins. What the container fetches, and the `container:` keys, are in
+[`fleet-manifest.md`](fleet-manifest.md).
 
 Three rules, each of which fails quietly when broken (all measured with a real `mani sync`):
 
@@ -41,18 +48,23 @@ Three rules, each of which fails quietly when broken (all measured with a real `
   repository to repository (`main`, `master`, `develop`): `git ls-remote --symref <url> HEAD`
   names it. A wrong name is warned about, the real default is created instead, and `mani sync`
   then reports the project failed, because the declared path does not exist. A `path:` naming the
-  container makes its parent the container; `git-clone-worktree` refuses that when the parent
+  container makes its parent the container; `fleet-repo` refuses that when the parent
   already holds files, which protects the devel root from becoming a repository.
 - **`clone:` is required.** Without it `mani sync` reports success and produces an ordinary
   checkout, with any `worktrees:` nested inside it and sharing its `.git`: the layout this page
   exists to avoid, with nothing to say so.
 - **`worktrees:` paths are relative to `path`,** so a sibling of the default branch is `../<name>`.
 
-`git-clone-worktree` is idempotent: run on an existing container it re-creates only what is
-missing, so `mani sync` may call it every time, and a re-sync restores a deleted worktree. It sets
-the default branch's upstream, which a bare clone does not record, so `mani exec --all 'git pull
---ff-only'` updates containers and plain clones alike; re-run it once on a container cloned before
-it did ("There is no tracking information for the current branch"). Mixed
+`fleet-repo clone` is idempotent: run on an existing container it RECONCILES it with the
+declaration. It adds and fetches newly declared branches, drops the refspec and remote-tracking ref of
+a branch no longer declared (reporting, never deleting, a local branch or worktree for it), repairs
+upstreams and re-creates missing worktrees. `mani` runs `clone:` only where `path` is missing, so
+`mani sync` never reconciles: after changing a declaration, run `fleet-repo clone <name>` yourself.
+It sets an upstream on every branch that has a worktree, which a bare clone does not record, so
+`fleet-repo update` (or `mani exec --all 'git pull --ff-only'`) works in containers and plain clones
+alike; re-run `fleet-repo clone` once on a container cloned before it did ("There is no tracking
+information for the current branch"). `fleet-repo check` reports the drift between declaration and
+disk without fixing it. The old name `git-clone-worktree` forwards to `fleet-repo clone`. Mixed
 default branches across repositories need nothing special: each clone reads its own from the
 remote. After editing `worktrunk:` blocks, run `wt-config-gen` (an apply also runs it). The skill
 `fleet-manifest` walks the whole procedure.
@@ -74,7 +86,7 @@ git -C "$old" for-each-ref --format='%(refname:short) %(upstream:short) %(upstre
 #   a branch with no upstream was never pushed; [ahead N] has N unpushed commits; carry both
 
 # 2. Clone the container beside it.
-git-clone-worktree "$(git -C "$old" remote get-url origin)" "$new"
+fleet-repo clone --url "$(git -C "$old" remote get-url origin)" "$new"
 
 # 3. Bring each local-only or ahead branch across, from the old clone (no push needed).
 git -C "$new/main" fetch "$old" my-branch:my-branch
@@ -100,4 +112,4 @@ branch then checked out as a sibling worktree.
 
 Remote names other than `origin` (a fork's `upstream`, say) are re-added with `git remote add` in the
 container. A repository the manifest manages can instead be cloned with
-`git-clone-worktree --mani-project <name>` after its `clone:` line is added.
+`fleet-repo clone <name>` after its `clone:` line is added.

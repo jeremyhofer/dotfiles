@@ -226,9 +226,12 @@ fragment, and each project's `worktrunk:` block in the manifest. Two rules, both
 the same table. The generated file is overwritten on every run; edit the sources. `WT_GEN_FRAGMENT`
 points at another path.
 
+**This layer must carry the trigger that re-runs `wt-config-gen`** when the manifest or this fragment
+changes: [Triggers](#triggers-re-running-the-bases-mechanisms).
+
 ### `~/.dotlocal/hooks/post-worktree-create`
 
-`git-clone-worktree` runs it, if it is executable, with the new worktree's absolute path. Advisory
+`fleet-repo clone` (and so its old name `git-clone-worktree`) runs it, if it is executable, with the new worktree's absolute path. Advisory
 only: its exit status is ignored, so it can report but never block a worktree's creation.
 
 ## The publish guard
@@ -269,11 +272,32 @@ nvim's spell files are `~/.config/nvim/spell/private.utf-8.add` (the domain's wo
 `shared.utf-8.add` (the base's). `zg` adds a word to the private list, and `spell-capture` copies it
 back into the private source so the next apply keeps it. The skeleton has a stub.
 
+## Triggers: re-running the base's mechanisms
+
+The base re-runs its generators and installers when ITS inputs change. An input this layer ships
+reaches its deployed file on apply, and reaches what is generated from it only if the layer carries a
+`run_onchange_` script whose rendered text changes with that input; an
+`{{ include "<input>" | sha256sum }}` comment does that. A missing trigger is silent: the input is
+applied and nothing downstream moves. `overlay-doctor` (Tier T) checks each row below.
+
+| The layer ships | It carries | Example | |
+| --- | --- | --- | --- |
+| `Devel/mani.yaml.tmpl` (and `dot_dotlocal/worktrunk.toml`) | `run_onchange_after_generate-worktrunk-config.sh.tmpl`, hashing both | `overlay-skeleton/` | required |
+| `dot_dotlocal/claude/executable_settings-declared` | `run_onchange_after_merge-claude-settings.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
+| the same fragment, declaring plugins | `run_onchange_after_install-claude-plugins.sh.tmpl`, calling the base's `install-claude-plugins` | `overlay-skeleton/opt-in/` | opt-in |
+| `dot_dotlocal/skill-externals.yaml` | `run_onchange_after_sync-skill-externals.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
+| `tests/run-all.sh` | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
+
+**Opt-in means the layer adds the trigger itself.** `setup/scaffold-overlay` copies the skeleton but
+not `opt-in/`, because a plugin installer and a commit gate (which writes a custom git hook into the
+layer's own repository) are what some machines may not run. The logic of both lives in the base, so
+a layer's trigger is a few lines that say where its inputs are.
+
 ## Checking it
 
 | Check | Run | Tells you |
 | --- | --- | --- |
-| `setup/overlay-doctor` | from the base checkout, after changing either layer | required private pieces present and filled, every private file has a recorded reason, no file owned by both layers, the manifest's schema |
+| `setup/overlay-doctor` | from the base checkout, after changing either layer | required private pieces present and filled, the trigger for every input the layer ships (Tier T), every private file has a recorded reason, no file owned by both layers, the manifest's schema |
 | `setup/overlay-doctor --machine` | on a machine | git, tools and Claude Code on that machine |
 | `fleet-decl --check` | after editing the manifest | the manifest's declarations |
 | `hook-doctor check` | after configuring the guard | each configured git hook is live, and the guard refuses a planted marker |

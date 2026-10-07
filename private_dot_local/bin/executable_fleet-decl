@@ -11,6 +11,10 @@
 #          fleet-decl --canonical-list <name> <key>  # ...when that key holds a sequence
 #          fleet-decl --projects-with <key>      # every project that declares <key>, one per line
 #          fleet-decl --entry <project> <key>    # a key on the project named <project>
+#          fleet-decl --entry-list <project> <key> [<item-key>]
+#                                                # the items of a sequence on <project>, one per line;
+#                                                # with <item-key> the items are maps and that key is
+#                                                # read from each (`--entry-list ios worktrees name`)
 #          fleet-decl --check                    # validate the record; print findings
 #
 #   exit 0  value printed on stdout (empty output means the key is declared empty)
@@ -128,6 +132,24 @@ valid_key() {
   esac
 }
 
+# Is the value at a yq path a valid `branches` setting: `all`, `default`, or a list of non-empty
+# strings? Prints what is wrong and returns 0 when it is NOT valid, so the caller reads
+# `branches_finding ... && report`. A bare shell function so the project-level and the fleet-level
+# checks cannot drift into accepting different things.
+branches_finding() {
+  case "$(yq -r "$1 | tag" "$RECORD" 2>/dev/null)" in
+    '!!str')
+      case "$(yq -r "$1" "$RECORD" 2>/dev/null)" in
+        all|default) return 1 ;;
+        *) printf 'must be all, default or a list of branch names (got %s)' "$(yq -r "$1" "$RECORD" 2>/dev/null)"; return 0 ;;
+      esac ;;
+    '!!seq')
+      [ "$(yq -r "[$1 | .[] | select(tag != \"!!str\" or . == \"\")] | length" "$RECORD" 2>/dev/null)" = 0 ] && return 1
+      printf 'must hold only non-empty branch names'; return 0 ;;
+    *) printf 'must be all, default or a list of branch names'; return 0 ;;
+  esac
+}
+
 # CANONICAL-KEYED LOOKUPS. Everywhere else this program answers "what does the record say about
 # this PATH"; a launcher needs the inverse -- "which project declares this canonical" -- and that
 # reverse index belongs here rather than in the caller, for the same reason the forward one does:
@@ -198,6 +220,29 @@ case "${1:-}" in
     [ "$_out" = "null" ] && exit 1
     printf '%s\n' "$_out"
     exit 0 ;;
+  --entry-list)
+    # The sequence form of --entry, for a tool that reads a project's `worktrees:` or `tags:`. The
+    # shape is stated by the caller for the reason --fleet-list exists: one line or many must be
+    # known BEFORE reading. With an item key the sequence holds maps; an item that lacks the key
+    # yields an EMPTY line rather than none, so two reads of the same sequence (`worktrees name`,
+    # `worktrees path`) stay line-for-line aligned. Exit 1 when the key is absent, is not a
+    # sequence, or is empty; stdout stays empty then. The item key is held to identifier characters
+    # because it is interpolated into the query.
+    { [ $# -eq 3 ] || [ $# -eq 4 ]; } \
+      || { printf 'usage: fleet-decl --entry-list <project> <key> [<item-key>]\n' >&2; exit 2; }
+    case "$2" in
+      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+    esac
+    valid_key "$3"
+    if [ $# -eq 4 ]; then
+      valid_key "$4"
+      _q=".projects.\"$2\".$3 | .[] | (.$4 // \"\")"
+    else
+      _q=".projects.\"$2\".$3 | .[]"
+    fi
+    _out=$(yq -e -r "$_q" "$RECORD" 2>/dev/null) || exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
   --check)
     rc=0
     # Every project must declare a policy. An ABSENT key is the failure this check exists for:
@@ -226,7 +271,8 @@ case "${1:-}" in
           scope|leakPrefix|leakPolicy|leakDisable) ;;
           canonical|canonicalIdentity|canonicalLaunchDir|canonicalLaunchModel|canonicalMachines) ;;
           worktrunk) ;;
-          leak*|canonical*)
+          container) ;;
+          leak*|canonical*|container*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
       done
@@ -246,6 +292,48 @@ case "${1:-}" in
         esac
       done
     done
+    # The container block is read by the cloner (fleet-repo), which would otherwise have to decide
+    # what to do with a value it does not understand -- and a mistyped `branchs: default` would
+    # silently mean `all`, the opposite of what was asked.
+    for p in $(yq -r '.projects | to_entries[] | select(.value.container != null) | .key' "$RECORD" 2>/dev/null || true); do
+      if [ "$(yq -r ".projects.\"$p\".container | tag" "$RECORD" 2>/dev/null)" != '!!map' ]; then
+        printf '[container-value] %s: container must be a map (branches, filter)\n' "$p"; rc=1; continue
+      fi
+      for k in $(yq -r ".projects.\"$p\".container | keys | .[]" "$RECORD" 2>/dev/null || true); do
+        case "$k" in
+          branches)
+            _w=$(branches_finding ".projects.\"$p\".container.branches") \
+              && { printf '[container-value] %s: container.branches %s\n' "$p" "$_w"; rc=1; } ;;
+          filter)
+            if [ "$(yq -r ".projects.\"$p\".container.filter | tag" "$RECORD" 2>/dev/null)" != '!!str' ] \
+               || [ -z "$(yq -r ".projects.\"$p\".container.filter" "$RECORD" 2>/dev/null)" ]; then
+              printf '[container-value] %s: container.filter must be a non-empty string (e.g. blob:none)\n' "$p"; rc=1
+            fi ;;
+          *) printf '[container-key] %s: container.%s is not a key this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
+        esac
+      done
+    done
+    # The fleet-wide default for those blocks; absent means every branch.
+    for k in $(yq -r 'keys | .[]' "$RECORD" 2>/dev/null || true); do
+      case "$k" in
+        containerDefaults) ;;
+        containerDefault*) printf '[unknown-key] fleet: %s is not a declaration this fleet reads (typo?)\n' "$k"; rc=1 ;;
+      esac
+    done
+    if [ "$(yq -r '.containerDefaults | tag' "$RECORD" 2>/dev/null)" != '!!null' ]; then
+      if [ "$(yq -r '.containerDefaults | tag' "$RECORD" 2>/dev/null)" != '!!map' ]; then
+        printf '[containerDefaults-value] containerDefaults must be a map (branches)\n'; rc=1
+      else
+        for k in $(yq -r '.containerDefaults | keys | .[]' "$RECORD" 2>/dev/null || true); do
+          case "$k" in
+            branches)
+              _w=$(branches_finding '.containerDefaults.branches') \
+                && { printf '[containerDefaults-value] containerDefaults.branches %s\n' "$_w"; rc=1; } ;;
+            *) printf '[containerDefaults-key] containerDefaults.%s is not a key this fleet reads (typo?)\n' "$k"; rc=1 ;;
+          esac
+        done
+      fi
+    fi
     # Two projects claiming one canonical name. Nothing else would notice: each entry is
     # individually well formed, and the collision only shows up as a launcher refusing later.
     dupes=$(yq -r '.projects | to_entries[] | select(.value.canonical != null) | .value.canonical' "$RECORD" 2>/dev/null \

@@ -1,0 +1,9 @@
+#!/bin/sh
+# OPT-IN: installs a commit gate into THIS layer's source repository, running its tests/run-all.sh
+# when a staged change could break what the layer ships. It writes .git/hooks/pre-commit, so drop
+# this file on a machine that may not run custom git hooks. Drop the `.example` suffix to use it.
+# The logic is the base's `install-test-gate` (see its --help for --paths and the skip variable).
+set -eu
+command -v install-test-gate >/dev/null 2>&1 || { echo "install-test-gate: not on PATH -- apply the base first" >&2; exit 1; }
+install-test-gate "{{ .chezmoi.sourceDir }}" --label "private layer" --skip-var SKIP_LAYER_TESTS \
+  --paths '^(private_dot_local/|dot_dotlocal/|dot_claude/|tests/)'

@@ -34,7 +34,7 @@ A repository is in one of two shapes, and four steps below depend on which:
 | Why choose it | one less directory level; fine for a repository with one writer and an occasional worktree | removing any one directory, `main/` included, cannot break the others, and no branch is privileged. In a plain clone every nested worktree's git data lives in the main checkout's `.git`, so losing that checkout loses them all |
 
 `wt switch --create` places a worktree correctly in either shape once the repository's layout is
-configured. `git-clone-worktree` clones a repository straight into the bare shape.
+configured. `fleet-repo clone` clones a repository straight into the bare shape.
 
 ## Do you need one?
 

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Regenerates worktrunk's user config when this layer's inputs to it change.
+#
+# The generator (wt-config-gen) is shipped by the public base, which re-runs it only when ITS inputs
+# (base.toml, the generator) change. The manifest and the optional fragment are this layer's, so
+# this layer needs its own trigger: without it, a project's new `worktrunk:` block reaches
+# ~/Devel/mani.yaml on apply and never reaches ~/.config/worktrunk/config.toml, and `wt` keeps
+# putting that container's worktrees in the nested layout.
+#
+# Drop the `.example` suffix. Keep each include below only if this layer ships that file:
+#   the repo manifest:   {{ include "Devel/mani.yaml.tmpl" | sha256sum }}
+#   the guard fragment:  {{ include "dot_dotlocal/worktrunk.toml" | sha256sum }}
+set -eu
+command -v wt >/dev/null 2>&1 || { echo "generate-worktrunk-config: wt not installed, skipped" >&2; exit 0; }
+command -v wt-config-gen >/dev/null 2>&1 || { echo "generate-worktrunk-config: wt-config-gen not on PATH -- apply the base first" >&2; exit 1; }
+wt-config-gen

@@ -1,0 +1,93 @@
+#!/bin/sh
+# install-claude-plugins -- install every Claude Code plugin a settings declaration names but this
+# machine has not installed.
+#
+#   usage: install-claude-plugins <declaration-fragment>
+#          (INSTALL_CLAUDE_PLUGINS_DECLARED=<file.json> names the declared JSON directly; tests use it)
+#
+# OPT-IN. Nothing in the base runs this. A private layer that declares plugins calls it from its own
+# run_onchange_after_install-claude-plugins.sh.tmpl, which hashes the fragment so a change to it
+# re-runs the install (example: overlay-skeleton/). A machine that may not install plugins declares
+# none and carries no trigger.
+#
+# WHY: declaring a plugin in settings does not install it. Measured 2026-09-22 in a scratch config
+# dir: with extraKnownMarketplaces and enabledPlugins both set, `claude plugin list` reported
+# nothing installed and no marketplace registered. So a machine that applies the layer would carry
+# an enabled flag for a plugin it does not have -- silently, since a missing plugin raises nothing.
+#
+# The fragment is the layer's executable settings declaration (dot_dotlocal/claude/
+# executable_settings-declared): run, it prints JSON whose "declared" block is what this installs.
+#
+# IT READS THE DECLARATION, NEVER THE LIVE SETTINGS FILE. The settings merge is additive by design
+# (Claude Code rewrites enabledPlugins itself), so a plugin removed from the declaration stays
+# enabled in the live file of every machine that already had it. Reading the live file, this
+# script once installed two deliberately removed plugins on a machine that had not applied the
+# removal yet (2026-09-23). The fragment's "declared" block is exactly what the
+# layer declares; INSTALL_CLAUDE_PLUGINS_DECLARED may name a JSON file of that shape instead,
+# which is how the tests supply one.
+#
+# Adds only; never removes. A plugin enabled on this machine but not declared is REPORTED, not
+# installed and not uninstalled: removing one is a deliberate act, and doing it silently on every
+# apply would be worse than the stale entry.
+set -eu
+
+plugins_dir="$HOME/.claude/plugins"
+live="$HOME/.claude/settings.json"
+declaring=${1:-}
+if [ -z "${INSTALL_CLAUDE_PLUGINS_DECLARED:-}" ] && { [ -z "$declaring" ] || [ ! -f "$declaring" ]; }; then
+  echo "usage: install-claude-plugins <declaration-fragment>" >&2; exit 2
+fi
+
+if ! command -v claude >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+  echo "install-claude-plugins: claude or jq not on PATH -- declared plugins NOT installed" >&2
+  exit 0
+fi
+
+if [ -n "${INSTALL_CLAUDE_PLUGINS_DECLARED:-}" ]; then
+  declared=$(cat "$INSTALL_CLAUDE_PLUGINS_DECLARED")
+else
+  declared=$(bash "$declaring" | jq '.declared')
+fi
+if ! printf '%s' "$declared" | jq -e . >/dev/null 2>&1; then
+  echo "install-claude-plugins: the declaration could not be read -- nothing installed" >&2
+  exit 1
+fi
+
+known=$(jq -r 'keys[]' "$plugins_dir/known_marketplaces.json" 2>/dev/null || true)
+installed=$(jq -r '.plugins | keys[]' "$plugins_dir/installed_plugins.json" 2>/dev/null || true)
+failed=0
+
+# 1. Marketplaces: register each declared one this machine does not know. Only the github source
+#    type is handled; anything else is reported rather than guessed at.
+for name in $(printf '%s' "$declared" | jq -r '.extraKnownMarketplaces // {} | keys[]'); do
+  printf '%s\n' "$known" | grep -qx "$name" && continue
+  kind=$(printf '%s' "$declared" | jq -r --arg n "$name" '.extraKnownMarketplaces[$n].source.source')
+  if [ "$kind" != "github" ]; then
+    echo "install-claude-plugins: marketplace '$name' has source type '$kind' -- add it by hand" >&2
+    failed=1; continue
+  fi
+  repo=$(printf '%s' "$declared" | jq -r --arg n "$name" '.extraKnownMarketplaces[$n].source.repo')
+  echo "install-claude-plugins: adding marketplace $name ($repo)"
+  claude plugin marketplace add "$repo" || { echo "install-claude-plugins: FAILED to add $name" >&2; failed=1; }
+done
+
+# 2. Plugins: install each one the layer declares enabled and this machine lacks.
+declared_ids=$(printf '%s' "$declared" | jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key')
+for id in $declared_ids; do
+  printf '%s\n' "$installed" | grep -qx "$id" && continue
+  echo "install-claude-plugins: installing $id"
+  claude plugin install "$id" || { echo "install-claude-plugins: FAILED to install $id" >&2; failed=1; }
+done
+
+# 3. Report, never act on, plugins enabled in THIS machine's settings that the layer does not
+#    declare. They are usually leftovers of a removal this machine has not applied.
+if [ -f "$live" ]; then
+  for id in $(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$live"); do
+    printf '%s\n' "$declared_ids" | grep -qx "$id" && continue
+    echo "install-claude-plugins: $id is enabled on this machine but NOT declared -- not installed." >&2
+    echo "  If it was removed on purpose: claude plugin uninstall $id  (and drop it from enabledPlugins in $live)" >&2
+  done
+fi
+
+# Fail loudly: a declared plugin that is not installed is exactly the silent state this exists to end.
+exit "$failed"

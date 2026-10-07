@@ -1,0 +1,11 @@
+#!/bin/sh
+# OPT-IN: installs the Claude Code plugins this layer's settings fragment declares, which declaring
+# alone does not do. Keep it only if the fragment declares plugins; a machine that may not install
+# plugins declares none and drops this file. Drop the `.example` suffix to use it.
+#
+# Re-runs whenever the fragment changes:
+#   settings hash: {{ include "dot_dotlocal/claude/executable_settings-declared" | sha256sum }}
+# The logic is the base's `install-claude-plugins`; this only says where the declaration is.
+set -eu
+command -v install-claude-plugins >/dev/null 2>&1 || { echo "install-claude-plugins: not on PATH -- apply the base first" >&2; exit 1; }
+install-claude-plugins "{{ .chezmoi.sourceDir }}/dot_dotlocal/claude/executable_settings-declared"

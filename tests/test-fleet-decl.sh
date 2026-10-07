@@ -310,5 +310,100 @@ YAML
   [ "$rc" -eq 1 ] && [[ "$out" == *"worktrunk"* ]] && ok "--check rejects worktrunk '$bad_block'" || bad "--check worktrunk '$bad_block'" "rc=$rc $out"
 done
 
+# --- --entry-list: the items of a sequence under a project, one per line. With a third argument,
+# the sequence holds maps and that key is read from each item. The reader is for tools that clone
+# or update a repository from its entry, so the arms that matter are the ones that keep parallel
+# reads aligned (an item lacking the key yields an EMPTY line, not a skipped one) and the exit codes.
+cat > "$TMP/list.yaml" <<'YAML'
+projects:
+  alpha:
+    scope: internal/alpha
+    leakPolicy: private
+    tags: [work, active]
+    worktrees:
+      - name: main
+        path: ../main
+      - name: nopath
+      - name: dev
+        path: ../dev
+  beta:
+    scope: internal/beta
+    leakPolicy: private
+    tags: []
+YAML
+EL() { FLEET_RECORD="$TMP/list.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" "$@"; }
+out=$(EL --entry-list alpha tags 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "work
+active" ] && ok "--entry-list: a sequence of scalars, one per line" || bad "--entry-list scalars" "rc=$rc out=$out"
+out=$(EL --entry-list alpha worktrees name 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "main
+nopath
+dev" ] && ok "--entry-list: a key read from each item of a list of maps" || bad "--entry-list item key" "rc=$rc out=$out"
+out=$(EL --entry-list alpha worktrees path 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "../main
+
+../dev" ] && ok "--entry-list: an item lacking the key is an EMPTY line, so parallel reads stay aligned" || bad "--entry-list alignment" "rc=$rc out=$out"
+out=$(EL --entry-list beta worktrees name 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-list: an absent key is exit 1, empty stdout" || bad "--entry-list absent" "rc=$rc out=$out"
+out=$(EL --entry-list beta tags 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-list: an empty sequence is exit 1, empty stdout" || bad "--entry-list empty" "rc=$rc out=$out"
+out=$(EL --entry-list alpha scope 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-list: a scalar is not a sequence, exit 1" || bad "--entry-list scalar" "rc=$rc out=$out"
+out=$(EL --entry-list nosuch tags 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "--entry-list: an unknown project is exit 1" || bad "--entry-list unknown project" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-list alpha tags 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-list: an unreadable record is exit 2" || bad "--entry-list unreadable" "rc=$rc"
+out=$(EL --entry-list 'alpha"x' tags 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-list: a project name that could escape the query is refused" || bad "--entry-list injection (project)" "rc=$rc"
+out=$(EL --entry-list alpha worktrees 'name|x' 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-list: an item key that could escape the query is refused" || bad "--entry-list injection (item key)" "rc=$rc"
+out=$(EL --entry-list alpha 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-list: a missing key argument is a usage error, exit 2" || bad "--entry-list usage" "rc=$rc"
+
+# --- --check on the container declaration. `container:` says how a bare container is cloned and
+# kept (fleet-repo reads it), and `containerDefaults:` is the fleet-wide default. A value the cloner
+# does not understand must be refused where every caller passes through, as for worktrunk above, and
+# a near-miss key name is otherwise silently ignored: `branchs: default` would mean "all".
+cont_check() {  # $1 = project-level lines (indented under `container:` already), $2 = fleet lines
+  { [ -n "${2:-}" ] && printf '%s\n' "$2"
+    printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n%s\n' "$1"
+  } > "$TMP/cont.yaml"
+  FLEET_RECORD="$TMP/cont.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1
+}
+for good in '    container:
+      branches: all' '    container:
+      branches: default' '    container:
+      branches: [main, develop, release/1.0]
+      filter: blob:none' '    container:
+      filter: blob:none' '    container: {}'; do
+  out=$(cont_check "$good"); rc=$?
+  [ "$rc" -eq 0 ] && ok "--check accepts a container block: $(printf '%s' "$good" | tr -s ' \n' ' ')" || bad "--check container valid" "rc=$rc $out :: $good"
+done
+out=$(cont_check '    container:
+      branches: default' 'containerDefaults:
+  branches: default'); rc=$?
+[ "$rc" -eq 0 ] && ok "--check accepts containerDefaults.branches: default" || bad "--check containerDefaults valid" "rc=$rc $out"
+out=$(cont_check '    scope2: x' 'containerDefaults:
+  branches: [main, develop]'); rc=$?
+[ "$rc" -eq 0 ] && ok "--check accepts containerDefaults.branches as a list" || bad "--check containerDefaults list" "rc=$rc $out"
+while IFS='|' read -r label block fleet want; do
+  block=$(printf '%b' "$block"); fleet=$(printf '%b' "$fleet")
+  [ "$fleet" = - ] && fleet=""
+  out=$(cont_check "$block" "$fleet"); rc=$?
+  [ "$rc" -eq 1 ] && [[ "$out" == *"$want"* ]] && ok "--check refuses $label" || bad "--check $label" "rc=$rc want=$want out=$out"
+done <<'CASES'
+an unknown branches word|    container:\n      branches: some|-|[container-value] alpha: container.branches
+branches containing a non-string|    container:\n      branches: [main, [x]]|-|[container-value] alpha: container.branches
+branches containing an empty name|    container:\n      branches: [main, ""]|-|[container-value] alpha: container.branches
+a mistyped container key|    container:\n      branchs: default|-|[container-key] alpha: container.branchs
+a non-string filter|    container:\n      filter: [blob:none]|-|[container-value] alpha: container.filter
+an empty filter|    container:\n      filter: ""|-|[container-value] alpha: container.filter
+a container that is not a map|    container: all|-|[container-value] alpha: container must be a map
+a near-miss of the container key|    containers:\n      branches: all|-|[unknown-key] alpha: containers
+a bad fleet default|    scope2: x|containerDefaults:\n  branches: some|[containerDefaults-value] containerDefaults.branches
+a mistyped fleet default key|    scope2: x|containerDefaults:\n  branchs: default|[containerDefaults-key] containerDefaults.branchs
+a near-miss of containerDefaults|    scope2: x|containerDefault:\n  branches: default|[unknown-key] fleet: containerDefault
+CASES
+
 printf '\nfleet-decl: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

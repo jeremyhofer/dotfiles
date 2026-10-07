@@ -20,11 +20,14 @@ projects:
     scope: internal/example-repo                   # path prefix that resolves a checkout to this entry (fleet-decl)
     leakPolicy: strict                             # strict | private | notes | internal — required unless tagged upstream
     # leakPrefix: EXR                              # this repo's own program id prefix(es), comma-separated
-    # clone: git-clone-worktree --mani-project example-repo   # bare clone with sibling worktrees. With it,
+    # clone: fleet-repo clone example-repo        # bare clone with sibling worktrees. With it,
     #   path: becomes internal/example-repo/<default-branch> (the worktree, not the container; scope stays
     #   the container). See docs/reference/repository-layouts.md and the skill fleet-manifest.
+    # container:                                 # what that bare container fetches (fleet-repo)
+    #   branches: default                        # all | default | [names]; worktrees: branches are always fetched
+    #   filter: blob:none                        # optional partial clone, fresh clones only
     # worktrunk:
-    #   layout: bare                               # bare | nested
+    #   layout: bare                               # bare | nested; a container is bare unless this says nested
     #   bootstrap: true                            # install dependencies in each new worktree
 
   # This domain's notes repository: the one place program ids and notes pointers may appear.

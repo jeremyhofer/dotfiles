@@ -1,6 +1,6 @@
 ---
 name: overlay-doctor
-description: Use when overlay-doctor reports MISSING or PLACEHOLDER and you need to know what to actually provision; when setting up, scaffolding or upgrading a private chezmoi overlay; when a freshly scaffolded overlay is incomplete; when a FIXME(overlay-doctor) sentinel appears; or when checking whether the base and overlay layers are safely disjoint. Explains what each tier means and how to fix each finding — not just how to run the tool.
+description: Use when overlay-doctor reports MISSING or PLACEHOLDER and you need to know what to actually provision; when setting up, scaffolding or upgrading a private chezmoi overlay; when a freshly scaffolded overlay is incomplete; when a FIXME(overlay-doctor) sentinel appears; or when checking whether the base and overlay layers are safely disjoint, or why a change to the manifest or a settings fragment applied but nothing downstream moved (a missing trigger, Tier T). Explains what each tier means and how to fix each finding — not just how to run the tool.
 ---
 
 # overlay-doctor: reading and fixing what it reports
@@ -20,8 +20,12 @@ deliberately does not tell you, because the answer is per-domain.
 | **B** | **Private vocabulary**, authored per-domain | Author it from **THIS domain's own** vault/records |
 | **C** | Domain-specific config (role packages, ssh hosts, repo manifest, bootstrap stages) | Author for this machine/domain |
 | **H** | Leak-guard | **Optional and home-only by design.** Reported, never enforced — its absence is not a failure |
+| **T** | A **trigger** for each input the layer ships to a base mechanism (manifest → worktrunk config, settings fragment → merge, skill list → install) | Copy the `run_onchange_` example from `overlay-skeleton/`, keep the `include` line for each input you ship. A trigger that exists but does not hash its input is reported too: it fails exactly as silently |
 
-Only required A/B/C pieces gate the exit code.
+Only required A/B/C/T pieces gate the exit code. Two triggers are **opt-in** and never required: the
+plugin installer (only where the settings fragment declares plugins) and the commit gate for the
+layer's own repository (reported as a NOTE). Both are in `overlay-skeleton/opt-in/`, which scaffolding
+does not copy, because some machines may not install plugins or run custom git hooks.
 
 ## The two findings, and what each means
 

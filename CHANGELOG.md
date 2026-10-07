@@ -32,6 +32,59 @@ Entries are newest first.
 
 ---
 
+## 2026-10-07
+
+### `fleet-repo` replaces `git-clone-worktree`, and a manifest entry can declare its container
+
+`fleet-repo clone <project>` makes a bare container match its manifest entry, and `fleet-repo update`
+and `fleet-repo check` keep it matching. `git-clone-worktree` still exists and forwards to it
+(`--mani-project <name>` to `clone <name>`, `<url> [target]` to `clone --url`, `--filter=` as an
+override), so no `clone:` line breaks. A domain can move its lines to `fleet-repo clone <name>` at its
+own pace.
+
+- **What a container fetches is now declared.** A project's `container:` block takes `branches`
+  (`all`, `default` or a list) and `filter` (a partial clone, for a fresh clone only); a fleet-level
+  `containerDefaults.branches` sets the default, and absent still means `all`, so a machine that
+  declares nothing behaves as before. The default branch and every `worktrees:` branch are always
+  fetched. Branches outside the set never arrive, which also avoids the ref collisions that
+  case-differing branch names cause on a case-insensitive file system.
+- **Re-running reconciles, and never deletes your branches.** `mani sync` runs `clone:` only where
+  `path` is missing, so a changed declaration reaches an existing container only through
+  `fleet-repo clone <name>` run by hand. That adds and fetches new branches, drops the refspec and
+  remote-tracking ref of an undeclared one, and only reports a local branch or worktree for it.
+  The old tool deleted every local branch except the default on each re-run.
+- **A container is bare to `wt-config-gen` without a `worktrunk:` block.** An entry with a
+  `container:` block, or a `clone:` that runs `fleet-repo` or `git-clone-worktree`, gets the sibling
+  worktree layout unless `worktrunk.layout` says otherwise. After the next apply, those entries
+  gain a table in the generated worktrunk config; `worktrunk: {layout: bare}` on them is redundant.
+- **`fleet-decl` grows read-only additions:** `--entry-list <project> <key> [<item-key>]`, and
+  `--check` validates `container:` and `containerDefaults:` (a near-miss such as `branchs` is a
+  finding). Its exit codes and every existing answer are unchanged.
+- No ACTION is required. To adopt: change a `clone:` line to `fleet-repo clone <name>`, move any
+  `--filter=` into `container.filter`, and run `fleet-repo check`. The shim is removed once no
+  manifest names it.
+
+### A private layer carries a trigger for each input it ships — ACTION where its manifest has none
+
+The base re-runs its generators and installers only when the base's files change. An input a private
+layer ships (its manifest, its Claude settings fragment, its skill list) reaches its deployed file on
+apply and reaches nothing generated from it unless the layer carries a `run_onchange_` script that
+hashes it. A layer without one applied a manifest declaring bare containers, and worktrunk kept the
+nested layout, with nothing to say so.
+
+- **`overlay-doctor` checks it (Tier T)**, and a missing trigger, or one that exists but does not hash
+  its input, gates. Every row is in `docs/reference/private-layer.md`, "Triggers".
+- **ACTION** for a layer that ships `Devel/mani.yaml.tmpl` without
+  `run_onchange_after_generate-worktrunk-config.sh.tmpl`: copy it from `overlay-skeleton/`, keep the
+  `include` line for each input you ship, apply, and re-run `overlay-doctor`. Until then,
+  `wt-config-gen` by hand.
+- **Two mechanisms moved into the base as opt-in tools**, so a layer's trigger is a few lines:
+  `install-claude-plugins` (declaring a plugin does not install it) and `install-test-gate` (a
+  test-suite commit gate for the layer's own repository, which refuses to overwrite a pre-commit it
+  did not write). Their triggers are in `overlay-skeleton/opt-in/`, which `scaffold-overlay` does not
+  copy: some machines may not install plugins or run custom git hooks. The doctor requires the plugin
+  trigger only where the fragment declares plugins, and only notes a layer test suite without a gate.
+
 ## 2026-10-05
 
 ### The overlay's global gitignore must carry the base's defaults — ACTION, and it has since 2026-09-30

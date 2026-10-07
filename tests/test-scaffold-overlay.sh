@@ -17,6 +17,13 @@ SKEL="$here/../overlay-skeleton" sh "$script" "$tmp/new-overlay"
 [ -f "$tmp/new-overlay/README.md" ]                          || { echo "FAIL: README"; exit 1; }
 grep -q "trusted: true" "$tmp/new-overlay/dot_dotlocal/Brewfile.role" || { echo "FAIL: tap-trust guidance missing"; exit 1; }
 grep -q "IdentitiesOnly" "$tmp/new-overlay/dot_dotlocal/ssh/config"     || { echo "FAIL: ssh example missing"; exit 1; }
+# The REQUIRED trigger lands (a scaffolded layer ships a manifest), and the OPT-IN ones do not: a
+# machine that may not install plugins or run custom git hooks must not get them by scaffolding.
+[ -f "$tmp/new-overlay/run_onchange_after_generate-worktrunk-config.sh.tmpl" ] || { echo "FAIL: worktrunk trigger missing"; exit 1; }
+for o in run_onchange_after_install-claude-plugins.sh.tmpl run_onchange_install-test-gate.sh.tmpl; do
+  [ ! -e "$tmp/new-overlay/$o" ] || { echo "FAIL: opt-in $o activated by scaffolding"; exit 1; }
+done
+[ ! -e "$tmp/new-overlay/opt-in" ] || { echo "FAIL: the opt-in directory was copied"; exit 1; }
 # refuses a non-empty dest
 if SKEL="$here/../overlay-skeleton" sh "$script" "$tmp/new-overlay" 2>/dev/null; then echo "FAIL: should refuse non-empty"; exit 1; fi
 # Tier-B/C shaped stubs land (overlay-doctor's required set):

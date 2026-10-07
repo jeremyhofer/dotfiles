@@ -31,6 +31,9 @@ mk() { # build a COMPLETE, compliant fake overlay source at $1
   echo '[data]'              > "$ov/.chezmoi.toml.tmpl"
   echo 'projects: []'        > "$ov/Devel/mani.yaml.tmpl"
   cp "$here/../overlay-skeleton/dot_gitignore_global.example" "$ov/dot_gitignore_global"
+  # A layer that ships a manifest must carry the trigger that regenerates worktrunk's config from it.
+  printf '#!/bin/sh\n# {{ include "Devel/mani.yaml.tmpl" | sha256sum }}\nwt-config-gen\n' \
+    > "$ov/run_onchange_after_generate-worktrunk-config.sh.tmpl"
 }
 
 # Case A — complete overlay -> exit 0
@@ -59,6 +62,34 @@ out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL(D): gpgsign=true needs ensure-keys, got ${rc:-0}"; echo "$out"; exit 1; }
 echo "$out" | grep -q 'ensure-keys' || { echo "FAIL(D): ensure-keys not flagged"; echo "$out"; exit 1; }
 echo "ok:   gpgsign=true requires ensure-keys (exit 1)"
+
+# --- Tier T: a layer that ships an input to a base mechanism carries the trigger that re-runs it --
+# The base re-runs its generators only when ITS inputs change; an input the layer ships reaches the
+# deployed file and never the generated one unless the layer's own run_onchange_ script hashes it.
+tcase() { # tcase <label> <expect-rc> <grep-pattern-or-empty>
+  out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+  [ "${rc:-0}" -eq "$2" ] || { echo "FAIL($1): expected exit $2, got ${rc:-0}"; echo "$out"; exit 1; }
+  [ -z "$3" ] || echo "$out" | grep -q "$3" || { echo "FAIL($1): '$3' not reported"; echo "$out"; exit 1; }
+  echo "ok:   $1"
+}
+mk "$tmp/ov"; rm "$tmp/ov/run_onchange_after_generate-worktrunk-config.sh.tmpl"
+tcase "T1 manifest without the worktrunk trigger is missing" 1 'MISSING .*generate-worktrunk-config'
+mk "$tmp/ov"; printf '#!/bin/sh\nwt-config-gen\n' > "$tmp/ov/run_onchange_after_generate-worktrunk-config.sh.tmpl"
+tcase "T2 a trigger that does not hash the manifest is missing" 1 'MISSING .*does not hash Devel/mani.yaml'
+mk "$tmp/ov"; echo '[projects."x"]' > "$tmp/ov/dot_dotlocal/worktrunk.toml"
+tcase "T3 a worktrunk fragment the trigger does not hash is missing" 1 'MISSING .*does not hash dot_dotlocal/worktrunk.toml'
+mk "$tmp/ov"; mkdir -p "$tmp/ov/dot_dotlocal/claude"; printf '#!/bin/sh\necho {}\n' > "$tmp/ov/dot_dotlocal/claude/executable_settings-declared"
+tcase "T4 a settings fragment without the merge trigger is missing" 1 'MISSING .*merge-claude-settings'
+printf '#!/bin/sh\n# {{ include "dot_dotlocal/claude/executable_settings-declared" | sha256sum }}\n' > "$tmp/ov/run_onchange_after_merge-claude-settings.sh.tmpl"
+tcase "T5 a fragment declaring no plugins needs no plugin installer (opt-in)" 0 ''
+printf '#!/bin/sh\necho "{\"enabledPlugins\": {}}"\n' > "$tmp/ov/dot_dotlocal/claude/executable_settings-declared"
+tcase "T6 a fragment declaring plugins without the installer trigger is missing" 1 'MISSING .*install-claude-plugins'
+cp "$tmp/ov/run_onchange_after_merge-claude-settings.sh.tmpl" "$tmp/ov/run_onchange_after_install-claude-plugins.sh.tmpl"
+tcase "T7 ...and with it passes" 0 ''
+mk "$tmp/ov"; echo 'skill_externals: []' > "$tmp/ov/dot_dotlocal/skill-externals.yaml"
+tcase "T8 a skill-externals list without its trigger is missing" 1 'MISSING .*sync-skill-externals'
+mk "$tmp/ov"; mkdir -p "$tmp/ov/tests"; echo '#!/bin/sh' > "$tmp/ov/tests/run-all.sh"
+tcase "T9 a test suite without a gate is advised, not failed (opt-in: no custom hooks on some machines)" 0 'NOTE .*install-test-gate'
 
 # --- Tier P: every overlay file carries a reason to be private, or is reported as a candidate to move
 # to the base. ADVISORY: it never changes the exit code, so an overlay written before the list existed

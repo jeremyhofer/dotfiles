@@ -18,7 +18,7 @@ fleet-decl --check      # prints findings; exit 0 clean, 1 findings, 2 the file 
 ```
 
 `overlay-doctor` runs the same check on the private layer's copy. Keys this page does not list are
-allowed (other tools may read the file), except near-misses of the `leak*`, `canonical*` and
+allowed (other tools may read the file), except near-misses of the `leak*`, `canonical*`, `container*` and
 `worktrunk` names below, which `--check` refuses as probable typos.
 
 ## What reading it means for a missing or broken file
@@ -41,8 +41,8 @@ Each entry is `projects.<name>`. The name is the key other tools use (`fleet-dec
 | `url` | the clone URL | `mani sync` sets `origin` from it. Required by `mani` |
 | `tags` | list | `mani` selects by tag (`mani sync --tags active`). Two tags also change what the base's tools do (below) |
 | `env` | map | exported to `mani` tasks for that project |
-| `clone` | a command | replaces `mani`'s own clone; `git-clone-worktree --mani-project <name>` gives the bare-plus-worktrees layout. Leaving it out of a bare-layout entry is silent: `mani sync` succeeds with an ordinary checkout |
-| `worktrees` | list of `{name, path}` | worktrees `mani` creates beside the clone; `path` is relative to the project's `path`, so a sibling is `../<name>` |
+| `clone` | a command | replaces `mani`'s own clone; `fleet-repo clone <name>` gives the bare-plus-worktrees layout (`git-clone-worktree --mani-project <name>` still works, as a forwarding shim). Leaving it out of a bare-layout entry is silent: `mani sync` succeeds with an ordinary checkout. `mani` runs it only where `path` does not exist yet, so a later change to the declaration reaches an existing container through `fleet-repo clone <name>` run by hand (it reconciles), never through `mani sync` |
+| `worktrees` | list of `{name, path}` | worktrees `mani` creates beside the clone; `path` is relative to the project's `path`, so a sibling is `../<name>`. Each `name` is a branch, and `fleet-repo` fetches it and creates the worktree itself, with an upstream |
 | `sync` | `false` | `mani sync` never clones it, not even when named (`mani sync <name>`); clone it by hand if a machine wants it. Once it exists on disk it is an ordinary project: `mani exec --all`, `mani run` and `mani list` include it, and `fleet-decl` reads its declarations either way |
 
 Top-level `tasks:` are `mani` tasks (`mani run <task>`). `lint-tasknames` checks their names against
@@ -65,6 +65,8 @@ Every other tag is the domain's own vocabulary and only selects.
 | `leakPolicy` | `strict`, `private`, `notes` or `internal` | `leak-guard`, `hook-doctor` | yes, unless tagged `upstream` or fleet-only (see below). `fleet-decl --check` reports `[policy-missing]` |
 | `leakPrefix` | comma-separated identifier prefixes | `leak-guard` | no. The repository's own program prefix(es): markers carrying one of them are allowed in this repository |
 | `leakDisable` | `true` | `leak-guard`, `hook-doctor` | no. Turns the publish guard off for this repository entirely; prefer a wider `leakPolicy` |
+| `container.branches` | `all`, `default` or a list of branch names | `fleet-repo` | no. Which branches a bare container fetches, beyond the default branch and every `worktrees:` name (always fetched). Absent: `containerDefaults.branches`, else `all` |
+| `container.filter` | a git `--filter` spec, e.g. `blob:none` | `fleet-repo` | no. A partial clone: every commit and tree, file contents only on demand. Applies to a FRESH clone only; on an existing unfiltered container it is reported, not applied |
 | `worktrunk.layout` | `bare` or `nested` | `wt-config-gen` | no. Where `wt` puts worktrees: siblings of a bare clone, or under `<repo>/.worktrees/` |
 | `worktrunk.bootstrap` | `true` or `false` | `wt-config-gen` | no. Whether a new worktree installs its dependencies (`wt-bootstrap`) |
 | `canonical` | a session name | a domain's session launcher, if it has one; `memory-doctor` | no. Declares the project's long-running agent session |
@@ -72,6 +74,41 @@ Every other tag is the domain's own vocabulary and only selects.
 | `canonicalLaunchDir` | a path | the session launcher; `memory-doctor` | yes when `canonical` is set |
 | `canonicalLaunchModel` | a model id | the session launcher | yes when `canonical` is set |
 | `canonicalMachines` | list of machine names | the session launcher | yes when `canonical` is set |
+
+**A container is declared by a `container:` block, or by a `clone:` command that runs `fleet-repo`**
+(or its older name `git-clone-worktree`). Such an entry is bare to `wt-config-gen` unless
+`worktrunk.layout` says otherwise, so the layout is stated once. `fleet-decl --check` validates the
+block: `branches` must be `all`, `default` or a list of non-empty strings, `filter` a non-empty
+string, and a near-miss of either key (`branchs`) is reported as `[container-key]`.
+
+```yaml
+containerDefaults:            # fleet level; absent means every entry's branches is all
+  branches: default
+projects:
+  ios:
+    path: work/ios/develop    # <container>/<default-branch>
+    url: git@github.com:org/ios.git
+    clone: fleet-repo clone ios
+    worktrees:
+      - name: main
+        path: ../main
+    container:
+      branches: default       # all | default | [names]
+      filter: blob:none
+```
+
+What each form fetches: `all`, every branch; `default`, the remote's default branch only; a list,
+the default plus those names; and in every case the `worktrees:` branches. The set is written into
+the container as fetch refspecs, so a later `git fetch` or `git pull` stays inside it. That is also
+what keeps branch names differing only in case (`Feature/x`, `feature/x`) from colliding on a
+case-insensitive file system: an undeclared one is never fetched. Changing the declaration and
+running `fleet-repo clone <name>` again reconciles an existing container: it adds and fetches new
+branches, drops the refspec and remote-tracking ref of a branch no longer declared, and only
+REPORTS a local branch or worktree for it, since either may hold unpushed work.
+
+`fleet-repo check` compares the declaration with the disk (exit 0 clean, 1 drift, 2 manifest
+unusable) and `fleet-repo update` fast-forwards a repository's worktrees; `fleet-repo --help` has
+the details.
 
 **What `leakPolicy` allows.** The publish guard keeps two classes of the domain's private vocabulary
 out of repositories, from files the private layer supplies under `~/.dotlocal/`: **markers**
@@ -95,6 +132,7 @@ settings is exempt from `leakPolicy`: no path resolves to it, so a policy would 
 
 | Key | Value | Read by |
 | --- | --- | --- |
+| `containerDefaults.branches` | `all`, `default` or a list | `fleet-repo`: the `container.branches` of every entry that sets none; absent means `all` (a domain with very large repositories sets `default`) |
 | `remoteConvention.remotes.<name>` | `{from: url | env.<VAR>, required: bool}` | a domain's own remote-setup tool, if it has one (`fleet-decl --fleet-keys remoteConvention.remotes`) |
 | `remoteConvention.fanout` | `{name, fetch, push: [remotes]}` | the same: one remote that fetches from one and pushes to several |
 | `remoteConvention.retire` | list of remote names | the same: removed from every managed repository wherever found |

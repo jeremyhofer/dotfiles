@@ -1,0 +1,664 @@
+#!/usr/bin/env bash
+# fleet-repo — make each repository on disk match its entry in the fleet manifest.
+#
+#   fleet-repo clone <project> [--filter=<spec>] [--branches=<all|default|a,b,..>]
+#   fleet-repo clone --url <url> [target] [--filter=<spec>] [--branches=<all|default|a,b,..>]
+#   fleet-repo update [--project <name>]
+#   fleet-repo check [<project>]
+#   fleet-repo -h | --help
+#
+#   exit 0  done / no drift
+#   exit 1  something could not be done (a worktree that would not create or fast-forward, a fetch
+#           that failed) or, for `check`, drift was found
+#   exit 2  the invocation or the manifest is unusable: bad usage, no manifest found, or a manifest
+#           `fleet-decl` cannot read. A caller enforcing anything treats 2 as a refusal.
+#
+# THE LAYOUT. A "container" is a bare clone with every branch checked out as a sibling directory:
+#
+#   <container>/
+#     .bare/            the git directory (a bare clone)
+#     .git              a file containing "gitdir: ./.bare"
+#     <default-branch>/ a worktree for the repository's default branch
+#     <other-branch>/   further worktrees, declared in the manifest or added later with `wt`
+#
+# Its point: no single directory's deletion is catastrophic. The git data lives in .bare, so
+# removing any one worktree, the default branch's included, loses only that checkout. In an ordinary
+# clone the git directory lives inside the primary checkout, and deleting it orphans every other
+# worktree of the repository.
+#
+# WHAT EACH VERB DOES
+#   clone <project>   Read the entry, make the container match it. A fresh path: clone the default
+#                     branch only, add the rest of the fetched set, fetch once, set each worktree
+#                     branch's upstream, create the worktrees. An existing container is RECONCILED:
+#                     missing refspecs are added and fetched; a branch no longer declared loses its
+#                     refspec and remote-tracking ref, but a local branch or worktree for it is only
+#                     REPORTED, never deleted (it may hold unpushed work); upstreams are repaired and
+#                     missing worktrees created. Idempotent, which is what makes it safe as a
+#                     `clone:` command a sync tool invokes. `clone --url` is the same for a
+#                     repository not in the manifest, with no declaration, so every branch.
+#   update            In a repository (or `--project <name>`): ONE fetch for the container, then a
+#                     fast-forward-only merge of each worktree's upstream, one line per worktree
+#                     saying what happened. Exit 1 if any could not move. Across many repositories:
+#                     mani exec --all --parallel 'fleet-repo update'
+#   check [<project>] Drift between declaration and disk, reported and never fixed: no container, a
+#                     plain clone where a container is declared, fetch refspecs that differ from the
+#                     declared set, a missing worktree, a missing upstream, a container the
+#                     generated worktrunk config has no table for. With no project, every entry that
+#                     declares a container. Offline.
+#
+# THE DECLARATION, read through fleet-decl so every tool resolves an entry the same way:
+#     path: <container>/<default-branch>   the container is its PARENT (mani runs tasks in `path`)
+#     url:  <the remote>
+#     worktrees: [{name: <branch>, path: <relative to path>}]    mani's own key, each name a branch
+#     container:
+#       branches: all | default | [names]  default: containerDefaults.branches, else all
+#       filter:   blob:none                a partial clone; applies to a FRESH clone only
+#   The fetched set is the remote's default branch, plus every `worktrees:` branch, plus all
+#   branches / none / the listed names. It is written into the container as fetch refspecs, so every
+#   later `git fetch` and `git pull` stays inside it: a branch that is not declared never arrives,
+#   which also keeps branch names that differ only in case (Feature/x, feature/x) from colliding on
+#   a case-insensitive filesystem. `all` is the one form that needs no second fetch after cloning.
+#
+#   --filter=<spec> and --branches=<..> override the declaration. --filter=blob:none fetches every
+#   commit and tree but file contents only as needed (the server must allow filters; GitHub does),
+#   for a repository with a long history of large files; old versions (`blame`, `log -p`) are fetched
+#   on demand and need the network. A filter declared for an EXISTING unfiltered container is
+#   reported and not applied: converting one is a re-clone.
+#
+# WHERE THE MANIFEST IS. $FLEET_RECORD if set; else the nearest mani.yaml (or mani.yml) at or above
+# the current directory, as mani itself finds it; else ~/Devel/mani.yaml. `path` is resolved against
+# the manifest's directory, never the current one: run by hand from a subdirectory, the old tool
+# built the container there. The manifest is read with fleet-decl (a sibling file, else on PATH).
+#
+# A post-worktree-create hook is offered, not required: see run_post_worktree_create_hook below.
+set -euo pipefail
+
+die() { printf 'fleet-repo: %s\n' "$1" >&2; exit "${2:-1}"; }
+say() { printf 'fleet-repo: %s\n' "$1"; }
+PROBLEMS=0
+problem() { printf 'fleet-repo: WARNING: %s\n' "$1" >&2; PROBLEMS=$((PROBLEMS + 1)); }
+
+usage() { sed -n '2,/^set /{/^set /d;s/^# \{0,1\}//;p;}' "$0"; }
+
+# ---- plumbing ---------------------------------------------------------------------------------
+
+# Find a companion tool: next to this file when it runs from a source tree or an install directory
+# (the source copy is named executable_<name>), else on PATH. The sibling comes first so the
+# forwarding shim and the test suite use the checkout they sit in, not an older deployed copy.
+here=$(cd "$(dirname "$0")" && pwd)
+sibling() {
+  local c
+  for c in "$here/$1" "$here/executable_$1"; do
+    if [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
+  done
+  command -v "$1" 2>/dev/null || true
+}
+FLEET_DECL=$(sibling fleet-decl)
+
+# decl_into VAR <fleet-decl args>: VAR gets the value. Returns 1 when nothing is declared (VAR is
+# empty), exits 2 when the manifest cannot be read. Never `x=$(decl ..) || x=""`: that would turn
+# exit 2 into "nothing declared", the collapse fleet-decl's exit codes exist to prevent.
+decl_into() {
+  local _v=$1 _out _rc=0
+  shift
+  _out=$("$FLEET_DECL" "$@" 2>&1) || _rc=$?
+  case "$_rc" in
+    0) printf -v "$_v" '%s' "$_out" ;;
+    1) printf -v "$_v" '%s' ""; return 1 ;;
+    *) die "the manifest cannot be read: $_out" 2 ;;
+  esac
+}
+
+# A path with . and .. collapsed lexically; relative input is taken against $PWD. Lexical because a
+# declared worktree path usually does not exist yet, so `cd` cannot resolve it.
+lexnorm() {
+  local p=$1 out="" seg rest
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  rest=${p#/}
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*) seg=${rest%%/*}; rest=${rest#*/} ;;
+      *)   seg=$rest; rest="" ;;
+    esac
+    case "$seg" in
+      ""|.) ;;
+      ..) out=${out%/*} ;;
+      *) out="$out/$seg" ;;
+    esac
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+# Sets RECORD and MDIR (the manifest's directory) and exports what fleet-decl reads. Exit 2 with a
+# message that names where it looked, since "no such project" would send the reader to the wrong
+# place.
+load_manifest() {
+  local r="" d
+  [ -n "$FLEET_DECL" ] || die "fleet-decl is not installed, so the manifest cannot be read" 2
+  if [ -n "${FLEET_RECORD:-}" ]; then
+    r=$FLEET_RECORD
+    [ -f "$r" ] || die "FLEET_RECORD names $r, which does not exist" 2
+  else
+    d=$PWD
+    while :; do
+      if [ -f "$d/mani.yaml" ]; then r="$d/mani.yaml"; break; fi
+      if [ -f "$d/mani.yml" ]; then r="$d/mani.yml"; break; fi
+      [ "$d" = / ] && break
+      d=$(dirname "$d")
+    done
+    if [ -z "$r" ] && [ -f "$HOME/Devel/mani.yaml" ]; then r="$HOME/Devel/mani.yaml"; fi
+    [ -n "$r" ] || die "no manifest: looked for mani.yaml at or above $PWD and at $HOME/Devel/mani.yaml (set FLEET_RECORD to name one)" 2
+  fi
+  MDIR=$(cd "$(dirname "$r")" && pwd)
+  RECORD="$MDIR/$(basename "$r")"
+  export FLEET_RECORD="$RECORD"
+  export FLEET_DEVEL_ROOT="${FLEET_DEVEL_ROOT:-$MDIR}"
+}
+
+# Newline lists as sets. All exact-line, so branch names that differ only in case stay different.
+list_minus() { awk 'NR==FNR { b[$0] = 1; next } NF && !($0 in b)' <(printf '%s\n' "$2") <(printf '%s\n' "$1"); }
+list_dedupe() { awk 'NF && !seen[$0]++'; }
+brief() {  # a newline list as "a b c (+N more)"
+  awk 'NF { n++; if (n <= 5) s = s (n > 1 ? " " : "") $0 } END { if (n > 5) s = s " (+" (n - 5) " more)"; print s }'
+}
+
+# Does the clone: value run this tool (or its older name) as a command word? A substring would
+# match `echo not-fleet-repo-really`.
+declares_container_clone() {
+  printf '%s\n' "$1" | grep -Eq '(^|[ /;&|])(fleet-repo|git-clone-worktree)([ ]|$)'
+}
+
+# ---- the entry --------------------------------------------------------------------------------
+# Fills P_URL P_PATH P_TARGET (the container, absolute) P_EXPECT (the default worktree's directory
+# name as declared) P_FILTER P_MODE (all|default|list) P_LIST WT_NAMES WT_DIRS (parallel newline
+# lists; WT_DIRS absolute).
+load_entry() {
+  local p=$1 v names paths i n rel
+  case "$p" in ""|*[!A-Za-z0-9_.-]*) die "'$p' is not a manifest project name" 2 ;; esac
+  decl_into P_URL --entry "$p" url || die "no such project in $RECORD, or it has no url: $p" 2
+  decl_into P_PATH --entry "$p" path || die "project $p has no path in $RECORD" 2
+  [ -n "$P_URL" ] || die "project $p has no url" 2
+  [ -n "$P_PATH" ] || die "project $p has no path" 2
+  # mani's path names the DEFAULT-BRANCH WORKTREE, so the container is its parent. Keeping that
+  # convention is what lets `mani exec` run ordinary git commands: the container is bare and has no
+  # work tree, so it cannot be the exec target.
+  P_TARGET=$(lexnorm "$MDIR/$(dirname "$P_PATH")")
+  P_EXPECT=$(basename "$P_PATH")
+  decl_into P_FILTER --entry "$p" container.filter || P_FILTER=""
+  P_MODE=all; P_LIST=""
+  if decl_into v --entry-list "$p" container.branches; then P_MODE=list; P_LIST=$v
+  elif decl_into v --entry "$p" container.branches; then P_MODE=$v
+  elif decl_into v --fleet-list containerDefaults.branches; then P_MODE=list; P_LIST=$v
+  elif decl_into v --fleet containerDefaults.branches; then P_MODE=$v
+  fi
+  [ "$P_MODE" != '[]' ] || { P_MODE=list; P_LIST=""; }
+  case "$P_MODE" in all|default|list) ;; *) die "container.branches for $p is '$P_MODE': want all, default or a list (fleet-decl --check says more)" 2 ;; esac
+  WT_NAMES=""; WT_DIRS=""
+  if decl_into names --entry-list "$p" worktrees name; then
+    decl_into paths --entry-list "$p" worktrees path || paths=""
+    i=0
+    while IFS= read -r n; do
+      i=$((i + 1))
+      [ -n "$n" ] || continue
+      rel=$(printf '%s\n' "$paths" | sed -n "${i}p")
+      [ -n "$rel" ] || rel="../$n"
+      WT_NAMES="$WT_NAMES$n
+"
+      WT_DIRS="$WT_DIRS$(lexnorm "$MDIR/$P_PATH/$rel")
+"
+    done <<EOF
+$names
+EOF
+  fi
+  return 0
+}
+
+# The nth line of a newline list.
+nth() { printf '%s\n' "$1" | sed -n "${2}p"; }
+
+# ---- git helpers ------------------------------------------------------------------------------
+# managed_refspecs: the branch names (or *) behind the container's `+refs/heads/X:refs/remotes/
+# origin/X` fetch refspecs. Other refspecs are somebody else's and left alone.
+managed_refspecs() {
+  git --git-dir="$1" config --get-all remote.origin.fetch 2>/dev/null \
+    | sed -n 's#^+refs/heads/\([^:]*\):refs/remotes/origin/\1$#\1#p' || true
+}
+
+has_ref() { git --git-dir="$1" rev-parse -q --verify "$2" >/dev/null 2>&1; }
+
+# CONTRACT: ~/.dotlocal/hooks/post-worktree-create <absolute-worktree-path>
+# A new worktree is the moment a per-worktree defect is BORN and the cheapest moment to catch it:
+# whoever is here is about to run an install anyway. This base repo is public and must not depend on
+# any private tooling, so it does not name a checker; it offers a documented hook and runs it if
+# something has been installed there. ADVISORY ONLY: the exit status is discarded, because a
+# reporting hook that can fail a worktree creation is a guard people route around.
+run_post_worktree_create_hook() {
+  local hook="$HOME/.dotlocal/hooks/post-worktree-create"
+  [ -x "$hook" ] || return 0
+  "$hook" "$1" || true
+}
+
+# ---- clone ------------------------------------------------------------------------------------
+# Globals in: URL TARGET EXPECT FILTER MODE LIST WT_NAMES WT_DIRS
+do_clone() {
+  local bare="$TARGET/.bare" fresh=0 default desired have want drop add b n i dir refspec remote_heads
+  local wild='+refs/heads/*:refs/remotes/origin/*'
+
+  # A directory that already holds files but no .bare is not a container, and making it one puts a
+  # .git into whatever it was. The usual cause is a manifest `path:` naming the container instead of
+  # its default-branch worktree: the container is then the PARENT, and for a top-level entry that is
+  # the devel root itself.
+  if [ ! -d "$bare" ] && [ -d "$TARGET" ] && [ -n "$(ls -A "$TARGET")" ]; then
+    die "$TARGET already holds files and is not a container; refusing to clone into it. As a mani clone: command, path: must name the worktree, <container>/<default-branch>, and the container is its parent"
+  fi
+
+  if [ -d "$bare" ]; then
+    say "$TARGET already present; ensuring it is complete"
+  else
+    fresh=1
+    mkdir -p "$TARGET"
+    if [ "$MODE" = all ]; then
+      # A bare clone does not fetch like a normal one: it records no fetch refspec, so `git fetch`
+      # would update nothing and no refs/remotes/origin/* would exist. Given at clone time, the
+      # clone itself fills them, so a fresh `all` clone needs no second fetch (a further network
+      # round trip, and the fetch set off git's automatic maintenance as well).
+      git clone --bare ${FILTER:+"--filter=$FILTER"} -c "remote.origin.fetch=$wild" "$URL" "$bare"
+    else
+      # Only the default branch comes down; the rest of the fetched set is added below.
+      git clone --bare --single-branch ${FILTER:+"--filter=$FILTER"} "$URL" "$bare"
+    fi
+    printf 'gitdir: ./.bare\n' > "$TARGET/.git"
+  fi
+
+  # The default branch comes from the bare clone's own HEAD, which git set from the remote's HEAD at
+  # clone time. This is why main / master / develop all work without being special-cased, and it
+  # needs no second network round trip.
+  default=$(git --git-dir="$bare" symbolic-ref --short HEAD 2>/dev/null || true)
+  [ -n "$default" ] || die "could not determine the default branch of $URL"
+
+  # --- the fetched set: refspecs ------------------------------------------------------------
+  if [ "$MODE" = all ]; then
+    want='*'
+  else
+    desired=$(printf '%s\n%s%s\n' "$default" "$WT_NAMES" "$LIST" | list_dedupe)
+    # Only branches that exist on the remote: a refspec for a missing one makes every later fetch
+    # fail with "couldn't find remote ref". One listing, exact-string match.
+    remote_heads=$(git --git-dir="$bare" ls-remote --heads origin | sed 's#^[0-9a-f]*[[:space:]]*refs/heads/##') \
+      || die "cannot list the branches of $URL"
+    want=""
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      if ! git check-ref-format "refs/heads/$b" 2>/dev/null; then
+        problem "'$b' is not a valid branch name; skipped"
+      elif [ "$b" = "$default" ] || printf '%s\n' "$remote_heads" | grep -Fxq -- "$b"; then
+        want="$want$b
+"
+      else
+        problem "branch $b is declared but does not exist on the remote; skipped"
+      fi
+    done <<EOF
+$desired
+EOF
+  fi
+  have=$(managed_refspecs "$bare")
+  drop=$(list_minus "$have" "$want")
+  add=$(list_minus "$want" "$have")
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    git --git-dir="$bare" config --fixed-value --unset-all remote.origin.fetch "+refs/heads/$b:refs/remotes/origin/$b"
+  done <<EOF
+$drop
+EOF
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    if [ "$b" = '*' ]; then
+      git --git-dir="$bare" config --add remote.origin.fetch "$wild"
+    else
+      git --git-dir="$bare" remote set-branches --add origin "$b"
+    fi
+  done <<EOF
+$add
+EOF
+
+  # A fresh `all` clone already fetched everything; every other case fetches once.
+  if [ "$fresh" = 0 ] || [ "$MODE" != all ]; then
+    git --git-dir="$bare" fetch --quiet origin
+  fi
+
+  # --- branches no longer declared ----------------------------------------------------------
+  if [ "$MODE" != all ]; then
+    # Remote-tracking refs outside the set go, in ONE update-ref transaction (a process per ref is
+    # what made the old tool take 8.9 s at 3000 branches). Empty input is a no-op that exits 0.
+    local keep_refs have_refs gone
+    keep_refs=$(printf '%s\n' "$want" | awk 'NF { print "refs/remotes/origin/" $0 }')
+    have_refs=$(git --git-dir="$bare" for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v '^refs/remotes/origin/HEAD$' || true)
+    gone=$(list_minus "$have_refs" "$keep_refs")
+    if [ -n "$gone" ]; then
+      printf '%s\n' "$gone" | sed 's/^/delete /' | git --git-dir="$bare" update-ref --stdin
+      say "dropped $(printf '%s\n' "$gone" | awk 'END { print NR }') remote-tracking ref(s) no longer declared"
+      # Never delete what may hold work: say what survives, and how to remove it.
+      local wts
+      wts=$(git --git-dir="$bare" worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\//{print substr($0,19) "\t" p}')
+      while IFS= read -r b; do
+        n=${b#refs/remotes/origin/}
+        if has_ref "$bare" "refs/heads/$n"; then
+          say "kept local branch $n (no longer declared; remove with: git branch -D $n)"
+        fi
+        printf '%s\n' "$wts" | awk -F'\t' -v n="$n" '$1 == n { print $2 }' | while IFS= read -r dir; do
+          say "kept worktree $dir for $n (no longer declared; remove with: git worktree remove $dir)"
+        done
+      done <<EOF
+$gone
+EOF
+    fi
+  fi
+
+  # A bare clone creates a local branch for every remote branch, so `git branch` lists them all and
+  # every one of them is a name that cannot be checked out anywhere useful. On a FRESH clone keep
+  # only the default; the rest remain reachable as refs/remotes/origin/*, which is what a later
+  # `git worktree add` wants. Never on an existing container: a local branch there is somebody's.
+  # One transaction; with --single-branch there are no extras, and empty input is a no-op.
+  if [ "$fresh" = 1 ] && [ "$MODE" = all ]; then
+    git --git-dir="$bare" for-each-ref --format='delete %(refname)' refs/heads/ \
+      | awk -v keep="delete refs/heads/$default" '$0 != keep' \
+      | git --git-dir="$bare" update-ref --stdin
+  fi
+
+  if [ -n "$EXPECT" ] && [ "$EXPECT" != "$default" ]; then
+    printf 'fleet-repo: WARNING: manifest expects the worktree at %s/%s, but the default branch is %s.\n' \
+      "$TARGET" "$EXPECT" "$default" >&2
+    printf '            Creating %s. Update the manifest path, or that path will not resolve.\n' "$default" >&2
+  fi
+
+  # --- worktrees ----------------------------------------------------------------------------
+  if [ -d "$TARGET/$default" ]; then
+    say "worktree $TARGET/$default already present"
+  else
+    git -C "$TARGET" worktree add "$default" "$default"
+  fi
+
+  i=0
+  while IFS= read -r b; do
+    i=$((i + 1))
+    [ -n "$b" ] || continue
+    [ "$b" != "$default" ] || continue            # the default has its own worktree above
+    dir=$(nth "$WT_DIRS" "$i")
+    if [ -e "$dir" ]; then
+      say "worktree $dir already present"
+      continue
+    fi
+    if ! has_ref "$bare" "refs/heads/$b"; then
+      if has_ref "$bare" "refs/remotes/origin/$b"; then
+        git --git-dir="$bare" branch --quiet --track "$b" "origin/$b"
+      else
+        problem "worktree $dir: branch $b is not on the remote, so it cannot be created"
+        continue
+      fi
+    fi
+    if git -C "$TARGET" worktree add "$dir" "$b"; then
+      run_post_worktree_create_hook "$(cd "$dir" 2>/dev/null && pwd)"
+    else
+      problem "could not create worktree $dir for $b"
+    fi
+  done <<EOF
+$WT_NAMES
+EOF
+
+  # A bare clone records no upstream, so `git pull` in a worktree stops at "There is no tracking
+  # information" -- and `mani exec --all 'git pull --ff-only'`, the fleet's update, skipped every
+  # container while updating every plain clone. Set it on every run for every branch that has a
+  # worktree, so a re-run also repairs a container cloned before this line existed.
+  for b in "$default" $(printf '%s' "$WT_NAMES" | tr '\n' ' '); do
+    if has_ref "$bare" "refs/heads/$b" && has_ref "$bare" "refs/remotes/origin/$b"; then
+      git --git-dir="$bare" branch --set-upstream-to="origin/$b" "$b" >/dev/null
+    fi
+  done
+
+  # A filter is applied by `git clone`, so it cannot be applied here.
+  if [ "$fresh" = 0 ] && [ -n "$FILTER" ] \
+     && [ "$(git --git-dir="$bare" config remote.origin.promisor 2>/dev/null || true)" != true ]; then
+    say "NOTE: filter $FILTER is declared but $TARGET is not a partial clone; not applied (a filter applies to a fresh clone only; re-clone to change it)"
+  fi
+
+  say "$TARGET ready (default branch: $default)"
+  # ABSOLUTISE before handing the path over. $TARGET may come from the caller relative, and a hook
+  # that receives a relative path resolves it against whatever directory it runs in, so it would
+  # inspect the wrong tree and report confidently either way. `cd`+`pwd` rather than `realpath`,
+  # which is not present on both userlands.
+  run_post_worktree_create_hook "$(cd "$TARGET/$default" 2>/dev/null && pwd)"
+  [ "$PROBLEMS" -eq 0 ] || return 1
+}
+
+cmd_clone() {
+  local project="" url="" target="" filter="" branches="" use_url=0 pos=0 a
+  while [ $# -gt 0 ]; do
+    a=$1; shift
+    case "$a" in
+      -h|--help) usage; exit 0 ;;
+      --filter=*) filter=${a#--filter=}; [ -n "$filter" ] || die "--filter needs a spec, e.g. --filter=blob:none" 2 ;;
+      --branches=*) branches=${a#--branches=}; [ -n "$branches" ] || die "--branches needs all, default or a comma-separated list" 2 ;;
+      --url) use_url=1; url=${1:-}; [ -n "$url" ] || die "--url needs a repository url" 2; shift ;;
+      -*) die "unknown option '$a' (see --help)" 2 ;;
+      *)
+        pos=$((pos + 1))
+        if [ "$use_url" = 1 ]; then target=$a; [ "$pos" -le 1 ] || die "usage: fleet-repo clone --url <url> [target]" 2
+        else project=$a; [ "$pos" -le 1 ] || die "usage: fleet-repo clone <project>" 2; fi ;;
+    esac
+  done
+  if [ "$use_url" = 0 ] && [ -z "$project" ]; then die "usage: fleet-repo clone <project> | clone --url <url> [target]" 2; fi
+
+  if [ "$use_url" = 1 ]; then
+    # No declaration: the manifest is not consulted, so every branch unless --branches says less.
+    URL=$url; EXPECT=""; MODE=all; LIST=""; WT_NAMES=""; WT_DIRS=""
+    if [ -z "$target" ]; then target=${url##*/}; target=${target%.git}; fi
+    TARGET=$target
+  else
+    load_manifest
+    load_entry "$project"
+    URL=$P_URL; TARGET=$P_TARGET; EXPECT=$P_EXPECT; MODE=$P_MODE; LIST=$P_LIST
+  fi
+  FILTER=${filter:-${P_FILTER:-}}
+  if [ -n "$branches" ]; then
+    case "$branches" in
+      all|default) MODE=$branches; LIST="" ;;
+      *) MODE=list; LIST=$(printf '%s\n' "$branches" | tr ',' '\n') ;;
+    esac
+  fi
+  do_clone
+}
+
+# ---- update -----------------------------------------------------------------------------------
+cmd_update() {
+  local project="" a b i dir branch before after out rc default dirs bare
+  while [ $# -gt 0 ]; do
+    a=$1; shift
+    case "$a" in
+      -h|--help) usage; exit 0 ;;
+      --project) project=${1:-}; [ -n "$project" ] || die "--project needs a name" 2; shift ;;
+      *) die "usage: fleet-repo update [--project <name>]" 2 ;;
+    esac
+  done
+  load_manifest
+  if [ -z "$project" ]; then
+    decl_into project --project "$PWD" \
+      || die "$PWD is not inside a repository the manifest declares (no entry's scope contains it); name one with --project" 2
+  fi
+  load_entry "$project"
+  dir="$MDIR/$P_PATH"
+  [ -d "$dir" ] || die "$project is not cloned at $dir; run: fleet-repo clone $project"
+  # One fetch serves every worktree: they share the container's git directory.
+  git -C "$dir" fetch --quiet origin || die "fetch failed for $project"
+  dirs="$dir
+"
+  i=0
+  while IFS= read -r b; do
+    i=$((i + 1))
+    [ -n "$b" ] || continue
+    dirs="$dirs$(nth "$WT_DIRS" "$i")
+"
+  done <<EOF
+$WT_NAMES
+EOF
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    if [ ! -d "$dir" ]; then
+      printf '%s: MISSING (run: fleet-repo clone %s)\n' "$dir" "$project"; PROBLEMS=$((PROBLEMS + 1)); continue
+    fi
+    branch=$(git -C "$dir" branch --show-current)
+    if [ -z "$branch" ]; then printf '%s: detached HEAD, skipped\n' "$dir"; continue; fi
+    if ! git -C "$dir" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+      printf '%s: %s has no upstream, skipped (fleet-repo clone %s repairs it)\n' "$dir" "$branch" "$project"
+      PROBLEMS=$((PROBLEMS + 1)); continue
+    fi
+    before=$(git -C "$dir" rev-parse HEAD)
+    rc=0; out=$(git -C "$dir" merge --ff-only --quiet '@{u}' 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf '%s: CANNOT fast-forward %s: %s\n' "$dir" "$branch" "$(printf '%s\n' "$out" | sed -n '1p')"
+      PROBLEMS=$((PROBLEMS + 1)); continue
+    fi
+    after=$(git -C "$dir" rev-parse HEAD)
+    if [ "$before" = "$after" ]; then printf '%s: %s already up to date\n' "$dir" "$branch"
+    else printf '%s: %s fast-forwarded %s..%s\n' "$dir" "$branch" "$(printf '%s' "$before" | cut -c1-7)" "$(printf '%s' "$after" | cut -c1-7)"; fi
+  done <<EOF
+$dirs
+EOF
+  [ "$PROBLEMS" -eq 0 ]
+}
+
+# ---- check ------------------------------------------------------------------------------------
+# <host>/<owner>/<repo> from a remote URL, as wt-config-gen derives it for worktrunk's per-project
+# table: ssh:// and https:// (user, port optional) and scp-style user@host:path.
+url_to_id() {
+  printf '%s\n' "$1" | sed -E \
+    -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
+    -e 's#^[^@/]*@##' \
+    -e 's#^([^/:]+):[0-9]+/#\1/#' \
+    -e 's#^([^/:]+):#\1/#' \
+    -e 's#\.git/?$##' \
+    -e 's#/+$##' | grep -E '^[^/]+/.+' || true
+}
+
+drift() { printf '[%s] %s: %s\n' "$1" "$2" "$3"; DRIFT=$((DRIFT + 1)); }
+
+projects_with() {  # prints names; exits 2 if the manifest is unusable
+  local out rc=0
+  out=$("$FLEET_DECL" --projects-with "$1" 2>&1) || rc=$?
+  case "$rc" in 0) printf '%s\n' "$out" ;; 1) ;; *) die "the manifest cannot be read: $out" 2 ;; esac
+}
+
+check_one() {
+  local p=$1 bare default dir b i want have wt_all names clone cfg id
+  load_entry "$p"
+  bare="$P_TARGET/.bare"
+  dir="$MDIR/$P_PATH"
+  if [ ! -d "$bare" ]; then
+    if [ -d "$P_TARGET/.git" ] || [ -d "$dir/.git" ]; then
+      drift plain-clone "$p" "a container is declared but $P_TARGET holds an ordinary clone (converting is manual: see the repository-layouts reference)"
+    else
+      drift no-container "$p" "nothing at $P_TARGET (run: fleet-repo clone $p)"
+    fi
+    return 0
+  fi
+  default=$(git --git-dir="$bare" symbolic-ref --short HEAD 2>/dev/null || true)
+  [ -n "$default" ] || { drift no-container "$p" "$bare has no HEAD"; return 0; }
+
+  # The fetched set, compared offline: what the declaration asks for against the refspecs on disk.
+  if [ "$P_MODE" = all ]; then want='*'
+  else want=$(printf '%s\n%s%s\n' "$default" "$WT_NAMES" "$P_LIST" | list_dedupe); fi
+  have=$(managed_refspecs "$bare")
+  if [ -n "$(list_minus "$want" "$have")$(list_minus "$have" "$want")" ]; then
+    drift refspec-drift "$p" "fetch refspecs differ from the declared set; missing: $(list_minus "$want" "$have" | brief); not declared: $(list_minus "$have" "$want" | brief)"
+  fi
+
+  # Worktrees and upstreams: the default branch and every declared one.
+  wt_all="$default	$P_TARGET/$default
+"
+  i=0
+  while IFS= read -r b; do
+    i=$((i + 1))
+    [ -n "$b" ] || continue
+    [ "$b" != "$default" ] || continue
+    wt_all="$wt_all$b	$(nth "$WT_DIRS" "$i")
+"
+  done <<EOF
+$WT_NAMES
+EOF
+  while IFS="	" read -r b dir; do
+    [ -n "$b" ] || continue
+    if [ ! -d "$dir" ]; then drift missing-worktree "$p" "no worktree at $dir for $b"; continue; fi
+    if has_ref "$bare" "refs/heads/$b" \
+       && ! git --git-dir="$bare" rev-parse -q --verify "$b@{u}" >/dev/null 2>&1; then
+      drift no-upstream "$p" "branch $b has no upstream (fleet-repo clone $p repairs it)"
+    fi
+  done <<EOF
+$wt_all
+EOF
+
+  # wt-config-gen writes a per-project table; a container without one gets worktrunk's nested
+  # default, so new worktrees land inside the default branch's checkout. Only judged on a machine
+  # that has the generated file at all.
+  cfg="${XDG_CONFIG_HOME:-$HOME/.config}/worktrunk/config.toml"
+  if [ -f "$cfg" ]; then
+    id=$(url_to_id "$P_URL")
+    if [ -n "$id" ] && ! grep -Fq "[projects.\"$id\"]" "$cfg"; then
+      drift worktrunk-missing "$p" "the generated worktrunk config has no table for $id, so new worktrees would nest (run: wt-config-gen)"
+    fi
+  fi
+}
+
+cmd_check() {
+  local project="" a names clones syncs n count=0 clone
+  while [ $# -gt 0 ]; do
+    a=$1; shift
+    case "$a" in
+      -h|--help) usage; exit 0 ;;
+      -*) die "unknown option '$a' (see --help)" 2 ;;
+      *) [ -z "$project" ] || die "usage: fleet-repo check [<project>]" 2; project=$a ;;
+    esac
+  done
+  load_manifest
+  DRIFT=0
+  if [ -n "$project" ]; then
+    load_entry "$project"
+    check_one "$project"
+    count=1
+  else
+    # Assigned one at a time, in this shell: a die inside a command substitution or a loop
+    # expression would only end that subshell and read as "no containers".
+    names=$(projects_with container)
+    clones=$(projects_with clone)
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      decl_into clone --entry "$n" clone || continue
+      if declares_container_clone "$clone"; then names="$names
+$n"; fi
+    done <<EOF
+$clones
+EOF
+    names=$(printf '%s\n' "$names" | sort -u)
+    syncs=$(projects_with sync)
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      # sync: false means this machine does not keep the repository, so its absence is not drift.
+      # fleet-decl reads a YAML false as "not declared" (exit 1), so a declared key that reads as
+      # absent is the false.
+      if printf '%s\n' "$syncs" | grep -Fxq -- "$n" && ! decl_into a --entry "$n" sync; then continue; fi
+      check_one "$n"; count=$((count + 1))
+    done <<EOF
+$names
+EOF
+  fi
+  if [ "$DRIFT" -eq 0 ]; then say "$count container(s) match their declarations."; exit 0; fi
+  exit 1
+}
+
+# ---- main -------------------------------------------------------------------------------------
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  clone) shift; cmd_clone "$@" ;;
+  update) shift; cmd_update "$@" ;;
+  check) shift; cmd_check "$@" ;;
+  "") usage >&2; exit 2 ;;
+  -*) die "unknown option '$1' (see --help)" 2 ;;
+  *) die "unknown verb '$1' (clone, update or check; see --help)" 2 ;;
+esac

@@ -20,7 +20,11 @@
 #       bootstrap: true | false          true: run wt-bootstrap as a BLOCKING pre-start hook, so a new
 #                                        worktree has its dependencies -- and any install-time git
 #                                        hooks -- before anyone uses it
-# A project without a `worktrunk:` block gets worktrunk's global defaults.
+# A project without a `worktrunk:` block gets worktrunk's global defaults -- unless it declares a
+# bare container, which is bare by implication: a `container:` block, or a `clone:` command that
+# runs fleet-repo (or its older name, git-clone-worktree). Saying it twice invited forgetting the
+# second, silently (new worktrees nested inside the default branch's checkout). An explicit
+# `worktrunk.layout` still wins.
 #
 # FAILURE LEAVES THE OLD FILE. The generated file is worktrunk's only user config, so a bad run would
 # not degrade one setting, it would remove all of them. Every refusal below exits before the live
@@ -86,17 +90,44 @@ else
   wt_findings=$(fleet-decl --check 2>&1 | grep '^\[worktrunk-' || true)
   [ -z "$wt_findings" ] || die "the manifest's worktrunk declarations are invalid:
 $wt_findings"
-  set +e; names=$(fleet-decl --projects-with worktrunk 2>"$work/decl.err"); rc=$?; set -e
-  case "$rc" in
-    0) ;;
-    1) names="" ;;
-    *) die "cannot read the manifest at $record: $(cat "$work/decl.err")" ;;
-  esac
+  # The projects to write a table for: those with a worktrunk block, those declaring a container,
+  # and those whose clone: command makes one. Each query's exit 1 means "none", 2 means unreadable.
+  names=""; implied=""
+  for key in worktrunk container clone; do
+    set +e; found=$(fleet-decl --projects-with "$key" 2>"$work/decl.err"); rc=$?; set -e
+    case "$rc" in
+      0) ;;
+      1) found="" ;;
+      *) die "cannot read the manifest at $record: $(cat "$work/decl.err")" ;;
+    esac
+    for name in $found; do
+      if [ "$key" = clone ]; then
+        # A command WORD, not a substring: `echo not-fleet-repo-really` makes no container.
+        c=$(fleet-decl --entry "$name" clone 2>/dev/null) || c=""
+        printf '%s\n' "$c" | grep -Eq '(^|[ /;&|])(fleet-repo|git-clone-worktree)([ ]|$)' || continue
+      fi
+      case "$key" in worktrunk) ;; *) implied="$implied $name" ;; esac
+      names="$names $name"
+    done
+  done
+  names=$(printf '%s\n' $names | sort -u)
   for name in $names; do
     url=$(fleet-decl --entry "$name" url 2>/dev/null) || url=""
     id=$(url_to_id "$url")
-    [ -n "$id" ] || die "project $name declares worktrunk settings but has no usable url ('$url')"
     layout=$(fleet-decl --entry "$name" worktrunk.layout 2>/dev/null) || layout=""
+    if [ -z "$id" ]; then
+      # An implied entry with no usable url is skipped rather than fatal: the table only matters
+      # once the repository exists, and one entry must not take every project's config with it.
+      if fleet-decl --entry "$name" worktrunk >/dev/null 2>&1; then
+        die "project $name declares worktrunk settings but has no usable url ('$url')"
+      fi
+      printf 'wt-config-gen: project %s declares a container but has no usable url (%s) -- skipped\n' "$name" "$url" >&2
+      continue
+    fi
+    # A container is bare unless the manifest says otherwise.
+    if [ -z "$layout" ]; then
+      case " $implied " in *" $name "*) layout=bare ;; esac
+    fi
     bootstrap=$(fleet-decl --entry "$name" worktrunk.bootstrap 2>/dev/null) || bootstrap=""
     {
       printf '\n[projects."%s"]   # from the manifest: %s\n' "$id" "$name"

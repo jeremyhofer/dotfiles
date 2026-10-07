@@ -56,6 +56,30 @@ rm -f "$tmp/frag.toml"; seed; rc=$(run)
 [ "$rc" = 0 ] && ! grep -q 'hook-doctor' "$tmp/config.toml" && ok "absent fragment is optional" || bad "absent fragment" "rc=$rc"
 frag
 
+# 2b. a container declaration implies the bare layout. An entry that declares a bare container (a
+# `container:` block, or a `clone:` that runs fleet-repo) says so twice otherwise, and forgetting the
+# second is silent: worktrunk's default is the nested layout, so new worktrees land inside the
+# default branch's checkout. An explicit worktrunk.layout still wins.
+{ printf 'projects:\n'
+  printf '  withblock:\n    path: c/withblock/main\n    url: https://code.example.org/org/withblock.git\n    container:\n      branches: default\n'
+  printf '  withclone:\n    path: c/withclone/main\n    url: https://code.example.org/org/withclone.git\n    clone: fleet-repo clone withclone\n'
+  printf '  withlegacy:\n    path: c/withlegacy/main\n    url: https://code.example.org/org/withlegacy.git\n    clone: git-clone-worktree --mani-project withlegacy\n'
+  printf '  override:\n    path: c/override/main\n    url: https://code.example.org/org/override.git\n    container: {}\n    worktrunk:\n      layout: nested\n'
+  printf '  plainclone:\n    path: c/plainclone\n    url: https://code.example.org/org/plainclone.git\n    clone: git clone https://code.example.org/org/plainclone.git c/plainclone\n'
+  printf '  mentions:\n    path: c/mentions\n    url: https://code.example.org/org/mentions.git\n    clone: echo not-fleet-repo-really\n'
+} > "$tmp/mani.yaml"
+seed; rc=$(run); c=$(cat "$tmp/config.toml")
+[ "$rc" = 0 ] && ok "a manifest of container declarations generates" || bad "container manifest generates" "rc=$rc $(cat "$tmp/err")"
+sect() { printf '%s\n' "$c" | awk -v h="[projects.\"$1\"]" 'index($0,h)==1{f=1;next} /^\[/{f=0} f'; }
+case "$(sect code.example.org/org/withblock)" in *'/../{{ branch'*) ok "a container: block -> sibling worktree path";; *) bad "container block implies bare" "$c";; esac
+case "$(sect code.example.org/org/withclone)" in *'/../{{ branch'*) ok "clone: fleet-repo -> sibling worktree path";; *) bad "fleet-repo clone implies bare" "$c";; esac
+case "$(sect code.example.org/org/withlegacy)" in *'/../{{ branch'*) ok "clone: git-clone-worktree (the shim) -> sibling worktree path";; *) bad "legacy clone implies bare" "$c";; esac
+case "$(sect code.example.org/org/override)" in *'.worktrees/'*) ok "an explicit worktrunk.layout overrides the implication";; *) bad "explicit layout wins" "$c";; esac
+case "$c" in *plainclone*) bad "an ordinary clone: line got an entry" "$c";; *) ok "an ordinary clone: line implies nothing";; esac
+case "$c" in *org/mentions*) bad "a clone: line merely containing the word got an entry" "$c";; *) ok "only a command WORD fleet-repo counts, not a substring";; esac
+record '      layout: bare
+      bootstrap: true'
+
 # 3. no manifest at all -> base + fragment, stated
 mv "$tmp/mani.yaml" "$tmp/mani.away"; seed; rc=$(run)
 [ "$rc" = 0 ] && grep -q 'no manifest' "$tmp/err" && ok "absent manifest degrades, and says so" || bad "absent manifest" "rc=$rc $(cat "$tmp/err")"

@@ -1,47 +1,41 @@
 #!/usr/bin/env bash
-# git-clone-worktree — clone a repo as a bare repository with worktrees as siblings.
+# git-clone-worktree — the old name for `fleet-repo clone`; forwards to it.
 #
-# Layout produced (the container directory IS the repo, from the outside):
-#
-#   <target>/
-#     .bare/            the git directory (a bare clone)
-#     .git              a file containing "gitdir: ./.bare"
-#     <default-branch>/ a worktree for the repo's default branch
-#     <other-branch>/   further worktrees, added later with `git worktree add` or `wt`
-#
-# The point of the layout: no single directory's deletion is catastrophic. The git data lives in
-# .bare, so removing any one worktree — including the default branch's — loses only that checkout.
-# In the ordinary layout the git directory lives inside the primary checkout, and deleting it
-# orphans every other worktree of the repo.
-#
-# Usage:
-#   git-clone-worktree <url> [target]      target defaults to the repo name; may be nested
+# Usage (unchanged, so every `clone:` line that names it keeps working):
+#   git-clone-worktree <url> [target]      -> fleet-repo clone --url <url> [target]
 #   git-clone-worktree --mani-project <name>
-#       Derive url and target from a mani project, so the clone location stays driven by the
-#       manifest rather than duplicated in a second place that can silently drift out of step.
-#   --filter=<spec>, with either form, anywhere on the line: a partial clone, passed to `git clone`.
-#       --filter=blob:none fetches every commit and tree but file contents only as they are needed,
-#       for a repository whose long history carries many large files: the checkout fetches what the
-#       default branch needs, and old versions (`blame`, `log -p`, an old checkout) are fetched on
-#       demand, which needs the network. The server must allow filters (GitHub does). Applies to a
-#       fresh clone only; an existing container is left as it is. In a manifest:
-#         clone: git-clone-worktree --mani-project <name> --filter=blob:none
+#                                          -> fleet-repo clone <name>
+#   --filter=<spec>, with either form, anywhere on the line: passed through, and overriding any
+#       `container.filter` the manifest declares for the project.
 #
-# Idempotent: re-running against an existing container re-creates only what is missing and exits 0,
-# which is what makes it safe as a `clone:` command that a sync tool may invoke repeatedly.
+# WHY A SHIM AND NOT A DELETION. Manifests on other machines name this command in their `clone:`
+# lines, and a sync tool runs those lines only when a repository is missing, so a removed command
+# would surface weeks later on a fresh clone. Each domain rewrites its lines to
+# `fleet-repo clone <name>` (moving any --filter into the entry's `container:` block) and this file
+# is removed once no manifest names it.
+#
+# WHAT IT FORWARDS TO. fleet-repo next to this file (a source tree, an install directory), else on
+# PATH, so a checkout's shim and its fleet-repo move together. The layout, the options and the
+# exit codes are fleet-repo's; `fleet-repo --help` has the full description.
 set -euo pipefail
 
 die() { printf 'git-clone-worktree: %s\n' "$1" >&2; exit 1; }
 
-url=""; target=""
+here=$(cd "$(dirname "$0")" && pwd)
+tool=""
+for c in "$here/fleet-repo" "$here/executable_fleet-repo"; do
+  if [ -x "$c" ]; then tool=$c; break; fi
+done
+[ -n "$tool" ] || tool=$(command -v fleet-repo 2>/dev/null || true)
+[ -n "$tool" ] || die "fleet-repo is not installed; this command forwards to it"
 
-# --filter=<spec> may sit anywhere, so a manifest's clone: line can append it. Pulled out before the
-# positional parsing below. The ${a+...} form keeps an empty list safe under `set -u` in bash 3.2,
-# which is what /usr/bin/env bash finds on a stock Mac.
-filter=""; rest=()
+# --filter=<spec> may sit anywhere, so a manifest's clone: line can append it. The ${a+...} form
+# keeps an empty list safe under `set -u` in bash 3.2, which is what /usr/bin/env bash finds on a
+# stock Mac.
+filter=(); rest=()
 for a in "$@"; do
   case "$a" in
-    --filter=*) filter=${a#--filter=}; [ -n "$filter" ] || die "--filter needs a spec, e.g. --filter=blob:none" ;;
+    --filter=*) filter=("$a") ;;
     *) rest+=("$a") ;;
   esac
 done
@@ -51,123 +45,12 @@ set -- ${rest[@]+"${rest[@]}"}
 # that once ran `mkdir -p --help` and printed mkdir's help instead of this tool's.
 case "${1:-}" in
   -h|--help) sed -n '2,/^set /{/^set /d;s/^# \{0,1\}//;p;}' "$0"; exit 0 ;;
-  --mani-project) ;;
+  --mani-project)
+    [ -n "${2:-}" ] || die "--mani-project requires a project name"
+    [ $# -eq 2 ] || die "usage: git-clone-worktree --mani-project <name> [--filter=<spec>]"
+    exec "$tool" clone "$2" ${filter[@]+"${filter[@]}"} ;;
   -*) die "unknown option '$1' (see --help)" ;;
+  "") die "usage: git-clone-worktree <url> [target]   |   git-clone-worktree --mani-project <name>" ;;
 esac
-
-if [ "${1:-}" = "--mani-project" ]; then
-  project="${2:?--mani-project requires a project name}"
-  command -v mani >/dev/null 2>&1 || die "--mani-project needs mani on PATH"
-  # `describe` prints plain "key: value" lines. Fail loudly rather than clone into a guessed path.
-  # NO_COLOR because `describe` colorizes even when piped, which would defeat the field match
-  # below; the sed is belt-and-braces for a version that ignores NO_COLOR. Getting this wrong does
-  # not fail loudly on its own -- it silently yields an empty url -- so the checks below are what
-  # turn it into an error rather than a clone into a guessed location.
-  desc=$(NO_COLOR=1 mani describe projects "$project" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g') \
-    || die "no such mani project: $project"
-  # Strip the key rather than splitting on ':' -- a url carries colons of its own (https://,
-  # ssh://host:port), and a field split returned only its scheme.
-  url=$(printf '%s\n' "$desc" | awk '/^url:/ { sub(/^url:[ \t]*/, ""); print; exit }')
-  mpath=$(printf '%s\n' "$desc" | awk '/^path:/ { sub(/^path:[ \t]*/, ""); print; exit }')
-  [ -n "$url" ]   || die "mani project '$project' has no url"
-  [ -n "$mpath" ] || die "mani project '$project' has no path"
-  # mani's path points at the DEFAULT-BRANCH WORKTREE inside the container, so the container is its
-  # parent. Keeping that convention is what lets `mani exec` run ordinary git commands: the
-  # container itself is bare and has no work tree, so it cannot be the exec target.
-  target=$(dirname "$mpath")
-  expected_wt=$(basename "$mpath")
-else
-  url="${1:?usage: git-clone-worktree <url> [target]   |   git-clone-worktree --mani-project <name>}"
-  target="${2:-}"
-  if [ -z "$target" ]; then base=${url##*/}; target=${base%.git}; fi
-  expected_wt=""
-fi
-
-bare="$target/.bare"
-
-# A directory that already holds files but no .bare is not a container, and making it one puts a
-# .git into whatever it was. The usual cause is a manifest `path:` naming the container instead of
-# its default-branch worktree: the container is then the PARENT, and for a top-level entry that is
-# the devel root itself.
-if [ ! -d "$bare" ] && [ -d "$target" ] && [ -n "$(ls -A "$target")" ]; then
-  die "$target already holds files and is not a container; refusing to clone into it. As a mani clone: command, path: must name the worktree, <container>/<default-branch>, and the container is its parent"
-fi
-
-# A bare clone does not fetch like a normal one: without this refspec, `git fetch` updates nothing
-# and no refs/remotes/origin/* ever appear, so later `git worktree add <branch>` for a branch that
-# only exists on the remote would fail. Given at clone time, the clone itself fills refs/remotes/
-# origin/*, so a fresh clone needs no second fetch: that was a further network round trip, and the
-# fetch set off git's automatic maintenance as well. An existing container, perhaps cloned without
-# the refspec, gets it set and is fetched.
-refspec='+refs/heads/*:refs/remotes/origin/*'
-if [ -d "$bare" ]; then
-  printf 'git-clone-worktree: %s already present; ensuring it is complete\n' "$target"
-  git --git-dir="$bare" config remote.origin.fetch "$refspec"
-  git --git-dir="$bare" fetch --quiet origin
-else
-  mkdir -p "$target"
-  git clone --bare ${filter:+"--filter=$filter"} -c "remote.origin.fetch=$refspec" "$url" "$bare"
-  printf 'gitdir: ./.bare\n' > "$target/.git"
-fi
-
-# The default branch comes from the bare clone's own HEAD, which git set from the remote's HEAD at
-# clone time. This is why main / master / develop all work without being special-cased, and it
-# needs no second network round trip.
-default=$(git --git-dir="$bare" symbolic-ref --short HEAD 2>/dev/null || true)
-[ -n "$default" ] || die "could not determine the default branch of $url"
-
-# A bare clone creates a local branch for every remote branch, so `git branch` lists them all and
-# every one of them is a name that cannot be checked out anywhere useful. Keep only the default;
-# the rest remain reachable as refs/remotes/origin/*, which is what `git worktree add` wants.
-#
-# One `update-ref --stdin` transaction, not a `git branch -D` per branch: each of those is a process
-# that may rewrite packed-refs, so the cost grew with the branch count (8.9 s of an 8.9 s clone at
-# 3000 branches, against 0.06 s batched). Empty input -- the default is the only branch -- is a
-# no-op that exits 0, where `xargs git branch -D` with no arguments fails and, under `set -e`,
-# aborts the clone half-finished.
-git --git-dir="$bare" for-each-ref --format='delete %(refname)' refs/heads/ \
-  | awk -v keep="delete refs/heads/$default" '$0 != keep' \
-  | git --git-dir="$bare" update-ref --stdin
-
-# A bare clone records no upstream for the default branch, so `git pull` in its worktree stops at
-# "There is no tracking information" -- and `mani exec --all 'git pull --ff-only'`, the fleet's
-# update, skipped every container while updating every plain clone. Set it on every run, so a
-# re-run also repairs a container cloned before this line existed.
-git --git-dir="$bare" branch --set-upstream-to="origin/$default" "$default" >/dev/null
-
-if [ -n "$expected_wt" ] && [ "$expected_wt" != "$default" ]; then
-  printf 'git-clone-worktree: WARNING: manifest expects the worktree at %s/%s, but the default branch is %s.\n' \
-    "$target" "$expected_wt" "$default" >&2
-  printf '                    Creating %s. Update the manifest path, or that path will not resolve.\n' "$default" >&2
-fi
-
-
-# --- post-worktree-create extension point --------------------------------------------------------
-# A new worktree is the moment a per-worktree defect is BORN and the cheapest moment to catch it:
-# whoever is here is about to run an install anyway. This base repo is public and must not depend on
-# any private tooling, so it does not name a checker -- it offers a documented hook and runs it if
-# something has been installed there. That is the base-provides-the-mechanism split.
-#
-# CONTRACT: ~/.dotlocal/hooks/post-worktree-create <absolute-worktree-path>
-# ADVISORY ONLY. Its exit status is deliberately discarded -- a reporting hook must never be able to
-# fail a worktree creation, and a guard people route around is worse than no guard at all.
-run_post_worktree_create_hook() {
-  hook="$HOME/.dotlocal/hooks/post-worktree-create"
-  [ -x "$hook" ] || return 0
-  "$hook" "$1" || true
-}
-
-if [ -d "$target/$default" ]; then
-  printf 'git-clone-worktree: worktree %s/%s already present\n' "$target" "$default"
-else
-  git -C "$target" worktree add "$default" "$default"
-fi
-
-printf 'git-clone-worktree: %s ready (default branch: %s)\n' "$target" "$default"
-
-# ABSOLUTISE before handing the path over. $target comes from the caller and is routinely relative,
-# and a hook that receives a relative path resolves it against whatever directory it happens to run
-# in -- so it would inspect the wrong tree, or none, and report confidently either way. Caught by
-# the suite's path assertion rather than by review. `cd`+`pwd` rather than `realpath`, which is not
-# present on both userlands.
-run_post_worktree_create_hook "$(cd "$target/$default" 2>/dev/null && pwd)"
+[ $# -le 2 ] || die "usage: git-clone-worktree <url> [target]"
+exec "$tool" clone --url "$@" ${filter[@]+"${filter[@]}"}

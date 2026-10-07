@@ -54,6 +54,15 @@ private ones included, goes in the overlay's `~/.dotlocal/skill-externals.yaml`,
 `skill-externals-sync` installs with git after every apply. Format and refusals: the base's
 `docs/reference/private-layer.md`.
 
+**A mechanism that reads a layer's input is two pieces: logic in the base, a trigger in the layer.**
+The base re-runs its own `run_onchange_` scripts only when the base's files change, so when a base
+tool consumes something a layer ships (the manifest, the settings fragment, a skill list), the layer
+needs a few-line `run_onchange_` script that hashes that input and calls the base tool. Ship that
+trigger as an example in `overlay-skeleton/` (or `overlay-skeleton/opt-in/` if some machines must not
+run it), add its row to `docs/reference/private-layer.md` "Triggers" and to `overlay-doctor`'s Tier
+T, in the same change. Without all three, a new domain applies the input and nothing downstream
+moves, with nothing to say so; that is how worktrunk's config at work kept the nested layout.
+
 OS differences belong in `.chezmoi.os` templates, not per-OS forks. Per-machine values come from
 machine-local chezmoi data, not from committed conditionals on hostnames.
 
