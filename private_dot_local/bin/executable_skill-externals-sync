@@ -2,6 +2,7 @@
 # skill-externals-sync -- install the pinned skills a PRIVATE layer declares, fetched with git.
 #
 #   usage: skill-externals-sync          install, update and prune to match the list
+#          skill-externals-sync --force  the same, also replacing what is at a listed name (see below)
 #          skill-externals-sync --status print what is installed, from the record
 #
 # WHY THIS EXISTS. The base pins public third-party skills in its own `.chezmoidata.yaml`
@@ -29,11 +30,18 @@
 # WHAT IT REFUSES, per entry, leaving whatever was installed before in place:
 #   - a name that is not a plain skill name, or a subtree that escapes the repository;
 #   - a directory already at ~/.claude/skills/<name> that this tool did not install (a base skill,
-#     a public external, or one placed by hand): it is never overwritten;
+#     a public external, or one placed by hand): it is never overwritten, unless --force is given;
 #   - a fetched tree with no SKILL.md at the subtree's root, or whose frontmatter `name` differs
 #     from the entry's, or whose frontmatter `version` (when it has one) differs from the pin.
 # One failed entry never stops the others. Exit 1 if any entry failed, 2 if the list itself cannot be
 # read (and then NOTHING is pruned: an unreadable list is not an empty one), else 0.
+#
+# --force, for adopting a name that something else put there first (a hand-made clone, a symlink
+# into one). Only the listed names are touched, and only once the new copy has fetched and passed
+# the checks above, so a failed entry still leaves the old one in place. A symlink is removed (what
+# it points at is untouched); anything else is moved to $SKILL_EXTERNALS_STATE/displaced/, never
+# deleted. A name either chezmoi instance manages is refused even then: replacing it would only
+# start a tug-of-war with every later apply, so drop it from that layer instead.
 #
 # PRUNING. Every install is recorded in $SKILL_EXTERNALS_STATE/installed.tsv (default
 # ~/.local/state/skill-externals). An entry removed from the list is uninstalled; only directories
@@ -56,6 +64,13 @@ TAB=$(printf '\t')
 
 say() { printf 'skill-externals: %s\n' "$*"; }
 err() { printf 'skill-externals: %s\n' "$*" >&2; }
+
+force=0
+case ${1:-} in
+  ''|--status) ;;
+  --force) force=1 ;;
+  *) err "unknown option '$1' (usage: skill-externals-sync [--force | --status])"; exit 2 ;;
+esac
 
 if [ "${1:-}" = "--status" ]; then
   [ -s "$STATE" ] || { say "nothing installed"; exit 0; }
@@ -108,9 +123,18 @@ if [ -n "$entries" ]; then
     subtree=${subtree#/}
     target=$SKILLS/$name
 
+    adopt=0
     if [ -z "$old" ] && { [ -e "$target" ] || [ -L "$target" ]; }; then
-      err "$name: $target already exists and was not installed by this tool (a base skill, a public external, or one placed by hand); left alone"
-      fail=1; continue
+      if [ "$force" = 0 ]; then
+        err "$name: $target already exists and was not installed by this tool (a base skill, a public external, or one placed by hand); left alone (--force replaces it)"
+        fail=1; continue
+      fi
+      if { command -v chezmoi >/dev/null 2>&1 && chezmoi source-path "$target" >/dev/null 2>&1; } \
+         || { command -v chezmoi-overlay >/dev/null 2>&1 && chezmoi-overlay source-path "$target" >/dev/null 2>&1; }; then
+        err "$name: $target is managed by chezmoi; not replaced even with --force (drop it from that layer first)"
+        fail=1; continue
+      fi
+      adopt=1
     fi
     if [ -n "$old" ] && [ -f "$target/SKILL.md" ] \
        && [ "$(printf '%s' "$old" | cut -f2)" = "$url" ] && [ "$(printf '%s' "$old" | cut -f3)" = "$ref" ]; then
@@ -149,12 +173,26 @@ if [ -n "$entries" ]; then
     # Stage beside the target, then swap, so a session never sees a half-copied skill.
     stage=$work/stage-$name
     cp -R "$tree" "$stage" && rm -rf "$stage/.git"
-    if [ -e "$target" ]; then mv "$target" "$work/old-$name"; fi
+    # What --force adopts is kept: a real directory goes to displaced/, a symlink to the work
+    # directory (removed at exit; what it pointed at is untouched).
+    prev=$work/old-$name
+    if [ "$adopt" = 1 ] && [ ! -L "$target" ]; then
+      prev=$STATE_DIR/displaced/$name.$(date +%Y%m%d%H%M%S)
+      mkdir -p "$STATE_DIR/displaced"
+    fi
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      mv "$target" "$prev" || { err "$name: could not move $target aside; nothing installed"; fail=1
+        [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"; continue; }
+    fi
     if mv "$stage" "$target"; then
       say "$name: installed $ref ($(printf '%s' "$commit" | cut -c1-7))"
+      if [ "$adopt" = 1 ]; then
+        if [ -L "$prev" ]; then say "$name: --force replaced a symlink to $(ls -l "$prev" | sed 's/.* -> //')"
+        else say "$name: --force moved the previous copy to $prev"; fi
+      fi
       printf '%s\t%s\t%s\t%s\n' "$name" "$url" "$ref" "$commit" >> "$work/state.new"
     else
-      [ -e "$work/old-$name" ] && mv "$work/old-$name" "$target"
+      { [ -e "$prev" ] || [ -L "$prev" ]; } && mv "$prev" "$target"
       err "$name: could not move the new copy into $target; the previous one is kept"; fail=1
       [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"
     fi

@@ -148,5 +148,40 @@ nclones=$(awk 'END { print NR }' "$tmp/clones")
 check "shared repo and tag: one clone per (url, ref), a failed one included" '[ "$nclones" = 2 ]'
 check "shared failed fetch: reported for each entry" 'grep -q "nosuch-one: could not fetch v9.0.0" "$tmp/out" && grep -q "nosuch-two: could not fetch v9.0.0" "$tmp/out"'
 
+# --- --force: replace what this tool did not install, reversibly ------------------------------
+run --bogus
+check "an unknown option: exit 2" '[ "$(rc)" = 2 ]'
+mkrepo repo-f forced skills/forced
+mkrepo repo-l linked skills/linked
+mkrepo repo-k kept skills/kept
+mkrepo repo-x chezfake skills/chezfake
+mkdir -p "$tmp/oldclone/linked"; echo oldclone > "$tmp/oldclone/linked/SKILL.md"
+rm -rf "$HOME/.claude/skills/forced" "$HOME/.claude/skills/linked" "$HOME/.claude/skills/kept"
+mkdir -p "$HOME/.claude/skills/forced" "$HOME/.claude/skills/kept" "$HOME/.claude/skills/chezfake"
+echo handplaced > "$HOME/.claude/skills/forced/SKILL.md"
+echo handkept > "$HOME/.claude/skills/kept/SKILL.md"
+echo chezmoi-owned > "$HOME/.claude/skills/chezfake/SKILL.md"
+ln -s "$tmp/oldclone/linked" "$HOME/.claude/skills/linked"
+# A chezmoi on PATH that claims chezfake, and nothing else.
+printf '#!/bin/sh\ncase "$*" in *skills/chezfake*) echo src; exit 0;; esac\necho "not managed" >&2; exit 1\n' > "$tmp/bin/chezmoi"
+chmod +x "$tmp/bin/chezmoi"
+cat > "$list" <<EOF
+skill_externals:
+  - { name: forced, url: "file://$tmp/repo-f", version: "1.0.0", subtree: skills/forced }
+  - { name: linked, url: "file://$tmp/repo-l", version: "1.0.0", subtree: skills/linked }
+  - { name: kept, url: "file://$tmp/repo-k", version: "9.9.9", subtree: skills/kept }
+  - { name: chezfake, url: "file://$tmp/repo-x", version: "1.0.0", subtree: skills/chezfake }
+EOF
+PATH="$tmp/bin:$PATH" run
+check "without --force: an existing directory is still refused, with the way out named" 'grep -q "forced: .* not installed by this tool.*--force" "$tmp/out" && grep -q handplaced "$HOME/.claude/skills/forced/SKILL.md"'
+PATH="$tmp/bin:$PATH" run --force
+check "--force: a hand-placed directory is replaced" 'grep -q "body one" "$HOME/.claude/skills/forced/SKILL.md"'
+check "--force: ...and moved aside, not deleted" 'grep -q handplaced "$tmp/state/displaced"/forced.*/SKILL.md'
+check "--force: a symlink is replaced by a real install" '[ ! -L "$HOME/.claude/skills/linked" ] && grep -q "body one" "$HOME/.claude/skills/linked/SKILL.md"'
+check "--force: ...and the clone it pointed at is untouched" 'grep -q oldclone "$tmp/oldclone/linked/SKILL.md"'
+check "--force: a failed fetch leaves the existing directory in place" 'grep -q handkept "$HOME/.claude/skills/kept/SKILL.md"'
+check "--force: a name chezmoi manages is refused" 'grep -q "chezfake: .*managed by chezmoi" "$tmp/out" && grep -q chezmoi-owned "$HOME/.claude/skills/chezfake/SKILL.md"'
+check "--force: forced installs are recorded, so the next run needs no --force" 'awk -F"\t" "\$1 == \"forced\"" "$tmp/state/installed.tsv" | grep -q forced'
+
 echo "passed: $pass   failed: $failn"
 [ "$failn" -eq 0 ]
