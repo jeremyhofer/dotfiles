@@ -98,14 +98,20 @@ default=$(git --git-dir="$bare" symbolic-ref --short HEAD 2>/dev/null || true)
 # every one of them is a name that cannot be checked out anywhere useful. Keep only the default;
 # the rest remain reachable as refs/remotes/origin/*, which is what `git worktree add` wants.
 #
-# Deliberately a loop over for-each-ref rather than `git branch | grep -v '\*' | xargs git branch -D`:
-# that pipeline feeds `git branch -D` zero arguments when the default is the only branch, which
-# fails, and under `set -e` aborts the clone half-finished.
-while IFS= read -r branch; do
-  [ -n "$branch" ] || continue
-  [ "$branch" = "$default" ] && continue
-  git --git-dir="$bare" branch -D "$branch" >/dev/null
-done < <(git --git-dir="$bare" for-each-ref --format='%(refname:short)' refs/heads/)
+# One `update-ref --stdin` transaction, not a `git branch -D` per branch: each of those is a process
+# that may rewrite packed-refs, so the cost grew with the branch count (8.9 s of an 8.9 s clone at
+# 3000 branches, against 0.06 s batched). Empty input -- the default is the only branch -- is a
+# no-op that exits 0, where `xargs git branch -D` with no arguments fails and, under `set -e`,
+# aborts the clone half-finished.
+git --git-dir="$bare" for-each-ref --format='delete %(refname)' refs/heads/ \
+  | awk -v keep="delete refs/heads/$default" '$0 != keep' \
+  | git --git-dir="$bare" update-ref --stdin
+
+# A bare clone records no upstream for the default branch, so `git pull` in its worktree stops at
+# "There is no tracking information" -- and `mani exec --all 'git pull --ff-only'`, the fleet's
+# update, skipped every container while updating every plain clone. Set it on every run, so a
+# re-run also repairs a container cloned before this line existed.
+git --git-dir="$bare" branch --set-upstream-to="origin/$default" "$default" >/dev/null
 
 if [ -n "$expected_wt" ] && [ "$expected_wt" != "$default" ]; then
   printf 'git-clone-worktree: WARNING: manifest expects the worktree at %s/%s, but the default branch is %s.\n' \

@@ -61,8 +61,11 @@ check "direct: the default branch is read from the remote (develop), not assumed
 check "direct: no main or master worktree is invented" '[ ! -e plain/main ] && [ ! -e plain/master ]'
 check "direct: only the default is a local branch; the rest stay remote-tracking" \
   '[ "$(git -C plain/develop for-each-ref --format="%(refname:short)" refs/heads/)" = develop ] && git -C plain/develop rev-parse -q --verify origin/feature >/dev/null'
+check "direct: the default branch tracks its remote, so a plain git pull works" '[ "$(git -C plain/develop rev-parse --abbrev-ref "@{u}" 2>/dev/null)" = origin/develop ]'
+git -C plain/develop branch --unset-upstream 2>/dev/null
 "$TOOL" "$TMP/dev.git" plain >/dev/null 2>&1; rc=$?
 check "direct: a re-run on a complete container exits 0" '[ "$rc" = 0 ]'
+check "direct: a re-run repairs a default branch with no upstream" '[ "$(git -C plain/develop rev-parse --abbrev-ref "@{u}" 2>/dev/null)" = origin/develop ]'
 rm -rf plain/develop; git -C plain worktree prune
 "$TOOL" "$TMP/dev.git" plain >/dev/null 2>&1
 check "direct: a re-run re-creates a missing default worktree" '[ -d plain/develop ]'
@@ -71,6 +74,22 @@ mkdir -p populated; echo keep > populated/notes.txt
 "$TOOL" "$TMP/mas.git" populated > "$TMP/out" 2>&1; rc=$?
 check "a non-empty directory that is not a container is refused" '[ "$rc" != 0 ] && [ ! -e populated/.bare ] && [ ! -e populated/.git ]'
 check "...naming the likely cause" 'grep -q "path:" "$TMP/out"'
+
+# --- cost does not grow a git process per branch ----------------------------------------------
+# A bare clone creates a local branch for every remote branch, and all but the default are deleted.
+# One process per deletion took 8.9 s of a 8.9 s clone at 3000 branches; a batch takes 0.06 s.
+# Counted, not timed, so the check is deterministic.
+git init -q -b main "$TMP/src-many"; git -C "$TMP/src-many" commit -q --allow-empty -m one
+h=$(git -C "$TMP/src-many" rev-parse HEAD)
+i=1; while [ $i -le 200 ]; do printf 'create refs/heads/b%s %s\n' $i "$h"; i=$((i + 1)); done \
+  | git -C "$TMP/src-many" update-ref --stdin
+git clone -q --bare "$TMP/src-many" "$TMP/many.git"
+realgit=$(command -v git); mkdir -p "$TMP/countbin"
+printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$TMP/gitcalls" "$realgit" > "$TMP/countbin/git"; chmod +x "$TMP/countbin/git"
+: > "$TMP/gitcalls"; (cd "$TMP" && PATH="$TMP/countbin:$PATH" "$TOOL" "$TMP/many.git" manybranches >/dev/null 2>&1)
+ncalls=$(awk 'END { print NR }' "$TMP/gitcalls")
+check "200 branches: git runs a bounded number of times, not once per branch (ran $ncalls)" '[ "$ncalls" -lt 30 ]'
+check "200 branches: only the default is left as a local branch" '[ "$(git -C "$TMP/manybranches/main" for-each-ref refs/heads/ | wc -l | tr -d " ")" = 1 ]'
 
 # --- as mani's clone: command --------------------------------------------------------------------
 if ! command -v mani >/dev/null 2>&1; then
@@ -107,6 +126,11 @@ projects:
 EOF
   NO_COLOR=1 mani sync good > "$TMP/out" 2>&1
   check "mani: path naming <container>/<default> gives a bare container" '[ "$(cat c1/.git)" = "gitdir: ./.bare" ] && [ -d c1/develop ]'
+  git clone -q "$TMP/dev.git" "$TMP/pusher" && git -C "$TMP/pusher" commit -q --allow-empty -m two \
+    && git -C "$TMP/pusher" push -q origin develop
+  NO_COLOR=1 mani exec --projects good 'git pull --ff-only' > "$TMP/out" 2>&1
+  check "mani exec git pull --ff-only updates a bare container's default branch" \
+    '[ "$(git -C c1/develop rev-parse HEAD)" = "$(git -C "$TMP/pusher" rev-parse HEAD)" ]'
   check "mani: a declared worktree is a sibling sharing .bare" \
     '[ "$(cd c1/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd c1 && pwd)/.bare" ]'
   rm -rf c1/feature; git -C c1 worktree prune; NO_COLOR=1 mani sync good > "$TMP/out" 2>&1

@@ -110,7 +110,11 @@ declared worktree comes back.
   whatever owns remote wiring on that machine.
 - `mani exec --all 'git pull --ff-only'` — the safe update; fast-forward only, so it never clobbers
   local work. It runs in each project's `path`, which is why `path` must be a worktree: the bare
-  container has no working tree to run in.
+  container has no working tree to run in. It updates only the branch checked out at `path`; other
+  worktrees are pulled in their own directories. A container whose default branch answers "There
+  is no tracking information" was cloned by an older `git-clone-worktree`; re-run
+  `git-clone-worktree --mani-project <name>` once, which is safe on an existing container and sets
+  the upstream.
 - `mani run <task> --projects <name>` — a task from the top-level `tasks:` block. Task names follow
   skill `naming-build-tasks`; `lint-tasknames` checks them.
 

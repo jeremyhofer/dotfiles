@@ -49,7 +49,10 @@ Three rules, each of which fails quietly when broken (all measured with a real `
 - **`worktrees:` paths are relative to `path`,** so a sibling of the default branch is `../<name>`.
 
 `git-clone-worktree` is idempotent: run on an existing container it re-creates only what is
-missing, so `mani sync` may call it every time, and a re-sync restores a deleted worktree. Mixed
+missing, so `mani sync` may call it every time, and a re-sync restores a deleted worktree. It sets
+the default branch's upstream, which a bare clone does not record, so `mani exec --all 'git pull
+--ff-only'` updates containers and plain clones alike; re-run it once on a container cloned before
+it did ("There is no tracking information for the current branch"). Mixed
 default branches across repositories need nothing special: each clone reads its own from the
 remote. After editing `worktrunk:` blocks, run `wt-config-gen` (an apply also runs it). The skill
 `fleet-manifest` walks the whole procedure.
