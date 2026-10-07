@@ -74,19 +74,22 @@ if [ ! -d "$bare" ] && [ -d "$target" ] && [ -n "$(ls -A "$target")" ]; then
   die "$target already holds files and is not a container; refusing to clone into it. As a mani clone: command, path: must name the worktree, <container>/<default-branch>, and the container is its parent"
 fi
 
-if [ -d "$bare" ]; then
-  printf 'git-clone-worktree: %s already present; ensuring it is complete\n' "$target"
-else
-  mkdir -p "$target"
-  git clone --bare "$url" "$bare"
-  printf 'gitdir: ./.bare\n' > "$target/.git"
-fi
-
 # A bare clone does not fetch like a normal one: without this refspec, `git fetch` updates nothing
 # and no refs/remotes/origin/* ever appear, so later `git worktree add <branch>` for a branch that
-# only exists on the remote would fail.
-git --git-dir="$bare" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-git --git-dir="$bare" fetch --quiet origin
+# only exists on the remote would fail. Given at clone time, the clone itself fills refs/remotes/
+# origin/*, so a fresh clone needs no second fetch: that was a further network round trip, and the
+# fetch set off git's automatic maintenance as well. An existing container, perhaps cloned without
+# the refspec, gets it set and is fetched.
+refspec='+refs/heads/*:refs/remotes/origin/*'
+if [ -d "$bare" ]; then
+  printf 'git-clone-worktree: %s already present; ensuring it is complete\n' "$target"
+  git --git-dir="$bare" config remote.origin.fetch "$refspec"
+  git --git-dir="$bare" fetch --quiet origin
+else
+  mkdir -p "$target"
+  git clone --bare -c "remote.origin.fetch=$refspec" "$url" "$bare"
+  printf 'gitdir: ./.bare\n' > "$target/.git"
+fi
 
 # The default branch comes from the bare clone's own HEAD, which git set from the remote's HEAD at
 # clone time. This is why main / master / develop all work without being special-cased, and it

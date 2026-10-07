@@ -112,9 +112,9 @@ declared worktree comes back.
   local work. It runs in each project's `path`, which is why `path` must be a worktree: the bare
   container has no working tree to run in. It updates only the branch checked out at `path`; other
   worktrees are pulled in their own directories. A container whose default branch answers "There
-  is no tracking information" was cloned by an older `git-clone-worktree`; re-run
-  `git-clone-worktree --mani-project <name>` once, which is safe on an existing container and sets
-  the upstream.
+  is no tracking information" was cloned by an older `git-clone-worktree`, and `mani sync` will not
+  fix it (it runs `clone:` only where `path` is missing). Repair every project at once:
+  `mani exec --all 'git rev-parse --abbrev-ref "@{u}" >/dev/null 2>&1 || git branch --set-upstream-to="origin/$(git branch --show-current)"'`.
 - `mani run <task> --projects <name>` — a task from the top-level `tasks:` block. Task names follow
   skill `naming-build-tasks`; `lint-tasknames` checks them.
 

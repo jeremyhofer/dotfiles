@@ -85,10 +85,12 @@ i=1; while [ $i -le 200 ]; do printf 'create refs/heads/b%s %s\n' $i "$h"; i=$((
   | git -C "$TMP/src-many" update-ref --stdin
 git clone -q --bare "$TMP/src-many" "$TMP/many.git"
 realgit=$(command -v git); mkdir -p "$TMP/countbin"
-printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$TMP/gitcalls" "$realgit" > "$TMP/countbin/git"; chmod +x "$TMP/countbin/git"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexec "%s" "$@"\n' "$TMP/gitcalls" "$realgit" > "$TMP/countbin/git"; chmod +x "$TMP/countbin/git"
 : > "$TMP/gitcalls"; (cd "$TMP" && PATH="$TMP/countbin:$PATH" "$TOOL" "$TMP/many.git" manybranches >/dev/null 2>&1)
 ncalls=$(awk 'END { print NR }' "$TMP/gitcalls")
 check "200 branches: git runs a bounded number of times, not once per branch (ran $ncalls)" '[ "$ncalls" -lt 30 ]'
+check "a fresh clone fetches once: the clone itself, no second fetch (a network round trip)" '! grep -q " fetch" "$TMP/gitcalls"'
+check "...and remote-tracking refs exist for every branch" '[ "$(git -C "$TMP/manybranches/main" for-each-ref refs/remotes/origin/ | wc -l | tr -d " ")" -ge 200 ]'
 check "200 branches: only the default is left as a local branch" '[ "$(git -C "$TMP/manybranches/main" for-each-ref refs/heads/ | wc -l | tr -d " ")" = 1 ]'
 
 # --- as mani's clone: command --------------------------------------------------------------------
