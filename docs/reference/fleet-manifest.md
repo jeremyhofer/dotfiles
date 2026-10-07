@@ -33,12 +33,12 @@ Each entry is `projects.<name>`. The name is the key other tools use (`fleet-dec
 
 | Key | Value | Notes |
 | --- | --- | --- |
-| `path` | path relative to `~/Devel` | where `mani sync` puts the clone. Required by `mani` |
+| `path` | path relative to `~/Devel` | where `mani sync` puts the clone, and where `mani` tasks run. For a bare container, the DEFAULT-BRANCH WORKTREE (`<container>/<default-branch>`), never the container ([`repository-layouts.md`](repository-layouts.md)). Required by `mani` |
 | `url` | the clone URL | `mani sync` sets `origin` from it. Required by `mani` |
 | `tags` | list | `mani` selects by tag (`mani sync --tags active`). Two tags also change what the base's tools do (below) |
 | `env` | map | exported to `mani` tasks for that project |
-| `clone` | a command | replaces `mani`'s own clone; `git-clone-worktree --mani-project <name>` gives the bare-plus-worktrees layout |
-| `worktrees` | list of `{name, path}` | worktrees `mani` creates beside the clone |
+| `clone` | a command | replaces `mani`'s own clone; `git-clone-worktree --mani-project <name>` gives the bare-plus-worktrees layout. Leaving it out of a bare-layout entry is silent: `mani sync` succeeds with an ordinary checkout |
+| `worktrees` | list of `{name, path}` | worktrees `mani` creates beside the clone; `path` is relative to the project's `path`, so a sibling is `../<name>` |
 | `sync` | `false` | leaves the project out of `mani sync` |
 
 Top-level `tasks:` are `mani` tasks (`mani run <task>`). `lint-tasknames` checks their names against

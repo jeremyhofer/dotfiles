@@ -21,17 +21,38 @@ Both live in the repository's entry in `~/Devel/mani.yaml` ([`fleet-manifest.md`
 ```yaml
 projects:
   my-service:
-    path: work/my-service
+    path: work/my-service/main                            # the DEFAULT-BRANCH WORKTREE, not the container
     url: https://github.com/my-org/my-service.git
+    scope: work/my-service                                # the container: every worktree resolves to this entry
     clone: git-clone-worktree --mani-project my-service   # mani sync clones it as a bare container
+    worktrees:                                            # optional: further durable worktrees, relative to path
+      - name: develop
+        path: ../develop
     worktrunk:
       layout: bare                                        # wt places new worktrees beside main/
       bootstrap: true                                     # and installs dependencies in each
 ```
 
+Three rules, each of which fails quietly when broken (all measured with a real `mani sync`):
+
+- **`path:` names the default-branch worktree,** `<container>/<default-branch>`, and the container is
+  its parent. `mani` runs tasks and `mani exec` in `path`, and the container itself is bare, so it
+  could not be that directory. Use the repository's real default branch, which differs from
+  repository to repository (`main`, `master`, `develop`): `git ls-remote --symref <url> HEAD`
+  names it. A wrong name is warned about, the real default is created instead, and `mani sync`
+  then reports the project failed, because the declared path does not exist. A `path:` naming the
+  container makes its parent the container; `git-clone-worktree` refuses that when the parent
+  already holds files, which protects the devel root from becoming a repository.
+- **`clone:` is required.** Without it `mani sync` reports success and produces an ordinary
+  checkout, with any `worktrees:` nested inside it and sharing its `.git`: the layout this page
+  exists to avoid, with nothing to say so.
+- **`worktrees:` paths are relative to `path`,** so a sibling of the default branch is `../<name>`.
+
 `git-clone-worktree` is idempotent: run on an existing container it re-creates only what is
-missing, so `mani sync` may call it every time. After editing `worktrunk:` blocks, run
-`wt-config-gen` (an apply also runs it).
+missing, so `mani sync` may call it every time, and a re-sync restores a deleted worktree. Mixed
+default branches across repositories need nothing special: each clone reads its own from the
+remote. After editing `worktrunk:` blocks, run `wt-config-gen` (an apply also runs it). The skill
+`fleet-manifest` walks the whole procedure.
 
 ## Converting an existing plain clone
 
