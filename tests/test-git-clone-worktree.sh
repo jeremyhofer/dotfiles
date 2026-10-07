@@ -42,6 +42,15 @@ mkorigin() {  # $1 name  $2 default branch
 mkorigin dev develop
 mkorigin mas master
 
+# --- options -------------------------------------------------------------------------------------
+mkdir -p "$TMP/opts"; cd "$TMP/opts" || exit 1
+"$TOOL" --help > "$TMP/out" 2>&1; rc=$?
+check "--help: exit 0, its own usage, nothing created" '[ "$rc" = 0 ] && grep -q "git-clone-worktree --mani-project" "$TMP/out" && [ -z "$(ls -A)" ]'
+"$TOOL" -h > "$TMP/out" 2>&1; rc=$?
+check "-h: the same" '[ "$rc" = 0 ] && grep -q "git-clone-worktree --mani-project" "$TMP/out"'
+"$TOOL" --bogus > "$TMP/out" 2>&1; rc=$?
+check "an unknown option: refused, never taken as a url, nothing created" '[ "$rc" != 0 ] && grep -q "unknown option" "$TMP/out" && [ -z "$(ls -A)" ]'
+
 # --- direct mode ---------------------------------------------------------------------------------
 cd "$TMP" || exit 1
 "$TOOL" "$TMP/dev.git" plain >/dev/null 2>&1; rc=$?

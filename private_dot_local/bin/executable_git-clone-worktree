@@ -28,6 +28,14 @@ die() { printf 'git-clone-worktree: %s\n' "$1" >&2; exit 1; }
 
 url=""; target=""
 
+# --help prints the header above. Any other leading dash is refused rather than taken as a url:
+# that once ran `mkdir -p --help` and printed mkdir's help instead of this tool's.
+case "${1:-}" in
+  -h|--help) sed -n '2,/^set /{/^set /d;s/^# \{0,1\}//;p;}' "$0"; exit 0 ;;
+  --mani-project) ;;
+  -*) die "unknown option '$1' (see --help)" ;;
+esac
+
 if [ "${1:-}" = "--mani-project" ]; then
   project="${2:?--mani-project requires a project name}"
   command -v mani >/dev/null 2>&1 || die "--mani-project needs mani on PATH"
