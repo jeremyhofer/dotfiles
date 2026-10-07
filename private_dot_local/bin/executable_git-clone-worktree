@@ -56,6 +56,14 @@ fi
 
 bare="$target/.bare"
 
+# A directory that already holds files but no .bare is not a container, and making it one puts a
+# .git into whatever it was. The usual cause is a manifest `path:` naming the container instead of
+# its default-branch worktree: the container is then the PARENT, and for a top-level entry that is
+# the devel root itself.
+if [ ! -d "$bare" ] && [ -d "$target" ] && [ -n "$(ls -A "$target")" ]; then
+  die "$target already holds files and is not a container; refusing to clone into it. As a mani clone: command, path: must name the worktree, <container>/<default-branch>, and the container is its parent"
+fi
+
 if [ -d "$bare" ]; then
   printf 'git-clone-worktree: %s already present; ensuring it is complete\n' "$target"
 else
