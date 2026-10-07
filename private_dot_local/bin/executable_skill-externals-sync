@@ -40,7 +40,9 @@
 # this tool recorded are ever removed.
 #
 # CHEAP WHEN NOTHING CHANGED. An entry whose url and ref match the record, and whose directory still
-# has its SKILL.md, is not fetched again, so running this on every apply costs no network.
+# has its SKILL.md, is not fetched again, so running this on every apply costs no network. Entries
+# that do need fetching and share a url and ref share one clone, so twenty skills from one
+# repository's release cost one fetch, not twenty.
 set -u
 
 LIST=${SKILL_EXTERNALS_LIST:-$HOME/.dotlocal/skill-externals.yaml}
@@ -80,7 +82,7 @@ mkdir -p "$STATE_DIR" "$SKILLS" || { err "cannot create $STATE_DIR or $SKILLS"; 
 work=$(mktemp -d "$STATE_DIR/work.XXXXXX") || { err "cannot create a work directory"; exit 2; }
 trap 'rm -rf "$work"' EXIT INT TERM
 touch "$STATE"
-: > "$work/state.new"
+: > "$work/state.new"; : > "$work/fetched"; nfetch=0
 fail=0
 
 recorded() { awk -F'\t' -v n="$1" '$1 == n' "$STATE"; }        # the record's row for a name, if any
@@ -115,10 +117,17 @@ if [ -n "$entries" ]; then
       printf '%s\n' "$old" >> "$work/state.new"; continue                   # up to date: no fetch
     fi
 
-    src=$work/src-$name
-    if ! GIT_TERMINAL_PROMPT=0 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" \
-           "$url" "$src" 2> "$work/err-$name"; then
-      err "$name: could not fetch $ref from $url: $(tail -1 "$work/err-$name")"; fail=1
+    # One clone per (url, ref) per run: entries that share a repository and tag reuse its checkout,
+    # and a failed fetch is not retried for the next entry that names it.
+    src=$(awk -F'\t' -v u="$url" -v r="$ref" '$1 == u && $2 == r { print $3; exit }' "$work/fetched")
+    if [ -z "$src" ]; then
+      nfetch=$((nfetch + 1)); src=$work/src-$nfetch
+      GIT_TERMINAL_PROMPT=0 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" \
+        "$url" "$src" 2> "$src.err" || rm -rf "$src"
+      printf '%s\t%s\t%s\n' "$url" "$ref" "$src" >> "$work/fetched"
+    fi
+    if [ ! -d "$src" ]; then
+      err "$name: could not fetch $ref from $url: $(tail -1 "$src.err")"; fail=1
       [ -n "$old" ] && printf '%s\n' "$old" >> "$work/state.new"; continue
     fi
     commit=$(git -C "$src" rev-parse HEAD)

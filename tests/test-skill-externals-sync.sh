@@ -126,5 +126,27 @@ run
 check "list removed: its skills are uninstalled" '[ ! -e "$HOME/.claude/skills/beta" ]'
 check "list removed: a hand-made skill survives" '[ -f "$HOME/.claude/skills/handmade/SKILL.md" ]'
 
+# --- several skills from one repository and tag: cloned once, not once per skill ----------------
+mkrepo repo-m multi-one skills/multi-one
+mkdir -p "$tmp/repo-m/skills/multi-two"
+printf -- '---\nname: multi-two\ndescription: test\n---\n\nbody multi\n' > "$tmp/repo-m/skills/multi-two/SKILL.md"
+git -C "$tmp/repo-m" add -A; git -C "$tmp/repo-m" commit -qm multi; git -C "$tmp/repo-m" tag v2.0.0
+# A git on PATH that counts clones, then runs the real one.
+realgit=$(command -v git); mkdir -p "$tmp/bin"
+printf '#!/bin/sh\ncase " $* " in *" clone "*) echo clone >> "%s";; esac\nexec "%s" "$@"\n' \
+  "$tmp/clones" "$realgit" > "$tmp/bin/git"; chmod +x "$tmp/bin/git"
+cat > "$list" <<EOF
+skill_externals:
+  - { name: multi-one, url: "file://$tmp/repo-m", ref: v2.0.0, subtree: skills/multi-one }
+  - { name: multi-two, url: "file://$tmp/repo-m", ref: v2.0.0, subtree: skills/multi-two }
+  - { name: nosuch-one, url: "file://$tmp/repo-m", ref: v9.0.0, subtree: skills/multi-one }
+  - { name: nosuch-two, url: "file://$tmp/repo-m", ref: v9.0.0, subtree: skills/multi-two }
+EOF
+: > "$tmp/clones"; PATH="$tmp/bin:$PATH" run
+check "shared repo and tag: both skills installed" 'grep -q "body multi" "$HOME/.claude/skills/multi-two/SKILL.md" && [ -f "$HOME/.claude/skills/multi-one/SKILL.md" ]'
+nclones=$(awk 'END { print NR }' "$tmp/clones")
+check "shared repo and tag: one clone per (url, ref), a failed one included" '[ "$nclones" = 2 ]'
+check "shared failed fetch: reported for each entry" 'grep -q "nosuch-one: could not fetch v9.0.0" "$tmp/out" && grep -q "nosuch-two: could not fetch v9.0.0" "$tmp/out"'
+
 echo "passed: $pass   failed: $failn"
 [ "$failn" -eq 0 ]
