@@ -19,6 +19,13 @@
 #   git-clone-worktree --mani-project <name>
 #       Derive url and target from a mani project, so the clone location stays driven by the
 #       manifest rather than duplicated in a second place that can silently drift out of step.
+#   --filter=<spec>, with either form, anywhere on the line: a partial clone, passed to `git clone`.
+#       --filter=blob:none fetches every commit and tree but file contents only as they are needed,
+#       for a repository whose long history carries many large files: the checkout fetches what the
+#       default branch needs, and old versions (`blame`, `log -p`, an old checkout) are fetched on
+#       demand, which needs the network. The server must allow filters (GitHub does). Applies to a
+#       fresh clone only; an existing container is left as it is. In a manifest:
+#         clone: git-clone-worktree --mani-project <name> --filter=blob:none
 #
 # Idempotent: re-running against an existing container re-creates only what is missing and exits 0,
 # which is what makes it safe as a `clone:` command that a sync tool may invoke repeatedly.
@@ -27,6 +34,18 @@ set -euo pipefail
 die() { printf 'git-clone-worktree: %s\n' "$1" >&2; exit 1; }
 
 url=""; target=""
+
+# --filter=<spec> may sit anywhere, so a manifest's clone: line can append it. Pulled out before the
+# positional parsing below. The ${a+...} form keeps an empty list safe under `set -u` in bash 3.2,
+# which is what /usr/bin/env bash finds on a stock Mac.
+filter=""; rest=()
+for a in "$@"; do
+  case "$a" in
+    --filter=*) filter=${a#--filter=}; [ -n "$filter" ] || die "--filter needs a spec, e.g. --filter=blob:none" ;;
+    *) rest+=("$a") ;;
+  esac
+done
+set -- ${rest[@]+"${rest[@]}"}
 
 # --help prints the header above. Any other leading dash is refused rather than taken as a url:
 # that once ran `mkdir -p --help` and printed mkdir's help instead of this tool's.
@@ -87,7 +106,7 @@ if [ -d "$bare" ]; then
   git --git-dir="$bare" fetch --quiet origin
 else
   mkdir -p "$target"
-  git clone --bare -c "remote.origin.fetch=$refspec" "$url" "$bare"
+  git clone --bare ${filter:+"--filter=$filter"} -c "remote.origin.fetch=$refspec" "$url" "$bare"
   printf 'gitdir: ./.bare\n' > "$target/.git"
 fi
 

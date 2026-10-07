@@ -98,6 +98,13 @@ worktree cannot orphan the others. Skill `working-in-worktrees` covers when to c
 | **`clone:` only acts where `path` does not exist yet** | adding `clone:` to an entry with an existing plain clone: ✓, and still a plain clone | mani clones only missing paths. Convert by hand: `repository-layouts.md`, "Converting an existing plain clone" |
 
 `worktrees:` paths are relative to `path:`, so a sibling of the default branch is `../<name>`.
+
+**A very large repository** (a long history with many big files) can take tens of minutes to clone
+in full. Append `--filter=blob:none` to its `clone:` line for a blobless partial clone: every commit
+and tree, but file contents only as needed. The checkout fetches what the default branch needs;
+`blame`, `log -p` and old checkouts fetch on demand and need the network. Opt in per repository,
+never by default, and only on a fresh clone. To measure first:
+`time git-clone-worktree --filter=blob:none <url> /tmp/<name>-test`.
 Re-running `mani sync` is safe: `git-clone-worktree` re-creates only what is missing, and a deleted
 declared worktree comes back.
 
@@ -105,9 +112,14 @@ declared worktree comes back.
 
 - `mani sync` — clone what is missing and create declared worktrees; `mani sync <name>` or
   `--tags active` for a subset, `--status` to look without cloning. It never pulls into an existing
-  checkout. Cloning is serial unless `--parallel`, which suits repositories that prompt for
-  credentials. `--sync-remotes` rewrites existing checkouts' remotes from the manifest; leave it to
+  checkout. `--sync-remotes` rewrites existing checkouts' remotes from the manifest; leave it to
   whatever owns remote wiring on that machine.
+- `mani sync --parallel [--forks N]` — clone several repositories at once, 4 by default. It runs
+  `clone:` commands concurrently too (measured: four 2 s clones took 8 s serially, 2 s parallel),
+  so it is the way to set up a machine with many large repositories. Stay serial when a repository
+  prompts for credentials: parallel prompts interleave and cannot be answered. Parallel clones share
+  one connection, so past 4 to 8 at once they mostly split the bandwidth. The output interleaves;
+  check the layout afterwards rather than reading it.
 - `mani exec --all 'git pull --ff-only'` — the safe update; fast-forward only, so it never clobbers
   local work. It runs in each project's `path`, which is why `path` must be a worktree: the bare
   container has no working tree to run in. It updates only the branch checked out at `path`; other

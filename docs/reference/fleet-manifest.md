@@ -3,7 +3,11 @@
 One file per domain, written by that domain's private layer (the home and work repository sets are
 separate, so each writes its own whole file). It does two jobs at once:
 
-- **`mani` reads it** to clone and sync the domain's repositories into `~/Devel`.
+- **`mani` reads it** to clone and sync the domain's repositories into `~/Devel`. `mani sync
+  --parallel` (4 at once; `--forks N` for more) clones several at a time, custom `clone:` commands
+  included; stay serial for repositories that prompt for credentials. `mani describe` shows only some
+  of mani's own keys (not `clone:`), so it is not a view of what an entry declares: read a key with
+  `fleet-decl`.
 - **The base's tools read declarations about each repository from it**, always through `fleet-decl`,
   so that every tool resolves a path to the same entry.
 
@@ -39,7 +43,7 @@ Each entry is `projects.<name>`. The name is the key other tools use (`fleet-dec
 | `env` | map | exported to `mani` tasks for that project |
 | `clone` | a command | replaces `mani`'s own clone; `git-clone-worktree --mani-project <name>` gives the bare-plus-worktrees layout. Leaving it out of a bare-layout entry is silent: `mani sync` succeeds with an ordinary checkout |
 | `worktrees` | list of `{name, path}` | worktrees `mani` creates beside the clone; `path` is relative to the project's `path`, so a sibling is `../<name>` |
-| `sync` | `false` | leaves the project out of `mani sync` |
+| `sync` | `false` | `mani sync` never clones it, not even when named (`mani sync <name>`); clone it by hand if a machine wants it. Once it exists on disk it is an ordinary project: `mani exec --all`, `mani run` and `mani list` include it, and `fleet-decl` reads its declarations either way |
 
 Top-level `tasks:` are `mani` tasks (`mani run <task>`). `lint-tasknames` checks their names against
 the shared task vocabulary.

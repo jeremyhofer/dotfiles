@@ -93,6 +93,24 @@ check "a fresh clone fetches once: the clone itself, no second fetch (a network 
 check "...and remote-tracking refs exist for every branch" '[ "$(git -C "$TMP/manybranches/main" for-each-ref refs/remotes/origin/ | wc -l | tr -d " ")" -ge 200 ]'
 check "200 branches: only the default is left as a local branch" '[ "$(git -C "$TMP/manybranches/main" for-each-ref refs/heads/ | wc -l | tr -d " ")" = 1 ]'
 
+# --- --filter: a partial clone for very large histories -----------------------------------------
+# A big file committed long ago and since deleted stays on the server; a blobless clone never
+# downloads it, yet the checkout and later pulls still work.
+git init -q -b main "$TMP/src-big"
+head -c 200000 /dev/urandom > "$TMP/src-big/old.bin"; git -C "$TMP/src-big" add -A; git -C "$TMP/src-big" commit -qm old
+git -C "$TMP/src-big" rm -q old.bin; echo current > "$TMP/src-big/now.txt"; git -C "$TMP/src-big" add -A; git -C "$TMP/src-big" commit -qm now
+git clone -q --bare "$TMP/src-big" "$TMP/big.git"; git -C "$TMP/big.git" config uploadpack.allowFilter true
+(cd "$TMP" && "$TOOL" --filter=blob:none "file://$TMP/big.git" partial > "$TMP/out" 2>&1); rc=$?
+check "--filter=blob:none: exit 0, the default branch checked out" '[ "$rc" = 0 ] && [ "$(cat "$TMP/partial/main/now.txt" 2>/dev/null)" = current ]'
+nmissing=$(git -C "$TMP/partial/main" rev-list --objects --all --missing=print 2>/dev/null | grep -c '^?' || true)
+check "--filter=blob:none: the deleted old file was never downloaded" '[ "${nmissing:-0}" -ge 1 ]'
+check "--filter=blob:none: the remote is recorded as the promisor, so git fetches on demand" '[ "$(git -C "$TMP/partial/.bare" config remote.origin.promisor)" = true ]'
+echo more > "$TMP/src-big/now.txt"; git -C "$TMP/src-big" commit -qam more; git -C "$TMP/src-big" push -q "$TMP/big.git" main
+git -C "$TMP/partial/main" pull -q --ff-only > "$TMP/out" 2>&1
+check "--filter=blob:none: git pull --ff-only still updates it" '[ "$(cat "$TMP/partial/main/now.txt")" = more ]'
+"$TOOL" --filter= "file://$TMP/big.git" emptyfilter > "$TMP/out" 2>&1; rc=$?
+check "--filter= with no spec is refused, nothing created" '[ "$rc" != 0 ] && [ ! -e emptyfilter ]'
+
 # --- as mani's clone: command --------------------------------------------------------------------
 if ! command -v mani >/dev/null 2>&1; then
   printf '  SKIP the mani arms: mani is not installed\n'; skip=1
@@ -121,6 +139,10 @@ projects:
     path: c5/develop
     url: file://$TMP/dev.git
     clone: git-clone-worktree --mani-project colonurl
+  partialm:
+    path: c6/main
+    url: file://$TMP/big.git
+    clone: git-clone-worktree --mani-project partialm --filter=blob:none
   toplevel:
     path: c4
     url: $TMP/mas.git
@@ -140,6 +162,9 @@ EOF
 
   NO_COLOR=1 mani sync colonurl > "$TMP/out" 2>&1
   check "mani: a url containing a colon (file://, https://, ssh://) is read whole" '[ "$(cat c5/.git 2>/dev/null)" = "gitdir: ./.bare" ] && [ -d c5/develop ]'
+
+  NO_COLOR=1 mani sync partialm > "$TMP/out" 2>&1
+  check "mani: --filter on a clone: line gives a partial container" '[ "$(git -C c6/.bare config remote.origin.promisor 2>/dev/null)" = true ] && [ -f c6/main/now.txt ]'
 
   NO_COLOR=1 mani sync noclone > "$TMP/out" 2>&1
   check "mani, no clone: line: an ORDINARY checkout, siblings' git data inside it (the silent trap)" \
