@@ -200,6 +200,37 @@ git -C fwt/topic-x branch --unset-upstream; rm -rf fwt/develop; git -C fwt workt
 FR clone fwt > "$TMP/out" 2>&1
 check "worktrees: a re-run repairs a missing upstream and re-creates a deleted worktree" '[ "$(upstream fwt/topic-x)" = origin/topic/x ] && [ "$(git -C fwt/develop branch --show-current)" = develop ]'
 
+# Files a new worktree needs that git does not carry: the default worktree's .worktreeinclude lists
+# them, and a worktree fleet-repo creates gets a copy -- the listed ones only, never other ignored
+# files, and nothing at all without a list. The list itself is untracked and excluded, the shape a
+# repository nobody may commit to uses. Needs wt, whose copy the tool uses.
+if command -v wt >/dev/null 2>&1; then
+  printf 'local.properties\n.worktreeinclude\nbuild/\n' >> fwt/.bare/info/exclude
+  printf 'sdk.dir=/opt/sdk\n' > fwt/main/local.properties
+  mkdir -p fwt/main/build; printf 'x\n' > fwt/main/build/out
+  printf 'local.properties\n' > fwt/main/.worktreeinclude
+  rm -rf fwt/develop; git -C fwt worktree prune
+  FR clone fwt > "$TMP/out" 2>&1; rc=$?
+  check "worktreeinclude: a new worktree gets the listed file from the default worktree" \
+    '[ "$rc" = 0 ] && [ "$(cat fwt/develop/local.properties 2>/dev/null)" = "sdk.dir=/opt/sdk" ]'
+  check "worktreeinclude: an ignored file it does not list is not copied" '[ ! -e fwt/develop/build ]'
+  check "worktreeinclude: an existing worktree is left alone" '[ ! -e fwt/topic-x/local.properties ]'
+  rm -f fwt/main/.worktreeinclude; rm -rf fwt/develop; git -C fwt worktree prune
+  FR clone fwt > "$TMP/out" 2>&1; rc=$?
+  check "worktreeinclude: without a list nothing is copied, and nothing is said" \
+    '[ "$rc" = 0 ] && [ -d fwt/develop ] && [ ! -e fwt/develop/local.properties ] && ! grep -qi worktreeinclude "$TMP/out"'
+  # A failing copy warns and does not fail the clone: the worktree is still made.
+  printf 'local.properties\n' > fwt/main/.worktreeinclude
+  mkdir -p "$TMP/failwt"; printf '#!/bin/sh\nexit 1\n' > "$TMP/failwt/wt"; chmod +x "$TMP/failwt/wt"
+  rm -rf fwt/develop; git -C fwt worktree prune
+  PATH="$TMP/failwt:$PATH" FR clone fwt > "$TMP/out" 2>&1; rc=$?
+  check "worktreeinclude: a failed copy is a warning, not a failed clone" \
+    '[ "$rc" = 0 ] && [ -d fwt/develop ] && grep -q "could not copy the files listed" "$TMP/out"'
+  rm -f fwt/main/.worktreeinclude
+else
+  printf '  SKIP worktreeinclude arm: wt is not installed\n'
+fi
+
 # A declared worktree whose branch is not on the remote cannot exist: said, and not silent.
 cat > mani.yaml <<EOF
 projects:

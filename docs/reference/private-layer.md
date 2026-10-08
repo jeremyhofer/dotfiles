@@ -223,7 +223,10 @@ the private layer applies after the base, the overlay also re-runs it when its l
 `wt-config-gen` builds worktrunk's only config file from three sources: the base's `base.toml`, this
 fragment, and each project's `worktrunk:` block in the manifest. Two rules, both checked: only
 `base.toml` may hold top-level keys, so the fragment holds TABLES only; and no two sources may open
-the same table. The generated file is overwritten on every run; edit the sources. `WT_GEN_FRAGMENT`
+the same table, except a hook table (`[pre-start]`, `[post-switch]`, ...), which the generator merges
+into one, refusing a hook name both sources define. The base ships one global hook,
+`pre-start.copy-files` ([repository-layouts.md](repository-layouts.md#files-a-worktree-needs-that-git-does-not-carry)),
+so that name is taken. The generated file is overwritten on every run; edit the sources. `WT_GEN_FRAGMENT`
 points at another path.
 
 **This layer must carry the trigger that re-runs `wt-config-gen`** when the manifest or this fragment

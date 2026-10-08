@@ -238,6 +238,24 @@ run_post_worktree_create_hook() {
   "$hook" "$1" || true
 }
 
+# A new worktree gets a copy of the gitignored files its repository lists in a .worktreeinclude at
+# the root of the default branch's worktree (Gradle's local.properties, a .env): the standard in
+# docs/reference/repository-layouts.md. worktrunk does this through a pre-start hook, but `git
+# worktree add` runs no worktrunk hook, so worktrees made here would otherwise go without. The copy
+# itself is worktrunk's (`wt step copy-ignored`), so the two paths cannot disagree about what is
+# copied. Nothing to do without a list, or without wt. A failed copy is a warning and not a failed
+# clone: the worktree exists and is correct, it only lacks a file someone can copy by hand.
+copy_listed_files() {  # $1 container, $2 default branch, $3 new worktree's branch
+  [ -f "$1/$2/.worktreeinclude" ] || return 0
+  if ! command -v wt >/dev/null 2>&1; then
+    say "NOTE: $1/$2 lists files in .worktreeinclude, but wt is not installed, so worktree $3 did not get them"
+    return 0
+  fi
+  if ! wt -C "$1/$2" step copy-ignored --require-include --from "$2" --to "$3" >/dev/null; then
+    printf 'fleet-repo: WARNING: could not copy the files listed in %s/%s/.worktreeinclude into worktree %s\n' "$1" "$2" "$3" >&2
+  fi
+}
+
 # ---- clone ------------------------------------------------------------------------------------
 # Globals in: URL TARGET EXPECT FILTER MODE LIST WT_NAMES WT_DIRS
 do_clone() {
@@ -396,6 +414,7 @@ EOF
       fi
     fi
     if git -C "$TARGET" worktree add "$dir" "$b"; then
+      copy_listed_files "$TARGET" "$default" "$b"
       run_post_worktree_create_hook "$(cd "$dir" 2>/dev/null && pwd)"
     else
       problem "could not create worktree $dir for $b"

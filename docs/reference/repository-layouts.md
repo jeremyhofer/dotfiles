@@ -69,6 +69,48 @@ default branches across repositories need nothing special: each clone reads its 
 remote. After editing `worktrunk:` blocks, run `wt-config-gen` (an apply also runs it). The skill
 `fleet-manifest` walks the whole procedure.
 
+## Files a worktree needs that git does not carry
+
+A worktree is a fresh checkout, so the gitignored, per-machine files a repository needs to build or
+run are not in it: Gradle's `local.properties` (the Android SDK location), a `.env`, local
+configuration. The standard:
+
+1. **The files live in the default branch's worktree** (`<container>/main/` in a bare container, the
+   checkout itself in a plain clone). That worktree is where you set a repository up by hand once.
+2. **The repository lists them in `.worktreeinclude`** at that worktree's root, one gitignore-style
+   pattern per line. A file is copied only if it is BOTH gitignored and listed, so a tracked file is
+   never touched and an unlisted ignored file (build output, `node_modules/`) is never copied.
+3. **Every new worktree gets a copy**, whichever way it is made:
+   - `wt switch --create`, and so a Claude Code worktree made through the worktrunk plugin: a global
+     `pre-start` hook in the base's `base.toml` runs `wt step copy-ignored --require-include`. It
+     blocks, so the files are in place before any later hook or build.
+   - `fleet-repo clone`, for each `worktrees:` entry it adds to an existing container: it runs the
+     same worktrunk copy, because `git worktree add` runs no worktrunk hook. Without `wt` installed
+     it says so; a failed copy is a warning, not a failed clone.
+
+   A file already present in the new worktree is never overwritten. A repository with no
+   `.worktreeinclude` gets nothing copied and no message.
+
+**`.worktreeinclude` may be committed or local.** Commit it where the team shares the convention;
+Claude Code reads the same file natively. In a repository you cannot commit to, keep it untracked
+and hide it, with the files it lists if they are not already ignored, in the repository's own
+exclude file, which every worktree of the container shares:
+
+```sh
+cd ~/Devel/<path>/<container>/main
+printf 'local.properties\n' > .worktreeinclude
+printf '.worktreeinclude\n' >> "$(git rev-parse --git-common-dir)/info/exclude"
+```
+
+**What it does not cover: the first worktree of a fresh clone.** There is nothing to copy from, so
+the default worktree is set up by hand, once, per machine. A standard way to seed it at clone time is
+not designed yet.
+
+**Copy, not symlink:** a tool that rewrites its file (Android Studio does, for `local.properties`)
+changes only its own worktree's copy. The cost is that a later change in `main/` does not reach
+worktrees that already exist; copy it across by hand, or re-run
+`wt step copy-ignored --from main --to <branch> --force` from any worktree of the container.
+
 ## Converting an existing plain clone
 
 Nothing is pushed, rewritten or deleted until the new container is proven. Unpushed local branches

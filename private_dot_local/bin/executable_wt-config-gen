@@ -37,6 +37,13 @@
 # table. And no two sources may open the same table -- TOML forbids it, and the error would name a
 # line in a file nobody edits.
 #
+# ONE EXCEPTION: HOOK TABLES ([pre-start], [post-switch], ...) ARE MERGED. Two layers can each have a
+# reason to run something at the same lifecycle point -- the base copies a worktree's listed files,
+# the private layer checks its commit guard -- and worktrunk has no include directive to let both
+# say so. The merge puts every later source's body into the first source's table; a hook NAME defined
+# twice is still refused, because one of the two would silently not run. Commands in one hook table
+# run concurrently, so a merged table changes no ordering a single source relied on.
+#
 # Environment (for tests and unusual layouts): WT_GEN_BASE, WT_GEN_FRAGMENT, WT_GEN_OUT, and
 # fleet-decl's own FLEET_RECORD / FLEET_DEVEL_ROOT.
 set -eu
@@ -58,6 +65,52 @@ trap 'rm -rf "$work"' EXIT
 # Tables a source opens, one header per line, whitespace and trailing comments removed. `[[x]]`
 # (arrays of tables) may legitimately repeat, so only single-bracket headers are collected.
 headers() { sed -n 's/[[:space:]]*#.*$//; s/[[:space:]]//g; /^\[[^[]/p' "$1"; }
+
+# worktrunk's hook types. A table with one of these names may be opened by more than one source.
+hook_names="pre-switch post-switch pre-start post-start pre-commit post-commit pre-merge post-merge pre-remove post-remove"
+
+# Merge repeated top-level hook tables in a joined file: every later occurrence's body moves to the
+# end of the first occurrence, its header dropped. Prints the merged file on stdout; exits 3, naming
+# each <hook>.<name> defined more than once, instead. Bare keys only are compared -- a quoted key
+# that collides is still caught, by worktrunk's own parse of the result.
+merge_hook_tables() {
+  awk -v hooks=" $hook_names " '
+    function hdr(line,   t) { t = line; sub(/[ \t]*#.*$/, "", t); gsub(/[ \t]/, "", t); return t }
+    function hookof(t,   n) {
+      if (t !~ /^\[[^[].*\]$/) return ""
+      n = substr(t, 2, length(t) - 2)
+      return index(hooks, " " n " ") ? n : ""
+    }
+    NR == FNR {
+      t = hdr($0)
+      if (t ~ /^\[/) { cur = hookof(t); occ = (cur == "") ? 0 : ++seen[cur]; next }
+      if (cur == "") next
+      if (occ > 1) extra[cur] = extra[cur] $0 "\n"
+      if ($0 ~ /^[ \t]*[A-Za-z0-9_-]+[ \t]*=/) {
+        k = $0; sub(/^[ \t]*/, "", k); sub(/[ \t]*=.*$/, "", k)
+        if ((cur SUBSEP k) in keys) dups = dups " " cur "." k
+        keys[cur SUBSEP k] = 1
+      }
+      next
+    }
+    FNR == 1 && dups != "" { print "hook name(s) defined by more than one source:" dups > "/dev/stderr"; exit 3 }
+    function flush() {
+      if (open != "" && extra[open] != "") {
+        printf "# (merged here by wt-config-gen from a later source)\n%s", extra[open]
+      }
+      open = ""
+    }
+    {
+      t = hdr($0)
+      if (t ~ /^\[/) {
+        flush(); h = hookof(t); skip = 0
+        if (h != "") { if (++printed[h] == 1) open = h; else { skip = 1; next } }
+      }
+      if (!skip) print
+    }
+    END { if (dups == "") flush() }
+  ' "$1" "$1"
+}
 
 # A source other than base must open with a table before it holds any key.
 starts_with_table() {
@@ -144,12 +197,13 @@ fi
 if [ -f "$frag" ] && ! starts_with_table "$frag"; then
   die "$frag holds a key before its first table; only base.toml may hold top-level keys"
 fi
+for h in $hook_names; do printf '[%s]\n' "$h"; done > "$work/hook-headers"
 : > "$work/headers"
 for src in "$base" "$frag" "$projects_toml"; do
   [ -f "$src" ] || continue
   headers "$src" | while IFS= read -r h; do printf '%s\t%s\n' "$h" "$src"; done >> "$work/headers"
 done
-dups=$(cut -f1 "$work/headers" | sort | uniq -d)
+dups=$(cut -f1 "$work/headers" | sort | uniq -d | grep -vxF -f "$work/hook-headers" || true)
 if [ -n "$dups" ]; then
   where=$(for d in $dups; do grep -F "$d	" "$work/headers" | cut -f2 | tr '\n' ' '; done)
   die "table(s) opened by more than one source: $(printf '%s' "$dups" | tr '\n' ' ')(in: $where)"
@@ -167,6 +221,9 @@ new="$work/config.toml"
   [ -f "$frag" ] && { printf '\n'; cat "$frag"; }
   cat "$projects_toml"
 } > "$new"
+
+merge_hook_tables "$new" > "$work/merged.toml" 2>"$work/merge.err" || die "$(cat "$work/merge.err")"
+mv "$work/merged.toml" "$new"
 
 # `wt config show` parses with worktrunk's own parser and exits 1 on a parse error. It is run from /
 # so the current directory's project config cannot make a valid user config look invalid.

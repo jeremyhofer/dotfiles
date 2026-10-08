@@ -32,6 +32,28 @@ Entries are newest first.
 
 ---
 
+## 2026-10-08
+
+### New worktrees get the gitignored files their repository lists in `.worktreeinclude`
+
+The standard is in `docs/reference/repository-layouts.md` ("Files a worktree needs that git does not
+carry"): per-machine files such as Gradle's `local.properties` or a `.env` live in the default
+branch's worktree, the repository lists them in a `.worktreeinclude` there, and every new worktree
+gets a copy. Two mechanisms, one copy (worktrunk's `wt step copy-ignored`):
+
+- **`base.toml` ships a global `pre-start` hook, `copy-files`.** It does nothing, silently, in a
+  repository without a `.worktreeinclude`, so existing repositories are unaffected until they opt in.
+- **`fleet-repo clone` copies into each `worktrees:` entry it adds** to an existing container.
+- **`wt-config-gen` now MERGES a hook table opened by more than one source** instead of refusing it,
+  and refuses a hook name defined twice. Before this, a private fragment's `[pre-start]` and the
+  base's would have collided. Every other duplicate table is still refused.
+
+**ACTION, on any machine whose private worktrunk fragment defines a `pre-start` hook named
+`copy-files`:** rename it; the generator now refuses the clash and keeps the old config. Then, per
+repository that needs files copied, write its `.worktreeinclude` (the doc shows the untracked form
+for a repository you cannot commit to). A fresh clone's first worktree is not covered: set it up by
+hand once.
+
 ## 2026-10-07
 
 ### `fleet-repo` replaces `git-clone-worktree`, and a manifest entry can declare its container

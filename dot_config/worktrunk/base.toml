@@ -7,8 +7,10 @@
 #
 # RULES FOR THIS FILE, because the generator concatenates it with other sources:
 #   * it is the ONLY source that may hold top-level keys;
-#   * it holds no hooks, no project entries and no host names -- those belong to the layers that
-#     know them.
+#   * it holds no project entries and no host names -- those belong to the layers that know them;
+#   * the only hooks it holds are generic ones that do nothing in a repository that has not opted in.
+#     A hook table it shares with the private fragment ([pre-start], say) is MERGED by the
+#     generator into one table, and a hook NAME defined by both is refused.
 #
 # ---------------------------------------------------------------------------
 # The default worktree location: NESTED inside the repository
@@ -38,3 +40,23 @@ worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
 # warning that a future release changes the default.
 [list]
 json-schema = 2
+
+# ---------------------------------------------------------------------------
+# Files a new worktree needs that git does not carry
+# ---------------------------------------------------------------------------
+# A worktree is a fresh checkout, so gitignored, per-machine files -- Gradle's local.properties, a
+# .env, local config -- are not in it. The standard (docs/reference/repository-layouts.md): those
+# files live in the default branch's worktree, a repository lists them in an (untracked or committed)
+# .worktreeinclude at that worktree's root, and every NEW worktree gets a copy.
+#
+# THE OPT-IN IS THE .worktreeinclude FILE, so this hook is global: without one it does nothing and
+# prints nothing. --require-include keeps it that way -- without the flag worktrunk copies EVERY
+# ignored file, build output and node_modules included. `step copy-ignored` copies from the primary
+# worktree (the default branch's, in a bare container) and never overwrites a file already there.
+#
+# pre-start, not post-start: it BLOCKS, so the files are in place before any later hook (a dependency
+# install) or the first build. worktrunk runs global pre-start hooks before per-project ones.
+#
+# Worktrees made by `fleet-repo` do not run worktrunk hooks; it runs the same copy itself.
+[pre-start]
+copy-files = "if [ -f {{ primary_worktree_path }}/.worktreeinclude ]; then wt step copy-ignored --require-include; fi"
