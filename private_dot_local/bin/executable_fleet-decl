@@ -272,7 +272,8 @@ case "${1:-}" in
           canonical|canonicalIdentity|canonicalLaunchDir|canonicalLaunchModel|canonicalMachines) ;;
           worktrunk) ;;
           container) ;;
-          leak*|canonical*|container*)
+          claudeTrust) ;;
+          leak*|canonical*|container*|claude*|Claude*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
       done
@@ -291,6 +292,14 @@ case "${1:-}" in
             printf '[worktrunk-key] %s: worktrunk.%s is not a key this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
       done
+    done
+    # claudeTrust is read by claude-trust-check, where only a YAML false opts a project out. A quoted
+    # "false" or a bare `no` is a STRING in YAML 1.2 and would leave the project checked, the opposite
+    # of what the line says, so any value that is not a boolean is refused here.
+    for p in $(yq -r '.projects | to_entries[] | select(.value | has("claudeTrust")) | .key' "$RECORD" 2>/dev/null || true); do
+      if [ "$(yq -r ".projects.\"$p\".claudeTrust | tag" "$RECORD" 2>/dev/null)" != '!!bool' ]; then
+        printf '[claudeTrust-value] %s: claudeTrust must be true or false, unquoted\n' "$p"; rc=1
+      fi
     done
     # The container block is read by the cloner (fleet-repo), which would otherwise have to decide
     # what to do with a value it does not understand -- and a mistyped `branchs: default` would

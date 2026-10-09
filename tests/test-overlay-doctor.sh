@@ -421,7 +421,11 @@ stub_trust 3 ""
 out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'Tier W: workspace trust is unknown' || { echo "FAIL(W3): unknown not reported"; echo "$out"; exit 1; }
 rm -f "$tmp/trbin/claude-trust-check"
-out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+# Absent by construction: on a machine where the base is applied the real tool is on PATH, so drop
+# every PATH directory that holds one rather than assuming the machine has none.
+notool=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/claude-trust-check" ] || printf '%s:' "$d"; done)
+notool=${notool%:}
+out=$(PATH="$notool" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'Tier W' && { echo "FAIL(W4): reported without the tool on PATH"; echo "$out"; exit 1; }
 echo "ok:   Tier W: trust reported as advisory (all trusted, names needing a click, unknown, absent tool)"
 echo "PASS"

@@ -375,7 +375,7 @@ for good in '    container:
       branches: default' '    container:
       branches: [main, develop, release/1.0]
       filter: blob:none' '    container:
-      filter: blob:none' '    container: {}'; do
+      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true'; do
   out=$(cont_check "$good"); rc=$?
   [ "$rc" -eq 0 ] && ok "--check accepts a container block: $(printf '%s' "$good" | tr -s ' \n' ' ')" || bad "--check container valid" "rc=$rc $out :: $good"
 done
@@ -403,6 +403,11 @@ a near-miss of the container key|    containers:\n      branches: all|-|[unknown
 a bad fleet default|    scope2: x|containerDefaults:\n  branches: some|[containerDefaults-value] containerDefaults.branches
 a mistyped fleet default key|    scope2: x|containerDefaults:\n  branchs: default|[containerDefaults-key] containerDefaults.branchs
 a near-miss of containerDefaults|    scope2: x|containerDefault:\n  branches: default|[unknown-key] fleet: containerDefault
+a lower-case claudeTrust|    claudetrust: false|-|[unknown-key] alpha: claudetrust
+a snake-case claudeTrust|    claude_trust: false|-|[unknown-key] alpha: claude_trust
+a capitalised claudeTrust|    ClaudeTrust: false|-|[unknown-key] alpha: ClaudeTrust
+a quoted claudeTrust false|    claudeTrust: "false"|-|[claudeTrust-value] alpha: claudeTrust
+claudeTrust: no, a string in YAML 1.2|    claudeTrust: no|-|[claudeTrust-value] alpha: claudeTrust
 CASES
 
 printf '\nfleet-decl: %d passed, %d failed\n' "$pass" "$fail"
