@@ -22,7 +22,7 @@ projects:
     # leakPrefix: EXR                              # this repo's own program id prefix(es), comma-separated
     # clone: fleet-repo clone example-repo        # bare clone with sibling worktrees. With it,
     #   path: becomes internal/example-repo/<default-branch> (the worktree, not the container; scope stays
-    #   the container). See docs/reference/repository-layouts.md and the skill fleet-manifest.
+    #   the container). See docs/reference/fleet-manifest.md and repository-layouts.md.
     # container:                                 # what that bare container fetches (fleet-repo)
     #   branches: default                        # all | default | [names]; worktrees: branches are always fetched
     #   filter: blob:none                        # optional partial clone, fresh clones only

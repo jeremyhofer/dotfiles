@@ -72,8 +72,8 @@ alike; re-run `fleet-repo clone` once on a container cloned before it did ("Ther
 information for the current branch"). `fleet-repo check` reports the drift between declaration and
 disk without fixing it. The old name `git-clone-worktree` forwards to `fleet-repo clone`. Mixed
 default branches across repositories need nothing special: each clone reads its own from the
-remote. After editing `worktrunk:` blocks, run `wt-config-gen` (an apply also runs it). The skill
-`fleet-manifest` walks the whole procedure.
+remote. After editing `worktrunk:` blocks, run `wt-config-gen` (an apply also runs it). Adding a
+repository and proving it: [`fleet-manifest.md`](fleet-manifest.md#adding-a-repository-as-a-container-and-proving-it).
 
 ## Files a worktree needs that git does not carry
 

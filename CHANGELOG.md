@@ -34,6 +34,16 @@ Entries are newest first.
 
 ## 2026-10-09
 
+### Skill `fleet-manifest` is retired
+
+Everything it said is now in `docs/reference/fleet-manifest.md`, including the add-a-repository
+procedure and its one-project proof (a new section). The mistakes it warned about are refused or
+reported by the tools themselves: `fleet-repo` refuses a populated non-container parent and warns
+on a wrong default branch, and `fleet-repo check` reports `plain-clone`, `worktrunk-missing` and
+`old-layout`. Its predecessor `working-across-repos` was retired on the same grounds, after a test.
+Applying removes the deployed directory (`.chezmoiremove`). If `skipSkills` lists it, that entry is
+now inert and can go.
+
 ### A bare container's repository is named `.git`; worktrunk's default path follows the shape
 
 **Why.** Claude Code's sandbox lets a linked worktree write its repository's shared git directory

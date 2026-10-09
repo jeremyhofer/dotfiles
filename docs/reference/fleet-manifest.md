@@ -116,6 +116,32 @@ REPORTS a local branch or worktree for it, since either may hold unpushed work.
 unusable) and `fleet-repo update` fast-forwards a repository's worktrees; `fleet-repo --help` has
 the details.
 
+### Adding a repository as a container, and proving it
+
+1. **Find the default branch**, which differs between repositories:
+   `git ls-remote --symref <url> HEAD` (first line: `ref: refs/heads/<default>  HEAD`).
+2. **Write the entry** with `path: <container>/<default-branch>` (the worktree; the container is its
+   parent) and `clone: fleet-repo clone <name>`. Where a chezmoi instance deploys the manifest, edit
+   that source and apply.
+3. **Validate:** `fleet-decl --check`.
+4. **Prove it on that one project** before syncing the rest:
+
+   ```sh
+   mani sync <name>
+   git -C <container>/.git rev-parse --is-bare-repository          # true
+   git -C <container>/<default-branch> rev-parse --git-common-dir  # ends in <container>/.git
+   fleet-repo check <name>                                         # exit 0
+   ```
+
+A ✓ from `mani sync` is not the proof, because three mistakes also tick: leaving out `clone:` (an
+ordinary checkout, with `worktrees:` nested inside it), naming the container in `path:` (the
+container is built one level up), and adding `clone:` to an entry whose `path` already holds a plain
+clone (`mani` runs `clone:` only where `path` is missing, so nothing changes; convert by hand,
+[`repository-layouts.md`](repository-layouts.md)). A wrong default branch in `path:` warns "manifest
+expects the worktree at" and marks the project ✕; fix `path:` and re-sync. A hand edit of the
+manifest does not run `wt-config-gen`, so new worktrees nest until it runs; `fleet-repo check`
+reports that as `worktrunk-missing`.
+
 **What `leakPolicy` allows.** The publish guard keeps two classes of the domain's private vocabulary
 out of repositories, from files the private layer supplies under `~/.dotlocal/`: **markers**
 (`git-leak-markers`: program identifiers such as a register entry's id, and pointers into the
