@@ -38,6 +38,7 @@ typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell sp
 `spell-capture` · `ui-shot` (headless render for visual review) ·
 `skill-externals-sync` (installs the pinned skills a private layer lists in `~/.dotlocal/skill-externals.yaml`, by git; runs after every apply) ·
 `fleet-repo` (makes a repository on disk match its manifest entry: `clone` as a bare container plus sibling worktrees, reconciling an existing one, `update` for fast-forwards, `check` for drift; bootstraps the layout `wt` then manages, since worktrunk has no clone verb) ·
+`claude-trust-check` (lists the manifest's directories whose Claude Code workspace-trust prompt is still unaccepted, which blocks `claude --bg` there; read-only, exit 3 when the trust state is unknown) ·
 `fleet-decl` (reads one declaration from the per-repo record, a mani.yaml; exit 2 means the record is unreadable, never "not declared") ·
 `wt-bootstrap` (installs a fresh worktree's dependencies from whichever lockfile it finds, frozen; wired in as worktrunk's `pre-start` hook) ·
 `install-claude-plugins` (installs the Claude Code plugins a private layer's settings fragment declares; opt-in, run from that layer's trigger) · `install-test-gate` (installs a test-suite commit gate into a chezmoi source repo, refusing a pre-commit it did not write; opt-in) ·

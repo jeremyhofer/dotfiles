@@ -401,4 +401,27 @@ printf '[hook "other-hook"]\n\tenabled = false\n' >> "$tmp/gc-hooks"
 out=$(GIT_CONFIG_GLOBAL="$tmp/gc-hooks" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
 printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'other-hook (disabled by hook.other-hook.enabled=false)' || { echo "FAIL(K3): git's own hook.<name>.enabled=false is not shown"; echo "$out"; exit 1; }
 echo "ok:   a configured hook that is switched off is listed as disabled, naming the setting"
+# ---- Tier W: workspace trust is advisory and prints names, never a path -------------------------
+# A stub claude-trust-check stands in for the real one: it answers by exit status and prints names.
+mk "$tmp/ov"; mkdir -p "$tmp/trbin"
+stub_trust() { # $1 exit status, $2 stdout
+  printf '#!/bin/sh\n[ "${1:-}" = --names-only ] || exit 9\nprintf "%%s" "%s"\nexit %s\n' "$2" "$1" > "$tmp/trbin/claude-trust-check"
+  chmod +x "$tmp/trbin/claude-trust-check"
+}
+stub_trust 0 ""
+out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'OK .*Tier W' || { echo "FAIL(W1): all-trusted not reported"; echo "$out"; exit 1; }
+stub_trust 1 "alpha
+beta"
+out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] || { echo "FAIL(W2): untrusted directories changed the exit status to $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'Tier W: 2 project(s) still need.*alpha beta' || { echo "FAIL(W2): count and names not reported"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'accept the trust prompt' || { echo "FAIL(W2): no fix line"; echo "$out"; exit 1; }
+stub_trust 3 ""
+out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'Tier W: workspace trust is unknown' || { echo "FAIL(W3): unknown not reported"; echo "$out"; exit 1; }
+rm -f "$tmp/trbin/claude-trust-check"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'Tier W' && { echo "FAIL(W4): reported without the tool on PATH"; echo "$out"; exit 1; }
+echo "ok:   Tier W: trust reported as advisory (all trusted, names needing a click, unknown, absent tool)"
 echo "PASS"

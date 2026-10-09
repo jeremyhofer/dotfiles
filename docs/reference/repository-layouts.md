@@ -141,8 +141,11 @@ write Claude Code's own directory:
    path of the old `.bare` directory, with separators flattened). Move
    `~/.claude/projects/<key>--bare/` to the same key without the `--bare` suffix, so the next
    session in the container finds it.
-2. **Expect a workspace-trust prompt.** Trust is keyed on the repository root, which the rename can
-   change, so Claude Code may ask again in the first session afterwards. Accept it.
+2. **Expect a workspace-trust prompt.** Claude Code keys trust on the repository's git common
+   directory with a trailing `/.git` removed. For an old container that was `<container>/.bare`;
+   after the rename it is `<container>`, so the converted container WILL ask again, and a
+   background session (`claude --bg`) in it is refused until someone accepts. Open `claude` in the
+   container once and accept. `claude-trust-check` lists every manifest directory still waiting.
 
 To go back, mirror the steps: rename `.git` to `.bare`, write `gitdir: ./.bare` into a new `.git`
 file, and run `git -C <container>/.bare worktree repair <each worktree path>`.

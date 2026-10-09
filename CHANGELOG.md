@@ -54,6 +54,10 @@ makes the built-in rule apply, and the sandbox leaves `config` and `hooks/` read
   gets worktrees inside its own git directory. `worktrunk.layout` stays valid.
 - **`hook-doctor` and `claude-context-probe`** recognise both shapes; the probe's container fixture
   is now the new one.
+- **`claude-trust-check` is new, and `overlay-doctor` reports untrusted directories (Tier W,
+  advisory).** Claude Code refuses `claude --bg` in a directory whose workspace trust nobody has
+  accepted; the tool reads Claude Code's state (never writes it) and lists the manifest's
+  directories still waiting, grouped by repository, with the command to accept each.
 - **Skill `working-in-worktrees`:** a sandboxed session creates a worktree with the EnterWorktree
   tool by name; `wt switch --create` remains the route for a person or an unsandboxed script. A
   session writes the worktree it is in plus the shared `.git`, so it lands from the default
@@ -75,8 +79,9 @@ makes the built-in rule apply, and the sandbox leaves `config` and `hooks/` read
    `fleet-repo check` prints these with the path filled in. The procedure is in
    `docs/reference/repository-layouts.md`, "Converting a `.bare` container from the old shape".
 3. **Move the container's Claude Code memory store** from the project key ending in `--bare`
-   (under `~/.claude/projects/`) to the same key without the suffix, and accept the workspace-trust
-   prompt if Claude Code asks again.
+   (under `~/.claude/projects/`) to the same key without the suffix. Claude Code will ask for
+   workspace trust again after converting a container (the trust key changes from
+   `<container>/.bare` to `<container>`); accept it. `claude-trust-check` lists what still needs it.
 4. **A private layer's container-root sandbox grants become unnecessary** once its containers are
    converted. Remove them then, not before: an unconverted container still needs its grant.
 

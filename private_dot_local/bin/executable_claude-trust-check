@@ -1,0 +1,226 @@
+#!/bin/sh
+# claude-trust-check -- which directories agents will run in still need a Claude Code trust click.
+#
+#   claude-trust-check [--names-only]
+#   claude-trust-check -h | --help
+#
+#   exit 0  every checked repository is trusted
+#   exit 1  at least one is untrusted, or a project's path exists but is not a git repository
+#   exit 2  unusable: the manifest cannot be read (or none is found), or jq or git is missing
+#   exit 3  the trust state is UNKNOWN: no Claude Code state file with a `projects` object was
+#           found, so nothing is reported as untrusted (an unknown is not a "no")
+#
+# WHY. Claude Code refuses to start a background session (`claude --bg`) in a directory whose
+# workspace trust has not been accepted, and the only way to grant trust is a person accepting the
+# dialog in an interactive `claude` there. On a new machine that is one click per repository, found
+# one failure at a time. This prints the whole list up front. It only READS Claude Code's state; it
+# never writes it, and it cannot grant trust.
+#
+# WHAT IS CHECKED. Every project in the fleet manifest whose `path` exists, plus every
+# `canonicalLaunchDir`, each resolved against the manifest's directory. A path that does not exist is
+# skipped silently (the project is not cloned on this machine). One that exists but is not inside a
+# git repository is reported as not-a-repo. Results are grouped by trust root, so a project and its
+# launch directory, or several worktrees of one repository, are one line.
+#
+# HOW TRUST IS KEYED (measured on Claude Code 2.1.295). The state holds
+# projects["<absolute path>"].hasTrustDialogAccepted. The key is the repository's git common
+# directory with a trailing /.git removed:
+#   plain clone                          -> the clone's root
+#   bare container, bare repo <c>/.git   -> <c>
+#   old container, bare repo <c>/.bare   -> <c>/.bare itself (not stripped)
+#   any worktree                         -> its repository's key, the same way
+# Trusting a parent directory does NOT extend to a repository nested below it, so an ancestor's entry
+# is never counted: each repository needs its own.
+#
+# WHERE THE STATE IS. ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.config.json is the live file. An older
+# Claude Code uses $HOME/.claude.json, which a current version leaves behind with stale entries. If
+# the first has a `projects` object it alone decides; else the second if it has one; else UNKNOWN.
+#
+# WHERE THE MANIFEST IS. The same resolution as fleet-repo: $FLEET_RECORD if set; else the nearest
+# mani.yaml (or mani.yml) at or above the current directory; else ~/Devel/mani.yaml. It is read only
+# through fleet-decl (a sibling file, else on PATH).
+#
+# --names-only prints just the names of untrusted projects, one per line, with no path anywhere, for
+# a caller that must not print directories.
+set -u
+
+die() { printf 'claude-trust-check: %s\n' "$1" >&2; exit "${2:-2}"; }
+usage() { sed -n '2,/^set /{/^set /d;s/^# \{0,1\}//;p;}' "$0"; }
+
+NAMES_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --names-only) NAMES_ONLY=1 ;;
+    *) die "unknown argument: $1 (try --help)" 2 ;;
+  esac
+  shift
+done
+
+command -v jq >/dev/null 2>&1 || die "jq is required and was not found" 2
+command -v git >/dev/null 2>&1 || die "git is required and was not found" 2
+
+# A companion tool: next to this file when run from a source tree or an install directory (the
+# source copy is named executable_<name>), else on PATH.
+here=$(cd "$(dirname "$0")" && pwd)
+FLEET_DECL=""
+for c in "$here/fleet-decl" "$here/executable_fleet-decl"; do
+  if [ -x "$c" ]; then FLEET_DECL=$c; break; fi
+done
+[ -n "$FLEET_DECL" ] || FLEET_DECL=$(command -v fleet-decl 2>/dev/null || true)
+[ -n "$FLEET_DECL" ] || die "fleet-decl is not installed, so the manifest cannot be read" 2
+
+if [ -n "${FLEET_RECORD:-}" ]; then
+  rec=$FLEET_RECORD
+  [ -f "$rec" ] || die "FLEET_RECORD names $rec, which does not exist" 2
+else
+  rec=""; d=$PWD
+  while :; do
+    if [ -f "$d/mani.yaml" ]; then rec="$d/mani.yaml"; break; fi
+    if [ -f "$d/mani.yml" ]; then rec="$d/mani.yml"; break; fi
+    [ "$d" = / ] && break
+    d=$(dirname "$d")
+  done
+  if [ -z "$rec" ] && [ -f "$HOME/Devel/mani.yaml" ]; then rec="$HOME/Devel/mani.yaml"; fi
+  [ -n "$rec" ] || die "no manifest: looked for mani.yaml at or above $PWD and at ~/Devel/mani.yaml (set FLEET_RECORD to name one)" 2
+fi
+MDIR=$(cd "$(dirname "$rec")" && pwd)
+FLEET_RECORD="$MDIR/$(basename "$rec")"; export FLEET_RECORD
+FLEET_DEVEL_ROOT="${FLEET_DEVEL_ROOT:-$MDIR}"; export FLEET_DEVEL_ROOT
+
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
+W=$(mktemp -d "$_TMP/claude-trust-check.XXXXXX") || die "cannot make a scratch directory" 2
+trap 'rm -rf "$W"' EXIT
+
+tilde() { case "$1" in "$HOME") printf '~' ;; "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
+
+# A path with . and .. collapsed lexically, so a manifest path such as ../.local/share/x prints and
+# compares as one name. Lexical, as the path may not exist.
+lexnorm() {
+  _p=$1; _out=""
+  _rest=${_p#/}
+  while [ -n "$_rest" ]; do
+    case "$_rest" in
+      */*) _seg=${_rest%%/*}; _rest=${_rest#*/} ;;
+      *)   _seg=$_rest; _rest="" ;;
+    esac
+    case "$_seg" in
+      ""|.) ;;
+      ..) _out=${_out%/*} ;;
+      *) _out="$_out/$_seg" ;;
+    esac
+  done
+  printf '%s\n' "${_out:-/}"
+}
+
+# decl <fleet-decl args>: stdout to $W/out. Returns 0 value, 1 none; exits 2 when the record is
+# unreadable. Never `|| true`: that would turn an unreadable record into "nothing declared".
+decl() {
+  _rc=0
+  "$FLEET_DECL" "$@" >"$W/out" 2>"$W/err" || _rc=$?
+  case "$_rc" in
+    0) return 0 ;;
+    1) : >"$W/out"; return 1 ;;
+    *) die "the manifest cannot be read: $(cat "$W/err")" 2 ;;
+  esac
+}
+
+# --- enumerate ----------------------------------------------------------------------------------
+# $W/cand: name<TAB>absolute dir<TAB>priority (0 launch dir, 1 project path), in manifest order.
+: >"$W/cand"
+if decl --projects-with path; then
+  cp "$W/out" "$W/names"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    decl --entry "$n" path || continue
+    p=$(cat "$W/out")
+    case "$p" in /*) ;; *) p="$MDIR/$p" ;; esac
+    p=$(lexnorm "$p")
+    printf '%s\t%s\t1\n' "$n" "$p" >>"$W/cand"
+  done <"$W/names"
+fi
+if decl --projects-with canonicalLaunchDir; then
+  cp "$W/out" "$W/names"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    decl --entry "$n" canonicalLaunchDir || continue
+    p=$(cat "$W/out")
+    case "$p" in /*) ;; *) p="$MDIR/$p" ;; esac
+    p=$(lexnorm "$p")
+    printf '%s\t%s\t0\n' "$n" "$p" >>"$W/cand"
+  done <"$W/names"
+fi
+
+# trust_root <dir>: the key Claude Code stores trust under, or nothing when <dir> is in no repository.
+trust_root() {
+  _r=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  [ -n "$_r" ] || return 1
+  case "$_r" in /*) ;; *) _r="$1/$_r" ;; esac
+  case "$_r" in */.git) _r=${_r%/.git} ;; esac
+  printf '%s\n' "$_r"
+}
+
+# $W/rows: root<TAB>name<TAB>rundir<TAB>priority.  $W/norepo: name<TAB>dir.
+: >"$W/rows"; : >"$W/norepo"
+while IFS="$(printf '\t')" read -r n p pr; do
+  [ -d "$p" ] || continue
+  if root=$(trust_root "$p"); then
+    printf '%s\t%s\t%s\t%s\n' "$root" "$n" "$p" "$pr" >>"$W/rows"
+  else
+    printf '%s\t%s\n' "$n" "$p" >>"$W/norepo"
+  fi
+done <"$W/cand"
+awk '!s[$0]++' "$W/norepo" >"$W/norepo.u"
+
+# --- the trust state ----------------------------------------------------------------------------
+cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.config.json"
+old="$HOME/.claude.json"
+STATE=""
+for f in "$cfg" "$old"; do
+  if [ -f "$f" ] && jq -e '.projects | type == "object"' "$f" >/dev/null 2>&1; then STATE=$f; break; fi
+done
+if [ -z "$STATE" ]; then
+  msg="trust state unknown: no Claude Code state file with a projects object. Looked for: $(tilde "$cfg"), $(tilde "$old")"
+  if [ "$NAMES_ONLY" -eq 1 ]; then printf 'claude-trust-check: %s\n' "$msg" >&2
+  else printf 'claude-trust-check: %s\n' "$msg"; fi
+  exit 3
+fi
+
+# --- group by root and judge --------------------------------------------------------------------
+# One line per root, in first-seen order: root<TAB>names (comma-joined)<TAB>rundir. The directory to
+# run `claude` from is the canonical launch dir when the root has one, else the project path.
+awk -F '\t' '
+  !($1 in seen) { seen[$1] = 1; order[++n] = $1 }
+  { key = $1 SUBSEP $2
+    if (!(key in has)) { has[key] = 1; names[$1] = names[$1] (names[$1] == "" ? "" : ",") $2 }
+    if (!($1 in best) || $4 < bestpr[$1]) { best[$1] = $3; bestpr[$1] = $4 } }
+  END { for (i = 1; i <= n; i++) printf "%s\t%s\t%s\n", order[i], names[order[i]], best[order[i]] }
+' "$W/rows" >"$W/roots"
+
+ntrusted=0; nuntrusted=0; nnorepo=0
+: >"$W/untrusted-names"
+while IFS="$(printf '\t')" read -r root names run; do
+  if jq -e --arg p "$root" '.projects[$p].hasTrustDialogAccepted == true' "$STATE" >/dev/null 2>&1; then
+    ntrusted=$((ntrusted + 1))
+    [ "$NAMES_ONLY" -eq 1 ] || printf 'trusted    %s\n' "$(printf '%s' "$names" | sed 's/,/, /g')"
+  else
+    nuntrusted=$((nuntrusted + 1))
+    printf '%s\n' "$names" | tr ',' '\n' >>"$W/untrusted-names"
+    [ "$NAMES_ONLY" -eq 1 ] || printf 'UNTRUSTED  %s: open Claude Code there once and accept the trust prompt: cd %s && claude\n' \
+      "$(printf '%s' "$names" | sed 's/,/, /g')" "$(tilde "$run")"
+  fi
+done <"$W/roots"
+
+while IFS="$(printf '\t')" read -r n p; do
+  [ -n "$n" ] || continue
+  nnorepo=$((nnorepo + 1))
+  [ "$NAMES_ONLY" -eq 1 ] || printf 'not-a-repo %s: %s exists but is not inside a git repository\n' "$n" "$(tilde "$p")"
+done <"$W/norepo.u"
+
+if [ "$NAMES_ONLY" -eq 1 ]; then
+  awk 'NF && !s[$0]++' "$W/untrusted-names"
+else
+  printf '%s trust root(s): %s trusted, %s untrusted, %s not a repository\n' \
+    "$((ntrusted + nuntrusted))" "$ntrusted" "$nuntrusted" "$nnorepo"
+fi
+[ "$nuntrusted" -eq 0 ] && [ "$nnorepo" -eq 0 ]

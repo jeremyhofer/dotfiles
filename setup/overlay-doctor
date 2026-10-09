@@ -8,7 +8,7 @@
 # Tiers: A generic (from the base, auto-propagated) · B private-vocab (authored per-domain
 # from THAT domain's own vault — never copied from another domain) · C domain-specific ·
 # H leak-guard (OPTIONAL: on when the domain supplies pattern files) · V signing-verification material
-# (ADVISORY). Only required A/B/C pieces gate the exit; Tiers H and V are reported, never
+# (ADVISORY) · W workspace trust of the manifest's directories (ADVISORY). Only required A/B/C pieces gate the exit; Tiers H, V and W are reported, never
 # enforced -- signing is legitimately disabled where an agent sandbox cannot reach ~/.ssh.
 set -eu
 
@@ -567,6 +567,28 @@ else
   else
     note "ADVISORY    Tier P: ${_nu:-0} file(s) with no reason (candidates to move to the base), ${_nb:-0} with an unknown reason"
   fi
+fi
+
+# --- Tier W: workspace trust (ADVISORY, never gating) ---
+# Claude Code refuses a background session in a directory whose trust prompt nobody has accepted, and
+# only a person can accept it. claude-trust-check lists the manifest's directories still waiting.
+# Names only, never a path: this report is read aloud or retyped off a machine. Silent when the tool
+# or the deployed manifest is absent (nothing to check yet).
+if command -v claude-trust-check >/dev/null 2>&1 && [ -f "$_rec" ]; then
+  _trc=0; _trn=$(FLEET_RECORD="$_rec" claude-trust-check --names-only 2>/dev/null) || _trc=$?
+  case "$_trc" in
+    0) note "OK          Tier W: every manifest directory has accepted Claude Code's workspace trust" ;;
+    1)
+      _trk=$(printf '%s\n' "$_trn" | grep -c .)
+      if [ "$_trk" -gt 0 ]; then
+        note "advisory    Tier W: $_trk project(s) still need a workspace-trust click: $(printf '%s' "$_trn" | tr '\n' ' ')"
+        note "            fix: open \`claude\` once in each and accept the trust prompt (claude-trust-check prints where)"
+      else
+        note "advisory    Tier W: a manifest path is not a git repository; run claude-trust-check"
+      fi ;;
+    3) note "info        Tier W: workspace trust is unknown here (Claude Code has written no state file yet)" ;;
+    *) note "advisory    Tier W: claude-trust-check could not run (exit $_trc); run it by hand" ;;
+  esac
 fi
 
 assess
