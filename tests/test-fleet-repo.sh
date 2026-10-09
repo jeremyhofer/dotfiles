@@ -74,9 +74,9 @@ mkorigin ob main;  addbranches ob develop release/1 topic/x Feature/B feature/b 
 mkorigin os develop; addbranches os feature
 
 # Readers of the result, in plain git.
-rrefs() { git --git-dir="$1/.bare" for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v '^refs/remotes/origin/HEAD$' | sed 's#^refs/remotes/origin/##' | sort | tr '\n' ' ' | sed 's/ $//'; }
-lrefs() { git --git-dir="$1/.bare" for-each-ref --format='%(refname:short)' refs/heads/ | sort | tr '\n' ' ' | sed 's/ $//'; }
-fetchspecs() { git --git-dir="$1/.bare" config --get-all remote.origin.fetch | sort | tr '\n' ' ' | sed 's/ $//'; }
+rrefs() { git --git-dir="$1/.git" for-each-ref --format='%(refname)' refs/remotes/origin/ | grep -v '^refs/remotes/origin/HEAD$' | sed 's#^refs/remotes/origin/##' | sort | tr '\n' ' ' | sed 's/ $//'; }
+lrefs() { git --git-dir="$1/.git" for-each-ref --format='%(refname:short)' refs/heads/ | sort | tr '\n' ' ' | sed 's/ $//'; }
+fetchspecs() { git --git-dir="$1/.git" config --get-all remote.origin.fetch | sort | tr '\n' ' ' | sed 's/ $//'; }
 upstream() { git -C "$1" rev-parse --abbrev-ref '@{u}' 2>/dev/null; }
 
 FR() { fleet-repo "$@"; }
@@ -114,7 +114,8 @@ check "update outside any manifest: exit 2" '[ "$rc" = 2 ] && grep -q "no manife
 cd "$TMP" || exit 1
 FR clone --url "$(url os)" plain >/dev/null 2>&1; rc=$?
 check "direct: exit 0" '[ "$rc" = 0 ]'
-check "direct: the git data is in .bare, .git is a file pointing at it" '[ -f plain/.bare/HEAD ] && [ "$(cat plain/.git)" = "gitdir: ./.bare" ]'
+check "direct: the container's .git is the bare repository itself: a directory, core.bare, no pointer file, no .bare" \
+  '[ -d plain/.git ] && [ -f plain/.git/HEAD ] && [ "$(git --git-dir=plain/.git config core.bare)" = true ] && [ ! -e plain/.bare ]'
 check "direct: the default branch is read from the remote (develop), not assumed" '[ "$(git -C plain/develop branch --show-current)" = develop ] && [ ! -e plain/main ] && [ ! -e plain/master ]'
 check "direct: every branch is fetched (no declaration) and only the default is a local branch" '[ "$(rrefs plain)" = "develop feature" ] && [ "$(lrefs plain)" = develop ]'
 check "direct: the default tracks its remote, so a plain git pull works" '[ "$(upstream plain/develop)" = origin/develop ]'
@@ -126,11 +127,11 @@ FR clone --url "$(url os)" plain >/dev/null 2>&1
 check "direct: a re-run re-creates a missing default worktree" '[ -d plain/develop ]'
 git -C plain/develop branch keepme
 FR clone --url "$(url os)" plain >/dev/null 2>&1
-check "direct: a re-run never deletes a local branch of the user's" 'git --git-dir=plain/.bare rev-parse -q --verify refs/heads/keepme >/dev/null'
+check "direct: a re-run never deletes a local branch of the user's" 'git --git-dir=plain/.git rev-parse -q --verify refs/heads/keepme >/dev/null'
 mkdir -p populated; echo keep > populated/notes.txt
 FR clone --url "$(url oa)" populated > "$TMP/out" 2>&1; rc=$?
 check "a non-empty directory that is not a container is refused, naming the likely cause" \
-  '[ "$rc" != 0 ] && [ ! -e populated/.bare ] && [ ! -e populated/.git ] && grep -q "path:" "$TMP/out"'
+  '[ "$rc" != 0 ] && [ ! -e populated/.git ] && grep -q "path:" "$TMP/out"'
 FR clone --url "$(url ob)" --branches=default dflt >/dev/null 2>&1
 check "direct --branches=default: only the default branch comes down" '[ "$(rrefs dflt)" = main ]'
 FR clone --url "$(url ob)" --branches=develop,topic/x lst >/dev/null 2>&1
@@ -188,12 +189,12 @@ check "branches: default: only the default branch is fetched" '[ "$rc_fdef" = 0 
 check "branches: default: the default branch is still checked out with an upstream" '[ "$(git -C fdef/main branch --show-current)" = main ] && [ "$(upstream fdef/main)" = origin/main ]'
 check "branches: [list]: the default plus the listed branches, nothing else" '[ "$rc_flist" = 0 ] && [ "$(rrefs flist)" = "develop main release/1" ]'
 check "branches: [list]: only the default is a local branch" '[ "$(lrefs flist)" = main ]'
-check "case-differing branches: the declared one arrives, its case twin does not" '[ "$(rrefs fcase)" = "feature/b main" ] && ! git --git-dir=fcase/.bare rev-parse -q --verify refs/remotes/origin/Feature/B >/dev/null'
-check "case-differing branches: undeclared, neither of the pair is fetched (default)" '! git --git-dir=fdef/.bare rev-parse -q --verify refs/remotes/origin/Feature/B >/dev/null && ! git --git-dir=fdef/.bare rev-parse -q --verify refs/remotes/origin/feature/b >/dev/null'
+check "case-differing branches: the declared one arrives, its case twin does not" '[ "$(rrefs fcase)" = "feature/b main" ] && ! git --git-dir=fcase/.git rev-parse -q --verify refs/remotes/origin/Feature/B >/dev/null'
+check "case-differing branches: undeclared, neither of the pair is fetched (default)" '! git --git-dir=fdef/.git rev-parse -q --verify refs/remotes/origin/Feature/B >/dev/null && ! git --git-dir=fdef/.git rev-parse -q --verify refs/remotes/origin/feature/b >/dev/null'
 check "worktrees: a branch named there is fetched although branches is default" '[ "$rc_fwt" = 0 ] && [ "$(rrefs fwt)" = "develop main topic/x" ]'
 check "worktrees: each gets a worktree at its declared path, relative to path:" '[ "$(git -C fwt/topic-x branch --show-current)" = topic/x ] && [ "$(git -C fwt/develop branch --show-current)" = develop ]'
 check "worktrees: each has an upstream" '[ "$(upstream fwt/topic-x)" = origin/topic/x ] && [ "$(upstream fwt/develop)" = origin/develop ]'
-check "worktrees: they share the container's .bare" '[ "$(cd fwt/topic-x && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd fwt && pwd)/.bare" ]'
+check "worktrees: they share the container's .git" '[ "$(cd fwt/topic-x && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd fwt && pwd)/.git" ]'
 FR clone fwt > "$TMP/out" 2>&1; rc=$?
 check "worktrees: a re-run is idempotent" '[ "$rc" = 0 ] && grep -q "already present" "$TMP/out"'
 git -C fwt/topic-x branch --unset-upstream; rm -rf fwt/develop; git -C fwt worktree prune
@@ -205,7 +206,7 @@ check "worktrees: a re-run repairs a missing upstream and re-creates a deleted w
 # files, and nothing at all without a list. The list itself is untracked and excluded, the shape a
 # repository nobody may commit to uses. Needs wt, whose copy the tool uses.
 if command -v wt >/dev/null 2>&1; then
-  printf 'local.properties\n.worktreeinclude\nbuild/\n' >> fwt/.bare/info/exclude
+  printf 'local.properties\n.worktreeinclude\nbuild/\n' >> fwt/.git/info/exclude
   printf 'sdk.dir=/opt/sdk\n' > fwt/main/local.properties
   mkdir -p fwt/main/build; printf 'x\n' > fwt/main/build/out
   printf 'local.properties\n' > fwt/main/.worktreeinclude
@@ -293,19 +294,19 @@ check "reconcile: branches added to the declaration are fetched on the next run"
 # neither is declared any more. Git itself refuses to delete a branch that is checked out, so only
 # the second proves the tool does not delete a local branch.
 git -C rec worktree add -q ../rec-dev develop 2>/dev/null || git -C rec worktree add -q "$WS/rec/develop" develop
-git --git-dir=rec/.bare branch --quiet mine origin/release/1
-git --git-dir=rec/.bare branch --quiet release/1 origin/release/1
+git --git-dir=rec/.git branch --quiet mine origin/release/1
+git --git-dir=rec/.git branch --quiet release/1 origin/release/1
 rec_manifest '[]' ''
 FR clone rec > "$TMP/out" 2>&1; rc=$?
 check "reconcile: a branch dropped from the declaration loses its refspec and remote-tracking ref" \
   '[ "$rc" = 0 ] && [ "$(rrefs rec)" = main ] && [ "$(fetchspecs rec)" = "+refs/heads/main:refs/remotes/origin/main" ]'
 check "reconcile: a local branch and a worktree for a dropped branch are REPORTED" 'grep -q "kept local branch release/1" "$TMP/out" && grep -q "kept local branch develop" "$TMP/out" && grep -q "kept worktree" "$TMP/out"'
-check "reconcile: ...and NOT deleted" 'git --git-dir=rec/.bare rev-parse -q --verify refs/heads/release/1 >/dev/null && git --git-dir=rec/.bare rev-parse -q --verify refs/heads/develop >/dev/null && [ -d "$WS/rec/develop" -o -d "$WS/rec-dev" ]'
-check "reconcile: an unrelated local branch is untouched" 'git --git-dir=rec/.bare rev-parse -q --verify refs/heads/mine >/dev/null'
+check "reconcile: ...and NOT deleted" 'git --git-dir=rec/.git rev-parse -q --verify refs/heads/release/1 >/dev/null && git --git-dir=rec/.git rev-parse -q --verify refs/heads/develop >/dev/null && [ -d "$WS/rec/develop" -o -d "$WS/rec-dev" ]'
+check "reconcile: an unrelated local branch is untouched" 'git --git-dir=rec/.git rev-parse -q --verify refs/heads/mine >/dev/null'
 rec_manifest 'all' ''
 FR clone rec >/dev/null 2>&1
 check "reconcile: moving to all replaces the per-branch refspecs with the wildcard and fetches the rest" \
-  '[ "$(fetchspecs rec)" = "+refs/heads/*:refs/remotes/origin/*" ] && git --git-dir=rec/.bare rev-parse -q --verify refs/remotes/origin/topic/x >/dev/null'
+  '[ "$(fetchspecs rec)" = "+refs/heads/*:refs/remotes/origin/*" ] && git --git-dir=rec/.git rev-parse -q --verify refs/remotes/origin/topic/x >/dev/null'
 rec_manifest 'default' ''
 FR clone rec >/dev/null 2>&1
 check "reconcile: moving from all to default drops every other remote-tracking ref" '[ "$(rrefs rec)" = main ] && [ "$(fetchspecs rec)" = "+refs/heads/main:refs/remotes/origin/main" ]'
@@ -334,7 +335,7 @@ FR clone filt > "$TMP/out" 2>&1; rc=$?
 check "filter: a declared filter on a fresh clone: exit 0, default branch checked out" '[ "$rc" = 0 ] && [ "$(cat filt/main/now.txt 2>/dev/null)" = current ]'
 nmissing=$(git -C filt/main rev-list --objects --all --missing=print 2>/dev/null | grep -c '^?' || true)
 check "filter: the deleted old file was never downloaded" '[ "${nmissing:-0}" -ge 1 ]'
-check "filter: the remote is recorded as the promisor, so git fetches on demand" '[ "$(git --git-dir=filt/.bare config remote.origin.promisor)" = true ]'
+check "filter: the remote is recorded as the promisor, so git fetches on demand" '[ "$(git --git-dir=filt/.git config remote.origin.promisor)" = true ]'
 echo more > "$TMP/src-big/now.txt"; git -C "$TMP/src-big" commit -qam more; git -C "$TMP/src-big" push -q "$TMP/big.git" main
 git -C filt/main pull -q --ff-only > "$TMP/out" 2>&1
 check "filter: git pull --ff-only still updates it" '[ "$(cat filt/main/now.txt)" = more ]'
@@ -350,7 +351,7 @@ projects:
 EOF
 FR clone unfilt > "$TMP/out" 2>&1; rc=$?
 check "filter: declared on an EXISTING unfiltered container: reported, not applied, exit 0" \
-  '[ "$rc" = 0 ] && grep -q "not applied" "$TMP/out" && [ "$(git --git-dir=unfilt/.bare config remote.origin.promisor 2>/dev/null)" != true ]'
+  '[ "$rc" = 0 ] && grep -q "not applied" "$TMP/out" && [ "$(git --git-dir=unfilt/.git config remote.origin.promisor 2>/dev/null)" != true ]'
 cat > mani.yaml <<EOF
 projects:
   over:
@@ -359,7 +360,7 @@ projects:
     clone: fleet-repo clone over
 EOF
 FR clone over --filter=blob:none >/dev/null 2>&1
-check "filter: --filter= on the command line applies to a project with none declared" '[ "$(git --git-dir=over/.bare config remote.origin.promisor 2>/dev/null)" = true ]'
+check "filter: --filter= on the command line applies to a project with none declared" '[ "$(git --git-dir=over/.git config remote.origin.promisor 2>/dev/null)" = true ]'
 
 # --- where path is resolved ----------------------------------------------------------------------
 cat > mani.yaml <<EOF
@@ -372,7 +373,7 @@ EOF
 mkdir -p "$WS/some/subdir"; cd "$WS/some/subdir" || exit 1
 FR clone sub > "$TMP/out" 2>&1; rc=$?
 check "path is resolved against the manifest's directory, not the current one (run from a subdirectory)" \
-  '[ "$rc" = 0 ] && [ -d "$WS/deep/er/.bare" ] && [ -d "$WS/deep/er/develop" ] && [ ! -e "$WS/some/subdir/deep" ] && [ -z "$(ls -A "$WS/some/subdir")" ]'
+  '[ "$rc" = 0 ] && [ -d "$WS/deep/er/.git" ] && [ -d "$WS/deep/er/develop" ] && [ ! -e "$WS/some/subdir/deep" ] && [ -z "$(ls -A "$WS/some/subdir")" ]'
 cd "$TMP" || exit 1
 FLEET_RECORD="$WS/mani.yaml" FR clone sub > "$TMP/out" 2>&1; rc=$?
 check "FLEET_RECORD names the manifest when no mani.yaml is above the current directory" '[ "$rc" = 0 ] && grep -q "already present" "$TMP/out"'
@@ -387,7 +388,7 @@ projects:
     clone: fleet-repo clone toplevel
 EOF
 FR clone toplevel > "$TMP/out" 2>&1; rc=$?
-check "path naming the container: refused, the directory above is NOT made a repository" '[ "$rc" != 0 ] && [ ! -e "$TMP/ws3/.bare" ] && [ ! -e "$TMP/ws3/.git" ]'
+check "path naming the container: refused, the directory above is NOT made a repository" '[ "$rc" != 0 ] && [ ! -e "$TMP/ws3/.git" ]'
 cat > mani.yaml <<EOF
 projects:
   mismatch:
@@ -472,12 +473,45 @@ FR check chk > "$TMP/out" 2>&1; rc=$?
 check "check: a missing worktree is drift" '[ "$rc" = 1 ] && grep -q "^\[missing-worktree\] chk" "$TMP/out"'
 mv chk/develop.away chk/develop
 
-git --git-dir=chk/.bare remote set-branches --add origin topic/x
+git --git-dir=chk/.git remote set-branches --add origin topic/x
 FR check chk > "$TMP/out" 2>&1; rc=$?
 check "check: refspecs that differ from the declared set are drift, naming the difference" '[ "$rc" = 1 ] && grep -q "^\[refspec-drift\] chk" "$TMP/out" && grep -q "topic/x" "$TMP/out"'
-git --git-dir=chk/.bare config --fixed-value --unset-all remote.origin.fetch "+refs/heads/topic/x:refs/remotes/origin/topic/x"
+git --git-dir=chk/.git config --fixed-value --unset-all remote.origin.fetch "+refs/heads/topic/x:refs/remotes/origin/topic/x"
 FR check chk > "$TMP/out" 2>&1; rc=$?
 check "check: and clean again once the refspec is removed" '[ "$rc" = 0 ]'
+
+# An OLD-shape container (the git data in .bare behind a `gitdir: ./.bare` pointer file) must keep
+# working through every verb, so a machine can update the base before it converts anything. The
+# fixture is the new container turned back into the old shape by hand.
+toold() {  # $1 container, then its worktree directories
+  local c=$1; shift
+  mv "$c/.git" "$c/.bare"; printf 'gitdir: ./.bare\n' > "$c/.git"
+  git --git-dir="$c/.bare" worktree repair "$@" >/dev/null 2>&1
+}
+toold chk chk/main chk/develop
+check "old shape (fixture): .bare is the repository and .git is the pointer file" \
+  '[ -f chk/.git ] && [ "$(cat chk/.git)" = "gitdir: ./.bare" ] && [ -f chk/.bare/HEAD ]'
+FR check chk > "$TMP/out" 2>&1; rc=$?
+check "old shape: check reports old-layout (exit 1) and nothing else" \
+  '[ "$rc" = 1 ] && grep -q "^\[old-layout\] chk" "$TMP/out" && [ "$(grep -c "^\[" "$TMP/out")" = 1 ]'
+check "old shape: check prints the three conversion commands for THIS container, and says to run them with nothing using it" \
+  'grep -Eq "^    rm .*/chk/\.git$" "$TMP/out" && grep -Eq "^    mv .*/chk/\.bare .*/chk/\.git$" "$TMP/out" && grep -Eq "^    git -C .*/chk/\.git worktree repair$" "$TMP/out" && grep -q "nothing running" "$TMP/out" && grep -q "memory store" "$TMP/out"'
+git -C chk/develop branch --unset-upstream
+FR clone chk > "$TMP/out" 2>&1; rc=$?
+check "old shape: clone reconciles it in place (exit 0, upstream repaired) and does not convert it" \
+  '[ "$rc" = 0 ] && [ "$(upstream chk/develop)" = origin/develop ] && [ -f chk/.git ] && [ -d chk/.bare ]'
+git clone -q "$TMP/ob.git" "$TMP/pusher-ob"
+git -C "$TMP/pusher-ob" checkout -q develop; git -C "$TMP/pusher-ob" commit -q --allow-empty -m old-shape-dev; git -C "$TMP/pusher-ob" push -q origin develop
+FR update --project chk > "$TMP/out" 2>&1; rc=$?
+check "old shape: update fast-forwards a worktree (exit 0)" \
+  '[ "$rc" = 0 ] && grep -q "chk/develop: develop fast-forwarded" "$TMP/out" && [ "$(git -C chk/develop rev-parse HEAD)" = "$(git -C "$TMP/pusher-ob" rev-parse HEAD)" ]'
+FR check chk > "$TMP/out" 2>&1
+grep -E '^    (rm|mv|git -C) ' "$TMP/out" | sed 's/^    //' > "$TMP/convert.sh"
+check "old shape: the printed commands are exactly three" '[ "$(awk "END{print NR}" "$TMP/convert.sh")" = 3 ]'
+sh "$TMP/convert.sh" >/dev/null 2>&1; rc=$?
+FR check chk > "$TMP/out" 2>&1; rc2=$?
+check "old shape: running the printed commands converts it: check is clean, worktrees work, no .bare left" \
+  '[ "$rc" = 0 ] && [ "$rc2" = 0 ] && [ ! -e chk/.bare ] && [ -d chk/.git ] && git -C chk/develop status >/dev/null 2>&1 && git -C chk/main status >/dev/null 2>&1'
 
 mkdir -p "$HOME/.config/worktrunk"; printf '[projects."other.example/org/else"]\n' > "$HOME/.config/worktrunk/config.toml"
 chk_manifest https://code.example.org/org/chk.git
@@ -542,7 +576,7 @@ projects:
 EOF
   NO_COLOR=1 mani sync viamani > "$TMP/out" 2>&1
   check "mani sync: a clone: line calling fleet-repo gives a bare container with the declared worktree" \
-    '[ "$(cat m1/.git 2>/dev/null)" = "gitdir: ./.bare" ] && [ -d m1/develop ] && [ "$(git -C m1/feature branch --show-current)" = feature ]'
+    '[ -d m1/.git ] && [ ! -e m1/.bare ] && [ -d m1/develop ] && [ "$(git -C m1/feature branch --show-current)" = feature ]'
   check "mani sync: only the declared set was fetched" '[ "$(rrefs m1)" = "develop feature" ]'
   check "mani sync: the worktrees have upstreams" '[ "$(upstream m1/develop)" = origin/develop ] && [ "$(upstream m1/feature)" = origin/feature ]'
   rm -rf m1/feature; git -C m1 worktree prune; NO_COLOR=1 mani sync viamani > "$TMP/out" 2>&1

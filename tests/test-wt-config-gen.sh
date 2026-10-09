@@ -101,16 +101,33 @@ c2="$tmp/c2"; mkdir -p "$c2"
 (
   export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"; : > "$GIT_CONFIG_GLOBAL"; mkdir -p "$HOME"
   git init -q -b main "$c2/src" && git -C "$c2/src" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
-  git clone -q --bare "$c2/src" "$c2/box/.bare" && printf 'gitdir: ./.bare\n' > "$c2/box/.git"
+  git clone -q --bare "$c2/src" "$c2/box/.git"
   git -C "$c2/box" worktree add -q main main
-  printf 'local.properties\n.worktreeinclude\nbuild/\n' >> "$c2/box/.bare/info/exclude"
+  printf 'local.properties\n.worktreeinclude\nbuild/\n' >> "$c2/box/.git/info/exclude"
   printf 'sdk.dir=/opt/sdk\n' > "$c2/box/main/local.properties"; mkdir -p "$c2/box/main/build"; : > "$c2/box/main/build/out"
   cd "$c2/box/main" || exit 1
-  # The sibling path wt-config-gen writes for a declared bare container; this fixture declares none.
-  wt --config "$tmp/config.toml" --config-set "worktree-path = \"{{ repo_path }}/../{{ branch | sanitize }}\"" -y switch --create quiet --no-cd > "$tmp/e2e-quiet" 2>&1
+  # No path setting here: the shipped default must put a worktree beside the others in a container
+  # whose bare repository is named .git, with nothing declared for it.
+  wt --config "$tmp/config.toml" -y switch --create quiet --no-cd > "$tmp/e2e-quiet" 2>&1
   printf 'local.properties\n' > .worktreeinclude
-  wt --config "$tmp/config.toml" --config-set "worktree-path = \"{{ repo_path }}/../{{ branch | sanitize }}\"" -y switch --create listed --no-cd > "$tmp/e2e-listed" 2>&1
+  wt --config "$tmp/config.toml" -y switch --create listed --no-cd > "$tmp/e2e-listed" 2>&1
+  # A plain clone with the same shipped default: the worktree nests under .worktrees/.
+  git clone -q "$c2/src" "$c2/plain" && cd "$c2/plain" \
+    && wt --config "$tmp/config.toml" -y switch --create nested --no-cd > "$tmp/e2e-plain" 2>&1
+  # An OLD-shape container (.bare behind a pointer file) still works for worktree creation when the
+  # sibling path is set explicitly, which is what wt-config-gen writes for a declared bare container.
+  git clone -q --bare "$c2/src" "$c2/old/.bare" && printf 'gitdir: ./.bare\n' > "$c2/old/.git" \
+    && git -C "$c2/old" worktree add -q main main && cd "$c2/old/main" \
+    && wt --config "$tmp/config.toml" --config-set "worktree-path = \"{{ repo_path }}/../{{ branch | sanitize }}\"" -y switch --create sib --no-cd > "$tmp/e2e-old" 2>&1
 ) >/dev/null 2>&1
+[ -d "$c2/box/quiet" ] && [ -d "$c2/box/listed" ] && [ ! -e "$c2/box/.git/.worktrees" ] \
+  && ok "shipped default, bare repository named .git: a worktree is a sibling of main, never inside .git" \
+  || bad "sibling in a .git container" "$(cat "$tmp/e2e-quiet"; ls -A "$c2/box" "$c2/box/.git" 2>&1 | tr '\n' ' ')"
+[ -d "$c2/plain/.worktrees/nested" ] && [ ! -e "$c2/nested" ] \
+  && ok "shipped default, ordinary clone: a worktree nests under .worktrees/" \
+  || bad "nested in a plain clone" "$(cat "$tmp/e2e-plain" 2>&1; ls -A "$c2" "$c2/plain" 2>&1 | tr '\n' ' ')"
+[ -d "$c2/old/sib" ] && ok "old-shape .bare container with the explicit sibling path: still a sibling" \
+  || bad "old-shape container sibling" "$(cat "$tmp/e2e-old" 2>&1; ls -A "$c2/old" | tr '\n' ' ')"
 [ ! -e "$c2/box/quiet/local.properties" ] && [ -d "$c2/box/quiet" ] && ! grep -qi 'nothing copied' "$tmp/e2e-quiet" \
   && ok "without .worktreeinclude: nothing copied, nothing said" || bad "no list -> silent no-op" "$(cat "$tmp/e2e-quiet")"
 [ "$(cat "$c2/box/listed/local.properties" 2>/dev/null)" = "sdk.dir=/opt/sdk" ] \

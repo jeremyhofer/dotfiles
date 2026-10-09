@@ -67,7 +67,7 @@ Every other tag is the domain's own vocabulary and only selects.
 | `leakDisable` | `true` | `leak-guard`, `hook-doctor` | no. Turns the publish guard off for this repository entirely; prefer a wider `leakPolicy` |
 | `container.branches` | `all`, `default` or a list of branch names | `fleet-repo` | no. Which branches a bare container fetches, beyond the default branch and every `worktrees:` name (always fetched). Absent: `containerDefaults.branches`, else `all` |
 | `container.filter` | a git `--filter` spec, e.g. `blob:none` | `fleet-repo` | no. A partial clone: every commit and tree, file contents only on demand. Applies to a FRESH clone only; on an existing unfiltered container it is reported, not applied |
-| `worktrunk.layout` | `bare` or `nested` | `wt-config-gen` | no. Where `wt` puts worktrees: siblings of a bare clone, or under `<repo>/.worktrees/` |
+| `worktrunk.layout` | `bare` or `nested` | `wt-config-gen` | no. Where `wt` puts worktrees: siblings of a bare clone, or under `<repo>/.worktrees/`. Without it, the default in `base.toml` chooses by the repository's shape: a bare repository named `.git` gets siblings, anything else nests |
 | `worktrunk.bootstrap` | `true` or `false` | `wt-config-gen` | no. Whether a new worktree installs its dependencies (`wt-bootstrap`) |
 | `canonical` | a session name | a domain's session launcher, if it has one; `memory-doctor` | no. Declares the project's long-running agent session |
 | `canonicalIdentity` | text | the session launcher | yes when `canonical` is set |
@@ -80,6 +80,11 @@ Every other tag is the domain's own vocabulary and only selects.
 `worktrunk.layout` says otherwise, so the layout is stated once. `fleet-decl --check` validates the
 block: `branches` must be `all`, `default` or a list of non-empty strings, `filter` a non-empty
 string, and a near-miss of either key (`branchs`) is reported as `[container-key]`.
+
+A container's bare repository is named `.git`. One made before that keeps it in `.bare` behind a
+pointer file; every `fleet-repo` verb accepts both, `fleet-repo check` reports the old one as
+`old-layout` and prints the conversion
+([`repository-layouts.md`](repository-layouts.md#converting-a-bare-container-from-the-old-shape)).
 
 ```yaml
 containerDefaults:            # fleet level; absent means every entry's branches is all

@@ -44,7 +44,9 @@ fleet-decl --check                  # validates the whole file: exit 0 clean, 1 
 
 ## Adding a repository, as a bare container
 
-A **bare container** keeps git's data in `<container>/.bare` and every branch, the default one
+A **bare container** is a bare repository named `<container>/.git` (a container made before that
+keeps it in `<container>/.bare` behind a pointer file; `fleet-repo check` reports it as `old-layout`
+and prints the three-command conversion) and every branch, the default one
 included, as a sibling worktree (`<container>/main/`, `<container>/develop/`), so deleting any one
 worktree cannot orphan the others. Skill `working-in-worktrees` covers when to choose it.
 
@@ -86,8 +88,8 @@ worktree cannot orphan the others. Skill `working-in-worktrees` covers when to c
 
    ```sh
    mani sync app
-   cat work/app/.git                                    # gitdir: ./.bare
-   git -C work/app/develop rev-parse --git-common-dir   # ends in work/app/.bare
+   git -C work/app/.git rev-parse --is-bare-repository  # true: the container's .git is the repository
+   git -C work/app/develop rev-parse --git-common-dir   # ends in work/app/.git
    ```
 
    A ✓ from `mani sync` is not this proof: three of the five mistakes below also tick.
@@ -99,9 +101,9 @@ worktree cannot orphan the others. Skill `working-in-worktrees` covers when to c
 | Rule | Broken, it looks like | What happened |
 | --- | --- | --- |
 | **`clone:` is required** for a bare container | `mani sync` ✓, and an ordinary checkout at `path` with `worktrees:` nested inside it | mani used its own clone; nothing says so |
-| **`path:` names `<container>/<default-branch>`**, never the container | the container is built one level up: `.bare` and `.git` in the parent | the container is always `path`'s parent. `fleet-repo` refuses when that parent already holds files ("already holds files and is not a container"), which keeps `~/Devel` from becoming a repository; an empty or new parent is still used |
+| **`path:` names `<container>/<default-branch>`**, never the container | the container is built one level up: a bare `.git` in the parent | the container is always `path`'s parent. `fleet-repo` refuses when that parent already holds files ("already holds files and is not a container"), which keeps `~/Devel` from becoming a repository; an empty or new parent is still used |
 | **`path:` uses the real default branch** | a warning "manifest expects the worktree at …", then ✕ for the project | the real default was created instead; fix `path:` and re-sync |
-| **The entry declares a container (`clone: fleet-repo clone <name>` or a `container:` block), then `wt-config-gen` runs** | `wt switch --create` puts new worktrees inside `<container>/<default>/.worktrees/`, where git sees them as untracked files | worktrunk's global default is the nested layout; the sibling layout is a per-project setting `wt-config-gen` writes for every entry that declares a container (an explicit `worktrunk.layout` wins). A chezmoi apply runs `wt-config-gen`; a hand edit of the manifest does not. `fleet-repo check` reports a container the generated config has no table for. Check: `grep -A1 'projects."<host>' ~/.config/worktrunk/config.toml` shows `worktree-path = "{{ repo_path }}/../{{ branch \| sanitize }}"` |
+| **The entry declares a container (`clone: fleet-repo clone <name>` or a `container:` block), then `wt-config-gen` runs** | `wt switch --create` puts new worktrees inside `<container>/<default>/.worktrees/`, where git sees them as untracked files | worktrunk's global default (in `base.toml`) puts a worktree beside the others only when the repository is a bare one named `.git`; for a container still in the old `.bare` shape it nests, so the sibling layout is also a per-project setting `wt-config-gen` writes for every entry that declares a container (an explicit `worktrunk.layout` wins). A chezmoi apply runs `wt-config-gen`; a hand edit of the manifest does not. `fleet-repo check` reports a container the generated config has no table for. Check: `grep -A1 'projects."<host>' ~/.config/worktrunk/config.toml` shows `worktree-path = "{{ repo_path }}/../{{ branch \| sanitize }}"` |
 | **`clone:` only acts where `path` does not exist yet** | adding `clone:` to an entry with an existing plain clone: ✓, and still a plain clone | mani clones only missing paths. Convert by hand: `repository-layouts.md`, "Converting an existing plain clone" |
 
 `worktrees:` paths are relative to `path:`, so a sibling of the default branch is `../<name>`.
@@ -142,8 +144,9 @@ To measure a clone first: `time fleet-repo clone --url <url> /tmp/<name>-test --
 
 ## Failure signature
 
-The procedure went wrong if any of these is true after a sync: a container has no `.bare`; a
-worktree's `git rev-parse --git-common-dir` points inside a sibling rather than at `.bare`; a
+The procedure went wrong if any of these is true after a sync: a container has no bare `.git`
+(or, in the old shape, no `.bare`); a worktree's `git rev-parse --git-common-dir` points inside a
+sibling rather than at the container's git directory; a
 `.git` exists in a directory that is not a repository (`~/Devel` itself, a group directory such as
 `work/`); `fleet-decl --check` reports findings; or a conclusion about which keys matter rests on
 `mani describe`.

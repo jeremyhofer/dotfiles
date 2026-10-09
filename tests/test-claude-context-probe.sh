@@ -45,6 +45,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 ask=$(cat)
+# Record the fixture's shape from where a session is rooted: the bare-container layout's session
+# directory is <container>/main, and its parent's .git is what the layout names.
+if [ -n "${FAKE_SHAPE_LOG:-}" ] && [ "$(basename "$PWD")" = main ] && [ -e ../CLAUDE.md ]; then
+  if [ -d ../.git ] && [ -f ../.git/HEAD ] && [ ! -e ../.bare ]; then echo container-git-is-bare-repo >> "$FAKE_SHAPE_LOG"
+  else echo container-other-shape >> "$FAKE_SHAPE_LOG"; fi
+fi
 [ "$mode" = fail ] && exit 3
 if [ "$mode" = silent ]; then echo NONE; exit 0; fi
 for f in CLAUDE.md AGENTS.md; do [ -f "$f" ] && grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$f"; done
@@ -88,6 +94,11 @@ chmod +x "$TMP/claude"
 export CLAUDE_CONTEXT_PROBE_CLAUDE="$TMP/claude"
 
 run() { FAKE_MODE=$1 bash "$PROBE" 2>/dev/null; }
+
+printf '\n== the container fixture has the current shape ==\n'
+: > "$TMP/shape.log"; FAKE_SHAPE_LOG="$TMP/shape.log" FAKE_MODE=normal bash "$PROBE" >/dev/null 2>&1
+grep -q container-git-is-bare-repo "$TMP/shape.log" && ! grep -q container-other-shape "$TMP/shape.log" \
+  && ok "the container's .git is the bare repository, with no .bare" || bad "container fixture shape" "$(cat "$TMP/shape.log")"
 
 printf '\n== an honest model ==\n'
 out=$(run normal); rc=$?

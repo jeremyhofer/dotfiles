@@ -26,11 +26,11 @@ A repository is in one of two shapes, and four steps below depend on which:
 
 | | Plain clone | Bare container |
 | --- | --- | --- |
-| On disk | `<repo>/` is a checkout; worktrees nest at `<repo>/.worktrees/<branch>` | `<repo>/.bare` holds the git data, `<repo>/.git` is a file saying `gitdir: ./.bare`, and every branch, the default one included, is a sibling worktree: `<repo>/main/`, `<repo>/<branch>/` |
-| How to tell | `.git` is a directory | `.bare` sits beside a `.git` file; `git rev-parse --is-bare-repository` prints `true` at `<repo>/` |
+| On disk | `<repo>/` is a checkout; worktrees nest at `<repo>/.worktrees/<branch>` | `<repo>/.git/` is itself a bare repository, and every branch, the default one included, is a sibling worktree: `<repo>/main/`, `<repo>/<branch>/`. (A container made before the rename keeps the git data in `<repo>/.bare` behind a `.git` file saying `gitdir: ./.bare`; `fleet-repo check` reports it as `old-layout` and prints the conversion.) |
+| How to tell | `git rev-parse --is-bare-repository` prints `false` at `<repo>/`, and `.git` holds a checkout's index | `git rev-parse --is-bare-repository` prints `true` at `<repo>/`, which has no working tree of its own |
 | Where you stand to create, land and remove | the main checkout, `<repo>/` | the default branch's worktree, `<repo>/main/`. Never `<repo>/` itself: it has no working tree, so `git status` fails there and gates skip it |
 | Reach another branch | `git -C <repo>/.worktrees/<branch>`, or from inside one, `git -C ../..` for the main checkout | `git -C ../<branch>` from any sibling |
-| Its cost | the worktrees live inside a working tree: `.worktrees/` must be ignored (globally), and tools that walk the tree (formatters, linters, `rg`, build graphs) each need it excluded, or they scan every worktree too | every sibling sits at the container root, outside the default branch's directory, which matters inside a sandbox (below) |
+| Its cost | the worktrees live inside a working tree: `.worktrees/` must be ignored (globally), and tools that walk the tree (formatters, linters, `rg`, build graphs) each need it excluded, or they scan every worktree too | every sibling sits at the container root, outside the default branch's directory, so a sandboxed session creates one with the EnterWorktree tool rather than from Bash (below) |
 | Why choose it | one less directory level; fine for a repository with one writer and an occasional worktree | removing any one directory, `main/` included, cannot break the others, and no branch is privileged. In a plain clone every nested worktree's git data lives in the main checkout's `.git`, so losing that checkout loses them all |
 
 `wt switch --create` places a worktree correctly in either shape once the repository's layout is
@@ -67,7 +67,14 @@ to run or compare an older commit holds no edits and is removed in the sitting t
 2. **Refresh every remote first**, so the base is current: `git fetch --all`. A push through a
    multi-URL remote does not update the other remotes' tracking refs, so a base taken without a
    fetch can be weeks old.
-3. **Create it from a named base**:
+3. **Create it from a named base.**
+
+   *A sandboxed Claude Code session* creates it with the EnterWorktree tool, by name. Worktrunk's
+   WorktreeCreate hook runs outside the sandbox and places the worktree per the layout (measured: in
+   a bare container it made a sibling that the session itself could not have written). The session
+   is then inside the new worktree.
+
+   *A person, or an unsandboxed script,* uses:
 
    ```sh
    wt switch --create <branch> --base <base> --no-cd -y --format=json
@@ -215,16 +222,18 @@ machine where Claude Code's hooks are not available, has none of them.
   `.claude/worktrees/` that skips the repository's layout and hooks. **So without that integration,
   create with `wt switch --create` (above), then enter by path.** ExitWorktree with "keep" returns
   the session to where it entered from.
-- **One directory is writable.** The session may write only under its current directory, so the
-  checkout you entered from is read-only from inside a worktree. In a bare container this bites at creation
-  too: a new sibling worktree sits at the container root, outside the default branch's directory,
-  so `wt switch --create` fails with `could not create leading directories … Read-only file system`
-  unless the sandbox settings grant the container root as writable. That grant is a deliberate
-  settings change, and it also lets the session write every other branch's worktree there; if it is
-  absent, the creation is the person's step. A plain clone's nested worktrees sit inside the
-  checkout and need no grant. A fast-forward run from the wrong place fails
-  with `Read-only file system`, sometimes after writing part of the change under a writable
-  subdirectory: check `git status` and restore those files.
+- **A session writes the worktree it is in, plus the shared `.git`.** Claude Code's sandbox lets a
+  linked worktree write its repository's shared git directory (commits, ref updates) when that
+  directory is named `.git`, which a bare container's is; `config` and `hooks/` in it stay
+  read-only. Nothing else outside the current worktree is writable, so the checkout you entered
+  from is read-only from inside another worktree, and a sibling cannot be created from Bash
+  (`wt switch --create` fails with `could not create leading directories … Read-only file system`):
+  use EnterWorktree (Creating one, step 3). The consequence for landing: a session lands from the
+  default branch's worktree after ExitWorktree, never into it from a sibling. A fast-forward run
+  from the wrong place fails with `Read-only file system`, sometimes after writing part of the
+  change under a writable subdirectory: check `git status` and restore those files. A container
+  still in the old `.bare` shape lacks the git-directory rule, so commits there fail until it is
+  converted, unless a settings grant already makes the container root writable.
 - **Protected paths show as untracked files.** The sandbox mounts empty placeholders over paths it
   protects (settings files, shell profiles and similar), and git lists them as untracked, so
   `git worktree remove` and `wt remove` refuse a clean worktree. Do not force it and do not add an
@@ -247,7 +256,8 @@ machine where Claude Code's hooks are not available, has none of them.
 | `fatal: '<branch>' is already used by worktree at …` | that branch is checked out elsewhere | work in that worktree, or operate the other branch through its own worktree |
 | `contains modified or untracked files` on a clean worktree | sandbox placeholders | hand the removal to the person |
 | `Read-only file system` after leaving a worktree | the session is not where the layout says to stand | stop; restore any half-written files; give the person the commands |
-| `could not create leading directories … Read-only file system` creating a worktree | a bare container's root is not writable from the sandbox | the person creates it, or grants the container root in the sandbox settings |
+| `could not create leading directories … Read-only file system` creating a worktree from Bash | a sandboxed command cannot write the container root | create it with the EnterWorktree tool by name; a person or an unsandboxed script uses `wt switch --create` |
+| A commit or ref update fails with `Read-only file system` in a bare container's worktree | the container is in the old `.bare` shape, which the sandbox's git-directory rule does not cover | convert it (`fleet-repo check` prints the commands) |
 | `fatal: this operation must be run in a work tree` | you are at a bare container's root | stand in the default branch's worktree |
 | A new worktree far behind | its base was a stale tracking ref | fetch every remote, recreate from a named base |
 | Tests pass here and fail there, or pass suspiciously fast | a borrowed install, missing build output, or an ignored input | install and build in this worktree |

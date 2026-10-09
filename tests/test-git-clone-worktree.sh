@@ -2,7 +2,7 @@
 # Tests for git-clone-worktree -- the bootstrap of the bare-container layout, alone and as a mani
 # project's `clone:` command.
 #
-# WHAT IS AT RISK. The layout's whole value is that the git data sits in <container>/.bare, so no
+# WHAT IS AT RISK. The layout's whole value is that the git data sits in <container>/.git (a bare repository), so no
 # one worktree's deletion orphans the others. The failures worth guarding are the ones that LOOK
 # like success: a sync that ticks while producing an ordinary checkout, a manifest path that makes
 # the container one directory too high (up to turning the devel root itself into a repository), and
@@ -55,8 +55,8 @@ check "an unknown option: refused, never taken as a url, nothing created" '[ "$r
 cd "$TMP" || exit 1
 "$TOOL" "$TMP/dev.git" plain >/dev/null 2>&1; rc=$?
 check "direct: exit 0" '[ "$rc" = 0 ]'
-check "direct: the git data is in .bare" '[ -f plain/.bare/HEAD ]'
-check "direct: .git is a file pointing at it" '[ "$(cat plain/.git)" = "gitdir: ./.bare" ]'
+check "direct: the git data is in .git, a directory holding a bare repository" '[ -f plain/.git/HEAD ] && [ "$(git --git-dir=plain/.git config core.bare)" = true ]'
+check "direct: there is no .bare and no pointer file" '[ ! -e plain/.bare ] && [ -d plain/.git ]'
 check "direct: the default branch is read from the remote (develop), not assumed" '[ "$(git -C plain/develop branch --show-current)" = develop ]'
 check "direct: no main or master worktree is invented" '[ ! -e plain/main ] && [ ! -e plain/master ]'
 check "direct: only the default is a local branch; the rest stay remote-tracking" \
@@ -70,9 +70,17 @@ rm -rf plain/develop; git -C plain worktree prune
 "$TOOL" "$TMP/dev.git" plain >/dev/null 2>&1
 check "direct: a re-run re-creates a missing default worktree" '[ -d plain/develop ]'
 
+# An old-shape container (git data in .bare behind a pointer file) still reconciles through the shim.
+mv plain/.git plain/.bare; printf 'gitdir: ./.bare\n' > plain/.git
+git --git-dir=plain/.bare worktree repair plain/develop >/dev/null 2>&1
+rm -rf plain/develop; git --git-dir=plain/.bare worktree prune
+"$TOOL" "$TMP/dev.git" plain >/dev/null 2>&1; rc=$?
+check "old shape: a re-run exits 0, re-creates the missing worktree and leaves the container in its old shape" \
+  '[ "$rc" = 0 ] && [ -d plain/develop ] && [ -f plain/.git ] && [ -f plain/.bare/HEAD ] && git -C plain/develop status >/dev/null 2>&1'
+
 mkdir -p populated; echo keep > populated/notes.txt
 "$TOOL" "$TMP/mas.git" populated > "$TMP/out" 2>&1; rc=$?
-check "a non-empty directory that is not a container is refused" '[ "$rc" != 0 ] && [ ! -e populated/.bare ] && [ ! -e populated/.git ]'
+check "a non-empty directory that is not a container is refused" '[ "$rc" != 0 ] && [ ! -e populated/.git ]'
 check "...naming the likely cause" 'grep -q "path:" "$TMP/out"'
 
 # --- cost does not grow a git process per branch ----------------------------------------------
@@ -104,7 +112,7 @@ git clone -q --bare "$TMP/src-big" "$TMP/big.git"; git -C "$TMP/big.git" config 
 check "--filter=blob:none: exit 0, the default branch checked out" '[ "$rc" = 0 ] && [ "$(cat "$TMP/partial/main/now.txt" 2>/dev/null)" = current ]'
 nmissing=$(git -C "$TMP/partial/main" rev-list --objects --all --missing=print 2>/dev/null | grep -c '^?' || true)
 check "--filter=blob:none: the deleted old file was never downloaded" '[ "${nmissing:-0}" -ge 1 ]'
-check "--filter=blob:none: the remote is recorded as the promisor, so git fetches on demand" '[ "$(git -C "$TMP/partial/.bare" config remote.origin.promisor)" = true ]'
+check "--filter=blob:none: the remote is recorded as the promisor, so git fetches on demand" '[ "$(git -C "$TMP/partial/.git" config remote.origin.promisor)" = true ]'
 echo more > "$TMP/src-big/now.txt"; git -C "$TMP/src-big" commit -qam more; git -C "$TMP/src-big" push -q "$TMP/big.git" main
 git -C "$TMP/partial/main" pull -q --ff-only > "$TMP/out" 2>&1
 check "--filter=blob:none: git pull --ff-only still updates it" '[ "$(cat "$TMP/partial/main/now.txt")" = more ]'
@@ -149,22 +157,22 @@ projects:
     clone: git-clone-worktree --mani-project toplevel
 EOF
   NO_COLOR=1 mani sync good > "$TMP/out" 2>&1
-  check "mani: path naming <container>/<default> gives a bare container" '[ "$(cat c1/.git)" = "gitdir: ./.bare" ] && [ -d c1/develop ]'
+  check "mani: path naming <container>/<default> gives a bare container" '[ -d c1/.git ] && [ ! -e c1/.bare ] && [ -d c1/develop ]'
   git clone -q "$TMP/dev.git" "$TMP/pusher" && git -C "$TMP/pusher" commit -q --allow-empty -m two \
     && git -C "$TMP/pusher" push -q origin develop
   NO_COLOR=1 mani exec --projects good 'git pull --ff-only' > "$TMP/out" 2>&1
   check "mani exec git pull --ff-only updates a bare container's default branch" \
     '[ "$(git -C c1/develop rev-parse HEAD)" = "$(git -C "$TMP/pusher" rev-parse HEAD)" ]'
-  check "mani: a declared worktree is a sibling sharing .bare" \
-    '[ "$(cd c1/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd c1 && pwd)/.bare" ]'
+  check "mani: a declared worktree is a sibling sharing .git" \
+    '[ "$(cd c1/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd c1 && pwd)/.git" ]'
   rm -rf c1/feature; git -C c1 worktree prune; NO_COLOR=1 mani sync good > "$TMP/out" 2>&1
   check "mani: a re-sync restores a deleted sibling worktree" '[ -d c1/feature ]'
 
   NO_COLOR=1 mani sync colonurl > "$TMP/out" 2>&1
-  check "mani: a url containing a colon (file://, https://, ssh://) is read whole" '[ "$(cat c5/.git 2>/dev/null)" = "gitdir: ./.bare" ] && [ -d c5/develop ]'
+  check "mani: a url containing a colon (file://, https://, ssh://) is read whole" '[ -d c5/.git ] && [ -d c5/develop ]'
 
   NO_COLOR=1 mani sync partialm > "$TMP/out" 2>&1
-  check "mani: --filter on a clone: line gives a partial container" '[ "$(git -C c6/.bare config remote.origin.promisor 2>/dev/null)" = true ] && [ -f c6/main/now.txt ]'
+  check "mani: --filter on a clone: line gives a partial container" '[ "$(git -C c6/.git config remote.origin.promisor 2>/dev/null)" = true ] && [ -f c6/main/now.txt ]'
 
   NO_COLOR=1 mani sync noclone > "$TMP/out" 2>&1
   check "mani, no clone: line: an ORDINARY checkout, siblings' git data inside it (the silent trap)" \
@@ -176,7 +184,7 @@ EOF
 
   NO_COLOR=1 mani sync toplevel > "$TMP/out" 2>&1
   check "mani, path naming the container: the directory above is NOT made a repository" \
-    '[ ! -e "$TMP/ws/.bare" ] && [ ! -e "$TMP/ws/.git" ]'
+    '[ ! -e "$TMP/ws/.git" ]'
 fi
 
 printf 'passed: %s   failed: %s%s\n' "$pass" "$fail" "$( [ "$skip" = 1 ] && printf '   (mani arms skipped)')"

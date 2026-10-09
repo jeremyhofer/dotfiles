@@ -27,7 +27,7 @@ A session without the skill, asked to add a repository as a bare container, gets
    to be `main`.
 4. Asked whether a key outside `mani describe`'s output has any effect, it answers from
    `fleet-decl` or the reference, not from `describe`.
-5. It proves the layout on one project (`.bare` present, `--git-common-dir` ends in `.bare`)
+5. It proves the layout on one project (the container's `.git` is a bare repository, `--git-common-dir` ends in `<container>/.git`)
    rather than citing `mani sync`'s ✓.
 
 ## Should-fire situations
@@ -37,7 +37,7 @@ A session without the skill, asked to add a repository as a bare container, gets
 - `mani sync` printed ✕ for one project after "manifest expects the worktree at work/app/main".
 - "`mani describe` doesn't show `leakPolicy`, so can I drop it?"
 - `git-clone-worktree: work already holds files and is not a container`.
-- "Why did `mani sync` give me a normal clone instead of `.bare` plus worktrees?"
+- "Why did `mani sync` give me a normal clone instead of a bare `.git` plus worktrees?"
 - Editing a project's `worktrees:` list to add a durable `devel` worktree.
 
 ## Near-misses
@@ -52,7 +52,7 @@ A session without the skill, asked to add a repository as a bare container, gets
 
 ## Failure signature
 
-As in the skill body: a container without `.bare`; a worktree whose common git directory is inside
+As in the skill body: a container without a bare `.git`; a worktree whose common git directory is inside
 a sibling; a `.git` in a non-repository directory; `fleet-decl --check` findings; a conclusion
 about keys drawn from `mani describe`.
 

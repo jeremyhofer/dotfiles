@@ -189,11 +189,34 @@ d2=$(HOME="$fh" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 HOOK_DOCTOR_
 # --- B1: a bare CONTAINER root is SKIP, never a verdict ------------------------------------------
 # In the bare-container layout the container root is a valid git context with no work tree; you pass
 # through it on the way to every worktree, so a false verdict there would be frequent.
-c7="$tmp/cont"; mkdir -p "$c7"; git_q init --bare -q "$c7/.bare"; printf 'gitdir: ./.bare\n' > "$c7/.git"
+c7="$tmp/cont"; mkdir -p "$c7"; git_q init --bare -q "$c7/.git"
 b1=$(run "$tmp/gcfg" check --path "$c7")
-want "B1 bare container is SKIP" "SKIP" "$b1"
+want "B1 bare container (bare repository named .git) is SKIP" "SKIP" "$b1"
 want "B1 exits 0" " rc=0" "$b1"
 lacks "B1 not DARK" "DARK" "$b1"
+# B1-old: the older shape, the repository in .bare behind a pointer file, is skipped the same way.
+c7o="$tmp/cont-old"; mkdir -p "$c7o"; git_q init --bare -q "$c7o/.bare"; printf 'gitdir: ./.bare\n' > "$c7o/.git"
+b1o=$(run "$tmp/gcfg" check --path "$c7o")
+want "B1-old bare container (.bare behind a pointer file) is SKIP" "SKIP" "$b1o"
+want "B1-old exits 0" " rc=0" "$b1o"
+lacks "B1-old not DARK" "DARK" "$b1o"
+# B2: a container's worktrees are enumerated, its bare repository is not, in either shape.
+for shape in new old; do
+  cc="$tmp/enum-$shape"; mkdir -p "$cc"
+  if [ "$shape" = new ]; then bg="$cc/.git"; git_q init --bare -q -b main "$bg"; listed_as="$cc"   # git lists it as the container itself
+  else listed_as="$cc/.bare"; bg="$cc/.bare"; git_q init --bare -q -b main "$bg"; printf 'gitdir: ./.bare\n' > "$cc/.git"; fi
+  tr_=$(git_q --git-dir="$bg" hash-object -t tree -w /dev/null)
+  cm=$(git_q --git-dir="$bg" -c user.name=t -c user.email=t@t commit-tree "$tr_" -m x)
+  git_q --git-dir="$bg" update-ref refs/heads/main "$cm"
+  git_q --git-dir="$bg" worktree add -q "$cc/main" main >/dev/null 2>&1
+  printf 'projects:\n  enum:\n    path: enum-%s/main\n' "$shape" > "$tmp/mani-enum.yaml"
+  le=$(HOME="$fh" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 HOOK_DOCTOR_MANIFEST="$tmp/mani-enum.yaml" \
+       HOOK_DOCTOR_DEVEL_ROOT="$tmp" FLEET_RECORD="$tmp/mani-enum.yaml" FLEET_DEVEL_ROOT="$tmp" \
+       HOOK_DOCTOR_CHEZMOI_SRC=/nonexistent HOOK_DOCTOR_OVERLAY_SRC=/nonexistent sh "$doctor" list 2>&1)
+  [ "$(printf '%s\n' "$le" | grep -c "^  $cc/main ")" = 1 ] && [ "$(printf '%s\n' "$le" | grep -c "^  $listed_as ")" = 0 ] \
+    && ok "B2 $shape shape: the worktree is listed, the bare repository is not" \
+    || bad "B2 $shape shape enumeration" "$(printf '%s' "$le" | tr '\n' '|' | cut -c1-300)"
+done
 
 # --- H1: a local core.hooksPath is a WARNING: the guard is still GUARDED -------------------------
 git_q -C "$k" config core.hooksPath .husky/_

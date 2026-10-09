@@ -13,28 +13,33 @@
 #     generator into one table, and a hook NAME defined by both is refused.
 #
 # ---------------------------------------------------------------------------
-# The default worktree location: NESTED inside the repository
+# The default worktree location: a sibling in a bare container, nested in a plain clone
 # ---------------------------------------------------------------------------
-# Two repo shapes need different paths, because {{ repo_path }} resolves differently in each:
+# Two repo shapes need different paths, because {{ repo_path }} resolves differently in each, and
+# the template tells them apart by the name it ends in:
 #
 #   ORDINARY CHECKOUT -- repo_path is the repo root, so worktrees nest inside it:
 #       <repo>/.worktrees/<branch>
 #
-#   BARE CONTAINER (.bare + sibling worktrees) -- repo_path is the bare directory, so ".." is
-#   already the container and the worktree is just the branch:
+#   BARE CONTAINER (a bare repository named .git + sibling worktrees) -- repo_path is that bare
+#   directory, <container>/.git, so ".." is already the container and the worktree is just the branch:
 #       <container>/<branch>
-#     A repository in this shape declares `layout: bare` in the manifest; this default does not
-#     apply to it.
+#     A container made before the rename keeps its bare repository in <container>/.bare and does not
+#     end in /.git; `fleet-repo check` reports it as old-layout, and until it is converted it needs
+#     `layout: bare` declared in the manifest, which wt-config-gen turns into this same sibling path
+#     for that project. The declaration stays true in the new shape too; it is simply no longer the
+#     only thing keeping an undeclared container's worktrees out of its own git directory.
 #
-# WHY NESTED RATHER THAN A SIBLING. The obvious alternative, {{ repo_path }}/../{{ repo }}.{{ branch }},
-# puts the worktree next to the repositories themselves, so anything that enumerates a directory of
-# repositories (mani, for one) meets something repo-shaped that is not a repo. Nesting keeps that
-# directory meaning one thing, and makes a worktree die with the repository that owns it.
+# WHY NESTED RATHER THAN A SIBLING, FOR A PLAIN CLONE. The obvious alternative,
+# {{ repo_path }}/../{{ repo }}.{{ branch }}, puts the worktree next to the repositories themselves,
+# so anything that enumerates a directory of repositories (mani, for one) meets something
+# repo-shaped that is not a repo. Nesting keeps that directory meaning one thing, and makes a
+# worktree die with the repository that owns it.
 #
 # THE COST: a nested worktree lives inside a working tree, so `.worktrees/` must be ignored --
 # globally, not per repo -- and tools that walk the tree (prettier, eslint, rg, nx) each need their
 # own ignore entry. A repository that converts to a bare container stops having this problem.
-worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
+worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.worktrees/{{ branch | sanitize }}{% endif %}"
 
 # Pin the JSON output schema. Without this, every `wt config show` prints a migration advisory
 # warning that a future release changes the default.

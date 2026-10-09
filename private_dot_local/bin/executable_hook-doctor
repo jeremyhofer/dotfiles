@@ -134,8 +134,10 @@ enumerate_all() {
     [ -d "$abs" ] || { printf '%s\t%s\n' "$abs" "mani.yaml (MISSING ON DISK)"; continue; }
     # 2>/dev/null, never 2>&1: an ensure-keys line folded into a git listing once manufactured a
     # phantom branch in this fleet. Never fold stderr into something you are about to parse.
-    # Skip BARE containers: `git worktree list` includes <container>/.bare, which has no working
-    # tree at all, so every probe against it would be measuring nothing and reporting a verdict.
+    # Skip BARE containers: `git worktree list` includes the container's bare repository
+    # (listed as <container> itself when it is named .git, as <container>/.bare in the older
+    # shape), which has no working tree at all, so every probe against it would be measuring nothing and reporting a verdict. Git marks
+    # it "bare" whatever its name, so one test covers both shapes.
     git -C "$abs" worktree list --porcelain 2>/dev/null \
       | awk -v src="mani.yaml:$p" '
           /^worktree /{ wt=substr($0,10); bare=0; next }
@@ -480,7 +482,7 @@ EOF
     say "  $((loose - strict)) nested worktrees: entry/entries in the manifest are NOT resolved here —"
     say "  they are relative to their project, not to $DEVEL_ROOT, and git worktree list already finds them."
   fi
-  say "  Bare containers (<project>/.bare) are excluded: no working tree, so no probe means anything there."
+  say "  Bare containers (<project>/.git, or .bare in the older shape) are excluded: no working tree, so no probe means anything there."
 }
 
 # One directory, no enumeration and no manifest -- so it stays fast enough for a shell hook and does

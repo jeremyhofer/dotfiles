@@ -4,9 +4,15 @@ A repository under `~/Devel` is in one of two shapes:
 
 - **Plain clone:** `<repo>/` is the checkout, `<repo>/.git/` holds the git data, and worktrees nest
   under `<repo>/.worktrees/<branch>`.
-- **Bare container:** `<repo>/.bare/` holds the git data, `<repo>/.git` is a file saying
-  `gitdir: ./.bare`, and every branch, the default one included, is a sibling worktree:
-  `<repo>/main/`, `<repo>/<branch>/`.
+- **Bare container:** `<repo>/.git/` is itself a bare repository (`core.bare = true`, no pointer
+  file), and every branch, the default one included, is a sibling worktree: `<repo>/main/`,
+  `<repo>/<branch>/`. The directory is named `.git` because Claude Code's sandbox lets a linked
+  worktree write its shared git directory (commits, ref updates) only under that name; with any
+  other name the container's root has to be granted writable by hand, which also opens the
+  directory's `config` and `hooks/` to every session. A container made before this naming keeps its
+  git data in `<repo>/.bare/` behind a one-line `.git` file saying `gitdir: ./.bare`; the fleet
+  tools accept both, `fleet-repo check` reports the old one as `old-layout`, and the conversion is
+  [below](#converting-a-bare-container-from-the-old-shape).
 
 The skill `working-in-worktrees` has the full comparison: how to tell them apart, where to stand to
 create, land and remove a worktree, what each costs, and when to choose which. In one line: a bare
@@ -111,6 +117,39 @@ changes only its own worktree's copy. The cost is that a later change in `main/`
 worktrees that already exist; copy it across by hand, or re-run
 `wt step copy-ignored --from main --to <branch> --force` from any worktree of the container.
 
+## Converting a `.bare` container from the old shape
+
+The conversion is a rename and one repair. There is deliberately no command for it: `fleet-repo
+check` prints these three, with the container's path filled in, and a person runs them.
+
+```sh
+rm <container>/.git                        # the pointer file, so the name is free
+mv <container>/.bare <container>/.git
+git -C <container>/.git worktree repair    # rewrites every worktree's .git file at once
+```
+
+**Run them with no session, editor, watcher or git process in that container.** Between the `mv`
+and the `repair` every worktree is broken (`fatal: not a git repository`), and a process that touches
+one in that window fails or holds a stale path. After `repair`, each worktree's common directory is
+`<container>/.git` and `git status` works in it. Measured on a scratch container with two worktrees.
+
+Two things happen outside git, and only a person can do them, because a sandboxed session cannot
+write Claude Code's own directory:
+
+1. **Move the container's Claude Code memory store.** Claude Code keys a project's memory by its
+   directory path, so the container's store lives under a project key that ends in `--bare` (the
+   path of the old `.bare` directory, with separators flattened). Move
+   `~/.claude/projects/<key>--bare/` to the same key without the `--bare` suffix, so the next
+   session in the container finds it.
+2. **Expect a workspace-trust prompt.** Trust is keyed on the repository root, which the rename can
+   change, so Claude Code may ask again in the first session afterwards. Accept it.
+
+To go back, mirror the steps: rename `.git` to `.bare`, write `gitdir: ./.bare` into a new `.git`
+file, and run `git -C <container>/.bare worktree repair <each worktree path>`.
+
+Convert one container at a time, a rarely-used one first, and check it in a real session: a commit
+and a ref update succeed, and a write to the shared `config` or `hooks/` is refused.
+
 ## Converting an existing plain clone
 
 Nothing is pushed, rewritten or deleted until the new container is proven. Unpushed local branches
@@ -138,7 +177,7 @@ git -C "$new/main" fetch "$old" my-branch:my-branch
 # 5. Swap, then repair: git records worktree paths as absolute, so moving the container leaves
 #    main/ pointing at the old path ("fatal: not a git repository") until `worktree repair` runs.
 mv "$old" "$old.plain-backup" && mv "$new" "$old"
-git --git-dir="$old/.bare" worktree repair "$old"/*/
+git -C "$old/.git" worktree repair "$old"/*/
 
 # 6. Re-create the worktrees you use, now at their final paths, and copy any untracked files they
 #    need (.env, local config). The branch exists already, so no --create.

@@ -32,6 +32,56 @@ Entries are newest first.
 
 ---
 
+## 2026-10-09
+
+### A bare container's repository is named `.git`; worktrunk's default path follows the shape
+
+**Why.** Claude Code's sandbox lets a linked worktree write its repository's shared git directory
+(commits, ref updates) only when that directory is named `.git`. A container whose bare repository
+is `.bare` therefore needed its whole root granted writable in sandbox settings, which also opens the
+repository's `config` and `hooks/` to every sandboxed session. Naming the bare repository `.git`
+makes the built-in rule apply, and the sandbox leaves `config` and `hooks/` read-only.
+
+**What changed.**
+
+- **`fleet-repo clone` builds the new shape:** `<container>/.git/` is the bare repository, with no
+  pointer file. Every verb still accepts an old `.bare` container, so updating the base converts
+  nothing and breaks nothing.
+- **`fleet-repo check` reports an old container as `old-layout`** and prints the three conversion
+  commands. There is no conversion verb.
+- **`base.toml`'s default `worktree-path` is shape-aware:** a bare repository named `.git` gets
+  sibling worktrees, anything else nests under `.worktrees/`. An undeclared bare container no longer
+  gets worktrees inside its own git directory. `worktrunk.layout` stays valid.
+- **`hook-doctor` and `claude-context-probe`** recognise both shapes; the probe's container fixture
+  is now the new one.
+- **Skill `working-in-worktrees`:** a sandboxed session creates a worktree with the EnterWorktree
+  tool by name; `wt switch --create` remains the route for a person or an unsandboxed script. A
+  session writes the worktree it is in plus the shared `.git`, so it lands from the default
+  branch's worktree after ExitWorktree.
+
+**ACTION, in this order.**
+
+1. **Update the base on every machine first** (pull, `chezmoi apply`). The tools accept both shapes,
+   so nothing needs converting yet.
+2. **Convert each container,** with nothing running in it (no session, editor or git process;
+   every worktree is broken between the second and third command):
+
+   ```sh
+   rm <container>/.git
+   mv <container>/.bare <container>/.git
+   git -C <container>/.git worktree repair
+   ```
+
+   `fleet-repo check` prints these with the path filled in. The procedure is in
+   `docs/reference/repository-layouts.md`, "Converting a `.bare` container from the old shape".
+3. **Move the container's Claude Code memory store** from the project key ending in `--bare`
+   (under `~/.claude/projects/`) to the same key without the suffix, and accept the workspace-trust
+   prompt if Claude Code asks again.
+4. **A private layer's container-root sandbox grants become unnecessary** once its containers are
+   converted. Remove them then, not before: an unconverted container still needs its grant.
+
+---
+
 ## 2026-10-08
 
 ### New worktrees get the gitignored files their repository lists in `.worktreeinclude`

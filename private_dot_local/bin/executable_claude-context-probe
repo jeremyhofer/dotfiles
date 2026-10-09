@@ -335,18 +335,19 @@ POLICY_ROWS=0
 [ -n "$POLICY_HOOKS" ] && POLICY_ROWS=$((POLICY_ROWS + 4))
 [ "$POLICY_SIDELOAD" -eq 1 ] && POLICY_ROWS=$((POLICY_ROWS + 1))
 
-# ---- layout A: a bare-container repository with a worktree (the .git inside is a FILE) --------
+# ---- layout A: a bare-container repository with a worktree (the worktree's .git is a FILE) -----
+# The container's own .git is the bare repository, the shape fleet-repo builds. (Containers made
+# before that kept the git data in .bare behind a pointer file; the probe measures the current shape.)
 A="$ROOT/container"
 mkdir -p "$A"
-git init -q --bare "$A/.bare" || exit 2
-printf 'gitdir: ./.bare\n' > "$A/.git"
+git init -q --bare "$A/.git" || exit 2
 # One empty commit, made with plumbing so it works on any git (worktree --orphan needs 2.42) and
 # never touches the user's identity, signing or hooks. It exists only inside the temp tree.
-tree=$(git --git-dir="$A/.bare" hash-object -t tree -w /dev/null) || exit 2
-commit=$(git --git-dir="$A/.bare" -c user.name=probe -c user.email=probe@example.invalid \
+tree=$(git --git-dir="$A/.git" hash-object -t tree -w /dev/null) || exit 2
+commit=$(git --git-dir="$A/.git" -c user.name=probe -c user.email=probe@example.invalid \
   commit-tree --no-gpg-sign "$tree" -m probe) || exit 2
-git --git-dir="$A/.bare" update-ref refs/heads/main "$commit" || exit 2
-git --git-dir="$A/.bare" worktree add -q "$A/main" main 2>/dev/null \
+git --git-dir="$A/.git" update-ref refs/heads/main "$commit" || exit 2
+git --git-dir="$A/.git" worktree add -q "$A/main" main 2>/dev/null \
   || { printf 'claude-context-probe: could not create a worktree\n' >&2; exit 2; }
 W="$A/main"
 plant "$A/CLAUDE.md" CONTAINER

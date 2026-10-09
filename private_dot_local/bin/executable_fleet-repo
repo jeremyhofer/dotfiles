@@ -16,15 +16,21 @@
 # THE LAYOUT. A "container" is a bare clone with every branch checked out as a sibling directory:
 #
 #   <container>/
-#     .bare/            the git directory (a bare clone)
-#     .git              a file containing "gitdir: ./.bare"
+#     .git/             the git directory itself: a bare clone (core.bare = true), no pointer file
 #     <default-branch>/ a worktree for the repository's default branch
 #     <other-branch>/   further worktrees, declared in the manifest or added later with `wt`
 #
-# Its point: no single directory's deletion is catastrophic. The git data lives in .bare, so
+# Its point: no single directory's deletion is catastrophic. The git data lives in <container>/.git, so
 # removing any one worktree, the default branch's included, loses only that checkout. In an ordinary
 # clone the git directory lives inside the primary checkout, and deleting it orphans every other
-# worktree of the repository.
+# worktree of the repository. The directory is named .git because Claude Code's sandbox lets a
+# linked worktree write its shared git directory only under that name.
+#
+# THE OLD SHAPE. Containers made before that rename keep the git data in <container>/.bare, with
+# <container>/.git a one-line file reading "gitdir: ./.bare". Every verb still works on one, so a
+# machine can update before it converts anything; `check` reports it as old-layout and prints the
+# three commands that convert it. There is no conversion verb: the conversion is a rename plus one
+# `git worktree repair`, and it must run with nothing using the container.
 #
 # WHAT EACH VERB DOES
 #   clone <project>   Read the entry, make the container match it. A fresh path: clone the default
@@ -43,7 +49,8 @@
 #   check [<project>] Drift between declaration and disk, reported and never fixed: no container, a
 #                     plain clone where a container is declared, fetch refspecs that differ from the
 #                     declared set, a missing worktree, a missing upstream, a container the
-#                     generated worktrunk config has no table for. With no project, every entry that
+#                     generated worktrunk config has no table for, a container still in the old
+#                     .bare shape (old-layout, with the conversion commands). With no project, every entry that
 #                     declares a container. Offline.
 #
 # THE DECLARATION, read through fleet-decl so every tool resolves an entry the same way:
@@ -256,24 +263,44 @@ copy_listed_files() {  # $1 container, $2 default branch, $3 new worktree's bran
   fi
 }
 
+# The git directory of the container at $1, or nothing if it is not one. Two shapes:
+#   new  <c>/.git is a directory holding a bare repository
+#   old  <c>/.git is a file reading "gitdir: ./.bare", and <c>/.bare is the bare repository
+# An ordinary clone's <c>/.git is also a directory, so the new shape also requires core.bare.
+container_gitdir() {
+  local c=$1 line
+  if [ -d "$c/.git" ]; then
+    if [ "$(git --git-dir="$c/.git" rev-parse --is-bare-repository 2>/dev/null || true)" = true ]; then
+      printf '%s\n' "$c/.git"
+    fi
+  elif [ -f "$c/.git" ] && [ -d "$c/.bare" ]; then
+    IFS= read -r line < "$c/.git" || true
+    [ "$line" != "gitdir: ./.bare" ] || printf '%s\n' "$c/.bare"
+  fi
+  return 0
+}
+
 # ---- clone ------------------------------------------------------------------------------------
 # Globals in: URL TARGET EXPECT FILTER MODE LIST WT_NAMES WT_DIRS
 do_clone() {
-  local bare="$TARGET/.bare" fresh=0 default desired have want drop add b n i dir refspec remote_heads
+  local bare fresh=0 default desired have want drop add b n i dir refspec remote_heads
   local wild='+refs/heads/*:refs/remotes/origin/*'
 
-  # A directory that already holds files but no .bare is not a container, and making it one puts a
+  bare=$(container_gitdir "$TARGET")
+
+  # A directory that already holds files but is not a container is refused: making it one would put a
   # .git into whatever it was. The usual cause is a manifest `path:` naming the container instead of
   # its default-branch worktree: the container is then the PARENT, and for a top-level entry that is
   # the devel root itself.
-  if [ ! -d "$bare" ] && [ -d "$TARGET" ] && [ -n "$(ls -A "$TARGET")" ]; then
+  if [ -z "$bare" ] && [ -d "$TARGET" ] && [ -n "$(ls -A "$TARGET")" ]; then
     die "$TARGET already holds files and is not a container; refusing to clone into it. As a mani clone: command, path: must name the worktree, <container>/<default-branch>, and the container is its parent"
   fi
 
-  if [ -d "$bare" ]; then
+  if [ -n "$bare" ]; then
     say "$TARGET already present; ensuring it is complete"
   else
     fresh=1
+    bare="$TARGET/.git"
     mkdir -p "$TARGET"
     if [ "$MODE" = all ]; then
       # A bare clone does not fetch like a normal one: it records no fetch refspec, so `git fetch`
@@ -285,7 +312,6 @@ do_clone() {
       # Only the default branch comes down; the rest of the fetched set is added below.
       git clone --bare --single-branch ${FILTER:+"--filter=$FILTER"} "$URL" "$bare"
     fi
-    printf 'gitdir: ./.bare\n' > "$TARGET/.git"
   fi
 
   # The default branch comes from the bare clone's own HEAD, which git set from the remote's HEAD at
@@ -568,9 +594,9 @@ projects_with() {  # prints names; exits 2 if the manifest is unusable
 check_one() {
   local p=$1 bare default dir b i want have wt_all names clone cfg id
   load_entry "$p"
-  bare="$P_TARGET/.bare"
+  bare=$(container_gitdir "$P_TARGET")
   dir="$MDIR/$P_PATH"
-  if [ ! -d "$bare" ]; then
+  if [ -z "$bare" ]; then
     if [ -d "$P_TARGET/.git" ] || [ -d "$dir/.git" ]; then
       drift plain-clone "$p" "a container is declared but $P_TARGET holds an ordinary clone (converting is manual: see the repository-layouts reference)"
     else
@@ -580,6 +606,13 @@ check_one() {
   fi
   default=$(git --git-dir="$bare" symbolic-ref --short HEAD 2>/dev/null || true)
   [ -n "$default" ] || { drift no-container "$p" "$bare has no HEAD"; return 0; }
+
+  if [ "$bare" = "$P_TARGET/.bare" ]; then
+    drift old-layout "$p" "the git data is in $P_TARGET/.bare behind a pointer file; the current layout names it .git. Convert with nothing running in $P_TARGET (between the second and third command every worktree is broken, and any git process or session there would fail or hold it open), then move the container's Claude Code memory store to the project key without the --bare suffix:
+    rm $P_TARGET/.git
+    mv $P_TARGET/.bare $P_TARGET/.git
+    git -C $P_TARGET/.git worktree repair"
+  fi
 
   # The fetched set, compared offline: what the declaration asks for against the refspecs on disk.
   if [ "$P_MODE" = all ]; then want='*'
