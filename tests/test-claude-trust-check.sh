@@ -166,6 +166,29 @@ o" ] && ! printf "%s" "$OUT" | grep -q "/"'
 check "--names-only keeps the exit status" '[ $RC -eq 1 ]'
 nostate; run --names-only
 check "--names-only with no state is exit 3 and prints no names on stdout" '[ $RC -eq 3 ] && [ -z "$(FLEET_RECORD="$WS/mani.yaml" sh "$TOOL" --names-only 2>/dev/null)" ]'
+# --- opting out: claudeTrust: false --------------------------------------------------------------
+echo "claudeTrust: false"
+# An untrusted project opted out is not reported and does not fail the exit; the summary names it.
+# A project and its launch directory are both left out; true, or no key, is still checked.
+{ echo 'projects:'
+  printf '  sec:\n    path: plain2\n    claudeTrust: false\n'
+  printf '  c:\n    path: cnew/main\n    canonicalLaunchDir: cnew/feat\n    claudeTrust: false\n'
+  printf '  p:\n    path: plain\n    claudeTrust: true\n'
+} > "$WS/mani.yaml"
+state "$LIVE" "$WS/plain"; run
+check "opted-out projects are not reported and do not fail the exit" '[ -z "$(line sec)" ] && [ -z "$(line c)" ] && [ $RC -eq 0 ]'
+check "the summary names the opted-out projects" 'printf "%s" "$OUT" | grep -q "^opted out (claudeTrust: false), not checked: sec, c$"'
+check "claudeTrust: true is still checked" '[ "$(verdict p)" = trusted ]'
+run --names-only
+check "--names-only lists no opted-out project" '[ -z "$OUT" ] && [ $RC -eq 0 ]'
+nostate; state "$LIVE"
+{ echo 'projects:'
+  printf '  p:\n    path: plain\n    claudeTrust: true\n'
+  printf '  q:\n    path: plain2\n'
+} > "$WS/mani.yaml"
+run
+check "true or no key: an untrusted project is still reported" '[ "$(verdict p)" = UNTRUSTED ] && [ "$(verdict q)" = UNTRUSTED ] && ! printf "%s" "$OUT" | grep -q "opted out"'
+
 run --help
 check "--help exits 0" '[ $RC -eq 0 ] && printf "%s" "$OUT" | grep -q "usage\|claude-trust-check"'
 

@@ -58,6 +58,7 @@ makes the built-in rule apply, and the sandbox leaves `config` and `hooks/` read
   advisory).** Claude Code refuses `claude --bg` in a directory whose workspace trust nobody has
   accepted; the tool reads Claude Code's state (never writes it) and lists the manifest's
   directories still waiting, grouped by repository, with the command to accept each.
+- **`claudeTrust: false` on a manifest project** leaves it out of `claude-trust-check` (and so out of overlay-doctor's list), for a repository no agent session should run in. The summary names every opted-out project.
 - **Skill `working-in-worktrees`:** a sandboxed session creates a worktree with the EnterWorktree
   tool by name; `wt switch --create` remains the route for a person or an unsandboxed script. A
   session writes the worktree it is in plus the shared `.git`, so it lands from the default

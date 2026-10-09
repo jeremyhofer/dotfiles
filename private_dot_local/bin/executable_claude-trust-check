@@ -22,6 +22,11 @@
 # git repository is reported as not-a-repo. Results are grouped by trust root, so a project and its
 # launch directory, or several worktrees of one repository, are one line.
 #
+# OPTING A REPOSITORY OUT. `claudeTrust: false` on a project leaves it, and its launch directory, out
+# of the check, for a repository no agent session should run in (a secrets store, a third-party clone
+# kept for reading). The summary counts them, so an opt-out is visible rather than silent. Only a YAML
+# false opts out; any other value, or none, is checked.
+#
 # HOW TRUST IS KEYED (measured on Claude Code 2.1.295). The state holds
 # projects["<absolute path>"].hasTrustDialogAccepted. The key is the repository's git common
 # directory with a trailing /.git removed:
@@ -151,6 +156,21 @@ if decl --projects-with canonicalLaunchDir; then
   done <"$W/names"
 fi
 
+# Opted out: declared `claudeTrust`, and the value reads as absent. fleet-decl reads a YAML false as
+# "not declared" (exit 1), so a project listed by --projects-with whose --entry says nothing is false.
+: >"$W/optout"
+if decl --projects-with claudeTrust; then
+  cp "$W/out" "$W/names"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    decl --entry "$n" claudeTrust || printf '%s\n' "$n" >>"$W/optout"
+  done <"$W/names"
+fi
+if [ -s "$W/optout" ]; then
+  awk -F '\t' 'NR == FNR { out[$0] = 1; next } !($1 in out)' "$W/optout" "$W/cand" >"$W/cand.in"
+  mv "$W/cand.in" "$W/cand"
+fi
+
 # trust_root <dir>: the key Claude Code stores trust under, or nothing when <dir> is in no repository.
 trust_root() {
   _r=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
@@ -222,5 +242,8 @@ if [ "$NAMES_ONLY" -eq 1 ]; then
 else
   printf '%s trust root(s): %s trusted, %s untrusted, %s not a repository\n' \
     "$((ntrusted + nuntrusted))" "$ntrusted" "$nuntrusted" "$nnorepo"
+  if [ -s "$W/optout" ]; then
+    printf 'opted out (claudeTrust: false), not checked: %s\n' "$(awk 'NF && !s[$0]++' "$W/optout" | paste -sd, - | sed 's/,/, /g')"
+  fi
 fi
 [ "$nuntrusted" -eq 0 ] && [ "$nnorepo" -eq 0 ]

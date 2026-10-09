@@ -69,6 +69,7 @@ Every other tag is the domain's own vocabulary and only selects.
 | `container.filter` | a git `--filter` spec, e.g. `blob:none` | `fleet-repo` | no. A partial clone: every commit and tree, file contents only on demand. Applies to a FRESH clone only; on an existing unfiltered container it is reported, not applied |
 | `worktrunk.layout` | `bare` or `nested` | `wt-config-gen` | no. Where `wt` puts worktrees: siblings of a bare clone, or under `<repo>/.worktrees/`. Without it, the default in `base.toml` chooses by the repository's shape: a bare repository named `.git` gets siblings, anything else nests |
 | `worktrunk.bootstrap` | `true` or `false` | `wt-config-gen` | no. Whether a new worktree installs its dependencies (`wt-bootstrap`) |
+| `claudeTrust` | `false` | `claude-trust-check` | no. `false` leaves the project, and its launch directory, out of the workspace-trust check: for a repository no agent session should run in (a secrets store, a third-party clone kept for reading). Any other value, or none, is checked |
 | `canonical` | a session name | a domain's session launcher, if it has one; `memory-doctor` | no. Declares the project's long-running agent session |
 | `canonicalIdentity` | text | the session launcher | yes when `canonical` is set |
 | `canonicalLaunchDir` | a path | the session launcher; `memory-doctor` | yes when `canonical` is set |
