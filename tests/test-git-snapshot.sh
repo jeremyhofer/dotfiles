@@ -7,6 +7,8 @@
 #
 # Run: bash ~/.local/share/chezmoi/tests/test-git-snapshot.sh
 set -uo pipefail
+# No machine-global git config, so none of its commit hooks fire in the scratch repositories.
+. "$(dirname "$0")/git-isolate.sh"
 
 SNAP="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_git-snapshot"
 

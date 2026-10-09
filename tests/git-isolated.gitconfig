@@ -1,0 +1,13 @@
+# The only git configuration the suites see. git-isolate.sh points GIT_CONFIG_GLOBAL here, so the
+# machine's own global config -- and the commit hooks, signing and identity it wires -- never
+# reaches a throwaway repository. Deliberately no core.hooksPath: a suite that tests a hook
+# installs that hook itself.
+[user]
+	name = Test
+	email = test@example.invalid
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
+[init]
+	defaultBranch = main

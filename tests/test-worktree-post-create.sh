@@ -20,6 +20,8 @@
 #      reporting hook that can fail a creation is a guard people route around, which is worse than
 #      no guard (kb autonomy-escalation).
 set -u
+# No machine-global git config, so none of its commit hooks fire in the scratch repositories.
+. "$(dirname "$0")/git-isolate.sh"
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 here=$(cd "$(dirname "$0")" && pwd)
 clonewt="$here/../private_dot_local/bin/executable_git-clone-worktree"

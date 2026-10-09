@@ -17,6 +17,8 @@
 # and each repository that gates on it calls it by name rather than carrying a copy -- so a
 # rule tuned here takes effect everywhere at the next apply, instead of drifting per repo.
 set -eu
+# No machine-global git config, so none of its commit hooks fire in the scratch repositories.
+. "$(dirname "$0")/git-isolate.sh"
 
 here=$(cd "$(dirname "$0")" && pwd)
 lint="$here/../private_dot_local/bin/executable_comment-lint"

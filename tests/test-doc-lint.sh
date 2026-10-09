@@ -7,6 +7,8 @@
 # cites several decision logs and CORRECT in a project citing its own. So the owner-prefix
 # checks run only where the repository's config declares its owners.
 set -eu
+# No machine-global git config, so none of its commit hooks fire in the scratch repositories.
+. "$(dirname "$0")/git-isolate.sh"
 
 here=$(cd "$(dirname "$0")" && pwd)
 lint="$here/../private_dot_local/bin/executable_doc-lint"

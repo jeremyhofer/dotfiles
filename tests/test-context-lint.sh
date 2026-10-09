@@ -4,6 +4,8 @@
 # span, a number that is a limit) must not.
 
 set -u
+# No machine-global git config, so none of its commit hooks fire in the scratch repositories.
+. "$(dirname "$0")/git-isolate.sh"
 
 LINT="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_context-lint"
 pass=0; fail=0
