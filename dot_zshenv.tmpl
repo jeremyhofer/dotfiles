@@ -22,6 +22,11 @@ export EDITOR='nvim'
 # so the cert's issuer/location can change without touching any project.
 export DEV_TLS_CERT="${DEV_TLS_CERT:-$HOME/.local/share/devcerts/localhost.pem}"
 export DEV_TLS_KEY="${DEV_TLS_KEY:-$HOME/.local/share/devcerts/localhost-key.pem}"
+
+# mani finds a manifest only at or above the current directory; outside ~/Devel it fails. It reads
+# MANI_CONFIG only when that search finds nothing, so a repository's own mani.yaml still wins and
+# this makes the fleet manifest the fallback from anywhere. tests/test-mani-config.sh checks both.
+[ -f "$HOME/Devel/mani.yaml" ] && export MANI_CONFIG="${MANI_CONFIG:-$HOME/Devel/mani.yaml}"
 {{ if eq .chezmoi.os "linux" -}}
 # Session env shared with ~/.config/environment.d — rendered from the same SSOT (.chezmoidata.yaml),
 # so shells and the systemd/GUI session env can't drift.

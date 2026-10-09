@@ -7,7 +7,9 @@ separate, so each writes its own whole file). It does two jobs at once:
   --parallel` (4 at once; `--forks N` for more) clones several at a time, custom `clone:` commands
   included; stay serial for repositories that prompt for credentials. `mani describe` shows only some
   of mani's own keys (not `clone:`), so it is not a view of what an entry declares: read a key with
-  `fleet-decl`.
+  `fleet-decl`. `mani` looks for a `mani.yaml` at or above the current directory; `~/.zshenv`
+  exports `MANI_CONFIG=~/Devel/mani.yaml` when that file exists, which mani uses only when the
+  search finds nothing, so `mani` works from anywhere and a repository's own `mani.yaml` still wins.
 - **The base's tools read declarations about each repository from it**, always through `fleet-decl`,
   so that every tool resolves a path to the same entry.
 

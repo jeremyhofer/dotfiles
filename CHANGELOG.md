@@ -34,6 +34,12 @@ Entries are newest first.
 
 ## 2026-10-09
 
+### `mani` finds `~/Devel/mani.yaml` from any directory
+
+`~/.zshenv` now exports `MANI_CONFIG=~/Devel/mani.yaml` when that file exists (a value already set
+is kept). mani reads it only when no `mani.yaml` is found at or above the current directory, so a
+repository with its own manifest is unaffected. Nothing to do beyond applying; open a new shell.
+
 ### Skill `fleet-manifest` is retired
 
 Everything it said is now in `docs/reference/fleet-manifest.md`, including the add-a-repository
