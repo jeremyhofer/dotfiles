@@ -92,9 +92,15 @@ fact about your probe. Both read as "fine".
   running session has mounted. `test -w` calls such a path writable (mode 666), so it cannot
   detect the mask.
 - **`fatal: Unable to create '.../index.lock': Read-only file system` is not the signing lock.** It comes
-  through the same `git` wrapper and reads like a key failure, but unlocking does nothing: the repo's
-  bare container is missing from the sandbox's `allowWrite`. Adding that path is permission config, so it
-  needs explicit consent from whoever owns the settings.
+  through the same `git` wrapper and reads like a key failure, but unlocking does nothing: the
+  repository's git directory is outside what this session may write. A sandboxed session writes the
+  directory it stands in plus its own repository's `.git` (except `config` and `hooks/`), shared live
+  with its subagents. So the cause is one of: the session has entered a worktree and is writing the
+  checkout it left; the repository is not the one the session was started in; or the repository keeps
+  its git data somewhere not named `.git`. Run the command from a session started in that repository,
+  or leave the worktree first. Do not reach for an `allowWrite` grant: it opens that repository's git
+  config and hooks to every session on the machine, and it is permission config, which needs explicit
+  consent from whoever owns the settings.
 - **A command listed in `sandbox.excludedCommands` (for example `nx serve`) runs in the host network**,
   so a human browser reaches it; a sandboxed call still cannot. The per-call PID namespace also recycles
   small PIDs, so an uncleanly killed Nx task can leave a stale row that makes the next run report

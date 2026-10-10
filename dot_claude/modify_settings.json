@@ -14,7 +14,8 @@
 #
 # TWO LAYERS OF DECLARED KEYS, merged in order, the later winning:
 #
-#   1. The base block below: preferences true on any machine (editor mode, UI, the status line).
+#   1. The base block below: preferences true on any machine (editor mode, UI, the status line),
+#      and the hooks of the tools this base ships (claude-worktree-hook; see that script's header).
 #   2. The domain's fragment: an executable at ~/.dotlocal/claude/settings-declared (or
 #      $CLAUDE_SETTINGS_FRAGMENT) that prints {"declared": {...}, "retiredHooks": [...]}. A private
 #      layer supplies what only its domain has: plugins, hooks, sandbox paths, permission rules. It
@@ -37,6 +38,17 @@
 # right for arrays the app never writes (sandbox paths, deny rules, hook lists): the source is
 # authoritative, and an entry added by hand to the live file and not declared is reverted on the
 # next apply. It is wrong only for arrays the app accretes, which is why those are never declared.
+#
+# HOOKS ARE THE ONE PLACE TWO DECLARING LAYERS MEET. Both the base and the fragment may declare
+# entries for the same event (SubagentStart, say), and a plain merge would let the fragment's list
+# replace the base's, silently unwiring the base's hook. So for each event under "hooks" the two
+# declared lists are joined, base first, an entry both declare kept once, and the join then replaces
+# the live list as any declared array does. Events only the live file has are kept.
+#
+# worktree.baseRef IS NOT DECLARED: Claude Code's default ("fresh", branch from the remote's default
+# branch) is wanted, and freshness of a worktree's base is otherwise handled by worktrunk's hooks
+# (wt-fetch-base). Removing a key from this block does not remove it from a live file; a machine that
+# still carries a value from an earlier apply keeps it until it is deleted there.
 #
 # RETIRED HOOKS. The merge can only add, so a hook dropped from a declaration survives in every live
 # file that already carried it and keeps firing on machines nobody touches. The fragment names each
@@ -73,8 +85,20 @@ base=$(cat <<EOF
   },
   "tui": "fullscreen",
   "wheelScrollAccelerationEnabled": true,
-  "worktree": {
-    "baseRef": "fresh"
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [ { "command": "${HOME}/.local/bin/claude-worktree-hook bash", "type": "command" } ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [ { "command": "${HOME}/.local/bin/claude-worktree-hook enter-worktree", "type": "command" } ]
+      }
+    ],
+    "SubagentStart": [
+      { "hooks": [ { "command": "${HOME}/.local/bin/claude-worktree-hook subagent-start", "type": "command" } ] }
+    ]
   }
 }
 EOF
@@ -93,7 +117,13 @@ if [ -f "$frag_path" ]; then
 fi
 
 printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" '
-  (. * $base * $domain)
+  ($base.hooks // {}) as $bh | ($domain.hooks // {}) as $dh
+  | (. * ($base | del(.hooks)) * ($domain | del(.hooks)))
+  | if (($bh | length) + ($dh | length)) > 0 then
+      .hooks = ((if (.hooks | type) == "object" then .hooks else {} end)
+        + reduce ((($bh | keys_unsorted) + ($dh | keys_unsorted)) | unique[]) as $e ({};
+            .[$e] = reduce (($bh[$e] // []) + ($dh[$e] // []))[] as $h ([]; if index([$h]) then . else . + [$h] end)))
+    else . end
   | if (.hooks | type) == "object" and ($retired | length) > 0 then
       .hooks |= (with_entries(
         .value |= map(select(any(.hooks[]?; (.command // "") as $c | any($retired[]; . as $r | $c | contains($r))) | not)))

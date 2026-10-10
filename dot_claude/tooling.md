@@ -37,10 +37,12 @@ where the domain supplies none) · `run-repo-gates` (runs a manifest repo's trac
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review) ·
 `skill-externals-sync` (installs the pinned skills a private layer lists in `~/.dotlocal/skill-externals.yaml`, by git; runs after every apply) ·
-`fleet-repo` (makes a repository on disk match its manifest entry: `clone` as a bare container plus sibling worktrees, reconciling an existing one, `update` for fast-forwards, `check` for drift; bootstraps the layout `wt` then manages, since worktrunk has no clone verb) ·
+`fleet-repo` (makes a repository on disk match its manifest entry, in the layout `fleet-decl --layout` reads from it: `clone` as a standard clone with nested `.worktrees/`, or as a bare container plus sibling worktrees, reconciling an existing one and never converting between the two; `update` for fast-forwards, `check` for drift; bootstraps what `wt` then manages, since worktrunk has no clone verb) ·
 `claude-trust-check` (lists the manifest's directories whose Claude Code workspace-trust prompt is still unaccepted, which blocks `claude --bg` there; read-only, exit 3 when the trust state is unknown) ·
 `fleet-decl` (reads one declaration from the per-repo record, a mani.yaml; exit 2 means the record is unreadable, never "not declared") ·
 `wt-bootstrap` (installs a fresh worktree's dependencies from whichever lockfile it finds, frozen; wired in as worktrunk's `pre-start` hook) ·
+`wt-fetch-base` (worktrunk hooks: a new worktree starts from its base fetched from `origin`, else the `fetch-base.fallback` remotes, and creation is refused when none answers; opt in with `git config fetch-base.enabled true`) ·
+`claude-worktree-hook` (Claude Code hooks: refuses a session's raw `git worktree add`/`move` with the `wt` command to use and warns on a raw `remove`, refuses EnterWorktree where sessions work in place (`worktree.bgIsolation` none), warns at dispatch about commits on no remote) ·
 `install-claude-plugins` (installs the Claude Code plugins a private layer's settings fragment declares; opt-in, run from that layer's trigger) · `install-test-gate` (installs a test-suite commit gate into a chezmoi source repo, refusing a pre-commit it did not write; opt-in) ·
 `wt-config-gen` (generates worktrunk's user config from `base.toml`, an optional private fragment, and each repo's `worktrunk:` block in the manifest).
 

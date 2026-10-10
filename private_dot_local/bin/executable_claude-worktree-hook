@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# claude-worktree-hook -- Claude Code hooks that keep a session's worktree work on worktrunk, and
+# keep a session that works in place from moving itself into a worktree.
+#
+# SUBCOMMANDS, one per hook event (the hook's JSON input on stdin in every case):
+#
+#   bash             PreToolUse, matcher "Bash". Refuses a raw `git worktree add` or `move` typed
+#                    by the session, naming the worktrunk command to use instead; lets a raw
+#                    `git worktree remove` through with a warning naming `wt remove` (below).
+#                    `git worktree list` and the other subcommands pass silently. It never rewrites
+#                    the command.
+#   enter-worktree   PreToolUse, matcher "EnterWorktree". Refuses where the repository's sessions
+#                    work in place (effective `worktree.bgIsolation` is "none"); allows otherwise.
+#   subagent-start   SubagentStart. Warns when the session's checkout has commits that are on no
+#                    remote.
+#
+# WHY REFUSE RAW `git worktree add`. Worktrunk (`wt`) owns worktree creation: it places a worktree
+# where the repository's layout says and runs the creation hooks (among them the one that fetches
+# the base first). A raw `git worktree add` skips all of that. Removal is only WARNED: the standard is
+# `wt remove --no-hooks --foreground <name>`, but a plain `git worktree remove` stays a sanctioned
+# fallback where a setup exempts it from the sandbox (git's own clean check still refuses a worktree
+# holding uncommitted work), so refusing it would remove a working route. The refusal is a guard against habit, not a
+# security boundary: it reads only the command line the session typed, so a script, an alias or a
+# heredoc fed to a shell is not seen, and tooling that manages worktrees itself keeps calling git.
+# Where worktrunk is not installed there is no `wt` command to name, so the guard stands down.
+#
+# WHY ENTERWORKTREE IS REFUSED WHERE SESSIONS WORK IN PLACE. A repository whose settings turn
+# Claude Code's background-isolation guard off (`worktree.bgIsolation: "none"`) is one whose owning
+# session works in its own checkout. Such a session reaches another branch by path instead
+# (`git -C .worktrees/<name> …`, `cd .worktrees/<name> && …`, edits by path) or hands the work to a
+# subagent. EnterWorktree would move it, and the subagents that share its sandbox write set, out of
+# the checkout. Stateless: the effective value is read from the settings files at each call, most
+# specific first -- the repository's .claude/settings.local.json, then its .claude/settings.json
+# (at the root of the session directory's repository), then the user's settings.json. A repository
+# that keeps the guard on, or a machine that never sets the key, is unaffected. `false` is read as
+# "none" too, since it states the same intent.
+#
+# THE UNPUSHED WARNING. A subagent given its own worktree starts from the base as fetched from the
+# remote, so commits that exist only in the session's checkout are not in it. It warns, it never
+# blocks: dispatching an agent that reads, rather than builds on, those commits is fine. "Not on the
+# remote" means reachable from HEAD and from no remote-tracking ref, which also covers a push
+# through a multi-URL remote that leaves `origin/*` stale. A branch with no upstream is quiet.
+#
+# FAIL OPEN. A hook that breaks a session is worse than one that misses a case: without jq, with
+# unreadable input, or on any internal error, every subcommand exits 0 and prints nothing.
+# Portable: bash 3.2 and BSD userland; the command scanner is POSIX awk.
+set -u
+
+subcommand=${1:-}
+case "$subcommand" in
+  bash | enter-worktree | subagent-start) ;;
+  *) exit 0 ;;
+esac
+
+input=$(cat 2>/dev/null) || exit 0
+
+# Cheap exit for the hottest path: this runs before every Bash call, and almost none mention
+# worktrees. Checked on the raw JSON before anything is spawned.
+if [ "$subcommand" = bash ]; then
+  case "$input" in *worktree*) ;; *) exit 0 ;; esac
+fi
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+
+deny() {
+  jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+  exit 0
+}
+
+# ---- the command scanner -------------------------------------------------------------------
+# Prints the word after `worktree` for every git invocation in the command line, one per line.
+# It tokenizes like a shell, roughly: quotes, backslashes, comments and heredoc bodies are honoured,
+# so text that merely mentions `git worktree add` (a commit message, a search pattern, a file being
+# written) is not mistaken for a call. A `git` word is matched anywhere, not only at a command's
+# start, so `env git …`, `command git …` and `/usr/bin/git …` are seen; its global options are
+# skipped (`-C <path>`, `-c <k=v>`, `--git-dir`, …). The text of `$(…)`, backticks, `sh -c '…'` and
+# `eval …` is scanned again, recursively.
+IFS= read -r -d '' SCANNER <<'AWK' || true
+function fl() { if (have) { tok[D, n++] = cur; cur = ""; have = 0 } }
+function bname(t) { sub(/.*\//, "", t); return t }
+function tokenize(s, d,    L, i, c, nx, j, q, dep, delim, strip, line, k) {
+  D = d; n = 0; cur = ""; have = 0; nh = 0; L = length(s); i = 1
+  while (i <= L) {
+    c = substr(s, i, 1)
+    if (c == "\\") {
+      nx = substr(s, i + 1, 1)
+      if (nx != "\n") { cur = cur nx; have = 1 }
+      i += 2; continue
+    }
+    if (c == "'") {
+      j = index(substr(s, i + 1), "'")
+      if (j == 0) { cur = cur substr(s, i + 1); have = 1; break }
+      cur = cur substr(s, i + 1, j - 1); have = 1; i += j + 1; continue
+    }
+    if (c == "\"") {
+      have = 1; i++
+      while (i <= L) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          nx = substr(s, i + 1, 1)
+          if (nx ~ /[\\"$`]/) { cur = cur nx; i += 2; continue }
+          cur = cur c; i++; continue
+        }
+        if (c == "\"") { i++; break }
+        cur = cur c; i++
+      }
+      continue
+    }
+    if (c == "$" && substr(s, i + 1, 1) == "(") {
+      dep = 0; j = i + 1
+      while (j <= L) {
+        q = substr(s, j, 1)
+        if (q == "(") dep++
+        else if (q == ")") { dep--; if (dep == 0) break }
+        j++
+      }
+      cur = cur substr(s, i, j - i + 1); have = 1; i = j + 1; continue
+    }
+    if (c == "`") {
+      j = index(substr(s, i + 1), "`")
+      if (j == 0) j = L - i
+      cur = cur substr(s, i, j + 1); have = 1; i += j + 1; continue
+    }
+    if (c == "#" && !have) {
+      j = index(substr(s, i), "\n")
+      if (j == 0) break
+      i += j - 1; continue
+    }
+    if (c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<") {
+      fl(); i += 2; strip = 0
+      if (substr(s, i, 1) == "-") { strip = 1; i++ }
+      while (i <= L && substr(s, i, 1) ~ /[ \t]/) i++
+      delim = ""
+      while (i <= L) {
+        q = substr(s, i, 1)
+        if (q ~ /[ \t\n;&|<>()]/) break
+        if (q != "'" && q != "\"" && q != "\\") delim = delim q
+        i++
+      }
+      if (delim != "") { nh++; hdq[nh] = delim; hds[nh] = strip }
+      continue
+    }
+    if (c == "\n") {
+      fl(); tok[D, n++] = SEP; i++
+      for (k = 1; k <= nh; k++) {
+        while (i <= L) {
+          j = index(substr(s, i), "\n")
+          if (j == 0) { line = substr(s, i); i = L + 1 } else { line = substr(s, i, j - 1); i += j }
+          if (hds[k]) sub(/^\t+/, "", line)
+          if (line == hdq[k]) break
+        }
+      }
+      nh = 0; continue
+    }
+    if (c ~ /[;&|()]/) { fl(); tok[D, n++] = SEP; i++; continue }
+    if (c ~ /[ \t<>]/) { fl(); i++; continue }
+    cur = cur c; have = 1; i++
+  }
+  fl(); ntok[d] = n
+}
+function subs(t, d,    L, i, j, dep, q) {
+  L = length(t); i = 1
+  while (i <= L) {
+    if (substr(t, i, 2) == "$(") {
+      dep = 0; j = i + 1
+      while (j <= L) {
+        q = substr(t, j, 1)
+        if (q == "(") dep++
+        else if (q == ")") { dep--; if (dep == 0) break }
+        j++
+      }
+      rescan(substr(t, i + 2, j - i - 2), d + 1); i = j + 1; continue
+    }
+    if (substr(t, i, 1) == "`") {
+      j = index(substr(t, i + 1), "`")
+      if (j == 0) break
+      rescan(substr(t, i + 1, j - 1), d + 1); i += j + 1; continue
+    }
+    i++
+  }
+}
+function rescan(s, d) { if (d > 8) return; tokenize(s, d); scan(d) }
+function scan(d,    k, m, t, b, j, u, inner) {
+  m = ntok[d]
+  for (k = 0; k < m; k++) {
+    t = tok[d, k]
+    if (t == SEP) continue
+    if (index(t, "$(") || index(t, "`")) subs(t, d)
+    b = bname(t)
+    if (b == "git") {
+      for (j = k + 1; j < m; j++) {
+        u = tok[d, j]
+        if (u == SEP) break
+        if (u ~ /^-/) {
+          if (u == "-C" || u == "-c" || u == "--git-dir" || u == "--work-tree" || u == "--namespace" || u == "--super-prefix" || u == "--config-env") j++
+          continue
+        }
+        if (u == "worktree" && j + 1 < m) print tok[d, j + 1]
+        break
+      }
+    }
+    if (b == "sh" || b == "bash" || b == "zsh" || b == "dash" || b == "ksh") {
+      for (j = k + 1; j < m && tok[d, j] != SEP; j++) {
+        u = tok[d, j]
+        if (u ~ /^-[A-Za-z]*c[A-Za-z]*$/) { if (j + 1 < m) rescan(tok[d, j + 1], d + 1); break }
+        if (u !~ /^-/) break
+      }
+    }
+    if (b == "eval") {
+      inner = ""
+      for (j = k + 1; j < m && tok[d, j] != SEP; j++) inner = inner " " tok[d, j]
+      rescan(inner, d + 1)
+    }
+  }
+}
+BEGIN { SEP = "\001"; rescan(ENVIRON["HOOK_CMD"], 0) }
+AWK
+
+# What the command line does with `git worktree`: "add" or "move" if it invokes either (refused),
+# else "remove" if it invokes that (warned), else nothing.
+worktree_verdict() {
+  HOOK_CMD=$1 awk "$SCANNER" </dev/null 2>/dev/null | {
+    seen=""
+    while IFS= read -r sub; do
+      case "$sub" in
+        add|move) printf '%s' "$sub"; exit 0 ;;
+        remove) seen=remove ;;
+      esac
+    done
+    printf '%s' "$seen"
+  }
+}
+
+# Allows the call, and tells both the session and the person what the standard form is. No
+# permissionDecision is set, so the normal permission flow still decides.
+warn() {
+  jq -n --arg m "$1" '{systemMessage: $m, hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $m}}'
+  exit 0
+}
+
+guard_bash() {
+  command -v wt >/dev/null 2>&1 || exit 0
+  cmd=$(field '.tool_input.command')
+  [ -n "$cmd" ] || exit 0
+  sub=$(worktree_verdict "$cmd")
+  case "$sub" in
+    add) how='Create it with worktrunk: `wt switch --create <branch> --base <base>` for a new branch, or `wt switch <branch>` for an existing one (add `--no-cd` in a script or a session). In a session, the EnterWorktree tool and a subagent launched with isolation "worktree" create through worktrunk too.' ;;
+    move) how='worktrunk has no move: create the new worktree with `wt switch --create <branch>`, carry the work across by committing it, then `wt remove --no-hooks --foreground <old name>`.' ;;
+    remove) warn 'Raw `git worktree remove` is the fallback here; the standard removal is `wt remove --no-hooks --foreground <name>`, after leaving the worktree (ExitWorktree with action "keep" if this session entered it). Never force either one.' ;;
+    *) exit 0 ;;
+  esac
+  deny "Raw \`git worktree $sub\` is refused in sessions here: worktrunk owns worktree creation, so the layout, the fetch of the base and the creation hooks are applied. $how \`git worktree list\` stays available."
+}
+
+# The effective worktree.bgIsolation for a directory, most specific settings file first; empty when
+# none sets it. A boolean is printed as its JSON text.
+bg_isolation() {
+  root=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || root=$1
+  for f in "$root/.claude/settings.local.json" "$root/.claude/settings.json" \
+           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"; do
+    [ -f "$f" ] || continue
+    v=$(jq -r 'if (.worktree | type) == "object" and (.worktree | has("bgIsolation")) then .worktree.bgIsolation | tostring else empty end' "$f" 2>/dev/null)
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  done
+}
+
+guard_enter() {
+  dir=$(field '.cwd')
+  [ -n "$dir" ] && [ -d "$dir" ] || dir=${CLAUDE_PROJECT_DIR:-}
+  [ -n "$dir" ] && [ -d "$dir" ] || exit 0
+  case "$(bg_isolation "$dir")" in
+    none | false) ;;
+    *) exit 0 ;;
+  esac
+  deny "This repository's sessions work in place: use the worktree by path (git -C .worktrees/<name>, cd .worktrees/<name> && …), or hand the work to a subagent."
+}
+
+warn_unpushed() {
+  command -v git >/dev/null 2>&1 || return 0
+  dir=${CLAUDE_PROJECT_DIR:-}
+  [ -n "$dir" ] && [ -d "$dir" ] || dir=$(field '.cwd')
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || return 0
+  ahead=$(git -C "$dir" rev-list --count HEAD --not --remotes 2>/dev/null)
+  [ "$ahead" -gt 0 ] 2>/dev/null || return 0
+  br=$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || printf 'HEAD')
+  jq -n --arg n "$ahead" --arg b "$br" '{
+    systemMessage: ("Push before dispatching: this checkout has \($n) commit(s) on \($b) that are on no remote. A subagent in its own worktree starts from the remote base and will not have them."),
+    hookSpecificOutput: {hookEventName: "SubagentStart",
+      additionalContext: ("Your parent session'"'"'s checkout has \($n) commit(s) on \($b) that were not pushed. If you work in your own worktree, it was created from the remote base and does not contain them; if your task depends on them, say so in your report rather than recreating them.")}}'
+}
+
+case "$subcommand" in
+  bash)
+    guard_bash
+    ;;
+  enter-worktree)
+    guard_enter
+    ;;
+  subagent-start)
+    warn_unpushed
+    ;;
+esac
+exit 0

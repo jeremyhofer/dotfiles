@@ -50,9 +50,9 @@ out=$(run "$live" "$frag")
 [ "$(val "$out" '.statusLine.type')" = "command" ] || { echo "FAIL: base keys must still apply under a fragment"; fail=1; }
 
 # C) retired hooks named by the fragment are stripped from every event; an emptied event is dropped
-live='{"hooks":{"PreToolUse":[{"hooks":[{"command":"/x/old-hook.sh","type":"command"}]}],"Stop":[{"hooks":[{"command":"/x/old-hook.sh","type":"command"}]}]}}'
+live='{"hooks":{"Notification":[{"hooks":[{"command":"/x/old-hook.sh","type":"command"}]}],"Stop":[{"hooks":[{"command":"/x/old-hook.sh","type":"command"}]}]}}'
 out=$(run "$live" "$frag")
-[ "$(val "$out" '.hooks.PreToolUse')" = "null" ] || { echo "FAIL: an event left empty by retirement must be dropped"; fail=1; }
+[ "$(val "$out" '.hooks.Notification')" = "null" ] || { echo "FAIL: an event left empty by retirement must be dropped"; fail=1; }
 printf '%s' "$out" | jq -e '[.hooks[][].hooks[].command] | any(test("old-hook"))' >/dev/null \
   && { echo "FAIL: a retired hook survived"; fail=1; }
 printf '%s' "$out" | jq -e '[.hooks.Stop[].hooks[].command] | any(endswith("/keep.sh"))' >/dev/null \
@@ -68,6 +68,48 @@ grep -q 'settings fragment' "$TMP/err" || { echo "FAIL: a broken fragment must b
 # E) unparseable live input starts from an empty object rather than corrupting it
 out=$(run '{not json' "$TMP/absent")
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 || { echo "FAIL: unparseable input must still yield valid JSON"; fail=1; }
+
+# G) worktree.baseRef is NOT declared: Claude Code's own default applies; a live value is left alone
+out=$(run '' "$TMP/absent")
+[ "$(val "$out" '.worktree.baseRef // "unset"')" = "unset" ] || { echo "FAIL: the base must not declare worktree.baseRef"; fail=1; }
+out=$(run '{"worktree":{"baseRef":"head","bgIsolation":"none"}}' "$TMP/absent")
+[ "$(val "$out" '.worktree.baseRef')" = "head" ] || { echo "FAIL: a live worktree.baseRef must survive"; fail=1; }
+
+# H) the base wires its own worktree hooks; hook events are UNIONED across the base and the fragment
+# (each layer's entries kept), so a fragment declaring the same event does not drop the base's.
+cmds() { printf '%s' "$1" | jq -r --arg e "$2" '[.hooks[$e][]?.hooks[]?.command] | join("\n")'; }
+out=$(run '' "$TMP/absent")
+for pair in 'PreToolUse:claude-worktree-hook bash' 'PreToolUse:claude-worktree-hook enter-worktree' \
+            'SubagentStart:claude-worktree-hook subagent-start'; do
+  ev=${pair%%:*}; want=${pair#*:}
+  cmds "$out" "$ev" | grep -q "$want\$" || { echo "FAIL: base must wire '$want' on $ev"; fail=1; }
+done
+for ev in SubagentStop SessionStart; do
+  cmds "$out" "$ev" | grep -q 'claude-worktree-hook' && { echo "FAIL: the base must not wire claude-worktree-hook on $ev"; fail=1; }
+done
+[ "$(printf '%s' "$out" | jq -r '[.hooks.PreToolUse[]? | select(.hooks[0].command | endswith("enter-worktree")) | .matcher][0]')" = "EnterWorktree" ] \
+  || { echo "FAIL: the EnterWorktree guard must match the EnterWorktree tool"; fail=1; }
+[ "$(printf '%s' "$out" | jq -r '[.hooks.PreToolUse[]? | select(.hooks[0].command | endswith("hook bash")) | .matcher][0]')" = "Bash" ] \
+  || { echo "FAIL: the git worktree guard must match the Bash tool"; fail=1; }
+union_frag="$TMP/union-frag"
+cat > "$union_frag" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"declared": {"hooks": {"SubagentStart": [ { "hooks": [ { "command": "/x/domain-start.sh", "type": "command" } ] } ]}}}
+JSON
+EOF
+live='{"hooks":{"SubagentStart":[{"hooks":[{"command":"/x/hand-added.sh","type":"command"}]}],"Elicitation":[{"hooks":[{"command":"/x/live-only.sh","type":"command"}]}]}}'
+out=$(run "$live" "$union_frag")
+cmds "$out" SubagentStart | grep -q 'claude-worktree-hook subagent-start$' || { echo "FAIL: the fragment's SubagentStart dropped the base's"; fail=1; }
+cmds "$out" SubagentStart | grep -q '/x/domain-start.sh' || { echo "FAIL: the fragment's SubagentStart entry missing"; fail=1; }
+cmds "$out" SubagentStart | grep -q 'hand-added' && { echo "FAIL: a hand-added entry in a declared event must be replaced"; fail=1; }
+cmds "$out" Elicitation | grep -q 'live-only' || { echo "FAIL: a live-only hook event must survive"; fail=1; }
+again=$(run "$out" "$union_frag")
+[ "$(printf '%s' "$again" | jq -S -c .)" = "$(printf '%s' "$out" | jq -S -c .)" ] || { echo "FAIL: a second apply must change nothing"; fail=1; }
+dup_frag="$TMP/dup-frag"
+printf '#!/usr/bin/env bash\ncat <<JSON\n{"declared": {"hooks": {"SubagentStart": [ { "hooks": [ { "command": "${HOME}/.local/bin/claude-worktree-hook subagent-start", "type": "command" } ] } ]}}}\nJSON\n' > "$dup_frag"
+out=$(run '' "$dup_frag")
+[ "$(printf '%s' "$out" | jq '[.hooks.SubagentStart[]?] | length')" = "1" ] || { echo "FAIL: an entry declared by both layers must appear once"; fail=1; }
 
 # F) no jq on PATH: byte-identical passthrough
 nojq="$TMP/nojq"; mkdir -p "$nojq"

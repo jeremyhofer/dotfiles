@@ -13,32 +13,33 @@
 #     generator into one table, and a hook NAME defined by both is refused.
 #
 # ---------------------------------------------------------------------------
-# The default worktree location: a sibling in a bare container, nested in a plain clone
+# The default worktree location: nested in a standard clone, a sibling in a bare container
 # ---------------------------------------------------------------------------
 # Two repo shapes need different paths, because {{ repo_path }} resolves differently in each, and
 # the template tells them apart by the name it ends in:
 #
-#   ORDINARY CHECKOUT -- repo_path is the repo root, so worktrees nest inside it:
+#   STANDARD CLONE (an ordinary clone; the fleet's layout) -- repo_path is the repo root, so
+#   worktrees nest inside it:
 #       <repo>/.worktrees/<branch>
 #
-#   BARE CONTAINER (a bare repository named .git + sibling worktrees) -- repo_path is that bare
-#   directory, <container>/.git, so ".." is already the container and the worktree is just the branch:
+#   BARE CONTAINER (the older layout: a bare repository named .git + sibling worktrees) -- repo_path
+#   is that bare directory, <container>/.git, so ".." is already the container and the worktree is
+#   just the branch:
 #       <container>/<branch>
 #     A container made before the rename keeps its bare repository in <container>/.bare and does not
-#     end in /.git; `fleet-repo check` reports it as old-layout, and until it is converted it needs
-#     `layout: bare` declared in the manifest, which wt-config-gen turns into this same sibling path
-#     for that project. The declaration stays true in the new shape too; it is simply no longer the
-#     only thing keeping an undeclared container's worktrees out of its own git directory.
+#     end in /.git; `fleet-repo check` reports it as old-layout. Any container declared in the
+#     manifest gets this same sibling path from wt-config-gen, so an old-shape one is covered too.
 #
-# WHY NESTED RATHER THAN A SIBLING, FOR A PLAIN CLONE. The obvious alternative,
+# WHY NESTED RATHER THAN A SIBLING, FOR A STANDARD CLONE. The obvious alternative,
 # {{ repo_path }}/../{{ repo }}.{{ branch }}, puts the worktree next to the repositories themselves,
 # so anything that enumerates a directory of repositories (mani, for one) meets something
-# repo-shaped that is not a repo. Nesting keeps that directory meaning one thing, and makes a
-# worktree die with the repository that owns it.
+# repo-shaped that is not a repo. Nesting keeps that directory meaning one thing, makes a worktree
+# die with the repository that owns it, and keeps it inside the one directory an agent session
+# standing in the checkout may write, so a session's subagents can work in worktrees of their own.
 #
-# THE COST: a nested worktree lives inside a working tree, so `.worktrees/` must be ignored --
-# globally, not per repo -- and tools that walk the tree (prettier, eslint, rg, nx) each need their
-# own ignore entry. A repository that converts to a bare container stops having this problem.
+# THE COST: a nested worktree lives inside a working tree, so `.worktrees/` must be ignored -- in
+# each repository's own .gitignore, committed, so it holds on every machine and in every tool --
+# and tools that walk the tree (prettier, eslint, rg, nx) must honour that ignore or carry their own.
 worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.worktrees/{{ branch | sanitize }}{% endif %}"
 
 # Pin the JSON output schema. Without this, every `wt config show` prints a migration advisory
@@ -65,3 +66,29 @@ json-schema = 2
 # Worktrees made by `fleet-repo` do not run worktrunk hooks; it runs the same copy itself.
 [pre-start]
 copy-files = "if [ -f {{ primary_worktree_path }}/.worktreeinclude ]; then wt step copy-ignored --require-include; fi"
+
+# ---------------------------------------------------------------------------
+# A new worktree starts from a freshly fetched base
+# ---------------------------------------------------------------------------
+# `wt switch --create` branches from the LOCAL base and never fetches, so a worktree can start far
+# behind the remote. `wt-fetch-base` (its header has the design and the measurements behind it)
+# fetches the base from origin, falling back to the remotes named by `git config fetch-base.fallback`,
+# and refuses to create when none can be reached. It needs both hooks: pre-switch is the only one that
+# runs before anything exists (so a refusal leaves nothing behind), and pre-start is the only one that
+# knows the base (`base` is defined there exactly when --create made a new branch).
+#
+# THE OPT-IN IS `git config fetch-base.enabled true` (any scope), so these do nothing in a repository,
+# or on a machine, that has not asked for it. Where the script is missing they do nothing either,
+# unless the repository has opted in: then creation fails, rather than quietly using a stale base.
+# Template variables are shell-escaped by worktrunk.
+#
+# ORDER, measured on worktrunk 0.79: the entries of one hook table run CONCURRENTLY, and a per-project
+# table ([projects."..."], where wt-config-gen puts the dependency install) runs only after this
+# global one has finished. So the install sees the fetched tree. Never put an install, or anything
+# else that reads tracked files, in this global [pre-start] table: it would race the move to the
+# fetched commit and could install from the stale lockfile (tests/test-wt-fetch-base.sh pins both).
+# copy-files beside it is safe: it copies only ignored files and never overwrites one.
+fetch-base = "{% if base is defined %}if command -v wt-fetch-base >/dev/null 2>&1; then wt-fetch-base pre-start {{ base }}; elif [ \"$(git config --bool fetch-base.enabled)\" = true ]; then echo 'fetch-base is enabled but wt-fetch-base is not installed' >&2; exit 1; fi{% endif %}"
+
+[pre-switch]
+fetch-base = "if command -v wt-fetch-base >/dev/null 2>&1; then wt-fetch-base pre-switch {{ branch }}; elif [ \"$(git config --bool fetch-base.enabled)\" = true ]; then echo 'fetch-base is enabled but wt-fetch-base is not installed' >&2; exit 1; fi"

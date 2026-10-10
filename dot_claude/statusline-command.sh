@@ -20,11 +20,11 @@ model=$(echo "$input" | jq -r '.model.display_name // empty')
 
 # Working directory: the LAST TWO path segments, not the basename.
 #
-# Under the bare-container repo layout a repo is <repo>/<branch>, so every session
-# sits in a directory called after its branch and basename renders "main" for all of
-# them -- the segment stops identifying anything. Two segments name the repo as well:
-# "repo-a/main", "repo-b/feature-x". It also reads better for ordinary checkouts,
-# where "org/repo-a" beats a bare "repo-a".
+# A session in a worktree sits in a directory named after its branch, so a basename
+# renders "main" or "feature-x" for every repository and stops identifying anything. Two
+# segments name the repo as well: "repo-a/feature-x". A worktree nested in a standard
+# clone (<repo>/.worktrees/<name>) renders the same way, with ".worktrees" skipped. It also
+# reads better for ordinary checkouts, where "org/repo-a" beats a bare "repo-a".
 #
 # $HOME collapses to ~ first, so a path directly under home shows "~/Devel" rather
 # than leaking the account name as a segment.
@@ -47,6 +47,11 @@ path_tail() {
     ''|'/') printf '%s' "${1:-}"; return ;;    # "" and "/" render as themselves
   esac
   local base="${p##*/}" parent="${p%/*}"
+  # A worktree nested in a standard clone sits at <repo>/.worktrees/<name>, so its second segment
+  # is ".worktrees" for every worktree of every repo: show the repository in its place.
+  case "$parent" in
+    */.worktrees) parent="${parent%/.worktrees}" ;;
+  esac
   if [ -z "$parent" ]; then
     printf '%s' "$base"                        # single segment, e.g. "/mnt" or "~"
   else

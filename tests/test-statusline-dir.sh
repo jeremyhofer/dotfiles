@@ -38,6 +38,14 @@ check /home/tester/Devel/org/repo-b/main   repo-b/main     "a second repo is dis
     && ok "two sessions on the same branch render differently" \
     || bad "two sessions collide - the segment identifies nothing"
 
+# A worktree nested in a standard clone, <repo>/.worktrees/<name>: the second segment would be
+# ".worktrees" for every one of them, which names nothing, so the repository is shown instead.
+check /home/tester/Devel/org/repo-a/.worktrees/feat  repo-a/feat  "nested worktree names its repo"
+check /home/tester/Devel/org/repo-b/.worktrees/feat/ repo-b/feat  "nested worktree, trailing slash"
+[[ "$(render /home/tester/Devel/org/repo-a/.worktrees/feat)" != *.worktrees* ]] \
+    && ok "the .worktrees segment is never rendered" \
+    || bad "rendered .worktrees: $(render /home/tester/Devel/org/repo-a/.worktrees/feat)"
+
 # Ordinary checkouts: checkouts outside the bare-container layout.
 check /home/tester/Devel/org/repo-a           org/repo-a  "ordinary checkout keeps org context"
 

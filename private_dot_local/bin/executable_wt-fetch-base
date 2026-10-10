@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# wt-fetch-base -- worktrunk hooks that make a new worktree start from a freshly fetched base.
+#
+# WHY. `wt switch --create <branch>` branches from the LOCAL base (the default branch unless
+# `--base` names another) and never fetches. A local base is often stale: a push through a
+# multi-URL remote does not move `origin/*`, and a machine that has been idle has fetched nothing.
+# A worktree created from it starts behind, sometimes by weeks, and nothing says so. Claude Code's
+# WorktreeCreate hook, where worktrunk's plugin supplies it, calls the same `wt switch --create`,
+# so a session's worktrees and a subagent's isolated worktree inherit the same staleness.
+#
+# THE RULE THIS IMPLEMENTS: fetch the base from `origin` before creating; if `origin` cannot be
+# reached, fetch from the fallback remotes; if none can be reached, refuse to create, and say so.
+# Never branch from an unfetched base.
+#
+# WHY TWO HOOKS. Measured on worktrunk 0.79: `pre-switch` runs before anything is created and a
+# failure there aborts with nothing on disk, but it does not know the base (its `{{ base }}` is the
+# invoking worktree's branch, whatever `--base` says). `pre-start` knows the base (`{{ base }}` is
+# defined exactly when `--create` made a new branch) but runs after the worktree exists, so a
+# failure there leaves it behind. So:
+#
+#   pre-switch <branch>  when <branch> is not a local branch yet (a creation), fetch `origin`, else
+#                        each fallback, with their configured refspecs; record which one answered;
+#                        if none did, fail, and worktrunk creates nothing. An existing branch needs
+#                        no base, so it is left alone, and switching between worktrees stays offline.
+#   pre-start <base>     fetch the base branch itself from the remote that answered (this also
+#                        covers a single-branch clone, whose refspec omits other branches), then
+#                        move the brand-new branch to the fetched commit. It refuses to move a
+#                        branch that is no longer exactly where worktrunk created it.
+#
+# OPT-IN, by `git config fetch-base.enabled true` at any scope; without it both hooks do nothing.
+# Refusing to create a worktree while offline is a policy, and a machine adopts it deliberately.
+#
+# FALLBACK REMOTES are a seam: `git config --get-all fetch-base.fallback`, at any scope, names
+# them in order (a repository's mirror, say). With none configured only `origin` is tried. A
+# repository with neither has nothing to fetch, and creation proceeds as before.
+#
+# A BASE THAT IS NOT ON THE REMOTE (a local-only branch, a tag, a commit) cannot be stale against
+# it, so it is used as given, with a note. A local base AHEAD of the remote is replaced by the
+# remote's commit, and the note says how many local commits the new branch does not have: the
+# remote is what other machines and agents see, which is the point of fetching.
+#
+# Wired in worktrunk's user config (`[pre-switch]` and `[pre-start]` in base.toml). Worktrees made
+# with `--no-hooks`, or by tooling that calls git directly, are not covered. Portable: bash 3.2,
+# BSD userland.
+set -u
+
+me=wt-fetch-base
+say() { printf '%s: %s\n' "$me" "$*" >&2; }
+die() { say "$*"; exit 1; }
+
+mode=${1:-}
+arg=${2:-}
+case "$mode" in
+  pre-switch | pre-start) ;;
+  *) say "usage: $me pre-switch <branch> | pre-start <base>  (worktrunk hooks)"; exit 2 ;;
+esac
+
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+[ "$(git config --bool --get fetch-base.enabled 2>/dev/null)" = true ] || exit 0
+common=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+marker="$common/wt-fetch-base.last"
+# How long the remote recorded by pre-switch is trusted by the pre-start of the same creation.
+fresh_secs=600
+
+# The remotes to try, in order: origin, then the configured fallbacks, each only if it exists.
+candidates() {
+  existing=$(git remote 2>/dev/null)
+  list=""
+  for r in origin $(git config --get-all fetch-base.fallback 2>/dev/null); do
+    case " $list " in *" $r "*) continue ;; esac
+    printf '%s\n' "$existing" | grep -qx -- "$r" || continue
+    list="$list $r"
+  done
+  printf '%s' "${list# }"
+}
+
+short() { git rev-parse --short "$1" 2>/dev/null; }
+
+if [ "$mode" = pre-switch ]; then
+  [ -n "$arg" ] || exit 0
+  git show-ref --verify --quiet "refs/heads/$arg" && exit 0
+  remotes=$(candidates)
+  [ -n "$remotes" ] || exit 0
+  errs=""
+  for r in $remotes; do
+    if out=$(git fetch --quiet "$r" 2>&1); then
+      printf '%s %s\n' "$r" "$(date +%s)" > "$marker" 2>/dev/null
+      [ "$r" = origin ] || say "origin could not be reached; fetched from $r instead"
+      exit 0
+    fi
+    errs="$errs; $r: $(printf '%s' "$out" | tail -n 1)"
+  done
+  die "refusing to create '$arg': no remote could be reached (tried: $remotes), so its base would be whatever was fetched last${errs}"
+fi
+
+# ---- pre-start: the base is known, and the new worktree is the current directory -------------
+base=$arg
+[ -n "$base" ] || exit 0
+# Where worktrunk created the branch; read before any fetch can move a remote-tracking base.
+expected=$(git rev-parse --verify --quiet "$base^{commit}") || exit 0
+new_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
+
+bname=$base
+for r in $(git remote 2>/dev/null); do
+  case "$base" in "$r"/*) bname=${base#"$r"/}; break ;; esac
+done
+if [ "$bname" = "$base" ] && ! git show-ref --verify --quiet "refs/heads/$bname"; then
+  say "base '$base' is not a branch; '$new_branch' starts at it as given"
+  exit 0
+fi
+
+remotes=$(candidates)
+[ -n "$remotes" ] || exit 0
+order=$remotes
+if [ -f "$marker" ]; then
+  read -r mr mt < "$marker" 2>/dev/null || mr=""
+  now=$(date +%s)
+  case " $remotes " in
+    *" ${mr:-.} "*)
+      if [ $((now - ${mt:-0})) -le "$fresh_secs" ] 2>/dev/null; then
+        order="$mr $(printf '%s' " $remotes " | sed "s/ $mr / /")"
+      fi ;;
+  esac
+fi
+
+got=""
+for r in $order; do
+  git ls-remote --exit-code --heads "$r" "refs/heads/$bname" >/dev/null 2>&1
+  case $? in
+    0) if git fetch --quiet "$r" "+refs/heads/$bname:refs/remotes/$r/$bname" 2>/dev/null; then got=$r; break; fi ;;
+    2) say "'$bname' is not on $r; '$new_branch' starts at the local '$base' ($(short "$expected"))"; exit 0 ;;
+  esac
+done
+[ -n "$got" ] || die "could not fetch '$bname' from any remote (tried: $order). '$new_branch' was created at the unfetched '$base' ($(short "$expected")); remove it with \`wt remove --no-hooks --foreground $new_branch\` and create it again once a remote can be reached."
+
+head=$(git rev-parse HEAD)
+[ "$head" = "$expected" ] || die "'$new_branch' is no longer at its base ($(short "$expected")); not moving it."
+[ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ] || die "'$new_branch' already has changes to tracked files; not moving it."
+
+fetched=$(git rev-parse "refs/remotes/$got/$bname")
+[ "$fetched" = "$head" ] && exit 0
+git reset --hard --quiet "$fetched" || die "could not move '$new_branch' to $got/$bname ($(short "$fetched"))."
+msg="'$new_branch' starts at $got/$bname ($(short "$fetched")), fetched just now; the local '$base' was at $(short "$head")"
+ahead=$(git rev-list --count "$fetched..$head" 2>/dev/null)
+if [ "${ahead:-0}" -gt 0 ] 2>/dev/null; then
+  msg="$msg, with $ahead commit(s) not on $got that '$new_branch' does not have (push them, then rebase onto them)"
+fi
+say "$msg"
+exit 0
