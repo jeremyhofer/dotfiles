@@ -160,5 +160,24 @@ seed; record '      bootsrap: true'; refused "unknown worktrunk key is refused"
 seed; record '      layout: bare'; printf '[list\n' > "$tmp/base.toml"; refused "a result worktrunk cannot parse is refused"
 base
 
+# A write that fails must FAIL, not report success. A read-only output directory makes the copy
+# fail; the old script, under set -e, carried on past the failed `cp && mv` and printed "wrote".
+frag; record ''; mkdir -p "$tmp/ro"; printf '# previous config\n' > "$tmp/ro/config.toml"; chmod 555 "$tmp/ro"
+rc=$(PATH="$tmp/bin:$PATH" WT_GEN_BASE="$tmp/base.toml" WT_GEN_FRAGMENT="$tmp/frag.toml" \
+  WT_GEN_OUT="$tmp/ro/config.toml" FLEET_RECORD="$tmp/mani.yaml" FLEET_DEVEL_ROOT="$tmp" \
+  sh "$tool" >"$tmp/out" 2>"$tmp/err"; echo $?)
+chmod 755 "$tmp/ro"
+if [ "$rc" -ne 0 ] && ! grep -q 'wrote' "$tmp/err" && grep -q '# previous config' "$tmp/ro/config.toml"; then
+  ok "an unwritable output fails, says so, and leaves the old config"
+else bad "unwritable output" "rc=$rc $(cat "$tmp/err")"; fi
+
+# --help prints usage and writes nothing (it used to run a real regeneration).
+seed; rc=$(PATH="$tmp/bin:$PATH" WT_GEN_OUT="$tmp/config.toml" sh "$tool" --help >"$tmp/out" 2>"$tmp/err"; echo $?)
+if [ "$rc" -eq 0 ] && grep -q 'usage' "$tmp/out" && grep -q '# previous config' "$tmp/config.toml"; then
+  ok "--help prints usage and does not regenerate"
+else bad "--help" "rc=$rc"; fi
+seed; rc=$(sh "$tool" --bogus >"$tmp/out" 2>"$tmp/err"; echo $?)
+[ "$rc" -eq 2 ] && ok "an unknown argument is refused (exit 2)" || bad "unknown argument" "rc=$rc"
+
 echo "passed: $pass failed: $fail"
 [ "$fail" -eq 0 ]

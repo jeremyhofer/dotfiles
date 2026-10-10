@@ -57,6 +57,14 @@ record="${FLEET_RECORD:-$HOME/Devel/mani.yaml}"
 
 die() { printf 'wt-config-gen: %s -- the existing config is unchanged\n' "$1" >&2; exit 1; }
 
+# It takes no arguments. Reject any rather than run: `--help` used to fall through to a real
+# regeneration, which is a surprising thing for a help request to do.
+case "${1:-}" in
+  "") ;;
+  -h|--help) sed -n '2,/^set /{/^set /d;s/^# \{0,1\}//;p;}' "$0"; exit 0 ;;
+  *) printf 'wt-config-gen: takes no arguments (got %s)\n' "$1" >&2; exit 2 ;;
+esac
+
 [ -f "$base" ] || die "no base config at $base"
 command -v wt >/dev/null 2>&1 || die "wt is not installed, so the result cannot be validated"
 
@@ -235,5 +243,8 @@ if ! (cd / && wt --config "$new" config show) >/dev/null 2>"$work/wt.err"; then
 fi
 
 mkdir -p "$(dirname "$out")"
-cp "$new" "$out.tmp.$$" && mv -f "$out.tmp.$$" "$out"
+# Under `set -e` a failure inside an && list does not stop the script, so test the pair explicitly:
+# otherwise a failed copy (a read-only config directory) went on to report success.
+cp "$new" "$out.tmp.$$" && mv -f "$out.tmp.$$" "$out" \
+  || { rm -f "$out.tmp.$$"; die "could not write $out"; }
 printf 'wt-config-gen: wrote %s\n' "$out" >&2
