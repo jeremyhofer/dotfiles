@@ -34,7 +34,7 @@ got=$(mani_config /elsewhere/mani.yaml)
 if command -v mani >/dev/null 2>&1; then
   printf 'projects:\n  local-proj:\n    path: local-proj\n' > "$tmp/local/mani.yaml"
   list() {  # $1 = directory to run mani from
-    (cd "$1" && HOME=$home zsh -f -c 'source "$1"; mani list projects' _ "$tmp/zshenv" 2>&1)
+    (cd "$1" && HOME=$home MANI_CONFIG= zsh -f -c 'source "$1"; mani list projects' _ "$tmp/zshenv" 2>&1)
   }
   out=$(list "$tmp/elsewhere")
   printf '%s\n' "$out" | grep -q home-proj || { echo "FAIL: mani outside any manifest tree did not find ~/Devel/mani.yaml"; printf '%s\n' "$out"; exit 1; }

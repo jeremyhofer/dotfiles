@@ -32,6 +32,37 @@ Entries are newest first.
 
 ---
 
+## 2026-10-10
+
+### Standard clones are the fleet layout; `fleet-repo` learns them (ACTION, per repository)
+
+A repository is now an ordinary clone with worktrees nested at `<repo>/.worktrees/<name>`. A manifest
+entry is a standard clone unless it declares a container (`container:`, a `clone:` running
+`fleet-repo` or `git-clone-worktree`, or `worktrunk: layout: bare`); `fleet-decl --layout <project>`
+answers which. `fleet-repo clone`, `update` and `check` handle standard entries and refuse a container
+found where a standard clone is declared; containers keep today's behaviour, so **a machine whose
+manifest still declares containers sees no change**. Changing a repository over is a fresh clone with
+the old directory kept: `docs/reference/standard-clone-changeover.md`. **ACTION, when you change a
+repository over:** list `.worktrees/` in its own `.gitignore` before creating any worktree (Nx and
+other tree-walkers break on un-ignored nested copies), and never run `mani sync -w` on it (it removes
+undeclared worktrees).
+
+### New Claude Code hooks, and hook lists now merge across layers (ACTION if your layer declares hooks)
+
+`claude-worktree-hook` is wired from the base's settings merge: it refuses a session's raw
+`git worktree add`/`move` (warns on `remove`), refuses `EnterWorktree` wherever the effective
+`worktree.bgIsolation` is `"none"`, and warns when a subagent starts while the checkout has commits
+not on its upstream. **Hook event lists from the base and the private fragment are now joined**, where
+before the fragment's list replaced the base's; check that your fragment's hooks still appear once.
+The base no longer declares `worktree.baseRef` (Claude Code's default, `"fresh"`, applies; a live
+file keeps whatever it already has).
+
+### `wt-fetch-base`: new worktrees start from a fresh fetch (opt-in)
+
+Two worktrunk hooks make worktree creation fetch the base branch from `origin` (then each
+`fetch-base.fallback` remote) and refuse when none answers. Off until `git config fetch-base.enabled
+true` at some scope; the base does not enable it.
+
 ## 2026-10-09
 
 ### `mani` finds `~/Devel/mani.yaml` from any directory
