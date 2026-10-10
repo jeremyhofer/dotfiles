@@ -172,6 +172,30 @@ setj "$T/userwide/.claude/settings.json" '"worktree"'
 expect_enter "$HOOK" allow "$T/userwide" "the repo's own setting beats the user's: allowed"
 user_bg ''
 
+echo "== Bash guard: the add refusal names EnterWorktree only where guard_enter allows it =="
+bash_payload_at() { jq -cn --arg c "$1" --arg cwd "$2" '{session_id: "s1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd}'; }
+add_reason() { run "$1" bash "$(bash_payload_at 'git worktree add x' "$2")" | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
+add_reason "$HOOK" "$T/inplace" | grep -q 'EnterWorktree tool' \
+  && no "a work-in-place repo's add refusal recommends EnterWorktree, which guard_enter refuses" \
+  || ok "work in place: the add refusal does not recommend EnterWorktree"
+add_reason "$HOOK" "$T/inplace" | grep -q 'EnterWorktree is refused here' \
+  && ok "work in place: the add refusal says EnterWorktree is refused" || no "work in place: no EnterWorktree note: $(add_reason "$HOOK" "$T/inplace")"
+add_reason "$HOOK" "$T/plain" | grep -q 'EnterWorktree tool' \
+  && ok "isolating repo: the add refusal still names the EnterWorktree tool" || no "isolating repo lost the EnterWorktree route: $(add_reason "$HOOK" "$T/plain")"
+echo "== Add-message RED: the isolation check removed -> EnterWorktree recommended where it is refused =="
+broken 's/^           none | false) how=/           never-matches) how=/' '           none | false) how='
+add_reason "$b" "$T/inplace" | grep -q 'EnterWorktree tool' \
+  && ok "broken copy recommends EnterWorktree in a work-in-place repo (the first assertion would fail)" || no "broken copy did not change the message"
+
+echo "== EnterWorktree refusal: by-path advice keeps the session where it is =="
+out=$(run "$HOOK" enter-worktree "$(enter_payload s1 "$T/inplace")")
+printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'a subshell: (cd .worktrees/<name>' \
+  && ok "the refusal recommends a subshell cd, not a bare one" || no "refusal does not name the subshell form: $out"
+broken 's/or a subshell: (cd .worktrees/cd .worktrees/' 'or a subshell: (cd .worktrees'
+out=$(run "$b" enter-worktree "$(enter_payload s1 "$T/inplace")")
+printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'a subshell: (cd .worktrees/<name>' \
+  && no "broken copy (bare cd restored) still passes the subshell assertion" || ok "and the subshell assertion fails against a bare-cd copy"
+
 echo "== EnterWorktree RED: the bgIsolation check removed -> allowed in a none repo =="
 broken 's/^    none | false) ;;$/    never-matches) ;;/' 'none | false) ;;'
 expect_enter "$b" allow "$T/inplace" "broken copy (check removed) allows EnterWorktree where sessions work in place"

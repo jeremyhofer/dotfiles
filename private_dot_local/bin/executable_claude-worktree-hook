@@ -246,7 +246,12 @@ guard_bash() {
   [ -n "$cmd" ] || exit 0
   sub=$(worktree_verdict "$cmd")
   case "$sub" in
-    add) how='Create it with worktrunk: `wt switch --create <branch> --base <base>` for a new branch, or `wt switch <branch>` for an existing one (add `--no-cd` in a script or a session). In a session, the EnterWorktree tool and a subagent launched with isolation "worktree" create through worktrunk too.' ;;
+    add) how='Create it with worktrunk: `wt switch --create <branch> --base <base>` for a new branch, or `wt switch <branch>` for an existing one (add `--no-cd` in a script or a session).'
+         # Name EnterWorktree only where guard_enter would allow it, or the two refusals contradict.
+         case "$(bg_isolation "$(field '.cwd')")" in
+           none | false) how="$how In a session, a subagent launched with isolation \"worktree\" creates through worktrunk too; EnterWorktree is refused here, because this repository's sessions work in place." ;;
+           *) how="$how In a session, the EnterWorktree tool and a subagent launched with isolation \"worktree\" create through worktrunk too." ;;
+         esac ;;
     move) how='worktrunk has no move: create the new worktree with `wt switch --create <branch>`, carry the work across by committing it, then `wt remove --no-hooks --foreground <old name>`.' ;;
     remove) warn 'Raw `git worktree remove` is the fallback here; the standard removal is `wt remove --no-hooks --foreground <name>`, after leaving the worktree (ExitWorktree with action "keep" if this session entered it). Never force either one.' ;;
     *) exit 0 ;;
@@ -274,7 +279,7 @@ guard_enter() {
     none | false) ;;
     *) exit 0 ;;
   esac
-  deny "This repository's sessions work in place: use the worktree by path (git -C .worktrees/<name>, cd .worktrees/<name> && …), or hand the work to a subagent."
+  deny "This repository's sessions work in place: use the worktree by path (git -C .worktrees/<name>, or a subshell: (cd .worktrees/<name> && …); a bare cd moves the session itself), or hand the work to a subagent."
 }
 
 warn_unpushed() {

@@ -57,8 +57,8 @@ Where one long-running session owns a repository, and subagents or a person work
 - **The owning session never calls EnterWorktree.** A session and its subagents share one write set,
   the directory the session stands in plus the repository's `.git`; entering a worktree takes the
   checkout out of it, for the subagents too. To work on another branch it uses that branch's
-  worktree **by path**, staying where it is: `git -C .worktrees/<name> …`, `cd .worktrees/<name> && …`
-  inside one command, and edits to files under `.worktrees/<name>/`, all of which its write set
+  worktree **by path**, staying where it is: `git -C .worktrees/<name> …`, `(cd .worktrees/<name> && …)` in a
+  subshell (a bare `cd`, even inside one command, moves the session's own directory), and edits to files under `.worktrees/<name>/`, all of which its write set
   covers in a standard clone. Or it hands the work to a subagent. Such a repository sets
   `worktree.bgIsolation: "none"` (in its settings or the user's), and where this setup's hooks are
   installed, EnterWorktree is refused wherever that is the effective value.
