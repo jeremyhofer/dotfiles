@@ -39,12 +39,14 @@ Each entry is `projects.<name>`. The name is the key other tools use (`fleet-dec
 
 | Key | Value | Notes |
 | --- | --- | --- |
-| `path` | path relative to `~/Devel` | where `mani sync` puts the clone, and where `mani` tasks run. For a bare container, the DEFAULT-BRANCH WORKTREE (`<container>/<default-branch>`), never the container ([`repository-layouts.md`](repository-layouts.md)). Required by `mani` |
+| `path` | path relative to `~/Devel` | where `mani sync` puts the clone, and where `mani` tasks run. For a standard clone, the repository root. For a bare container, the DEFAULT-BRANCH WORKTREE (`<container>/<default-branch>`), never the container ([`repository-layouts.md`](repository-layouts.md)). Required by `mani` |
 | `url` | the clone URL | `mani sync` sets `origin` from it. Required by `mani` |
 | `tags` | list | `mani` selects by tag (`mani sync --tags active`). Two tags also change what the base's tools do (below) |
 | `env` | map | exported to `mani` tasks for that project |
-| `clone` | a command | replaces `mani`'s own clone; `fleet-repo clone <name>` gives the bare-plus-worktrees layout (`git-clone-worktree --mani-project <name>` still works, as a forwarding shim). Leaving it out of a bare-layout entry is silent: `mani sync` succeeds with an ordinary checkout. `mani` runs it only where `path` does not exist yet, so a later change to the declaration reaches an existing container through `fleet-repo clone <name>` run by hand (it reconciles), never through `mani sync` |
-| `worktrees` | list of `{name, path}` | worktrees `mani` creates beside the clone; `path` is relative to the project's `path`, so a sibling is `../<name>`. Each `name` is a branch, and `fleet-repo` fetches it and creates the worktree itself, with an upstream |
+| `clone` | a command | replaces `mani`'s own clone. A standard clone needs none: `mani`'s own clone and `fleet-repo clone <name>` run the same `git clone`. `fleet-repo clone <name>` here declares a bare container (`git-clone-worktree --mani-project <name>` still works, as a forwarding shim); leaving it out of an entry meant to be bare makes it a standard clone, silently. `mani` runs it only where `path` does not exist yet, so a later change to the declaration reaches an existing container through `fleet-repo clone <name>` run by hand (it reconciles), never through `mani sync` |
+| `branch` | a branch name | the branch a standard clone's checkout is on: `mani sync` and `fleet-repo clone` both clone with `git clone --branch <branch>`. Absent: the remote's default branch. Also what `fleet-repo check` compares the checkout against (`checkout-branch`), and what makes a standard entry part of a no-argument `fleet-repo check` |
+| `single_branch` | `true` | a standard clone fetches only its `branch` (`git clone --single-branch`), for a very large repository; `fleet-repo` adds a fetch refspec for each `worktrees:` branch on top. `fleet-decl` reads `false` as absent |
+| `worktrees` | list of `{name, path}` | durable worktrees; `path` is relative to the project's `path`: `.worktrees/<name>` in a standard clone, `../<name>` beside a bare container's default branch. Each `name` is a branch, and `fleet-repo clone` fetches it and creates the worktree with an upstream. `mani sync` creates them too where no `clone:` replaces its own, but (mani 0.32.1, measured) on a NEW branch named after the directory, from the checkout's commit, so let `fleet-repo clone <name>` make them |
 | `sync` | `false` | `mani sync` never clones it, not even when named (`mani sync <name>`); clone it by hand if a machine wants it. Once it exists on disk it is an ordinary project: `mani exec --all`, `mani run` and `mani list` include it, and `fleet-decl` reads its declarations either way |
 
 Top-level `tasks:` are `mani` tasks (`mani run <task>`). `lint-tasknames` checks their names against
@@ -78,11 +80,14 @@ Every other tag is the domain's own vocabulary and only selects.
 | `canonicalLaunchModel` | a model id | the session launcher | yes when `canonical` is set |
 | `canonicalMachines` | list of machine names | the session launcher | yes when `canonical` is set |
 
-**A container is declared by a `container:` block, or by a `clone:` command that runs `fleet-repo`**
-(or its older name `git-clone-worktree`). Such an entry is bare to `wt-config-gen` unless
-`worktrunk.layout` says otherwise, so the layout is stated once. `fleet-decl --check` validates the
-block: `branches` must be `all`, `default` or a list of non-empty strings, `filter` a non-empty
-string, and a near-miss of either key (`branchs`) is reported as `[container-key]`.
+**The layout is declared, and `fleet-decl --layout <name>` reads it.** An entry is a bare container
+when it has a `container:` block, a `clone:` command that runs `fleet-repo` (or its older name
+`git-clone-worktree`) as a command word, or `worktrunk.layout: bare`; any other entry is a standard
+clone. `fleet-repo`, `wt-config-gen` and `fleet-repo check` all ask this one reader, so the layout is
+stated once and no two tools can disagree about it. A bare entry gets sibling worktrees from
+`wt-config-gen` unless `worktrunk.layout` says otherwise. `fleet-decl --check` validates the
+`container:` block: `branches` must be `all`, `default` or a list of non-empty strings, `filter` a
+non-empty string, and a near-miss of either key (`branchs`) is reported as `[container-key]`.
 
 A container's bare repository is named `.git`. One made before that keeps it in `.bare` behind a
 pointer file; every `fleet-repo` verb accepts both, `fleet-repo check` reports the old one as
@@ -116,16 +121,35 @@ REPORTS a local branch or worktree for it, since either may hold unpushed work.
 
 `fleet-repo check` compares the declaration with the disk (exit 0 clean, 1 drift, 2 manifest
 unusable) and `fleet-repo update` fast-forwards a repository's worktrees; `fleet-repo --help` has
-the details.
+the details. With no project named, `check` examines every bare entry and every standard entry that
+declares `branch:`, so a machine whose manifest declares no standard entries sees no change.
 
-### Adding a repository as a container, and proving it
+### Adding a repository, and proving it
+
+**As a standard clone**, the fleet layout:
+
+1. **Write the entry** with `path:` the repository root, `scope:` the same, and `branch:` the branch
+   its checkout should be on; no `clone:`. Where a chezmoi instance deploys the manifest, edit that
+   source and apply.
+2. **Validate:** `fleet-decl --check`, and `fleet-decl --layout <name>` prints `standard`.
+3. **Prove it on that one project:**
+
+   ```sh
+   mani sync <name>                                        # or: fleet-repo clone <name>
+   git -C <path> rev-parse --is-bare-repository            # false
+   git -C <path> branch --show-current                     # the declared branch
+   fleet-repo check <name>                                 # exit 0
+   ```
+
+   Then add `.worktrees/` to the repository's `.gitignore` if it is not there yet.
+
+**As a bare container**, on a machine that still uses them:
 
 1. **Find the default branch**, which differs between repositories:
    `git ls-remote --symref <url> HEAD` (first line: `ref: refs/heads/<default>  HEAD`).
 2. **Write the entry** with `path: <container>/<default-branch>` (the worktree; the container is its
-   parent) and `clone: fleet-repo clone <name>`. Where a chezmoi instance deploys the manifest, edit
-   that source and apply.
-3. **Validate:** `fleet-decl --check`.
+   parent) and `clone: fleet-repo clone <name>`.
+3. **Validate:** `fleet-decl --check`, and `fleet-decl --layout <name>` prints `bare`.
 4. **Prove it on that one project** before syncing the rest:
 
    ```sh
@@ -135,14 +159,13 @@ the details.
    fleet-repo check <name>                                         # exit 0
    ```
 
-A ✓ from `mani sync` is not the proof, because three mistakes also tick: leaving out `clone:` (an
-ordinary checkout, with `worktrees:` nested inside it), naming the container in `path:` (the
-container is built one level up), and adding `clone:` to an entry whose `path` already holds a plain
-clone (`mani` runs `clone:` only where `path` is missing, so nothing changes; convert by hand,
-[`repository-layouts.md`](repository-layouts.md)). A wrong default branch in `path:` warns "manifest
-expects the worktree at" and marks the project ✕; fix `path:` and re-sync. A hand edit of the
-manifest does not run `wt-config-gen`, so new worktrees nest until it runs; `fleet-repo check`
-reports that as `worktrunk-missing`.
+A ✓ from `mani sync` is not the proof for a container, because three mistakes also tick: leaving out
+`clone:` (a standard clone, with `worktrees:` nested inside it), naming the container in `path:` (the
+container is built one level up), and adding `clone:` to an entry whose `path` already holds a clone
+(`mani` runs `clone:` only where `path` is missing, so nothing changes). A wrong default branch in
+`path:` warns "manifest expects the worktree at" and marks the project ✕; fix `path:` and re-sync. A
+hand edit of the manifest does not run `wt-config-gen`, so new worktrees nest until it runs;
+`fleet-repo check` reports that as `worktrunk-missing`.
 
 **What `leakPolicy` allows.** The publish guard keeps two classes of the domain's private vocabulary
 out of repositories, from files the private layer supplies under `~/.dotlocal/`: **markers**

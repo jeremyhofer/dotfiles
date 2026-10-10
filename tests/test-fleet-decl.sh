@@ -185,6 +185,84 @@ out=$(run --project "$ROOT/internal/alpha/some-worktree" 2>/dev/null)
 run "$ROOT/internal/alpha/no-such-worktree" leakPolicy >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && ok "a non-existent caller path is exit 1" || bad "non-existent caller path" "rc=$rc"
 
+# A standard clone nests its worktrees at <repo>/.worktrees/<name>, so a session standing in one
+# must resolve to the repository's entry through the same scope as the checkout itself.
+mkdir -p "$ROOT/internal/std/.worktrees/x/src"
+cat > "$TMP/std.yaml" <<'YAML'
+projects:
+  std:
+    path: internal/std
+    scope: internal/std
+    branch: main
+    leakPolicy: private
+YAML
+out=$(FLEET_RECORD="$TMP/std.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --project "$ROOT/internal/std/.worktrees/x/src" 2>/dev/null); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "std" ] \
+  && ok "--project: a path inside a nested .worktrees/ worktree resolves to its repository" \
+  || bad "--project nested worktree" "rc=$rc out=[$out]"
+
+# --- --layout: bare container or standard clone, read from the DECLARATION, never from the disk
+# (cloning has nothing on disk to inspect yet, and `fleet-repo check` exists to compare the two). Any
+# one of three clauses declares a bare container; every other entry is a standard clone. Each clause
+# has a fixture that carries it alone, so dropping one clause from the reader turns exactly its arm red.
+cat > "$TMP/layout.yaml" <<'YAML'
+projects:
+  byblock:
+    path: c/byblock/main
+    container:
+      branches: default
+  byemptyblock:
+    path: c/byemptyblock/main
+    container: {}
+  byclone:
+    path: c/byclone/main
+    clone: fleet-repo clone byclone
+  bypathclone:
+    clone: /opt/bin/fleet-repo clone bypathclone
+  bylegacy:
+    clone: git-clone-worktree --mani-project bylegacy
+  bywt:
+    worktrunk:
+      layout: bare
+  plain:
+    path: internal/plain
+    branch: main
+  ordinaryclone:
+    clone: git clone https://x.example/o/r.git r
+  mentions:
+    clone: echo not-fleet-repo-really
+  wtnested:
+    worktrunk:
+      layout: nested
+  nullblock:
+    container:
+YAML
+lay() { FLEET_RECORD="$TMP/layout.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --layout "$@"; }
+while IFS='|' read -r p want label; do
+  out=$(lay "$p" 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "$out" = "$want" ] && ok "--layout: $label -> $want" || bad "--layout: $label" "rc=$rc out=[$out] want=$want"
+done <<'CASES'
+byblock|bare|a container: block
+byemptyblock|bare|an empty container: {} block
+byclone|bare|a clone: that runs fleet-repo
+bypathclone|bare|a clone: that runs fleet-repo by an absolute path
+bylegacy|bare|a clone: that runs git-clone-worktree (the old name)
+bywt|bare|worktrunk.layout: bare alone
+plain|standard|no container clause at all
+ordinaryclone|standard|a clone: that runs plain git clone
+mentions|standard|a clone: that only CONTAINS the word (echo not-fleet-repo-really)
+wtnested|standard|worktrunk.layout: nested
+nullblock|standard|a container: key with no value
+CASES
+out=$(lay no-such-project 2>/dev/null); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--layout: an undeclared project is exit 1 with nothing printed" || bad "--layout undeclared" "rc=$rc out=[$out]"
+FLEET_RECORD="$TMP/broken.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --layout byblock >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "--layout: an unreadable record is exit 2, never a layout" || bad "--layout unreadable" "rc=$rc"
+lay 'x") | .. | ("y' >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "--layout: a project name that is not a manifest key is refused (exit 2)" || bad "--layout name validation" "rc=$rc"
+lay >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "--layout with no project: usage, exit 2" || bad "--layout usage" "rc=$rc"
+
 # --- --check ----------------------------------------------------------------------------------
 run --check >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 0 ] && ok "--check is clean on a well-formed record" || bad "--check clean" "rc=$rc"

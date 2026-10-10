@@ -20,11 +20,12 @@
 #       bootstrap: true | false          true: run wt-bootstrap as a BLOCKING pre-start hook, so a new
 #                                        worktree has its dependencies -- and any install-time git
 #                                        hooks -- before anyone uses it
-# A project without a `worktrunk:` block gets worktrunk's global defaults -- unless it declares a
-# bare container, which is bare by implication: a `container:` block, or a `clone:` command that
-# runs fleet-repo (or its older name, git-clone-worktree). Saying it twice invited forgetting the
-# second, silently (new worktrees nested inside the default branch's checkout). An explicit
-# `worktrunk.layout` still wins.
+# A project without a `worktrunk:` block gets worktrunk's global defaults, which nest worktrees
+# under <repo>/.worktrees/: right for a standard (ordinary, non-bare) clone, the fleet's layout. A
+# project that declares a bare container is bare by implication; whether it does is asked of
+# `fleet-decl --layout`, the one reader every fleet tool uses, so this generator and the cloner
+# cannot disagree about an entry. Saying it twice invited forgetting the second, silently (new
+# worktrees nested inside the default branch's checkout). An explicit `worktrunk.layout` still wins.
 #
 # FAILURE LEAVES THE OLD FILE. The generated file is worktrunk's only user config, so a bad run would
 # not degrade one setting, it would remove all of them. Every refusal below exits before the live
@@ -143,8 +144,10 @@ else
   wt_findings=$(fleet-decl --check 2>&1 | grep '^\[worktrunk-' || true)
   [ -z "$wt_findings" ] || die "the manifest's worktrunk declarations are invalid:
 $wt_findings"
-  # The projects to write a table for: those with a worktrunk block, those declaring a container,
-  # and those whose clone: command makes one. Each query's exit 1 means "none", 2 means unreadable.
+  # The projects to write a table for: those with a worktrunk block, and those that declare a bare
+  # container. A container is only ever declared through a `container:` or `clone:` key, so only
+  # projects with one of those are asked for their layout. Each query's exit 1 means "none", 2
+  # means unreadable.
   names=""; implied=""
   for key in worktrunk container clone; do
     set +e; found=$(fleet-decl --projects-with "$key" 2>"$work/decl.err"); rc=$?; set -e
@@ -154,12 +157,12 @@ $wt_findings"
       *) die "cannot read the manifest at $record: $(cat "$work/decl.err")" ;;
     esac
     for name in $found; do
-      if [ "$key" = clone ]; then
-        # A command WORD, not a substring: `echo not-fleet-repo-really` makes no container.
-        c=$(fleet-decl --entry "$name" clone 2>/dev/null) || c=""
-        printf '%s\n' "$c" | grep -Eq '(^|[ /;&|])(fleet-repo|git-clone-worktree)([ ]|$)' || continue
+      if [ "$key" != worktrunk ]; then
+        set +e; lay=$(fleet-decl --layout "$name" 2>"$work/decl.err"); rc=$?; set -e
+        [ "$rc" = 0 ] || die "cannot read the layout of $name from $record: $(cat "$work/decl.err")"
+        [ "$lay" = bare ] || continue
+        implied="$implied $name"
       fi
-      case "$key" in worktrunk) ;; *) implied="$implied $name" ;; esac
       names="$names $name"
     done
   done

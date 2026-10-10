@@ -556,6 +556,171 @@ check "check: an unreadable manifest is exit 2, never 'clean'" '[ "$rc" = 2 ] &&
 FR clone anything > "$TMP/out" 2>&1; rc=$?
 check "clone: an unreadable manifest is exit 2 as well" '[ "$rc" = 2 ]'
 
+# --- standard clones -----------------------------------------------------------------------------
+# The fleet layout: an ordinary clone at `path`, checked out on the branch mani's `branch:` key names,
+# with worktrees nested at <path>/.worktrees/<name>. An entry is standard unless it declares a
+# container (`fleet-decl --layout`). `dom/` stands for a domain directory such as internal/, which
+# always holds other things already; the half-changed-entry arm depends on that.
+mkorigin st main; addbranches st develop feature
+mkorigin su main; addbranches su develop
+SW="$TMP/std"; mkdir -p "$SW/dom"; echo keep > "$SW/dom/README"; cd "$SW" || exit 1
+cat > mani.yaml <<EOF
+projects:
+  sfresh:
+    path: dom/sfresh
+    url: $(url st)
+    branch: main
+  sdev:
+    path: dom/sdev
+    url: $(url st)
+    branch: develop
+  swt:
+    path: dom/swt
+    url: $(url st)
+    branch: main
+    worktrees:
+      - name: feature
+        path: .worktrees/feature
+  scont:
+    path: dom/scont
+    url: $(url st)
+    branch: main
+    worktrees:
+      - name: feature
+        path: .worktrees/feature
+  shalf:
+    path: dom/shalf
+    url: $(url st)
+    branch: main
+    clone: fleet-repo clone shalf
+  supd:
+    path: dom/supd
+    url: $(url su)
+    branch: main
+    worktrees:
+      - name: develop
+        path: .worktrees/develop
+EOF
+FR clone sfresh > "$TMP/out" 2>&1; rc=$?
+check "standard: a fresh clone is ordinary: .git a directory, not bare, on the declared branch with an upstream, nothing made beside it" \
+  '[ "$rc" = 0 ] && [ -d dom/sfresh/.git ] && [ "$(git -C dom/sfresh rev-parse --is-bare-repository)" = false ] && [ "$(git -C dom/sfresh branch --show-current)" = main ] && [ "$(upstream dom/sfresh)" = origin/main ] && [ "$(ls -A dom | LC_ALL=C sort | tr "\n" " ")" = "README sfresh " ]'
+FR clone sdev > "$TMP/out" 2>&1; rc=$?
+check "standard: branch: develop is honoured where the remote's default is main" \
+  '[ "$rc" = 0 ] && [ "$(git -C dom/sdev branch --show-current)" = develop ] && [ "$(upstream dom/sdev)" = origin/develop ]'
+FR clone swt > "$TMP/out" 2>&1; rc=$?
+check "standard: a declared worktree is NESTED at <path>/.worktrees/<name>, on its branch, with an upstream, sharing <path>/.git" \
+  '[ "$rc" = 0 ] && [ "$(git -C dom/swt/.worktrees/feature branch --show-current)" = feature ] && [ "$(upstream dom/swt/.worktrees/feature)" = origin/feature ] && [ "$(cd dom/swt/.worktrees/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd dom/swt && pwd)/.git" ] && [ ! -e dom/.worktrees ]'
+
+# The checkout is whatever its owner left it on: a re-run reports a branch that differs from the
+# declaration and never switches it, because a switch could carry or strand someone's work.
+git -C dom/sfresh checkout -q develop
+git -C dom/sfresh branch --unset-upstream main
+FR clone sfresh > "$TMP/out" 2>&1; rc=$?
+check "standard: a re-run on a checkout someone switched: exit 0, the mismatch reported, NOT switched back" \
+  '[ "$rc" = 0 ] && grep -q "is on develop" "$TMP/out" && [ "$(git -C dom/sfresh branch --show-current)" = develop ]'
+check "standard: ...and the removed upstream of the declared branch is repaired" \
+  '[ "$(git -C dom/sfresh rev-parse --abbrev-ref main@{u} 2>/dev/null)" = origin/main ]'
+
+# A bare container where a standard clone is declared is refused UNTOUCHED: changing it over is a
+# deliberate, documented procedure, never something a re-run does on the way past.
+FR clone --url "$(url st)" dom/scont >/dev/null 2>&1
+snap() { (cd "$1" && ls -A | LC_ALL=C sort; git --git-dir=.git for-each-ref --format='%(refname) %(objectname) %(upstream)'; git --git-dir=.git config --list --local); }
+before=$(snap dom/scont)
+FR clone scont > "$TMP/out" 2>&1; rc=$?
+check "standard: a bare container at a standard entry's path: exit 1, named as a bare container" \
+  '[ "$rc" = 1 ] && grep -q "bare container" "$TMP/out" && grep -q "dom/scont" "$TMP/out"'
+check "standard: ...its listing, refs and config are exactly as before" '[ "$(snap dom/scont)" = "$before" ]'
+
+# Half a manifest change: the repository root already in path:, the container's clone: still there.
+# It reads as a container, whose directory is path's parent, a domain directory that already holds
+# files, so nothing is made anywhere.
+before=$(ls -A dom | LC_ALL=C sort)
+FR clone shalf > "$TMP/out" 2>&1; rc=$?
+check "standard: a half-changed entry (root path:, container clone: kept) is refused and nothing is created" \
+  '[ "$rc" = 1 ] && [ ! -e dom/shalf ] && [ ! -e dom/.git ] && [ "$(ls -A dom | LC_ALL=C sort)" = "$before" ] && grep -q "half" "$TMP/out"'
+
+FR clone supd >/dev/null 2>&1
+git clone -q "$TMP/su.git" "$TMP/pusher-su"
+git -C "$TMP/pusher-su" commit -q --allow-empty -m su-main; git -C "$TMP/pusher-su" push -q origin main
+git -C "$TMP/pusher-su" checkout -q develop; git -C "$TMP/pusher-su" commit -q --allow-empty -m su-dev; git -C "$TMP/pusher-su" push -q origin develop
+FR update --project supd > "$TMP/out" 2>&1; rc=$?
+check "standard: update fast-forwards the checkout and its nested worktree" \
+  '[ "$rc" = 0 ] && [ "$(git -C dom/supd rev-parse HEAD)" = "$(git -C "$TMP/pusher-su" rev-parse origin/main)" ] && [ "$(git -C dom/supd/.worktrees/develop rev-parse HEAD)" = "$(git -C "$TMP/pusher-su" rev-parse origin/develop)" ]'
+git clone -q "$TMP/st.git" "$TMP/pusher-st"
+git -C "$TMP/pusher-st" commit -q --allow-empty -m st-main; git -C "$TMP/pusher-st" push -q origin main
+before=$(git --git-dir=dom/scont/.git rev-parse refs/remotes/origin/main)
+FR update --project scont > "$TMP/out" 2>&1; rc=$?
+check "standard: update on a bare container where a standard clone is declared: exit 1, bare-container, nothing fetched" \
+  '[ "$rc" = 1 ] && grep -q "bare-container" "$TMP/out" && [ "$(git --git-dir=dom/scont/.git rev-parse refs/remotes/origin/main)" = "$before" ]'
+
+# check on standard entries: one fixture per finding, each producing exactly that one finding.
+SC="$TMP/stdchk"; mkdir -p "$SC/dom"; cd "$SC" || exit 1
+std_entry() {  # $1 name, then extra lines
+  local n=$1; shift
+  printf '  %s:\n    path: dom/%s\n    url: %s\n    branch: main\n' "$n" "$n" "$(url st)"
+  for l in "$@"; do printf '    %s\n' "$l"; done
+}
+{ printf 'projects:\n'
+  std_entry cclean 'worktrees:' '  - name: feature' '    path: .worktrees/feature'
+  std_entry cnone; std_entry ccont; std_entry cfiles; std_entry cbranch; std_entry cup
+  std_entry cwt 'worktrees:' '  - name: feature' '    path: .worktrees/feature'
+} > mani.yaml
+for p in cclean cbranch cup cwt; do FR clone "$p" >/dev/null 2>&1; done
+git clone -q "$(url st)" dom/cwtb
+printf '  cwtb:\n    path: dom/cwtb\n    url: https://code.example.org/org/cwtb.git\n    branch: main\n' >> mani.yaml
+FR clone --url "$(url st)" dom/ccont >/dev/null 2>&1
+mkdir -p dom/cfiles; echo x > dom/cfiles/notes
+git -C dom/cbranch checkout -q develop
+git -C dom/cup branch --unset-upstream main
+rm -rf dom/cwt/.worktrees/feature; git -C dom/cwt worktree prune
+FR check cclean > "$TMP/out" 2>&1; rc=$?
+check "check, standard: a clone matching its declaration, worktree included, is clean" '[ "$rc" = 0 ] && ! grep -q "^\[" "$TMP/out"'
+mkdir -p "$HOME/.config/worktrunk"
+printf '[projects."code.example.org/org/cwtb"]\nworktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"\n' > "$HOME/.config/worktrunk/config.toml"
+for pf in cnone:no-checkout ccont:bare-container cfiles:not-a-clone cbranch:checkout-branch cup:no-upstream cwt:missing-worktree cwtb:worktrunk-bare; do
+  p=${pf%%:*}; f=${pf#*:}
+  FR check "$p" > "$TMP/out" 2>&1; rc=$?
+  check "check, standard: $f -- exit 1 and exactly that one finding" \
+    '[ "$rc" = 1 ] && [ "$(grep -c "^\[" "$TMP/out")" = 1 ] && grep -q "^\[$f\] $p: " "$TMP/out"'
+done
+rm -rf "$HOME/.config"
+# A branch someone made in the checkout and never pushed has nothing to track yet: its missing
+# upstream is not drift, since `fleet-repo clone` could not repair it.
+git -C dom/cbranch checkout -q -b localonly
+FR check cbranch > "$TMP/out" 2>&1; rc=$?
+check "check, standard: a local-only branch in the checkout is checkout-branch, not no-upstream" \
+  '[ "$rc" = 1 ] && [ "$(grep -c "^\[" "$TMP/out")" = 1 ] && grep -q "^\[checkout-branch\] cbranch: " "$TMP/out"'
+
+# check with no project: every bare entry as before, plus every entry that declares `branch:` and
+# reads as standard; an entry with sync: false is this machine's choice not to keep it, and one with
+# neither a container nor a branch: is not examined (a machine whose manifest declares no standard
+# entries sees no change).
+SE="$TMP/stdenum"; mkdir -p "$SE"; cd "$SE" || exit 1
+cat > mani.yaml <<EOF
+projects:
+  bareone:
+    path: b1/main
+    url: $(url st)
+    clone: fleet-repo clone bareone
+  stdone:
+    path: dom/stdone
+    url: $(url st)
+    branch: main
+  stdskip:
+    path: dom/stdskip
+    url: $(url st)
+    branch: main
+    sync: false
+  plainnobranch:
+    path: dom/plainnobranch
+    url: $(url st)
+EOF
+FR check > "$TMP/out" 2>&1; rc=$?
+check "check, no project: a standard entry is examined alongside the bare ones" \
+  '[ "$rc" = 1 ] && grep -q "^\[no-checkout\] stdone" "$TMP/out" && grep -q "^\[no-container\] bareone" "$TMP/out"'
+check "check, no project: sync: false is skipped, and an entry with no branch: and no container is not examined" \
+  '! grep -q stdskip "$TMP/out" && ! grep -q plainnobranch "$TMP/out"'
+
 # --- as mani's clone: command --------------------------------------------------------------------
 if ! command -v mani >/dev/null 2>&1; then
   printf '  SKIP the mani arm: mani is not installed\n'; skip=1
@@ -583,6 +748,24 @@ EOF
   check "mani sync: a re-sync restores a deleted worktree" '[ -d m1/feature ]'
   NO_COLOR=1 mani exec --all --parallel 'fleet-repo update' > "$TMP/out" 2>&1
   check "mani exec ... 'fleet-repo update' runs in a project's path and resolves it" 'grep -q "already up to date" "$TMP/out" || grep -q "fast-forwarded" "$TMP/out"'
+
+  # One standard entry, cloned once by mani itself and once by fleet-repo: both readers of the same
+  # declaration must reach the same checkout, so either may make a machine's copy.
+  for d in a b; do
+    mkdir -p "$TMP/mstd/$d"
+    cat > "$TMP/mstd/$d/mani.yaml" <<EOF
+projects:
+  same:
+    path: same
+    url: $(url st)
+    branch: develop
+    single_branch: true
+EOF
+  done
+  (cd "$TMP/mstd/a" && NO_COLOR=1 mani sync same >/dev/null 2>&1)
+  (cd "$TMP/mstd/b" && FR clone same >/dev/null 2>&1)
+  check "mani sync and fleet-repo clone of one standard entry: the same branch, upstream and fetch refspecs" \
+    '[ -d "$TMP/mstd/a/same/.git" ] && [ "$(git -C "$TMP/mstd/a/same" branch --show-current)" = develop ] && [ "$(git -C "$TMP/mstd/b/same" branch --show-current)" = develop ] && [ "$(upstream "$TMP/mstd/a/same")" = "$(upstream "$TMP/mstd/b/same")" ] && [ "$(fetchspecs "$TMP/mstd/a/same")" = "$(fetchspecs "$TMP/mstd/b/same")" ]'
 fi
 
 printf 'passed: %s   failed: %s%s\n' "$pass" "$fail" "$( [ "$skip" = 1 ] && printf '   (mani arm skipped)')"

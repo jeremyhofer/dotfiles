@@ -30,7 +30,7 @@
 # HOW TRUST IS KEYED (measured on Claude Code 2.1.295). The state holds
 # projects["<absolute path>"].hasTrustDialogAccepted. The key is the repository's git common
 # directory with a trailing /.git removed:
-#   plain clone                          -> the clone's root
+#   standard clone                       -> the clone's root (its nested .worktrees/* too)
 #   bare container, bare repo <c>/.git   -> <c>
 #   old container, bare repo <c>/.bare   -> <c>/.bare itself (not stripped)
 #   any worktree                         -> its repository's key, the same way

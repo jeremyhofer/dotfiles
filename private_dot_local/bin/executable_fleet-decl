@@ -15,6 +15,7 @@
 #                                                # the items of a sequence on <project>, one per line;
 #                                                # with <item-key> the items are maps and that key is
 #                                                # read from each (`--entry-list ios worktrees name`)
+#          fleet-decl --layout <project>         # `bare` or `standard`: how <project> is laid out on disk
 #          fleet-decl --check                    # validate the record; print findings
 #
 #   exit 0  value printed on stdout (empty output means the key is declared empty)
@@ -242,6 +243,42 @@ case "${1:-}" in
     fi
     _out=$(yq -e -r "$_q" "$RECORD" 2>/dev/null) || exit 1
     printf '%s\n' "$_out"
+    exit 0 ;;
+  --layout)
+    # Which of the two shapes a project's repository takes on disk. A STANDARD clone is an ordinary,
+    # non-bare clone at `path`, its worktrees nested under <path>/.worktrees/. A BARE CONTAINER is a
+    # directory holding a bare repository named .git with every branch checked out beside it.
+    #
+    # Bare only when the entry DECLARES a container, by any one of three clauses: a `container:`
+    # block, a `clone:` command that runs fleet-repo (or its older name, git-clone-worktree), or
+    # `worktrunk.layout: bare`. Everything else is standard. Declared rather than detected from the
+    # disk because a cloner has nothing on disk to inspect yet, and a drift check exists to compare
+    # the declaration against the disk, which it cannot do if the declaration is read from the disk.
+    # Every tool that needs the answer asks here, so no two of them can disagree about an entry.
+    #
+    # Exit 1 when the project is not declared, 2 when the record cannot be read: a cloner that took
+    # an unreadable record for "standard" would build the wrong shape.
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --layout <project>\n' >&2; exit 2; }
+    case "$2" in
+      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+    esac
+    # Each read either answers or ends the program with exit 2. Falling through on a failed read
+    # would make that clause silently absent, and the entry would read as standard.
+    lq() { yq -r "$1" "$RECORD" 2>/dev/null || die_unusable "--layout: cannot read $2 from $RECORD"; }
+    # Assigned, not tested inline: a failed read inside `[ ... ]` would not end the program, and
+    # would read as "not declared".
+    _has=$(lq ".projects | has(\"$2\")" "the project list")
+    [ "$_has" = true ] || exit 1
+    _container=$(lq ".projects.\"$2\".container != null" "$2's container")
+    _wtlayout=$(lq ".projects.\"$2\" | select(.worktrunk | tag == \"!!map\") | .worktrunk.layout // \"\"" "$2's worktrunk.layout")
+    _clone=$(lq ".projects.\"$2\".clone // \"\"" "$2's clone")
+    # A command WORD, not a substring: `echo not-fleet-repo-really` makes no container.
+    if [ "$_container" = true ] || [ "$_wtlayout" = bare ] \
+       || printf '%s\n' "$_clone" | grep -Eq '(^|[ /;&|])(fleet-repo|git-clone-worktree)([ ]|$)'; then
+      printf 'bare\n'
+    else
+      printf 'standard\n'
+    fi
     exit 0 ;;
   --check)
     rc=0

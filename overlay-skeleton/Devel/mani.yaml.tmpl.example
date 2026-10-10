@@ -12,23 +12,28 @@
 # (e.g. `mani sync --tags active`). Exclude chezmoi-source dirs and retired repos.
 
 projects:
-  # A repository this domain authors.
+  # A repository this domain authors, as a standard clone (the fleet layout): an ordinary clone at
+  # path, worktrees nested under path/.worktrees/ (list `.worktrees/` in the repository's .gitignore).
   example-repo:
-    path: internal/example-repo                   # relative to ~/Devel (mani)
+    path: internal/example-repo                   # relative to ~/Devel: the repository root (mani)
     url: https://git.example.com/org/example-repo.git
+    branch: main                                   # the checkout's branch (mani; fleet-repo clones the same)
+    # single_branch: true                          # fetch only that branch, for a very large repository
     tags: [internal, active]                       # mani selects by tag; `upstream` and `external` also change tool behaviour
     scope: internal/example-repo                   # path prefix that resolves a checkout to this entry (fleet-decl)
     leakPolicy: strict                             # strict | private | notes | internal — required unless tagged upstream
     # leakPrefix: EXR                              # this repo's own program id prefix(es), comma-separated
-    # clone: fleet-repo clone example-repo        # bare clone with sibling worktrees. With it,
-    #   path: becomes internal/example-repo/<default-branch> (the worktree, not the container; scope stays
-    #   the container). See docs/reference/fleet-manifest.md and repository-layouts.md.
-    # container:                                 # what that bare container fetches (fleet-repo)
-    #   branches: default                        # all | default | [names]; worktrees: branches are always fetched
-    #   filter: blob:none                        # optional partial clone, fresh clones only
+    # worktrees:                                   # durable worktrees, made by `fleet-repo clone example-repo`
+    #   - name: develop                            #   the branch
+    #     path: .worktrees/develop                 #   relative to path
     # worktrunk:
-    #   layout: bare                               # bare | nested; a container is bare unless this says nested
     #   bootstrap: true                            # install dependencies in each new worktree
+    #
+    # The older layout, a bare container with sibling worktrees, is declared instead by
+    # `clone: fleet-repo clone example-repo` (or a `container:` block), with path: naming the
+    # default-branch worktree, internal/example-repo/<default-branch>, and no branch:.
+    # `fleet-decl --layout example-repo` prints which one an entry declares. See
+    # docs/reference/fleet-manifest.md and repository-layouts.md.
 
   # This domain's notes repository: the one place program ids and notes pointers may appear.
   journal:
