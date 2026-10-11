@@ -26,9 +26,9 @@ earlier sample had part of its CPU counted then, so that part is subtracted from
 reaped figure when it disappears. That correction is approximate (a reparented orphan is credited
 to its new parent), which is why totals are labelled CPU-seconds and not presented as exact.
 
-ATTRIBUTION. A row's `session` is the nearest ancestor whose command name is
-$MACHINE_SNAPSHOT_SESSION_COMM (default `claude`), shown with that process's working directory,
-which is the directory the session works in. Stalled tasks (state D, uninterruptible wait) are
+ATTRIBUTION. A row's `session` is the nearest ancestor whose command name, or the first word of
+whose command line, is $MACHINE_SNAPSHOT_SESSION_COMM (default `claude`), shown with that process's
+working directory, which is the directory the session works in. Stalled tasks (state D, uninterruptible wait) are
 listed with their kernel wait channel; a load average well above the CPU in use is usually them.
 
 A SAMPLE IS AN INSTANT. A task stalled for a few milliseconds between samples is never seen. The
@@ -130,7 +130,12 @@ def session_of(pid, procs):
     while pid in procs and pid not in seen:
         seen.add(pid)
         p = procs[pid]
-        if p["comm"] == SESSION_COMM:
+        # By command name OR by the first word of the command line. A background session's
+        # process is named after its version (`2.1.296`) and only its command line says
+        # `claude bg-spare`, so matching the name alone files every background session's work under
+        # no session. Seen on the first live sample, 2026-10-11.
+        argv0 = os.path.basename(p["args"].split(" ", 1)[0]) if p["args"] else ""
+        if SESSION_COMM in (p["comm"], argv0):
             return f"{pid} {p['cwd']}"
         pid = p["ppid"]
     return "-"

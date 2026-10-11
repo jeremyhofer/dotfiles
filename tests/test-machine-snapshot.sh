@@ -72,11 +72,15 @@ reset
 proc 100 1 S "$(t 50)" "$(t 7 | awk '{print $1/2}')" 10 claude "$HOME/Devel/proj"
 proc 200 100 R "$(t 13)" 0 20 'node (vitest) x' "$HOME/Devel/proj" 0 'node vitest run'
 proc 400 2 D 0 0 40 'kworker/u64:9+netns' / cleanup_net
+# A background session's process is named after its version; only its command line names it.
+proc 500 1 S 0 0 50 2.1.296 "$HOME/Devel/other" 0 'claude bg-spare --bg-spare x.sock'
+proc 510 500 R "$(t 2)" 0 51 python3 "$HOME/Devel/other"
 rec 1015
 eq "own: CPU in the interval, not since birth" "$(last_row 200 own)" "3.0"
 eq "reaped: short-lived and ended children, minus what was counted alive" "$(last_row 100 reaped)" "2.5"
 eq "comm with a space and parentheses parses" "$(last_row 200 comm)" "node (vitest) x"
 eq "session: nearest claude ancestor, with its directory" "$(last_row 200 session)" "100 ~/Devel/proj"
+eq "session: matched by command line when the name is a version" "$(last_row 510 session)" "500 ~/Devel/other"
 eq "stalled task recorded with its wait channel" "$(last_row 400 wchan)" "cleanup_net"
 eq "idle process left out of the history" "$(last_row 1 own)" "absent"
 now=$(MACHINE_SNAPSHOT_NOW=1016 python3 "$TOOL" now)
