@@ -1,6 +1,6 @@
 ---
 name: test-coverage
-description: Use when setting up, changing or reviewing a project's test configuration (Vitest, Jest, pytest, Playwright), adding a package or module that ships, when a coverage threshold fails a run, or when deciding whether a line may be excluded from coverage. Fires on "coverage", "thresholds", "v8 ignore", "istanbul ignore", "pragma: no cover", "fail_under", "--cov-fail-under", and on "why is this uncovered". Covers the expected bar (100%, enforced), where the threshold lives, how an exception is written, ratcheting a project that is not there yet, proving the threshold can fail, and how a browser lane that runs in several engines enforces coverage.
+description: Use when setting up, changing or reviewing a project's test configuration (Vitest, Jest, pytest, Playwright), adding a package or module that ships, when a coverage threshold fails a run, or when deciding whether a line may be excluded from coverage. Fires on "coverage", "thresholds", "v8 ignore", "istanbul ignore", "pragma: no cover", "fail_under", "--cov-fail-under", and on "why is this uncovered". Covers the expected bar (100%, enforced), where the threshold lives, how an exception is written, ratcheting a project that is not there yet, proving the threshold can fail, how a browser lane that runs in several engines enforces coverage, and which environment (browser or node) a unit test belongs in.
 ---
 
 # Test coverage: 100%, enforced by the test run itself
@@ -94,3 +94,20 @@ so a run that includes Firefox cannot collect V8 coverage at all. Check the runn
 assuming one run can do both.
 
 A Playwright end-to-end lane is outside this rule; it measures behaviour, not line coverage.
+
+## 7. A test runs in the environment its subject needs
+
+**Code that runs in the browser and needs browser APIs is tested in a browser lane** (for example
+Vitest browser mode); **code that runs in Node is tested in a node lane.** A browser lane is slower
+and heavier, so nothing goes there that does not need a real engine.
+
+**Do not use a DOM shim (jsdom, happy-dom) in a node lane for what only a real engine can answer.**
+A shim has no layout engine and only part of the cascade: `getBoundingClientRect` returns zero-size
+boxes, and `elementFromPoint`, `checkVisibility` and `matchMedia` are missing or stubbed. A test of a
+size, a position, a computed colour or a focus order run there passes while measuring nothing,
+which is the worst kind of green, because it reads as coverage.
+
+**Where one piece of code both reads the page and decides from what it read, split it:** a thin
+measuring layer, tested in the browser, and pure judging functions that hold the rules and the
+branching, tested in Node. Most of the logic then runs in the fast lane, and the browser lane
+tests only what needs a browser.

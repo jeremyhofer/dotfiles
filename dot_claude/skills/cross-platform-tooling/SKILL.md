@@ -181,6 +181,14 @@ perl is present on every macOS by default. **Keep the bound real**: a skipped ha
 regression hangs the suite forever instead of failing it — and a suite that hangs reports the same
 thing as one that was never run.
 
+**`VAR=x some_function` in a `#!/bin/sh` suite leaks on macOS.** POSIX lets a shell keep an
+assignment made in front of a *function* call after the call returns, and the two machines differ:
+`sh -c 'f(){ :; }; X=1 f; echo "${X-unset}"'` prints `1` on macOS and `unset` on
+Arch (both measured 2026-10-11). A suite that sets a one-off variable that way passes on Linux and, on
+the Mac, carries the variable into every later case: measured on a test whose last case failed only
+there. Pass a one-off variable to the program itself (`env VAR=x prog`, or `VAR=x prog` where
+`prog` is a command, not a function), never as a prefix on a helper function.
+
 ## Do not "fix" it by installing GNU coreutils on the Mac
 
 It is the first idea everyone has, and it trades a portability bug for an **undeclared dependency on
