@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""machine-snapshot — what is loading this machine, readable from inside an agent sandbox.
+
+WHY IT EXISTS. Claude Code's Bash sandbox on Linux (bubblewrap) gives each command its own PID
+namespace, so `ps` inside it shows that one command and nothing else. A session can read the load
+average and the pressure files, which say THAT the machine is busy, but nothing says WHO: which
+session, which test lane, which kernel worker. Coordinating work across sessions without that is
+guessing. This tool runs OUTSIDE the sandbox, from a systemd user timer every 15 seconds, and
+writes what it sees to a state directory every session can read. Reading is all a session can do
+with it: it shows other sessions' processes, and gives no way to signal them.
+
+    machine-snapshot record           take one sample (the timer runs this; refuses in a sandbox)
+    machine-snapshot now              the latest sample: busiest processes, stalled tasks, sessions
+    machine-snapshot since MINUTES    totals over a window: CPU by session and by command, stalls
+
+WHAT A SAMPLE MEASURES, AND WHY NOT `ps %cpu`. ps reports CPU time divided by the process's whole
+lifetime, which says nothing about the last minute. A sample here records each process's CPU time
+and subtracts the previous sample's, so every figure is CPU spent in the interval between them.
+
+Short commands are the hard case: most of an agent session's work is commands that start and end
+between two samples and are never seen alive. Their CPU is not lost. When a process reaps a dead
+child the kernel adds the child's CPU time to the parent's "children" counters (cutime, cstime in
+/proc/<pid>/stat), so it shows up as growth there. Each row therefore carries two figures: `own`
+(the process itself) and `reaped` (children that ended in the interval). A child seen alive in an
+earlier sample had part of its CPU counted then, so that part is subtracted from its parent's
+reaped figure when it disappears. That correction is approximate (a reparented orphan is credited
+to its new parent), which is why totals are labelled CPU-seconds and not presented as exact.
+
+ATTRIBUTION. A row's `session` is the nearest ancestor whose command name is
+$MACHINE_SNAPSHOT_SESSION_COMM (default `claude`), shown with that process's working directory,
+which is the directory the session works in. Stalled tasks (state D, uninterruptible wait) are
+listed with their kernel wait channel; a load average well above the CPU in use is usually them.
+
+A SAMPLE IS AN INSTANT. A task stalled for a few milliseconds between samples is never seen. The
+pressure figures (/proc/pressure, averaged by the kernel over 10 seconds) are recorded with each
+sample so a stall rate can be seen even when no single task is caught.
+
+Files, under $MACHINE_SNAPSHOT_DIR (default $XDG_STATE_HOME/machine-snapshot, else
+~/.local/state/machine-snapshot): `latest.json`, the whole last sample, and `history.jsonl`, one
+line per sample holding only the rows that used CPU or were stalled, kept for
+$MACHINE_SNAPSHOT_KEEP_HOURS (default 24).
+
+Linux only: it reads /proc. $MACHINE_SNAPSHOT_PROC replaces /proc for the test suite.
+"""
+import json
+import os
+import sys
+import time
+
+PROC = os.environ.get("MACHINE_SNAPSHOT_PROC", "/proc")
+STATE = os.environ.get("MACHINE_SNAPSHOT_DIR") or os.path.join(
+    os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "machine-snapshot")
+SESSION_COMM = os.environ.get("MACHINE_SNAPSHOT_SESSION_COMM", "claude")
+KEEP_HOURS = float(os.environ.get("MACHINE_SNAPSHOT_KEEP_HOURS", "24"))
+# A previous sample older than this is not a baseline: deltas across a suspend or a stopped timer
+# would attribute an hour of CPU to one interval.
+MAX_GAP = float(os.environ.get("MACHINE_SNAPSHOT_MAX_GAP", "120"))
+# Rows below this many CPU-seconds in an interval, and not stalled, are left out of the history.
+MIN_CPU = float(os.environ.get("MACHINE_SNAPSHOT_MIN_CPU", "0.2"))
+NOW = os.environ.get("MACHINE_SNAPSHOT_NOW")   # a fixed clock, for the test suite only
+TICK = os.sysconf("SC_CLK_TCK")
+HOME = os.path.expanduser("~")
+
+LATEST = os.path.join(STATE, "latest.json")
+HISTORY = os.path.join(STATE, "history.jsonl")
+
+
+def read(path, default=""):
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return default
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path == HOME or path.startswith(HOME + "/") else path
+
+
+def pressure():
+    out = {}
+    for kind in ("cpu", "io", "memory"):
+        for line in read(os.path.join(PROC, "pressure", kind)).splitlines():
+            parts = line.split()
+            if parts and parts[0] in ("some", "full"):
+                fields = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
+                out[f"{kind}_{parts[0]}"] = float(fields.get("avg10", 0))
+    return out
+
+
+def scan():
+    procs = {}
+    for name in os.listdir(PROC):
+        if not name.isdigit():
+            continue
+        base = os.path.join(PROC, name)
+        stat = read(os.path.join(base, "stat"))
+        # The command name sits in parentheses and may itself contain spaces or parentheses, so
+        # the fields are counted from the LAST closing parenthesis.
+        rparen = stat.rfind(")")
+        if rparen < 0:
+            continue
+        f = stat[rparen + 2:].split()
+        if len(f) < 22:
+            continue
+        try:
+            cwd = os.readlink(os.path.join(base, "cwd"))
+        except OSError:
+            cwd = ""
+        args = read(os.path.join(base, "cmdline")).replace("\0", " ").strip()
+        procs[name] = {
+            "ppid": f[1],
+            "state": f[0],
+            "cpu": (int(f[11]) + int(f[12])) / TICK,
+            "ccpu": (int(f[13]) + int(f[14])) / TICK,
+            "start": int(f[19]),
+            "rss_mb": int(f[21]) * os.sysconf("SC_PAGE_SIZE") // 1048576,
+            # /proc/<pid>/comm carries a kernel worker's workqueue name (kworker/u64:3+netns),
+            # which the 15-character name inside stat truncates away.
+            "comm": read(os.path.join(base, "comm")).strip() or stat[stat.find("(") + 1:rparen],
+            "wchan": read(os.path.join(base, "wchan")).strip(),
+            "cwd": tilde(cwd),
+            "args": args[:200],
+        }
+    return procs
+
+
+def session_of(pid, procs):
+    seen = set()
+    while pid in procs and pid not in seen:
+        seen.add(pid)
+        p = procs[pid]
+        if p["comm"] == SESSION_COMM:
+            return f"{pid} {p['cwd']}"
+        pid = p["ppid"]
+    return "-"
+
+
+def cmd_record():
+    if read(os.path.join(PROC, "1", "comm")).strip() == "bwrap":
+        sys.exit("machine-snapshot: refusing to record inside a sandbox: only this sandbox's own "
+                 "processes are visible here, so the sample would be wrong. The timer records; "
+                 "use `now` or `since` to read.")
+    now = float(NOW) if NOW else time.time()
+    procs = scan()
+    prev, interval = {}, None
+    try:
+        with open(LATEST) as fh:
+            last = json.load(fh)
+        if 0 < now - last["ts"] <= MAX_GAP:
+            prev, interval = last["procs"], now - last["ts"]
+    except (OSError, ValueError, KeyError):
+        pass
+
+    # CPU already counted for children that have since disappeared, per parent (see the header).
+    counted = {}
+    for pid, p in prev.items():
+        if pid not in procs or procs[pid]["start"] != p["start"]:
+            counted[p["ppid"]] = counted.get(p["ppid"], 0) + p["cpu"] + p["ccpu"]
+
+    rows = []
+    for pid, p in procs.items():
+        q = prev.get(pid)
+        if interval is None:
+            own = reaped = 0.0
+        elif q and q["start"] == p["start"]:
+            own = max(0.0, p["cpu"] - q["cpu"])
+            reaped = max(0.0, p["ccpu"] - q["ccpu"] - counted.get(pid, 0))
+        else:   # born in the interval: everything it has used, it used since the last sample
+            own, reaped = p["cpu"], p["ccpu"]
+        p["own"], p["reaped"] = round(own, 2), round(reaped, 2)
+        if interval is not None and (own + reaped >= MIN_CPU or p["state"] == "D"):
+            rows.append({"pid": pid, "comm": p["comm"], "state": p["state"], "wchan": p["wchan"],
+                         "own": p["own"], "reaped": p["reaped"], "rss_mb": p["rss_mb"],
+                         "cwd": p["cwd"], "session": session_of(pid, procs), "args": p["args"][:120]})
+
+    sample = {"ts": now, "interval": interval,
+              "load": read(os.path.join(PROC, "loadavg")).split()[:3], "pressure": pressure()}
+    os.makedirs(STATE, exist_ok=True)
+    tmp = LATEST + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(dict(sample, procs=procs), fh)
+    os.replace(tmp, LATEST)
+    if interval is not None:
+        with open(HISTORY, "a") as fh:
+            fh.write(json.dumps(dict(sample, rows=rows)) + "\n")
+        prune(now)
+
+
+def prune(now):
+    # Rewriting the history on every sample would be most of this tool's own I/O, so it is rewritten
+    # only once its first line is an hour past the retention window.
+    cutoff = now - KEEP_HOURS * 3600
+    with open(HISTORY) as fh:
+        first = fh.readline()
+    try:
+        if json.loads(first)["ts"] >= cutoff - 3600:
+            return
+    except (ValueError, KeyError):
+        pass
+    kept = []
+    with open(HISTORY) as fh:
+        for line in fh:
+            try:
+                if json.loads(line)["ts"] >= cutoff:
+                    kept.append(line)
+            except (ValueError, KeyError):
+                continue
+    tmp = HISTORY + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.writelines(kept)
+    os.replace(tmp, HISTORY)
+
+
+def when(ts):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def header(s):
+    p = s.get("pressure", {})
+    return (f"load {' '.join(s.get('load', []))}  |  pressure avg10: cpu {p.get('cpu_some', 0):.0f}%"
+            f"  io {p.get('io_some', 0):.0f}% (all stalled {p.get('io_full', 0):.0f}%)"
+            f"  memory {p.get('memory_some', 0):.0f}%")
+
+
+def cmd_now():
+    try:
+        with open(LATEST) as fh:
+            s = json.load(fh)
+    except (OSError, ValueError):
+        sys.exit(f"machine-snapshot: no sample in {STATE}; is machine-snapshot.timer running?")
+    age = (float(NOW) if NOW else time.time()) - s["ts"]
+    print(f"sample {when(s['ts'])} ({age:.0f}s ago)  {header(s)}")
+    if age > MAX_GAP:
+        print(f"  STALE: older than {MAX_GAP:.0f}s, so the timer has stopped; this is not the machine now")
+    if not s.get("interval"):
+        print("  first sample after a gap: no interval to measure CPU over yet")
+        return
+    procs, iv = s["procs"], s["interval"]
+    busy = sorted(procs.items(), key=lambda kv: -(kv[1]["own"] + kv[1]["reaped"]))
+    print(f"\nbusiest over the last {iv:.0f}s (cores = CPU-seconds / interval):")
+    print(f"  {'cores':>6} {'own':>6} {'reaped':>6} {'pid':>8}  command  [session]")
+    for pid, p in busy[:20]:
+        tot = p["own"] + p["reaped"]
+        if tot < MIN_CPU:
+            break
+        print(f"  {tot / iv:6.2f} {p['own']:6.1f} {p['reaped']:6.1f} {pid:>8}  {p['comm']}  "
+              f"[{session_of(pid, procs)}]  {p['args'][:70]}")
+    stalled = [(pid, p) for pid, p in procs.items() if p["state"] == "D"]
+    print(f"\nstalled (state D) at the instant of the sample: {len(stalled)}")
+    for pid, p in stalled:
+        print(f"  {pid:>8}  {p['comm']}  waiting in {p['wchan'] or '-'}  [{session_of(pid, procs)}]")
+    sessions = {}
+    for pid, p in procs.items():
+        k = session_of(pid, procs)
+        sessions[k] = sessions.get(k, 0) + p["own"] + p["reaped"]
+    print("\nCPU by session (cores):")
+    for k, v in sorted(sessions.items(), key=lambda kv: -kv[1]):
+        if v >= MIN_CPU:
+            print(f"  {v / iv:6.2f}  {'(not under a session)' if k == '-' else k}")
+
+
+def cmd_since(minutes):
+    now = float(NOW) if NOW else time.time()
+    start = now - minutes * 60
+    n, span = 0, 0.0
+    by_session, by_comm, stalls, io_full, loads = {}, {}, {}, [], []
+    try:
+        fh = open(HISTORY)
+    except OSError:
+        sys.exit(f"machine-snapshot: no history in {STATE}")
+    with fh:
+        for line in fh:
+            try:
+                s = json.loads(line)
+            except ValueError:
+                continue
+            if s["ts"] < start:
+                continue
+            n += 1
+            span += s.get("interval") or 0
+            io_full.append(s.get("pressure", {}).get("io_full", 0))
+            if s.get("load"):
+                loads.append(float(s["load"][0]))
+            for r in s["rows"]:
+                cpu = r["own"] + r["reaped"]
+                by_session[r["session"]] = by_session.get(r["session"], 0) + cpu
+                by_comm[r["comm"]] = by_comm.get(r["comm"], 0) + cpu
+                if r["state"] == "D":
+                    k = f"{r['comm']}  in {r['wchan'] or '-'}"
+                    stalls[k] = stalls.get(k, 0) + 1
+    if not n:
+        sys.exit(f"machine-snapshot: no samples in the last {minutes:g} minutes")
+    print(f"{n} samples from {when(start)} to {when(now)}, covering {span / 60:.1f} minutes")
+    print(f"load1 mean {sum(loads) / max(len(loads), 1):.1f}, max {max(loads, default=0):.1f};"
+          f"  io all-stalled mean {sum(io_full) / len(io_full):.0f}%, max {max(io_full):.0f}%")
+    print("\nCPU by session (CPU-seconds, mean cores):")
+    for k, v in sorted(by_session.items(), key=lambda kv: -kv[1])[:15]:
+        print(f"  {v:8.1f}  {v / max(span, 1):5.2f}  {'(not under a session)' if k == '-' else k}")
+    print("\nCPU by command:")
+    for k, v in sorted(by_comm.items(), key=lambda kv: -kv[1])[:15]:
+        print(f"  {v:8.1f}  {v / max(span, 1):5.2f}  {k}")
+    print(f"\nstalled tasks, by how many of the {n} samples caught them:")
+    for k, v in sorted(stalls.items(), key=lambda kv: -kv[1])[:15]:
+        print(f"  {v:6d}  {k}")
+    if not stalls:
+        print("  none caught")
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else ""
+    if not sys.platform.startswith("linux") and "MACHINE_SNAPSHOT_PROC" not in os.environ:
+        print(f"machine-snapshot: nothing to do on {sys.platform}; it reads Linux's /proc")
+        return
+    if cmd == "record":
+        cmd_record()
+    elif cmd == "now":
+        cmd_now()
+    elif cmd == "since" and len(argv) == 3:
+        try:
+            cmd_since(float(argv[2]))
+        except ValueError:
+            sys.exit("machine-snapshot: since takes a number of minutes")
+    elif cmd in ("-h", "--help"):
+        print(__doc__)
+    else:
+        sys.exit("usage: machine-snapshot record | now | since MINUTES")
+
+
+if __name__ == "__main__":
+    main(sys.argv)

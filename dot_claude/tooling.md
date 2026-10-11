@@ -17,6 +17,7 @@ view on demand) ·
 `claude-scratch-hook` (Claude Code lifecycle hooks — SubagentStart/SubagentStop/Stop/SessionEnd —
 that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
 only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
+`machine-snapshot` (what is loading the machine, by session and command, readable inside a sandbox that hides other sessions' processes: `now`, `since MINUTES`; Linux) ·
 `claude-mask-sweep` (stale Claude Code sandbox placeholder files, the ones `claude update` warns
 about; `--remove` deletes those no running session has mounted; a terminal tool, refuses in a sandbox) ·
 `claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·

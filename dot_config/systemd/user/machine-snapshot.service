@@ -1,0 +1,10 @@
+# One sample of what is loading this machine, written where sandboxed sessions can read it.
+# See `machine-snapshot --help`. Low CPU and I/O priority: it must not add to the load it measures.
+[Unit]
+Description=Record what is loading the machine (machine-snapshot)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/machine-snapshot record
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,12 @@
+# Every 15 seconds. AccuracySec is set because systemd's default of one minute would let samples
+# drift together and leave gaps, and the CPU figures are deltas between consecutive samples.
+[Unit]
+Description=Sample what is loading the machine every 15 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
