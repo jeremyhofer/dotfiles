@@ -32,6 +32,12 @@ measured but not enforced has been found sitting below the bar for months with n
   test files themselves, type declarations), each with a comment saying what it is.
 - An exception with no reason is a defect: the next reader cannot tell a deliberate gap from a
   convenient one.
+- **Under Vitest with V8 coverage, never put the marker inside an expression.** Vite's transform drops
+  a `/* v8 ignore next */` written mid-expression before V8 reads it, so the line still counts as
+  uncovered, or a reader believes it is excluded when it is not. Use the line form,
+  `// v8 ignore start -- <reason>` … `// v8 ignore stop`, around the smallest range, or a
+  statement-level `/* v8 ignore next -- <reason> */` on its own line (measured with Vitest 4.1 and
+  Vite 8, 2026-10-11). Check an exception took effect by reading the coverage report, not the code.
 
 ## 3. A project below the bar ratchets up; it never lowers the floor
 
