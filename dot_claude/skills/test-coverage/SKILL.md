@@ -1,6 +1,6 @@
 ---
 name: test-coverage
-description: Use when setting up, changing or reviewing a project's test configuration (Vitest, Jest, pytest, Playwright), adding a package or module that ships, when a coverage threshold fails a run, or when deciding whether a line may be excluded from coverage. Fires on "coverage", "thresholds", "v8 ignore", "istanbul ignore", "pragma: no cover", "fail_under", "--cov-fail-under", and on "why is this uncovered". Covers the expected bar (100%, enforced), where the threshold lives, how an exception is written, ratcheting a project that is not there yet, and proving the threshold can fail.
+description: Use when setting up, changing or reviewing a project's test configuration (Vitest, Jest, pytest, Playwright), adding a package or module that ships, when a coverage threshold fails a run, or when deciding whether a line may be excluded from coverage. Fires on "coverage", "thresholds", "v8 ignore", "istanbul ignore", "pragma: no cover", "fail_under", "--cov-fail-under", and on "why is this uncovered". Covers the expected bar (100%, enforced), where the threshold lives, how an exception is written, ratcheting a project that is not there yet, proving the threshold can fail, and how a browser lane that runs in several engines enforces coverage.
 ---
 
 # Test coverage: 100%, enforced by the test run itself
@@ -66,9 +66,31 @@ before relying on them.
 - **Vitest browser mode** collects coverage differently by browser: the V8 provider needs a
   Chromium-based browser, and other engines need the Istanbul provider. A lane that runs only in
   Firefox or WebKit may report no coverage at all under V8, which reads as a pass if no threshold
-  applies to it.
+  applies to it. Section 6 sets the rule for a lane that runs in more than one engine.
 - **Coverage from several test lanes** (a node lane and a browser lane of the same package) may need
   merging before a threshold means anything; a per-lane threshold on half the code passes while the
   package as a whole is uncovered.
 - **pytest with xdist** (`-n`) needs pytest-cov's own xdist support to combine worker data; check
   the reported total matches a serial run once.
+
+## 6. A browser lane in several engines enforces coverage on a Chromium-only run
+
+**Split the lane into two runs.** One runs in Chromium alone, collects V8 coverage and holds the 100
+threshold, and it is the run the gate executes as the test task. The other runs every test in the
+remaining engines (Firefox, WebKit) and measures nothing. **Do not instrument with Istanbul to
+measure several engines in one run.** A line reached only in another engine shows as uncovered in
+the Chromium run; give it a Chromium test, or an inline exception that says why (section 2).
+
+Why V8 on Chromium rather than Istanbul everywhere: V8 coverage comes from the engine, so the tests
+run the code that ships, at native speed, with no extra dependency. Istanbul rewrites every module
+before it runs, which slows the tests and changes their timing, and the tests that suffer are the
+focus, scroll and animation tests that already flake. The two choices fail differently, and that
+decides it: the split's weak spot is LOUD, a visible uncovered line; Istanbul's is QUIET, new
+intermittent failures nobody can attribute.
+
+The split is forced rather than chosen in at least one runner: Angular's Vitest builder
+(`@angular/build` 22) selects the V8 provider only when every browser in the run is Chromium-based,
+so a run that includes Firefox cannot collect V8 coverage at all. Check the runner in use before
+assuming one run can do both.
+
+A Playwright end-to-end lane is outside this rule; it measures behaviour, not line coverage.
