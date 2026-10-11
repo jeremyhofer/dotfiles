@@ -59,6 +59,12 @@ manual).
   publishable packages (`docs-nested`), and the initiative and subject shapes below. It reads the
   git index, so an untracked leftover on disk does not count. Nothing inside `docs/archive/` is
   checked.
+- **A live document may cite the archive for provenance, never for knowledge.** Pointing at an
+  archived spec for where a decision came from, or for the evidence behind it, is fine. A citation
+  that sends the reader there to learn how something works now, or what to do, means the knowledge
+  was never promoted: write it into a decision record, a runbook, a reference page or the register,
+  and keep the archived path only as its source. The test is whether the live document still reads
+  completely if the archive is never opened. No check reads this; it is judged by reading.
 
 ## Initiatives and subjects: where a document belongs
 

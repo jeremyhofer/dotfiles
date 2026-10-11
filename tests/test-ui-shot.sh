@@ -56,20 +56,62 @@ grep -q 'colorScheme' "$TOOL" \
   || { echo "FAIL: no prefers-color-scheme emulation"; exit 1; }
 echo "ok:   can render under a prefers-color-scheme condition"; pass=$((pass+1))
 
-# Functional, when a project Playwright is reachable. Source greps above cannot show that the
-# exit code actually changes; this can. Skipped rather than faked where nothing is installed.
-pw=$(find "$HOME/Devel" -maxdepth 6 -type d -path '*/node_modules/playwright' 2>/dev/null | head -1)
-if [ -n "$pw" ]; then
-  proj=${pw%/node_modules/playwright}
-  printf '<html><body><div id="row" style="border-top:1px solid #ddd">r</div></body></html>' > "$d/p.html"
-  ( cd "$proj" && sh "$TOOL" "file://$d/p.html" --selector '#row'  --out "$d/o1" >/dev/null 2>&1 ) \
+# Functional, against a STUB playwright module rather than a real browser. Source greps above
+# cannot show that the exit code actually changes; this can. The stub stands in for Playwright's
+# API only: what is under test is ui-shot's own logic (finding the project's install, the
+# no-match failure, the options it passes), not Playwright's rendering, which every real use
+# exercises. The suite used to borrow the first project install under ~/Devel instead, and failed
+# once that was a moved checkout whose browsers Playwright had garbage-collected (2026-10-11).
+if command -v node >/dev/null 2>&1; then
+  proj="$d/proj"; mkdir -p "$proj/node_modules/playwright"
+  cat > "$proj/node_modules/playwright/index.js" <<'STUB'
+// Stub: a page holds one element, #row. Each call that matters is appended to $UI_SHOT_STUB_LOG.
+const fs = require('fs');
+const log = o => fs.appendFileSync(process.env.UI_SHOT_STUB_LOG, JSON.stringify(o) + '\n');
+const touch = o => { if (o && o.path) fs.writeFileSync(o.path, 'png'); };
+const element = sel => ({
+  first: () => element(sel),
+  count: async () => (sel === '#row' ? 1 : 0),
+  screenshot: async o => touch(o),
+  boundingBox: async () => ({ width: 10, height: 1 }),
+  waitFor: async () => {},
+});
+exports.chromium = {
+  launch: async opts => {
+    log({ launch: opts === undefined ? null : opts });
+    return {
+      newPage: async opts => {
+        log({ newPage: opts });
+        return {
+          goto: async () => {},
+          screenshot: async o => touch(o),
+          locator: element,
+          evaluate: async () => ({ w: 100, h: 100 }),
+        };
+      },
+      close: async () => {},
+    };
+  },
+};
+STUB
+  UI_SHOT_STUB_LOG="$d/stub.log"; export UI_SHOT_STUB_LOG
+  ( cd "$proj" && sh "$TOOL" "file:///stub" --selector '#row'  --out "$d/o1" >/dev/null 2>&1 ) \
     && { echo "ok:   a matching selector still exits 0"; pass=$((pass+1)); } \
     || { echo "FAIL: over-corrected -- a VALID selector now fails"; exit 1; }
-  ( cd "$proj" && sh "$TOOL" "file://$d/p.html" --selector '#nope' --out "$d/o2" >/dev/null 2>&1 ) \
+  [ -f "$d/o1/crop-1.png" ] || { echo "FAIL: a matching selector produced no crop"; exit 1; }
+  echo "ok:   a matching selector writes its crop"; pass=$((pass+1))
+  ( cd "$proj" && sh "$TOOL" "file:///stub" --selector '#nope' --out "$d/o2" >/dev/null 2>&1 ) \
     && { echo "FAIL: a no-match selector still exits 0 -- the crop silently absent"; exit 1; } \
     || { echo "ok:   a no-match selector exits non-zero (functional)"; pass=$((pass+1)); }
+  grep -q '"deviceScaleFactor"' "$d/stub.log" \
+    || { echo "FAIL: the page is not opened with a deviceScaleFactor"; exit 1; }
+  echo "ok:   the page is opened at an explicit scale (functional)"; pass=$((pass+1))
+  if grep -q '"headless":false' "$d/stub.log"; then
+    echo "FAIL: the browser is launched headed"; exit 1
+  fi
+  echo "ok:   the browser is not launched headed (functional)"; pass=$((pass+1))
 else
-  echo "skip: no project Playwright reachable; functional selector checks not run"
+  echo "skip: node not installed; functional selector checks not run"
 fi
 
 printf '\n%d passed\n' "$pass"
