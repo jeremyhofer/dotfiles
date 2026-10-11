@@ -202,12 +202,19 @@ regenerates is believed while wrong.
 | the steps to execute a build | plan | scaffolding: archived when executed |
 | a from-scratch procedure a person follows on a live system | runbook | living, kept current |
 | a cited investigation | research note | frozen; a newer note supersedes it |
-| how the project works, looked up when needed (architecture, commands, testing, a workflow) | reference page, `reference/` | living |
+| how the project works, looked up when needed (architecture, commands, testing, a workflow, what exists and what is switched on) | reference page, `reference/` | living |
 | a rule the project is governed by, or its compliance evidence | policy, `policies/` or `compliance/` | living, versioned |
 | the state of a piece of work | register entry (skill `register-standard`) | living |
 
 **Status lives only in the register.** Never narrate what is in flight into a context file, a
 README, a record or a spec.
+
+**What the system does today is a reference page, not status.** The register holds the state of
+*work*; the state of the *system* (which capabilities exist, which are switched on, and for which
+data) is how the project works, so it is written as current state in `reference/`, on a page of
+its own or in the architecture page. It carries no per-plan status or commit hashes: git and the
+closed register entries keep that history. An index of executed plans is not this page, and an
+archived document is never its home.
 
 ## A decision record
 
