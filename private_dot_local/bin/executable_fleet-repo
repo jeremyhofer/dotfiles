@@ -113,7 +113,8 @@
 # the manifest's directory, never the current one: run by hand from a subdirectory, the old tool
 # built the container there. The manifest is read with fleet-decl (a sibling file, else on PATH).
 #
-# A post-worktree-create hook is offered, not required: see run_post_worktree_create_hook below.
+# Two hooks are offered, not required: post-worktree-create and post-clone, each described at its
+# runner below (run_post_worktree_create_hook, run_post_clone_hook).
 set -euo pipefail
 
 die() { printf 'fleet-repo: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -290,6 +291,21 @@ run_post_worktree_create_hook() {
   local hook="$HOME/.dotlocal/hooks/post-worktree-create"
   [ -x "$hook" ] || return 0
   "$hook" "$1" || true
+}
+
+# CONTRACT: ~/.dotlocal/hooks/post-clone <absolute-repository-path> <project>
+# Runs at the end of every `clone <project>`, fresh or reconciling, in either layout; the path is the
+# standard clone's root or the bare container's directory. It is where a private layer finishes a
+# clone this public tool cannot finish without naming private tooling, such as wiring the remotes its
+# own convention declares. So it runs on every re-run and must be idempotent. NOT ADVISORY, unlike
+# post-worktree-create: a hook that fails leaves the clone incomplete, so it is a problem and the
+# exit is 1; the clone itself is left in place. `clone --url` has no manifest entry to hand over and
+# does not run it.
+run_post_clone_hook() {
+  local hook="$HOME/.dotlocal/hooks/post-clone" path
+  [ -n "${PROJECT:-}" ] && [ -x "$hook" ] || return 0
+  path=$(cd "$TARGET" 2>/dev/null && pwd) || { problem "post-clone hook not run: $TARGET is not a directory"; return 0; }
+  "$hook" "$path" "$PROJECT" || problem "the post-clone hook ($hook) failed for $PROJECT; the clone is in place but incomplete"
 }
 
 # A new worktree gets a copy of the gitignored files its repository lists in a .worktreeinclude at
@@ -525,6 +541,7 @@ EOF
   # inspect the wrong tree and report confidently either way. `cd`+`pwd` rather than `realpath`,
   # which is not present on both userlands.
   run_post_worktree_create_hook "$(cd "$TARGET/$default" 2>/dev/null && pwd)"
+  run_post_clone_hook
   [ "$PROBLEMS" -eq 0 ] || return 1
 }
 
@@ -622,6 +639,7 @@ EOF
 
   say "$TARGET ready (on ${cur:-a detached HEAD})"
   run_post_worktree_create_hook "$(cd "$TARGET" 2>/dev/null && pwd)"
+  run_post_clone_hook
   [ "$PROBLEMS" -eq 0 ] || return 1
 }
 

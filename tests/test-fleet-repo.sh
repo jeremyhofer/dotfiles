@@ -653,6 +653,52 @@ FR update --project scont > "$TMP/out" 2>&1; rc=$?
 check "standard: update on a bare container where a standard clone is declared: exit 1, bare-container, nothing fetched" \
   '[ "$rc" = 1 ] && grep -q "bare-container" "$TMP/out" && [ "$(git --git-dir=dom/scont/.git rev-parse refs/remotes/origin/main)" = "$before" ]'
 
+# --- the post-clone hook ------------------------------------------------------------------------
+# ~/.dotlocal/hooks/post-clone <absolute-repository-path> <project> runs after a manifest entry is
+# cloned or reconciled, in either layout, so a private layer can finish the clone (its remotes)
+# without this public tool naming private tooling. Unlike post-worktree-create it is NOT advisory: a
+# failed hook leaves the clone incomplete, so it is a problem and the exit is 1. `clone --url` has
+# no entry to hand over and does not run it.
+cd "$SW" || exit 1
+cat >> mani.yaml <<EOF
+  shook:
+    path: dom/shook
+    url: $(url st)
+    branch: main
+  bhook:
+    path: dom/bhook/main
+    url: $(url st)
+    container:
+      branches: [main]
+EOF
+mkdir -p "$HOME/.dotlocal/hooks"
+cat > "$HOME/.dotlocal/hooks/post-clone" <<EOF
+#!/bin/sh
+printf '%s|%s\n' "\$1" "\$2" >> "$TMP/hook.log"
+exit "\${HOOK_RC:-0}"
+EOF
+chmod +x "$HOME/.dotlocal/hooks/post-clone"
+: > "$TMP/hook.log"
+FR clone shook > "$TMP/out" 2>&1; rc=$?
+check "post-clone: a fresh standard clone runs the hook once, with the absolute path and the project" \
+  '[ "$rc" = 0 ] && [ "$(cat "$TMP/hook.log")" = "$SW/dom/shook|shook" ]'
+: > "$TMP/hook.log"
+FR clone shook > "$TMP/out" 2>&1; rc=$?
+check "post-clone: a re-run on the existing clone runs it again (the hook must be idempotent)" \
+  '[ "$rc" = 0 ] && [ "$(cat "$TMP/hook.log")" = "$SW/dom/shook|shook" ]'
+: > "$TMP/hook.log"
+FR clone bhook > "$TMP/out" 2>&1; rc=$?
+check "post-clone: a bare container runs it with the container's path" \
+  '[ "$rc" = 0 ] && [ "$(cat "$TMP/hook.log")" = "$SW/dom/bhook|bhook" ]'
+: > "$TMP/hook.log"
+HOOK_RC=3 FR clone shook > "$TMP/out" 2>&1; rc=$?
+check "post-clone: a failing hook is a problem: exit 1, a warning naming the hook, the clone left in place" \
+  '[ "$rc" = 1 ] && grep -q "post-clone" "$TMP/out" && [ -d dom/shook/.git ]'
+: > "$TMP/hook.log"
+FR clone --url "$(url st)" "$TMP/byurl" > "$TMP/out" 2>&1; rc=$?
+check "post-clone: clone --url does not run it" '[ "$rc" = 0 ] && [ ! -s "$TMP/hook.log" ]'
+rm -f "$HOME/.dotlocal/hooks/post-clone"
+
 # check on standard entries: one fixture per finding, each producing exactly that one finding.
 SC="$TMP/stdchk"; mkdir -p "$SC/dom"; cd "$SC" || exit 1
 std_entry() {  # $1 name, then extra lines

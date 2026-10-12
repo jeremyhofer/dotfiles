@@ -237,6 +237,15 @@ changes: [Triggers](#triggers-re-running-the-bases-mechanisms).
 `fleet-repo clone` (and so its old name `git-clone-worktree`) runs it, if it is executable, with the new worktree's absolute path. Advisory
 only: its exit status is ignored, so it can report but never block a worktree's creation.
 
+### `~/.dotlocal/hooks/post-clone`
+
+`fleet-repo clone <project>` runs it, if it is executable, at the end of every run, fresh or
+reconciling, in either layout, with the repository's absolute path (a standard clone's root, or a
+bare container's directory) and the project's name. It is where this layer finishes a clone the base
+cannot finish without naming private tooling, such as wiring the remotes the domain's convention
+declares. It runs on every re-run, so it must be idempotent. **Not advisory:** a failing hook makes
+`fleet-repo` exit 1, with the clone left in place. `clone --url` does not run it.
+
 ## The publish guard
 
 `leak-guard` runs on every commit and push and passes everything until the domain says what to keep
