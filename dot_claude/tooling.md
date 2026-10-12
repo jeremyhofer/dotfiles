@@ -39,7 +39,7 @@ typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell sp
 `spell-capture` · `ui-shot` (headless render for visual review) ·
 `skill-externals-sync` (installs the pinned skills a private layer lists in `~/.dotlocal/skill-externals.yaml`, by git; runs after every apply) ·
 `fleet-repo` (makes a repository on disk match its manifest entry, in the layout `fleet-decl --layout` reads from it: `clone` as a standard clone with nested `.worktrees/`, or as a bare container plus sibling worktrees, reconciling an existing one and never converting between the two; `update` for fast-forwards, `check` for drift; bootstraps what `wt` then manages, since worktrunk has no clone verb) ·
-`claude-project-settings` (writes each manifest project's declared `claudeLocalSettings:` into its `.claude/settings.local.json` by merge, declared keys winning; `check` reports drift; run by a private layer's apply, never from a sandboxed session) ·
+`claude-project-settings` (writes the settings file each manifest project points at with `claudeLocalSettings:` into its `.claude/settings.local.json` by merge, declared keys winning; `validate` holds a file to closed rules of what may be declared; `check` reports drift; run by a private layer's apply, never from a sandboxed session) ·
 `claude-trust-check` (lists the manifest's directories whose Claude Code workspace-trust prompt is still unaccepted, which blocks `claude --bg` there; read-only, exit 3 when the trust state is unknown) ·
 `fleet-decl` (reads one declaration from the per-repo record, a mani.yaml; exit 2 means the record is unreadable, never "not declared") ·
 `wt-bootstrap` (installs a fresh worktree's dependencies from whichever lockfile it finds, frozen; wired in as worktrunk's `pre-start` hook) ·

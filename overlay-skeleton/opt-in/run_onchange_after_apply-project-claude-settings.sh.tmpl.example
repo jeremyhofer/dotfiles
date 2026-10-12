@@ -1,10 +1,11 @@
 #!/bin/sh
-# OPT-IN: writes each project's declared Claude settings (`claudeLocalSettings:` in the manifest) into
-# that project's .claude/settings.local.json, which declaring alone does not do. Keep it only if the
-# manifest declares some. Drop the `.example` suffix to use it.
+# OPT-IN: writes each project's Claude settings file (the manifest's `claudeLocalSettings:` pointers,
+# files under dot_dotlocal/claude/projects/) into that project's .claude/settings.local.json, which
+# declaring alone does not do. Keep it only if the manifest declares some. Drop the `.example` suffix.
 #
-# Re-runs whenever the manifest changes:
+# Re-runs whenever the manifest or any project file changes:
 #   manifest hash: {{ include "Devel/mani.yaml.tmpl" | sha256sum }}
+#   project files: {{ range glob (joinPath .chezmoi.sourceDir "dot_dotlocal/claude/projects/*.json") }}{{ include . | sha256sum | trunc 12 }} {{ end }}
 # The logic is the base's `claude-project-settings`; this only runs it. It exits 1 when a project
 # could not be written, which it names; that is reported here and does not fail the apply.
 set -u

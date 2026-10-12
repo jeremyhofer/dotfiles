@@ -1,48 +1,59 @@
 #!/bin/sh
-# claude-project-settings -- merge each fleet project's declared Claude Code settings into that
-# project's .claude/settings.local.json.
+# claude-project-settings -- write each fleet project's declared Claude Code settings into that
+# project's .claude/settings.local.json, after checking them against what may be declared at all.
 #
-#   claude-project-settings apply [<project>]   write every declaring project, or the one named
-#   claude-project-settings check [<project>]   report drift; write nothing
+#   claude-project-settings apply [<project>]     validate, then write every declaring project
+#   claude-project-settings check [<project>]     report drift; write nothing
+#   claude-project-settings validate [<file>...]  check files against the rules; with no file,
+#                                                 every declared project's file
 #
-#   exit 0  done / no drift
-#   exit 1  a project could not be written (an unparseable live file, a refused declaration), or,
-#           for `check`, drift was found
+#   exit 0  done / no drift / valid
+#   exit 1  a project could not be written (an invalid declaration, an unparseable live file), or
+#           drift found, or a file failed validation
 #   exit 2  bad usage, a missing tool, or a fleet record fleet-decl cannot read
 #
 # WHY. A project's own Claude settings, such as the extra directories its sessions may write, lived
 # in hand-edited, gitignored files on each machine: nothing recorded them, a new machine had none,
-# and nobody could see which project was granted what. They are now declared on the project in the
-# fleet record, as a `claudeLocalSettings:` map in settings.json's own shape:
+# and nobody could see which project was granted what. Now a private layer keeps one plain JSON
+# file per project, in settings.json's own shape, and points at it from the project's entry in the
+# fleet record:
 #
-#     claudeLocalSettings:
-#       sandbox:
-#         filesystem:
-#           allowWrite: ["~/Devel/internal/some-repo"]
+#     claudeLocalSettings: claude/projects/notes.json
 #
-# and written by this tool. A private layer declares them, so the reason for each can sit beside it
-# in that layer's record.
+# A relative path is resolved against $CLAUDE_PROJECT_SETTINGS_ROOT, by default ~/.dotlocal, where a
+# private layer deploys. The files hold settings only; the layer documents each grant beside them.
+#
+# WHAT MAY BE DECLARED, checked by `validate` and again before every write. The rules are closed:
+#   - only the keys listed in ALLOWED_KEYS below, today sandbox.filesystem.allowWrite. Anything
+#     else, permissions included, is refused until it is added here on purpose;
+#   - allowWrite is a list of paths written ~/..., with no glob characters, no `.` or `..`
+#     segments, no doubled slash, not the whole home directory, and nothing at or under a
+#     protected directory (PROTECTED below: keys, the GPG home, and Claude's own configuration).
+# A layer's commit gate should run `validate`, so a bad file is refused when it is committed, not
+# when it is applied.
 #
 # WHY settings.local.json AND NOT settings.json. The local file is machine-local and gitignored;
 # settings.json is committed and travels with every clone, the wrong place for a path on one
 # machine.
 #
 # THE MERGE RULE, the same as the user-level file's (dot_claude/modify_settings.json): the declared
-# keys win, merged deeply; every other key in the live file is kept, because Claude Code writes there
-# too. A declared ARRAY replaces the live one wholesale, so a declared allowWrite is the complete
-# list, and an entry dropped from the declaration is removed on the next apply. For the same reason
-# `permissions.allow` may not be declared: the app adds every permission it is granted to that
-# array, and replacing it would discard them all. A project that declares it is refused.
+# keys win, merged deeply; every other key in the live file is kept, because Claude Code writes
+# there too (every permission it is granted). A declared ARRAY replaces the live one wholesale, so a
+# declared allowWrite is the complete list, and an entry dropped from the file is removed on the
+# next apply. Removing a project's pointer removes nothing from its live file; declare an empty list
+# to take entries away.
 #
 # NEVER CLOBBER. A live file that is not valid JSON is reported and left alone. A write goes through
 # a temporary file and a rename. A project whose directory is not on this machine is skipped, so one
-# record serves every machine. Removing a project's whole declaration removes nothing from its live
-# file; declare an empty list to take entries away.
+# record serves every machine.
 #
 # WHO RUNS IT. Not a sandboxed session: these files are among the paths Claude Code's sandbox
-# protects, so a session cannot grant itself access. A private layer runs `apply` when its record
-# changes, as the person applying it.
+# protects, so a session cannot grant itself access. A private layer runs `apply` when its record or
+# its files change, as the person applying it.
 set -u
+
+ALLOWED_KEYS='[["sandbox","filesystem","allowWrite"]]'
+PROTECTED='["~/.ssh","~/.gnupg","~/.claude"]'
 
 say()  { printf 'claude-project-settings: %s\n' "$1"; }
 warn() { printf 'claude-project-settings: %s\n' "$1" >&2; problems=$((problems + 1)); }
@@ -50,46 +61,101 @@ die2() { printf 'claude-project-settings: %s\n' "$1" >&2; exit 2; }
 
 cmd=${1:-}
 case "$cmd" in
-  apply|check) shift ;;
+  apply|check|validate) shift ;;
   -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
-  *) die2 "usage: claude-project-settings apply|check [<project>]" ;;
+  *) die2 "usage: claude-project-settings apply|check [<project>] | validate [<file>...]" ;;
 esac
-[ $# -le 1 ] || die2 "usage: claude-project-settings $cmd [<project>]"
-only=${1:-}
+[ "$cmd" = validate ] || [ $# -le 1 ] || die2 "usage: claude-project-settings $cmd [<project>]"
 
 command -v jq >/dev/null 2>&1 || die2 "jq is not installed"
-command -v fleet-decl >/dev/null 2>&1 || die2 "fleet-decl is not installed (it ships with the public dotfiles base)"
-RECORD=${FLEET_RECORD:-$HOME/Devel/mani.yaml}
-ROOT=${FLEET_DEVEL_ROOT:-$(dirname "$RECORD")}
-FLEET_RECORD=$RECORD; FLEET_DEVEL_ROOT=$ROOT; export FLEET_RECORD FLEET_DEVEL_ROOT
+SROOT=${CLAUDE_PROJECT_SETTINGS_ROOT:-$HOME/.dotlocal}
+problems=0; drift=0
+
+# Prints one line per rule the JSON file $1 breaks; prints nothing for a valid file.
+violations() {
+  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson protected "$PROTECTED" '
+    def under($dirs): sub("/+$"; "") as $n
+      | any($dirs[] as $d | ($n == $d or ($n | startswith($d + "/"))); .);
+    if type != "object" then "the file is not a JSON object" else
+      ([paths | map(select(type == "string")) | select(length > 0)] | unique[]
+        | . as $k
+        | select(any($allowed[]; .[0:($k | length)] == $k) | not)
+        | "key \(join(".")) may not be declared"),
+      (.sandbox.filesystem.allowWrite as $w
+        | if $w == null then empty
+          elif ($w | type) != "array" then "sandbox.filesystem.allowWrite must be a list"
+          else $w[]
+            | if type != "string" then "allowWrite entry \(tojson) is not a path"
+              elif (startswith("~/") | not) then "allowWrite entry \(.) must be written ~/..."
+              elif test("[*?\\[\\]{}]") then "allowWrite entry \(.) contains a glob character"
+              elif test("(^|/)\\.{1,2}(/|$)") then "allowWrite entry \(.) contains a . or .. segment"
+              elif test("//") then "allowWrite entry \(.) contains a doubled slash"
+              elif sub("/+$"; "") == "~" then "allowWrite entry \(.) is the whole home directory"
+              elif under($protected) then "allowWrite entry \(.) is at or under a protected directory"
+              else empty end
+          end)
+    end' "$1" 2>/dev/null || echo "the file is not valid JSON"
+}
+
+check_file() {  # $1 file, $2 label; warns for each violation, returns 1 if any
+  [ -f "$1" ] || { warn "$2: $1 does not exist"; return 1; }
+  _v=$(violations "$1")
+  [ -z "$_v" ] && return 0
+  printf '%s\n' "$_v" | while IFS= read -r _l; do printf 'claude-project-settings: %s: %s\n' "$2" "$_l" >&2; done
+  problems=$((problems + 1))
+  return 1
+}
+
+resolve() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$SROOT" "$1" ;; esac; }
 
 KEY=claudeLocalSettings
-if [ -n "$only" ]; then
-  projects=$only
-else
-  projects=$(fleet-decl --projects-with "$KEY"); rc=$?
-  case $rc in
+need_record() {
+  command -v fleet-decl >/dev/null 2>&1 || die2 "fleet-decl is not installed (it ships with the public dotfiles base)"
+  RECORD=${FLEET_RECORD:-$HOME/Devel/mani.yaml}
+  ROOT=${FLEET_DEVEL_ROOT:-$(dirname "$RECORD")}
+  FLEET_RECORD=$RECORD; FLEET_DEVEL_ROOT=$ROOT; export FLEET_RECORD FLEET_DEVEL_ROOT
+}
+# Sets PROJECTS. Not called in a command substitution: its die2 must end the script, not a subshell.
+load_projects() {
+  PROJECTS=$(fleet-decl --projects-with "$KEY"); _rc=$?
+  case $_rc in
     0) ;;
-    1) exit 0 ;;
-    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $rc)" ;;
+    1) PROJECTS="" ;;
+    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $_rc)" ;;
   esac
+}
+pointer() {  # $1 project -> sets SRC to the resolved file, or empty with a warning. Not in a subshell.
+  SRC=""
+  _p=$(fleet-decl --entry "$1" "$KEY"); _rc=$?
+  case $_rc in
+    0) SRC=$(resolve "$_p") ;;
+    1) warn "$1: declares no $KEY" ;;
+    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $_rc)" ;;
+  esac
+}
+
+if [ "$cmd" = validate ]; then
+  if [ $# -gt 0 ]; then
+    for f in "$@"; do check_file "$f" "$f" || :; done
+  else
+    need_record; load_projects
+    for p in $PROJECTS; do
+      pointer "$p"
+      [ -z "$SRC" ] || check_file "$SRC" "$p" || :
+    done
+  fi
+  [ "$problems" -eq 0 ] && exit 0
+  exit 1
 fi
 
-problems=0; drift=0
+need_record
+if [ -n "${1:-}" ]; then projects=$1; else load_projects; projects=$PROJECTS; fi
+
 for p in $projects; do
-  decl=$(fleet-decl --entry-json "$p" "$KEY"); rc=$?
-  case $rc in
-    0) ;;
-    1) warn "$p: declares no $KEY"; continue ;;
-    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $rc)" ;;
-  esac
-  if ! printf '%s' "$decl" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    warn "$p: $KEY is not a map; skipped"; continue
-  fi
-  if printf '%s' "$decl" | jq -e '.permissions.allow != null' >/dev/null 2>&1; then
-    warn "$p: declares permissions.allow, which the app adds to as permissions are granted; refused"
-    continue
-  fi
+  pointer "$p"; src=$SRC
+  [ -n "$src" ] || continue
+  check_file "$src" "$p" || { warn "$p: not written"; continue; }
+  decl=$(cat "$src")
   path=$(fleet-decl --entry "$p" path) || { warn "$p: declares no path"; continue; }
   case "$path" in /*) dir=$path ;; *) dir=$ROOT/$path ;; esac
   if [ ! -d "$dir" ]; then say "$p: $dir is not on this machine; skipped"; continue; fi
