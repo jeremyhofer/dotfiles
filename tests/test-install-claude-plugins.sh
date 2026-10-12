@@ -7,7 +7,11 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "ok:   $1"; }
 bad() { fail=$((fail+1)); echo "FAIL: $1 -> $2"; }
 DECL='{"extraKnownMarketplaces":{"cloudflare":{"source":{"source":"github","repo":"cloudflare/skills"}},"worktrunk":{"source":{"source":"github","repo":"max-sixty/worktrunk"}}},"enabledPlugins":{"cloudflare@cloudflare":true,"worktrunk@worktrunk":true,"old@x":false}}'
+# Each case gets a fresh scratch home; the previous one is removed when the next is made, and the
+# last on exit, so a run leaves nothing in $TMPDIR.
+trap '[ -n "${H:-}" ] && rm -rf "$H"' EXIT
 setup() {  # $1 known marketplaces json, $2 installed plugins json, $3 stub exit code for install, $4 live settings json (default: the declaration)
+  [ -n "${H:-}" ] && rm -rf "$H"
   H=$(mktemp -d); mkdir -p "$H/.claude/plugins" "$H/bin"
   printf '%s' "$DECL" > "$H/declared.json"
   printf '%s' "${4:-$DECL}" > "$H/.claude/settings.json"
