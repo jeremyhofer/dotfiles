@@ -45,7 +45,7 @@ projects:
 YAML
 P="$sroot/claude/projects"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/one","~/two"]}}}\n' > "$P/a.json"
-printf '{"sandbox":{"filesystem":{"allowWrite":["~/three"]}}}\n' > "$P/fresh.json"
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/three"]},"excludedCommands":["ssh *"]}}\n' > "$P/fresh.json"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/x"]}}}\n' > "$P/broken.json"
 printf '{"permissions":{"allow":["Bash(rm:*)"]}}\n' > "$P/greedy.json"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/y"]}}}\n' > "$P/elsewhere.json"
@@ -82,6 +82,15 @@ v "the whole home directory" '{"sandbox":{"filesystem":{"allowWrite":["~/"]}}}' 
 v "a protected directory" '{"sandbox":{"filesystem":{"allowWrite":["~/.ssh"]}}}' "protected"
 v "under a protected directory" '{"sandbox":{"filesystem":{"allowWrite":["~/.claude/settings.json"]}}}' "protected"
 v "a sibling of a protected directory is fine" '{"sandbox":{"filesystem":{"allowWrite":["~/.sshfoo"]}}}' ""
+v "excludedCommands of the form <command> *" '{"sandbox":{"excludedCommands":["ssh *","ci-trigger *"]}}' ""
+v "excludedCommands beside allowWrite" '{"sandbox":{"excludedCommands":["ssh *"],"filesystem":{"allowWrite":["~/x"]}}}' ""
+v "excludedCommands that is not a list" '{"sandbox":{"excludedCommands":"ssh *"}}' "must be a list"
+v "an excludedCommands entry with no star" '{"sandbox":{"excludedCommands":["ssh"]}}' "one command name followed by"
+v "an excludedCommands entry with arguments" '{"sandbox":{"excludedCommands":["git push *"]}}' "one command name followed by"
+v "an excludedCommands entry that is a path" '{"sandbox":{"excludedCommands":["/usr/bin/ssh *"]}}' "one command name followed by"
+v "an excluded shell" '{"sandbox":{"excludedCommands":["bash *"]}}' "shell, interpreter or wrapper"
+v "an excluded wrapper" '{"sandbox":{"excludedCommands":["env *"]}}' "shell, interpreter or wrapper"
+v "a sandbox key beside excludedCommands" '{"sandbox":{"excludedCommands":["ssh *"],"network":{"allowAllUnixSockets":true}}}' "key sandbox.network may not be declared"
 v "a non-object file" '["~/x"]' "not a JSON object"
 v "unparseable JSON" '{ nope' "not valid JSON"
 out=$(sh "$tool" validate 2>&1); rc=$?
@@ -102,6 +111,8 @@ a="$root/work/a/.claude/settings.local.json"
   && ok "undeclared live keys, the app's permissions.allow among them, are kept" || bad "live keys kept" "$(cat "$a")"
 [ "$(jq -c .sandbox.filesystem.allowWrite "$root/work/fresh/.claude/settings.local.json" 2>/dev/null)" = '["~/three"]' ] \
   && ok "a project with no .claude/ gets the directory and the file" || bad "fresh project" "$(ls -la "$root/work/fresh")"
+[ "$(jq -c .sandbox.excludedCommands "$root/work/fresh/.claude/settings.local.json" 2>/dev/null)" = '["ssh *"]' ] \
+  && ok "a declared excludedCommands is written beside allowWrite" || bad "excludedCommands written" "$(cat "$root/work/fresh/.claude/settings.local.json" 2>/dev/null)"
 { [ "$(cat "$root/work/broken/.claude/settings.local.json")" = '{ not json' ] && grep -q 'broken' "$tmp/out"; } \
   && ok "an unparseable live file is left alone and named" || bad "broken left alone" "$(cat "$tmp/out")"
 { [ ! -e "$root/work/greedy/.claude/settings.local.json" ] && grep -q 'greedy: not written' "$tmp/out"; } \

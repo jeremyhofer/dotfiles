@@ -24,11 +24,16 @@
 # private layer deploys. The files hold settings only; the layer documents each grant beside them.
 #
 # WHAT MAY BE DECLARED, checked by `validate` and again before every write. The rules are closed:
-#   - only the keys listed in ALLOWED_KEYS below, today sandbox.filesystem.allowWrite. Anything
-#     else, permissions included, is refused until it is added here on purpose;
+#   - only the keys listed in ALLOWED_KEYS below, today sandbox.filesystem.allowWrite and
+#     sandbox.excludedCommands. Anything else, permissions included, is refused until it is added
+#     here on purpose;
 #   - allowWrite is a list of paths written ~/..., with no glob characters, no `.` or `..`
 #     segments, no doubled slash, not the whole home directory, and nothing at or under a
-#     protected directory (PROTECTED below: keys, the GPG home, and Claude's own configuration).
+#     protected directory (PROTECTED below: keys, the GPG home, and Claude's own configuration);
+#   - excludedCommands, the commands that run OUTSIDE the sandbox in that project, is a list of
+#     entries of exactly the form `<command> *`: one plain command name, a space, a star. Never a
+#     shell, interpreter or wrapper (SHELLISH below), because excluding one would take every
+#     command written through it out of the sandbox, which leaves no boundary at all.
 # A layer's commit gate should run `validate`, so a bad file is refused when it is committed, not
 # when it is applied.
 #
@@ -52,7 +57,8 @@
 # its files change, as the person applying it.
 set -u
 
-ALLOWED_KEYS='[["sandbox","filesystem","allowWrite"]]'
+ALLOWED_KEYS='[["sandbox","filesystem","allowWrite"],["sandbox","excludedCommands"]]'
+SHELLISH='["sh","bash","zsh","dash","fish","ksh","env","sudo","doas","su","exec","eval","command","xargs","nohup","timeout","nice","python","python3","node","perl","ruby","npx","uv","uvx"]'
 PROTECTED='["~/.ssh","~/.gnupg","~/.claude"]'
 
 say()  { printf 'claude-project-settings: %s\n' "$1"; }
@@ -73,7 +79,7 @@ problems=0; drift=0
 
 # Prints one line per rule the JSON file $1 breaks; prints nothing for a valid file.
 violations() {
-  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson protected "$PROTECTED" '
+  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson protected "$PROTECTED" --argjson shellish "$SHELLISH" '
     def under($dirs): sub("/+$"; "") as $n
       | any($dirs[] as $d | ($n == $d or ($n | startswith($d + "/"))); .);
     if type != "object" then "the file is not a JSON object" else
@@ -92,6 +98,15 @@ violations() {
               elif test("//") then "allowWrite entry \(.) contains a doubled slash"
               elif sub("/+$"; "") == "~" then "allowWrite entry \(.) is the whole home directory"
               elif under($protected) then "allowWrite entry \(.) is at or under a protected directory"
+              else empty end
+          end),
+      (.sandbox.excludedCommands as $x
+        | if $x == null then empty
+          elif ($x | type) != "array" then "sandbox.excludedCommands must be a list"
+          else $x[]
+            | if type != "string" then "excludedCommands entry \(tojson) is not a string"
+              elif (test("^[a-z0-9][a-z0-9._-]* \\*$") | not) then "excludedCommands entry \(.) must be one command name followed by \" *\""
+              elif (split(" ")[0]) as $c | any($shellish[]; . == $c) then "excludedCommands entry \(.) names a shell, interpreter or wrapper"
               else empty end
           end)
     end' "$1" 2>/dev/null || echo "the file is not valid JSON"
