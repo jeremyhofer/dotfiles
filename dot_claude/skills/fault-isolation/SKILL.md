@@ -1,6 +1,6 @@
 ---
 name: fault-isolation
-description: Use when something is slow, broken, unreachable or intermittent and the layer at fault is not yet established — "X is slow", "can't reach Y", "it works from here but not there", "this worked yesterday", a timeout, a hang, a connection refused, a failed push, a performance gate that regressed with no code change. Also use before believing any single measurement that localises a fault. Covers the rung order (process → host → link → LAN → WAN → remote service), the one cheap command and explicit discriminator per rung, and — most importantly — which rungs are STRUCTURALLY BLIND from which context, so a session does not produce a confident wrong answer from a place that cannot see the fault.
+description: Use when something is slow, broken, unreachable or intermittent and the layer at fault is not yet established — "X is slow", "can't reach Y", "it works from here but not there", "this worked yesterday", a timeout, a hang, a connection refused, a failed push, a performance gate that regressed with no code change. Also use when a test fails or slows only sometimes and might be the shared machine's load rather than the code. Also use before believing any single measurement that localises a fault. Covers the rung order (process → host → link → LAN → WAN → remote service), the one cheap command and explicit discriminator per rung, and — most importantly — which rungs are STRUCTURALLY BLIND from which context, so a session does not produce a confident wrong answer from a place that cannot see the fault.
 ---
 
 # Fault isolation
@@ -57,6 +57,15 @@ is the finding, not the symptom.
 degradation that presented as *"the internet is slow"* and *"the website is slow"* — one an access
 point, one a server, each after roughly seven weeks up — and both were cleared by a restart. *"How long has this been up?"* is the
 cheapest question on the ladder and it has the best hit rate.
+
+**A test that fails or slows only sometimes may be the machine, not the code.** On a machine several
+sessions share, read what was loading it at the time of the run before treating the failure as a code
+defect: `machine-snapshot since MINUTES` where it is installed (CPU by session and command, pressure,
+stalled tasks; Linux only, 24 hours of history), else the load average and `/proc/pressure/{cpu,memory}`
+now. Re-run on a quiet machine. A failure that passes there, with CPU pressure "some" above 50% or
+memory "full" above 10% when it failed, is load-induced. Report it, with the time, the command and the
+snapshot reading, to whoever coordinates the shared machine (on a fleet with a systems hub, that
+session), within the day, before the snapshot's history ages out.
 
 ## Which rungs are BLIND from where you are standing
 
