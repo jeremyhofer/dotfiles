@@ -95,7 +95,68 @@ fi
 # would lose the -e, and a failing step mid-script could fall through to a passing exit.
 # .githooks/ is this runner's own contract: an executable file runs under the interpreter its #!
 # names, so it may be bash, python, anything; a non-executable one runs under `sh -e`.
+direct=0
 if [ "$dir" = .githooks ] && [ -x "$hook" ] && [ "$(head -c 2 "$hook" 2>/dev/null)" = '#!' ]; then
-  exec "$hook" "$@"
+  direct=1
 fi
-exec sh -e "$hook" "$@"
+run_gate() { if [ "$direct" = 1 ]; then "$hook" "$@"; else sh -e "$hook" "$@"; fi; }
+
+# PRE-COMMIT JUDGES WHAT IS BEING COMMITTED, NOT THE WORKING TREE. A gate reads files from disk, but
+# a commit is made from the index, and the two differ whenever a staged file has further edits. The
+# gate then passes or refuses the wrong version. Measured 2026-10-12 in a fleet repository: `git mv`
+# staged a register entry's old content into `closed/`, the closing edits stayed on disk, and the
+# register lint passed the finished file while the commit carried the entry still `active`.
+#
+# So, as the pre-commit framework does, the unstaged edits are set aside for the gate's run: saved as
+# a binary patch, reversed off the working tree, and applied again afterwards, whatever the gate's
+# result. Untracked files are not touched, so a gate that reads one still sees it. During a merge
+# the gate runs on the working tree as before, because a half-resolved merge is no state to patch.
+#
+# If the patch will not go back (a gate rewrote a file the edits also touch), the gate's rewrite is
+# saved to a second patch and undone, then the edits are applied. If even that fails, both patch
+# files are KEPT and named: nothing is discarded without a copy. `git apply --3way` is not used: it
+# also writes the index, which would put the unstaged edits into the commit being made.
+if [ "$event" != pre-commit ] || [ -e "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+  [ "$direct" = 1 ] && exec "$hook" "$@"
+  exec sh -e "$hook" "$@"
+fi
+cd "$top" || exit 1
+patch=$(mktemp "${TMPDIR:-/tmp}/run-repo-gates-unstaged.XXXXXX") || {
+  printf 'run-repo-gates: no temp file for the unstaged edits; %s/%s not run -- refusing.\n' "$dir" "$event" >&2
+  exit 1; }
+if ! git diff --binary --no-color --no-ext-diff --ignore-submodules >"$patch"; then
+  rm -f "$patch"
+  printf 'run-repo-gates: could not read the unstaged edits; %s/%s not run -- refusing.\n' "$dir" "$event" >&2
+  exit 1
+fi
+if [ ! -s "$patch" ]; then
+  rm -f "$patch"
+  run_gate "$@"; exit $?
+fi
+if ! git apply --reverse --binary --whitespace=nowarn "$patch"; then
+  rm -f "$patch"
+  printf 'run-repo-gates: could not set the unstaged edits aside; %s/%s not run -- refusing.\n' "$dir" "$event" >&2
+  printf '  Stage or stash them, then commit again.\n' >&2
+  exit 1
+fi
+restore() {
+  trap - EXIT HUP INT TERM
+  if git apply --binary --whitespace=nowarn "$patch" 2>/dev/null; then rm -f "$patch"; return 0; fi
+  fix=$(mktemp "${TMPDIR:-/tmp}/run-repo-gates-gatefix.XXXXXX") || fix=""
+  if [ -n "$fix" ] && git diff --binary --no-color --no-ext-diff --ignore-submodules >"$fix" \
+     && git checkout -- . && git apply --binary --whitespace=nowarn "$patch" 2>/dev/null; then
+    rm -f "$patch"
+    printf 'run-repo-gates: your unstaged edits are back; what the gate rewrote on disk conflicted with them\n' >&2
+    printf '  and was undone. It is kept in %s\n' "$fix" >&2
+    return 0
+  fi
+  printf 'run-repo-gates: YOUR UNSTAGED EDITS COULD NOT BE PUT BACK. They are kept in\n  %s\n' "$patch" >&2
+  [ -n "$fix" ] && printf '  and what the gate rewrote is kept in %s\n' "$fix" >&2
+  printf '  Reapply them with: git apply %s\n' "$patch" >&2
+  return 1
+}
+trap 'restore; exit 1' HUP INT TERM
+trap restore EXIT
+run_gate "$@"; rc=$?
+restore || [ "$rc" != 0 ] || rc=1
+exit "$rc"

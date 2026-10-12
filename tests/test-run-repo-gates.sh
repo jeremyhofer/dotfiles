@@ -62,6 +62,10 @@ projects:
     path: work/husk
     scope: work/husk
     tags: [first-party]
+  snap:
+    path: work/snap
+    scope: work/snap
+    tags: [first-party]
 YAML
 
 mkrepo() { # <path under root> -> creates a repo whose .githooks/<event> records that it ran
@@ -112,6 +116,55 @@ grep -q 'commit-msg .git/COMMIT_EDITMSG' "$root/work/ours/ran" 2>/dev/null && ok
 rm -f "$root/work/ours/ran"
 (cd "$root/work/ours" && printf 'refs/heads/x abc refs/heads/x def\n' | sh "$runner" pre-push origin url >/dev/null 2>&1)
 grep -q 'stdin refs/heads/x abc' "$root/work/ours/ran" 2>/dev/null && ok "stdin passed through (pre-push)" || bad "stdin passed" "$(cat "$root/work/ours/ran" 2>/dev/null)"
+
+# --- pre-commit sees what is being committed, not the working tree ------------------------------
+# A gate reads files from disk. When a file is staged in one version and edited further on disk,
+# the gate used to judge the disk version and pass a commit that contains the other one (measured
+# in a fleet repository: a register entry committed as `active` in `closed/`, its lint green on the
+# finished file on disk). The runner now sets the unstaged edits aside for the gate and puts them
+# back after, as the pre-commit framework does.
+sp="$root/work/snap"; mkdir -p "$sp/.githooks"; git init -q "$sp"
+git -C "$sp" config user.email t@t; git -C "$sp" config user.name t; git -C "$sp" config commit.gpgsign false
+printf '#!/bin/sh\nif grep -q BAD f.txt; then echo "gate: f.txt is BAD" >&2; exit 1; fi\nexit 0\n' > "$sp/.githooks/pre-commit"
+chmod +x "$sp/.githooks/pre-commit"
+printf 'ok\n' > "$sp/f.txt"; printf 'other\n' > "$sp/g.txt"
+git -C "$sp" add -A; git -C "$sp" commit -q -m base --no-verify
+# TMPDIR is this suite's scratch, so any patch the runner keeps goes with it.
+snaprun() { (cd "$sp" && TMPDIR="$tmp" sh "$runner" pre-commit </dev/null >"$tmp/out" 2>&1); rc=$?; }
+
+printf 'BAD\n' > "$sp/f.txt"; git -C "$sp" add f.txt; printf 'fixed on disk only\n' > "$sp/f.txt"
+snaprun
+[ $rc != 0 ] && ok "staged BAD, fixed on disk only: refused (the gate saw what is committed)" \
+  || bad "staged BAD, fixed on disk: refused" "rc=$rc out=$(cat "$tmp/out")"
+[ "$(cat "$sp/f.txt")" = "fixed on disk only" ] && ok "...and the unstaged edit is back on disk" \
+  || bad "unstaged edit restored after a refusal" "f.txt is now: $(cat "$sp/f.txt")"
+[ "$(git -C "$sp" show :f.txt)" = BAD ] && ok "...and the index is untouched" || bad "index untouched" "$(git -C "$sp" show :f.txt)"
+
+printf 'ok again\n' > "$sp/f.txt"; git -C "$sp" add f.txt; printf 'BAD on disk only\n' > "$sp/f.txt"
+printf 'unstaged other\n' > "$sp/g.txt"
+snaprun
+[ $rc = 0 ] && ok "staged ok, BAD on disk only: accepted" || bad "staged ok, BAD on disk: accepted" "rc=$rc out=$(cat "$tmp/out")"
+{ [ "$(cat "$sp/f.txt")" = "BAD on disk only" ] && [ "$(cat "$sp/g.txt")" = "unstaged other" ]; } \
+  && ok "...and every unstaged edit is back, in staged and unstaged-only files alike" \
+  || bad "unstaged edits restored" "f=$(cat "$sp/f.txt") g=$(cat "$sp/g.txt")"
+
+git -C "$sp" checkout -q -- g.txt; printf 'ok\n' > "$sp/f.txt"; git -C "$sp" add f.txt
+snaprun
+{ [ $rc = 0 ] && [ -z "$(git -C "$sp" diff --name-only)" ]; } && ok "nothing unstaged: the gate runs as before" \
+  || bad "nothing unstaged" "rc=$rc out=$(cat "$tmp/out")"
+
+# A gate that rewrites a file the unstaged edits also touch: the edits come back, the gate's rewrite
+# is undone and kept in a patch the message names.
+cp "$sp/.githooks/pre-commit" "$tmp/gate.keep"
+# Staged, because the gate is a tracked file too: an unstaged edit to it is set aside like any other.
+printf '#!/bin/sh\nprintf "rewritten by the gate\\n" > f.txt\nexit 0\n' > "$sp/.githooks/pre-commit"
+printf 'staged\n' > "$sp/f.txt"; git -C "$sp" add f.txt .githooks/pre-commit; printf 'my unstaged edit\n' > "$sp/f.txt"
+snaprun
+kept=$(sed -n 's/.*It is kept in \(.*\)$/\1/p' "$tmp/out")
+{ [ $rc = 0 ] && [ "$(cat "$sp/f.txt")" = "my unstaged edit" ] && [ -n "$kept" ] && grep -q 'rewritten by the gate' "$kept"; } \
+  && ok "a gate rewriting an edited file: the edit is back, the rewrite kept in the named patch" \
+  || bad "gate rewrite conflict" "rc=$rc f=$(cat "$sp/f.txt") out=$(cat "$tmp/out")"
+cp "$tmp/gate.keep" "$sp/.githooks/pre-commit"; git -C "$sp" reset -q; git -C "$sp" checkout -q -- .
 
 printf '{}\n' > "$root/work/js/package.json"
 run "$root/work/js" pre-commit
