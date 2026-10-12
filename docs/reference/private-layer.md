@@ -278,6 +278,14 @@ the `probe-marker=` token from `git-leak-policy` to prove the guard refuses it.
 `~/Devel/mani.yaml`, the domain's repository set and the declarations about each repository:
 [`fleet-manifest.md`](fleet-manifest.md).
 
+A project's own Claude Code settings, such as the extra directories its sessions may write, are
+declared on it as `claudeLocalSettings:`, a map in settings.json's own shape.
+`claude-project-settings apply` merges each into that project's `.claude/settings.local.json`: declared
+keys win, an array replaces the live one, every other key is kept, and `permissions.allow` may not
+be declared, because the app adds to it. `claude-project-settings check` reports drift. The layer
+runs `apply` through its trigger (below); a sandboxed session cannot, because the sandbox protects
+these files.
+
 ## Spelling (Neovim)
 
 nvim's spell files are `~/.config/nvim/spell/private.utf-8.add` (the domain's words) and
@@ -297,6 +305,7 @@ applied and nothing downstream moves. `overlay-doctor` (Tier T) checks each row 
 | `Devel/mani.yaml.tmpl` (and `dot_dotlocal/worktrunk.toml`) | `run_onchange_after_generate-worktrunk-config.sh.tmpl`, hashing both | `overlay-skeleton/` | required |
 | `dot_dotlocal/claude/executable_settings-declared` | `run_onchange_after_merge-claude-settings.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
 | the same fragment, declaring plugins | `run_onchange_after_install-claude-plugins.sh.tmpl`, calling the base's `install-claude-plugins` | `overlay-skeleton/opt-in/` | opt-in |
+| `Devel/mani.yaml.tmpl`, declaring `claudeLocalSettings:` | `run_onchange_after_apply-project-claude-settings.sh.tmpl`, hashing it and calling the base's `claude-project-settings` | `overlay-skeleton/opt-in/` | opt-in |
 | `dot_dotlocal/skill-externals.yaml` | `run_onchange_after_sync-skill-externals.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
 | `tests/run-all.sh` | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
 

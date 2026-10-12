@@ -370,6 +370,17 @@ out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry nosuc
 [ "$rc" -eq 1 ] && ok "--entry: unknown project is exit 1" || bad "--entry unknown project" "rc=$rc out=$out"
 out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry 'alpha"x' url 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "--entry: a project name that could escape the query is refused" || bad "--entry injection" "rc=$rc"
+
+# --entry-json: a whole declared map, for a tool that merges it into a JSON file.
+out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-json alpha worktrunk 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -c . 2>/dev/null)" = '{"layout":"bare","bootstrap":true}' ] \
+  && ok "--entry-json prints the declared map as JSON, types kept" || bad "--entry-json" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-json beta worktrunk 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-json: absent key is exit 1 with empty stdout" || bad "--entry-json absent" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-json 'alpha"x' worktrunk 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-json: a project name that could escape the query is refused" || bad "--entry-json injection" "rc=$rc"
+out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-json alpha worktrunk 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-json: unreadable record is exit 2" || bad "--entry-json unreadable" "rc=$rc"
 out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
 [ "$rc" -eq 0 ] && ok "--check accepts a valid worktrunk block" || bad "--check worktrunk valid" "rc=$rc $out"
 

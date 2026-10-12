@@ -1,0 +1,125 @@
+#!/bin/sh
+# claude-project-settings -- merge each fleet project's declared Claude Code settings into that
+# project's .claude/settings.local.json.
+#
+#   claude-project-settings apply [<project>]   write every declaring project, or the one named
+#   claude-project-settings check [<project>]   report drift; write nothing
+#
+#   exit 0  done / no drift
+#   exit 1  a project could not be written (an unparseable live file, a refused declaration), or,
+#           for `check`, drift was found
+#   exit 2  bad usage, a missing tool, or a fleet record fleet-decl cannot read
+#
+# WHY. A project's own Claude settings, such as the extra directories its sessions may write, lived
+# in hand-edited, gitignored files on each machine: nothing recorded them, a new machine had none,
+# and nobody could see which project was granted what. They are now declared on the project in the
+# fleet record, as a `claudeLocalSettings:` map in settings.json's own shape:
+#
+#     claudeLocalSettings:
+#       sandbox:
+#         filesystem:
+#           allowWrite: ["~/Devel/internal/some-repo"]
+#
+# and written by this tool. A private layer declares them, so the reason for each can sit beside it
+# in that layer's record.
+#
+# WHY settings.local.json AND NOT settings.json. The local file is machine-local and gitignored;
+# settings.json is committed and travels with every clone, the wrong place for a path on one
+# machine.
+#
+# THE MERGE RULE, the same as the user-level file's (dot_claude/modify_settings.json): the declared
+# keys win, merged deeply; every other key in the live file is kept, because Claude Code writes there
+# too. A declared ARRAY replaces the live one wholesale, so a declared allowWrite is the complete
+# list, and an entry dropped from the declaration is removed on the next apply. For the same reason
+# `permissions.allow` may not be declared: the app adds every permission it is granted to that
+# array, and replacing it would discard them all. A project that declares it is refused.
+#
+# NEVER CLOBBER. A live file that is not valid JSON is reported and left alone. A write goes through
+# a temporary file and a rename. A project whose directory is not on this machine is skipped, so one
+# record serves every machine. Removing a project's whole declaration removes nothing from its live
+# file; declare an empty list to take entries away.
+#
+# WHO RUNS IT. Not a sandboxed session: these files are among the paths Claude Code's sandbox
+# protects, so a session cannot grant itself access. A private layer runs `apply` when its record
+# changes, as the person applying it.
+set -u
+
+say()  { printf 'claude-project-settings: %s\n' "$1"; }
+warn() { printf 'claude-project-settings: %s\n' "$1" >&2; problems=$((problems + 1)); }
+die2() { printf 'claude-project-settings: %s\n' "$1" >&2; exit 2; }
+
+cmd=${1:-}
+case "$cmd" in
+  apply|check) shift ;;
+  -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+  *) die2 "usage: claude-project-settings apply|check [<project>]" ;;
+esac
+[ $# -le 1 ] || die2 "usage: claude-project-settings $cmd [<project>]"
+only=${1:-}
+
+command -v jq >/dev/null 2>&1 || die2 "jq is not installed"
+command -v fleet-decl >/dev/null 2>&1 || die2 "fleet-decl is not installed (it ships with the public dotfiles base)"
+RECORD=${FLEET_RECORD:-$HOME/Devel/mani.yaml}
+ROOT=${FLEET_DEVEL_ROOT:-$(dirname "$RECORD")}
+FLEET_RECORD=$RECORD; FLEET_DEVEL_ROOT=$ROOT; export FLEET_RECORD FLEET_DEVEL_ROOT
+
+KEY=claudeLocalSettings
+if [ -n "$only" ]; then
+  projects=$only
+else
+  projects=$(fleet-decl --projects-with "$KEY"); rc=$?
+  case $rc in
+    0) ;;
+    1) exit 0 ;;
+    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $rc)" ;;
+  esac
+fi
+
+problems=0; drift=0
+for p in $projects; do
+  decl=$(fleet-decl --entry-json "$p" "$KEY"); rc=$?
+  case $rc in
+    0) ;;
+    1) warn "$p: declares no $KEY"; continue ;;
+    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $rc)" ;;
+  esac
+  if ! printf '%s' "$decl" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    warn "$p: $KEY is not a map; skipped"; continue
+  fi
+  if printf '%s' "$decl" | jq -e '.permissions.allow != null' >/dev/null 2>&1; then
+    warn "$p: declares permissions.allow, which the app adds to as permissions are granted; refused"
+    continue
+  fi
+  path=$(fleet-decl --entry "$p" path) || { warn "$p: declares no path"; continue; }
+  case "$path" in /*) dir=$path ;; *) dir=$ROOT/$path ;; esac
+  if [ ! -d "$dir" ]; then say "$p: $dir is not on this machine; skipped"; continue; fi
+
+  file=$dir/.claude/settings.local.json
+  if [ -s "$file" ]; then
+    jq -e . "$file" >/dev/null 2>&1 || { warn "$p: $file is not valid JSON; left alone"; continue; }
+    live=$(cat "$file")
+  else
+    live='{}'
+  fi
+  merged=$(jq -n --argjson live "$live" --argjson decl "$decl" '$live * $decl') \
+    || { warn "$p: could not merge into $file"; continue; }
+  if [ "$(printf '%s' "$live" | jq -S -c .)" = "$(printf '%s' "$merged" | jq -S -c .)" ]; then
+    say "$p: current"
+    continue
+  fi
+  if [ "$cmd" = check ]; then
+    say "$p: $file differs from the declaration"
+    drift=$((drift + 1))
+    continue
+  fi
+  mkdir -p "$dir/.claude" || { warn "$p: cannot create $dir/.claude"; continue; }
+  tmpf=$(mktemp "$dir/.claude/.settings.local.json.XXXXXX") || { warn "$p: cannot write in $dir/.claude"; continue; }
+  if printf '%s\n' "$merged" | jq . > "$tmpf" && mv -f "$tmpf" "$file"; then
+    say "$p: written"
+  else
+    rm -f "$tmpf"; warn "$p: could not write $file"
+  fi
+done
+
+[ "$problems" -eq 0 ] && [ "$drift" -eq 0 ] && exit 0
+exit 1

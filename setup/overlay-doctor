@@ -208,6 +208,10 @@ if _has Devel/mani.yaml; then
   else
     _trigger run_onchange_after_generate-worktrunk-config.sh.tmpl "the manifest feeds worktrunk's config" Devel/mani.yaml
   fi
+  # Opt-in: only a manifest that declares per-project Claude settings needs them written.
+  if grep -qs 'claudeLocalSettings:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
+    _trigger run_onchange_after_apply-project-claude-settings.sh.tmpl "declaring claudeLocalSettings does not write it" Devel/mani.yaml
+  fi
 fi
 _sd=dot_dotlocal/claude/executable_settings-declared
 if _has "$_sd"; then

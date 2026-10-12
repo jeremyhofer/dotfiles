@@ -11,6 +11,7 @@
 #          fleet-decl --canonical-list <name> <key>  # ...when that key holds a sequence
 #          fleet-decl --projects-with <key>      # every project that declares <key>, one per line
 #          fleet-decl --entry <project> <key>    # a key on the project named <project>
+#          fleet-decl --entry-json <project> <key>   # ...a map or list there, as compact JSON
 #          fleet-decl --entry-list <project> <key> [<item-key>]
 #                                                # the items of a sequence on <project>, one per line;
 #                                                # with <item-key> the items are maps and that key is
@@ -218,6 +219,19 @@ case "${1:-}" in
     esac
     valid_key "$3"
     _out=$(yq -e -r ".projects.\"$2\".$3" "$RECORD" 2>/dev/null) || exit 1
+    [ "$_out" = "null" ] && exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
+  --entry-json)
+    # The structured form of --entry, for a tool that merges a declared map into a JSON file (a
+    # project's Claude settings). Types survive: a YAML `true` stays a JSON boolean, which a
+    # stringly --entry read would lose. Same exits and the same name guard as --entry.
+    [ $# -eq 3 ] || { printf 'usage: fleet-decl --entry-json <project> <key>\n' >&2; exit 2; }
+    case "$2" in
+      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+    esac
+    valid_key "$3"
+    _out=$(yq -e -o=json -I=0 ".projects.\"$2\".$3" "$RECORD" 2>/dev/null) || exit 1
     [ "$_out" = "null" ] && exit 1
     printf '%s\n' "$_out"
     exit 0 ;;
