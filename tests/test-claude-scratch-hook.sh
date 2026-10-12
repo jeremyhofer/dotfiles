@@ -265,6 +265,31 @@ else
   fi
   rm -rf "$clean"
 
+  echo "== stop sweeps browser profiles a killed run left behind, and only those =="
+  pr=$(mktemp -d "/tmp/c-test-XXXXXX"); mkdir -p "$pr/claude-1000"
+  stale="$pr/claude-1000/playwright_firefoxdev_profile-AAAA"
+  live="$pr/claude-1000/playwright_chromiumdev_profile-BBBB"
+  other="$pr/claude-1000/not-a-profile"
+  mkdir -p "$stale/sub" "$live/Default" "$other"
+  : > "$stale/prefs.js"; : > "$stale/sub/x"; : > "$live/Default/Cookies"; : > "$other/f"
+  # Old everywhere for the stale one; for the live one only the directory itself is old, with a
+  # fresh file inside, which is how a Chromium profile in use looks.
+  touch -t 202001010000 "$stale/prefs.js" "$stale/sub/x" "$stale/sub" "$stale" "$other/f" "$other" "$live"
+  CLAUDE_CODE_TMPDIR="$pr" runhook "$HOOK" stop "$(stop_payload false)" >/dev/null 2>&1
+  eq "real script: a profile untouched for hours is removed" "$([ -e "$stale" ] && echo present || echo gone)" "gone"
+  eq "real script: a profile with a fresh file inside survives" "$([ -e "$live" ] && echo present || echo gone)" "present"
+  eq "real script: an old directory that is not a profile survives" "$([ -e "$other" ] && echo present || echo gone)" "present"
+
+  broken=$(broken_copy 's/find "\$d" -mmin/find "$d" -maxdepth 0 -mmin/')
+  touch -t 202001010000 "$live"
+  CLAUDE_CODE_TMPDIR="$pr" runhook "$broken" stop "$(stop_payload false)" >/dev/null 2>&1
+  if [ ! -e "$live" ]; then
+    ok "plant: judging a profile by its own mtime alone deletes one in use"
+  else
+    no "plant: judging by the directory's own mtime did not change behaviour -- check the sed edit landed"
+  fi
+  rm -rf "$pr"
+
   echo "== session-end deletes the root =="
   fresh=$(mktemp -d "/tmp/c-test-XXXXXX")
   : > "$fresh/leftover"

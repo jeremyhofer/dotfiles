@@ -19,8 +19,9 @@
 #                     and, at or above the threshold, ask it (via SubagentStop additionalContext)
 #                     to clear what its parent does not need. Removes the marker either way once
 #                     it has actually processed a stop (not on the stop_hook_active skip).
-#   stop              same measurement, over the WHOLE root, as session-level feedback (Stop
-#                     additionalContext). No marker involved.
+#   stop              first deletes browser profiles a killed test run left behind (see
+#                     sweep_stale_profiles), then the same measurement, over the WHOLE root, as
+#                     session-level feedback (Stop additionalContext). No marker involved.
 #   session-end       delete the whole root outright. SessionEnd output is discarded by Claude
 #                     Code (side effects only), so this never prints anything.
 #
@@ -126,6 +127,24 @@ scratch_bytes() {
   fi | awk '{s += $5} END {printf "%d", s + 0}'
 }
 
+# Browser profiles a killed test run left behind. Playwright makes one per browser launch in the
+# temp directory and deletes it when the browser closes, so a run killed mid-test leaves its profile
+# (about 34 MB for Firefox). session-end removes them with the rest of the root, but a canonical
+# session lives for days: one held about 1.2 GB of them on 2026-10-10. A profile is removed only when
+# NOTHING inside it has changed for $stale_min minutes. The directory's own mtime is not that test:
+# Chromium writes into subdirectories, so a profile in use can carry an old top-level mtime.
+stale_min=${CLAUDE_SCRATCH_HOOK_PROFILE_STALE_MIN:-120}
+case "$stale_min" in
+  '' | *[!0-9]*) stale_min=120 ;;
+esac
+sweep_stale_profiles() {
+  find "$root" -maxdepth 3 -type d -name 'playwright_*profile-*' -prune -print 2>/dev/null |
+    while IFS= read -r d; do
+      [ -n "$(find "$d" -mmin "-$stale_min" -print 2>/dev/null | head -n 1)" ] && continue
+      rm -rf -- "$d" 2>/dev/null
+    done
+}
+
 emit_context() { # <hookEventName> <message>
   jq -n --arg h "$1" --arg c "$2" '{hookSpecificOutput: {hookEventName: $h, additionalContext: $c}}'
 }
@@ -174,6 +193,7 @@ case "$subcommand" in
     active=$(json_field '.stop_hook_active')
     [ "$active" = "true" ] && exit 0
 
+    sweep_stale_profiles
     bytes=$(scratch_bytes "")
     thresh_bytes=$((threshold_mb * 1024 * 1024))
     if [ "$bytes" -ge "$thresh_bytes" ] 2>/dev/null; then
