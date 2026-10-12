@@ -20,6 +20,11 @@ command -v wt >/dev/null 2>&1 || { echo "wt-config-gen tests: wt absent, cannot 
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"; cp "$decl" "$tmp/bin/fleet-decl"; chmod +x "$tmp/bin/fleet-decl"
+# `wt config show` runs `claude plugin list --json`, which contacts Anthropic's API and a telemetry
+# intake. A stub that fails keeps this suite off the network; worktrunk treats it as no plugin.
+# Exported, not only in run(): the arms below that call `wt` directly need it too.
+printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/claude"; chmod +x "$tmp/bin/claude"
+PATH="$tmp/bin:$PATH"; export PATH
 
 base() { printf 'worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"\n\n[list]\njson-schema = 2\n' > "$tmp/base.toml"; }
 frag() { printf '[pre-start]\nguard = "hook-doctor check --path {{ worktree_path }} --quiet"\n' > "$tmp/frag.toml"; }

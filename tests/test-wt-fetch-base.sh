@@ -28,6 +28,9 @@ ok() { printf '  ok    %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf '  FAIL  %s\n' "$1"; fail=$((fail + 1)); }
 
 mkdir -p "$T/bin"
+# `wt config show` runs `claude plugin list --json`, which contacts Anthropic's API and a telemetry
+# intake. A stub that fails keeps this suite off the network; worktrunk treats it as no plugin.
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/claude"; chmod +x "$T/bin/claude"
 use_script() { ln -sf "$1" "$T/bin/wt-fetch-base"; }
 use_script "$SCRIPT"
 PATH="$T/bin:$PATH"; export PATH
