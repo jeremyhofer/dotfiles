@@ -33,7 +33,7 @@ about; `--remove` deletes those no running session has mounted; a terminal tool,
 `leak-guard` (gitconfig commit and push hooks: refuses the domain's private vocabulary, from its
 `~/.dotlocal/git-leak-*` files, outside the repos the fleet record allows it in; passes everything
 where the domain supplies none) · `run-repo-gates` (runs a manifest repo's tracked `.githooks/<event>`)
-· `hook-doctor` (is the leak-guard live per worktree; `--path <dir>`) ·
+· `git-staged-run` (runs a command against what is staged, unstaged edits set aside and put back; every commit gate runs through it) · `hook-doctor` (is the leak-guard live per worktree; `--path <dir>`) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review) ·

@@ -166,6 +166,13 @@ kept=$(sed -n 's/.*It is kept in \(.*\)$/\1/p' "$tmp/out")
   || bad "gate rewrite conflict" "rc=$rc f=$(cat "$sp/f.txt") out=$(cat "$tmp/out")"
 cp "$tmp/gate.keep" "$sp/.githooks/pre-commit"; git -C "$sp" reset -q; git -C "$sp" checkout -q -- .
 
+# Without git-staged-run (not beside the runner, not on PATH) a pre-commit gate is refused, never run
+# on the working tree. PATH keeps only the system directories here, plus fleet-decl.
+mkdir -p "$tmp/alone"; cp "$runner" "$tmp/alone/run-repo-gates"
+(cd "$sp" && PATH="$tmp/srcbin:/usr/bin:/bin" sh "$tmp/alone/run-repo-gates" pre-commit </dev/null >"$tmp/out" 2>&1); rc=$?
+{ [ $rc = 1 ] && grep -q 'git-staged-run is not installed' "$tmp/out"; } \
+  && ok "no git-staged-run: the pre-commit gate is refused, not run on the working tree" || bad "no helper refused" "rc=$rc $(cat "$tmp/out")"
+
 printf '{}\n' > "$root/work/js/package.json"
 run "$root/work/js" pre-commit
 { ! ran "$root/work/js" && [ $rc = 0 ] && grep -q node_modules "$tmp/out"; } && ok "package.json without node_modules: warned and skipped" || bad "no node_modules skip" "rc=$rc out=$(cat "$tmp/out")"
@@ -297,6 +304,7 @@ case "$(git --version)" in
     fh="$tmp/home"; mkdir -p "$fh/.dotlocal" "$fh/.local/bin" "$tmp/nohooks"
     cp "$guard"  "$fh/.local/bin/leak-guard"
     cp "$runner" "$fh/.local/bin/run-repo-gates"
+    cp "$base/private_dot_local/bin/executable_git-staged-run" "$fh/.local/bin/git-staged-run"
     printf '\\b(ZZP|ZZQ)(-ADR)?-[0-9]+\n' > "$fh/.dotlocal/git-leak-markers"
     printf 'hush-term\n' > "$fh/.dotlocal/git-leak-sensitive"
     printf 'probe-marker=ZZP-9999\n' > "$fh/.dotlocal/git-leak-policy"

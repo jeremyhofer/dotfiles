@@ -429,6 +429,7 @@ grep -qF "is missing" "$cout" || { echo "FAIL: absent markers file refusal does 
 mkdir -p "$tmp/.local/bin"
 cp "$guard"  "$tmp/.local/bin/leak-guard"
 cp "$runner" "$tmp/.local/bin/run-repo-gates"
+cp "$base/private_dot_local/bin/executable_git-staged-run" "$tmp/.local/bin/git-staged-run"   # deployed beside the runner
 : > "$tmp/gcfg"
 git config --file "$base/dot_gitconfig" --get-regexp '^hook\.(publish-guard|repo-gates)-' > "$tmp/shipped-hooks"
 [ "$(wc -l < "$tmp/shipped-hooks" | tr -d ' ')" = 12 ] || { echo "FAIL: expected 12 shipped hook lines (6 entries x command+event), got: $(cat "$tmp/shipped-hooks")"; exit 1; }
@@ -449,7 +450,7 @@ stage "$r" "hush-term leak"
 if cgit "$r" commit -q -m leak 2>/dev/null; then echo "FAIL: leak not refused by the configured guard on a real commit"; exit 1; fi
 
 # 14b) the shipped entries fire on a real commit with NO guard configured: they pass, and say nothing.
-mkdir -p "$noguardhome/.local/bin"; cp "$tmp/.local/bin/leak-guard" "$tmp/.local/bin/run-repo-gates" "$noguardhome/.local/bin/"
+mkdir -p "$noguardhome/.local/bin"; cp "$tmp/.local/bin/leak-guard" "$tmp/.local/bin/run-repo-gates" "$tmp/.local/bin/git-staged-run" "$noguardhome/.local/bin/"
 r=$(newrepo chain_noguard); stage "$r" "ZZQ-69 hush-term"
 out=$(HOME="$noguardhome" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 git -C "$r" -c commit.gpgsign=false commit -q -m "ZZQ-69 message" 2>&1) \
   || { echo "FAIL: a commit was refused by the shipped hooks in a domain with no guard: $out"; exit 1; }
