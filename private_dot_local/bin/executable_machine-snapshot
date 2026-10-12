@@ -11,7 +11,16 @@ with it: it shows other sessions' processes, and gives no way to signal them.
 
     machine-snapshot record           take one sample (the timer runs this; refuses in a sandbox)
     machine-snapshot now              the latest sample: busiest processes, stalled tasks, sessions
-    machine-snapshot since MINUTES    totals over a window: CPU by session and by command, stalls
+    machine-snapshot since MINUTES    totals over the last MINUTES minutes (below)
+    machine-snapshot between START END    the same totals over an absolute window, local time:
+                                      `between 09:30 10:15` (both today), or with dates,
+                                      `between 2026-10-12 09:30 2026-10-12 10:15`; a date
+                                      and time may also be one quoted argument
+
+A window summary (`since`, `between`) prints: pressure (mean, max and how many samples crossed a
+threshold, for cpu "some" > 50%, memory "full" > 10% and io "full" > 10%; the first two are the
+"load pattern" a test failure is judged against), load, /tmp use (min and max), CPU by session and
+by command, I/O by session and by command (MB read and written), and stalled tasks.
 
 WHAT A SAMPLE MEASURES, AND WHY NOT `ps %cpu`. ps reports CPU time divided by the process's whole
 lifetime, which says nothing about the last minute. A sample here records each process's CPU time
@@ -30,6 +39,20 @@ ATTRIBUTION. A row's `session` is the nearest ancestor whose command name, or th
 whose command line, is $MACHINE_SNAPSHOT_SESSION_COMM (default `claude`), shown with that process's
 working directory, which is the directory the session works in. Stalled tasks (state D, uninterruptible wait) are
 listed with their kernel wait channel; a load average well above the CPU in use is usually them.
+
+I/O is attributed the same way, from /proc/<pid>/io: `rd` and `wr` are the process's read_bytes and
+write_bytes growth since the previous sample. Unlike CPU there is no "children" counter, so the I/O
+of a process that began and ended between two samples is never seen; the figures are a floor.
+read_bytes counts bytes fetched from the storage layer; write_bytes counts bytes the process caused
+to be SENT to it, counted when a page is dirtied (as proc(5) words it; the man page is not
+installed on the machine this was written on, so that wording is from memory). Buffered writes
+therefore show up whether or not they ever reach the disk, and a file deleted before writeback is
+still counted. Read it as who generated write pressure, not as a measure of disk traffic. A process
+whose io file cannot be read (another user's, or one that exited mid-scan) has no I/O figure.
+
+/tmp: each sample records the filesystem's used and total bytes (statvfs), because a full or
+nearly full /tmp is a machine-level cause of test failures. A per-user figure is not recorded:
+only a walk of the tree gives it, and walking /tmp every 15 seconds would add the load measured.
 
 A SAMPLE IS AN INSTANT. A task stalled for a few milliseconds between samples is never seen. The
 pressure figures (/proc/pressure, averaged by the kernel over 10 seconds) are recorded with each
@@ -60,6 +83,14 @@ MIN_CPU = float(os.environ.get("MACHINE_SNAPSHOT_MIN_CPU", "0.2"))
 NOW = os.environ.get("MACHINE_SNAPSHOT_NOW")   # a fixed clock, for the test suite only
 TICK = os.sysconf("SC_CLK_TCK")
 HOME = os.path.expanduser("~")
+# The directory whose filesystem use is recorded with each sample; replaceable for the test suite.
+TMP_DIR = os.environ.get("MACHINE_SNAPSHOT_TMP", "/tmp")
+# Rows that did less I/O than this in an interval (and are not otherwise kept) are left out of the
+# history, as MIN_CPU does for CPU: it keeps the file small on a busy machine.
+MIN_IO = float(os.environ.get("MACHINE_SNAPSHOT_MIN_IO_MB", "1")) * 1048576
+# The thresholds a window summary counts samples against.
+THRESHOLDS = (("cpu_some", "cpu some", 50), ("memory_full", "memory full", 10),
+              ("io_full", "io full", 10))
 
 LATEST = os.path.join(STATE, "latest.json")
 HISTORY = os.path.join(STATE, "history.jsonl")
@@ -88,6 +119,27 @@ def pressure():
     return out
 
 
+def tmp_usage():
+    try:
+        st = os.statvfs(TMP_DIR)
+    except OSError:
+        return None
+    return {"used": (st.f_blocks - st.f_bfree) * st.f_frsize, "size": st.f_blocks * st.f_frsize}
+
+
+def read_io(base):
+    # Absent (None) when unreadable, which is routine: /proc/<pid>/io is mode 0400 and other users'
+    # processes refuse it, and a process can exit between the listing and the read.
+    fields = {}
+    for line in read(os.path.join(base, "io")).splitlines():
+        k, _, v = line.partition(":")
+        if v.strip().isdigit():
+            fields[k] = int(v)
+    if "read_bytes" in fields and "write_bytes" in fields:
+        return fields["read_bytes"], fields["write_bytes"]
+    return None
+
+
 def scan():
     procs = {}
     for name in os.listdir(PROC):
@@ -109,6 +161,7 @@ def scan():
             cwd = ""
         args = read(os.path.join(base, "cmdline")).replace("\0", " ").strip()
         procs[name] = {
+            "io": read_io(base),
             "ppid": f[1],
             "state": f[0],
             "cpu": (int(f[11]) + int(f[12])) / TICK,
@@ -174,13 +227,33 @@ def cmd_record():
         else:   # born in the interval: everything it has used, it used since the last sample
             own, reaped = p["cpu"], p["ccpu"]
         p["own"], p["reaped"] = round(own, 2), round(reaped, 2)
-        if interval is not None and (own + reaped >= MIN_CPU or p["state"] == "D"):
-            rows.append({"pid": pid, "comm": p["comm"], "state": p["state"], "wchan": p["wchan"],
-                         "own": p["own"], "reaped": p["reaped"], "rss_mb": p["rss_mb"],
-                         "cwd": p["cwd"], "session": session_of(pid, procs), "args": p["args"][:120]})
+        # I/O is treated exactly like `own`: growth since the previous sample for the same process,
+        # and for one born in the interval everything it has done, since it did all of it in the
+        # interval. If either side is unreadable there is no baseline, so the delta is absent
+        # (None), not zero: a process whose io file becomes readable later must not be credited with
+        # its whole lifetime.
+        rd = wr = None
+        if interval is not None and p["io"]:
+            if q and q["start"] == p["start"]:
+                if q.get("io"):
+                    rd, wr = max(0, p["io"][0] - q["io"][0]), max(0, p["io"][1] - q["io"][1])
+            else:
+                rd, wr = p["io"]
+        p["rd"], p["wr"] = rd, wr
+        io_heavy = (rd or 0) + (wr or 0) >= MIN_IO
+        if interval is not None and (own + reaped >= MIN_CPU or p["state"] == "D" or io_heavy):
+            row = {"pid": pid, "comm": p["comm"], "state": p["state"], "wchan": p["wchan"],
+                   "own": p["own"], "reaped": p["reaped"], "rss_mb": p["rss_mb"],
+                   "cwd": p["cwd"], "session": session_of(pid, procs), "args": p["args"][:120]}
+            if rd is not None:
+                row["rd"], row["wr"] = rd, wr
+            rows.append(row)
 
     sample = {"ts": now, "interval": interval,
               "load": read(os.path.join(PROC, "loadavg")).split()[:3], "pressure": pressure()}
+    usage = tmp_usage()
+    if usage:
+        sample["tmp"] = usage
     os.makedirs(STATE, exist_ok=True)
     tmp = LATEST + ".tmp"
     with open(tmp, "w") as fh:
@@ -228,6 +301,10 @@ def header(s):
             f"  memory {p.get('memory_some', 0):.0f}%")
 
 
+def gb(n):
+    return f"{n / 2**30:.2f} GB"
+
+
 def cmd_now():
     try:
         with open(LATEST) as fh:
@@ -236,6 +313,8 @@ def cmd_now():
         sys.exit(f"machine-snapshot: no sample in {STATE}; is machine-snapshot.timer running?")
     age = (float(NOW) if NOW else time.time()) - s["ts"]
     print(f"sample {when(s['ts'])} ({age:.0f}s ago)  {header(s)}")
+    if s.get("tmp"):
+        print(f"  {TMP_DIR} used {gb(s['tmp']['used'])} of {gb(s['tmp']['size'])}")
     if age > MAX_GAP:
         print(f"  STALE: older than {MAX_GAP:.0f}s, so the timer has stopped; this is not the machine now")
     if not s.get("interval"):
@@ -265,11 +344,13 @@ def cmd_now():
             print(f"  {v / iv:6.2f}  {'(not under a session)' if k == '-' else k}")
 
 
-def cmd_since(minutes):
-    now = float(NOW) if NOW else time.time()
-    start = now - minutes * 60
+def summarise(start, end):
+    """Print the totals for samples with start <= ts <= end. `since` and `between` both land here."""
     n, span = 0, 0.0
-    by_session, by_comm, stalls, io_full, loads = {}, {}, {}, [], []
+    by_session, by_comm, stalls, loads = {}, {}, {}, []
+    io_session, io_comm = {}, {}
+    press = {key: [] for key, _, _ in THRESHOLDS}
+    tmp_used, tmp_size = [], 0
     try:
         fh = open(HISTORY)
     except OSError:
@@ -280,36 +361,100 @@ def cmd_since(minutes):
                 s = json.loads(line)
             except ValueError:
                 continue
-            if s["ts"] < start:
+            if not start <= s["ts"] <= end:
                 continue
             n += 1
             span += s.get("interval") or 0
-            io_full.append(s.get("pressure", {}).get("io_full", 0))
+            # Samples from before a field existed lack it; they are skipped for that figure only.
+            for key in press:
+                if key in s.get("pressure", {}):
+                    press[key].append(s["pressure"][key])
             if s.get("load"):
                 loads.append(float(s["load"][0]))
+            if s.get("tmp"):
+                tmp_used.append(s["tmp"]["used"])
+                tmp_size = max(tmp_size, s["tmp"]["size"])
             for r in s["rows"]:
                 cpu = r["own"] + r["reaped"]
                 by_session[r["session"]] = by_session.get(r["session"], 0) + cpu
                 by_comm[r["comm"]] = by_comm.get(r["comm"], 0) + cpu
+                if "rd" in r:
+                    for table, k in ((io_session, r["session"]), (io_comm, r["comm"])):
+                        have = table.setdefault(k, [0, 0])
+                        have[0] += r["rd"]
+                        have[1] += r["wr"]
                 if r["state"] == "D":
                     k = f"{r['comm']}  in {r['wchan'] or '-'}"
                     stalls[k] = stalls.get(k, 0) + 1
     if not n:
-        sys.exit(f"machine-snapshot: no samples in the last {minutes:g} minutes")
-    print(f"{n} samples from {when(start)} to {when(now)}, covering {span / 60:.1f} minutes")
-    print(f"load1 mean {sum(loads) / max(len(loads), 1):.1f}, max {max(loads, default=0):.1f};"
-          f"  io all-stalled mean {sum(io_full) / len(io_full):.0f}%, max {max(io_full):.0f}%")
+        sys.exit(f"machine-snapshot: no samples from {when(start)} to {when(end)}")
+    print(f"{n} samples from {when(start)} to {when(end)}, covering {span / 60:.1f} minutes")
+    print(f"load1 mean {sum(loads) / max(len(loads), 1):.1f}, max {max(loads, default=0):.1f}")
+    print("\npressure avg10 (mean, max, samples over the threshold):")
+    for key, label, limit in THRESHOLDS:
+        v = press[key]
+        if v:
+            over = sum(1 for x in v if x > limit)
+            print(f"  {label:<12} mean {sum(v) / len(v):5.1f}%  max {max(v):5.1f}%  "
+                  f"over {limit}%: {over} of {len(v)}")
+        else:
+            print(f"  {label:<12} not recorded")
+    if tmp_used:
+        print(f"\n{TMP_DIR} used: min {gb(min(tmp_used))}, max {gb(max(tmp_used))} of {gb(tmp_size)}")
+    else:
+        print(f"\n{TMP_DIR} used: not recorded")
     print("\nCPU by session (CPU-seconds, mean cores):")
     for k, v in sorted(by_session.items(), key=lambda kv: -kv[1])[:15]:
         print(f"  {v:8.1f}  {v / max(span, 1):5.2f}  {'(not under a session)' if k == '-' else k}")
     print("\nCPU by command:")
     for k, v in sorted(by_comm.items(), key=lambda kv: -kv[1])[:15]:
         print(f"  {v:8.1f}  {v / max(span, 1):5.2f}  {k}")
+    for title, table in (("session", io_session), ("command", io_comm)):
+        print(f"\nI/O by {title} (MB read, MB written; written = sent to writeback, not necessarily disk):")
+        for k, (rd, wr) in sorted(table.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:15]:
+            if rd + wr:
+                print(f"  {rd / 1048576:8.1f}  {wr / 1048576:8.1f}  "
+                      f"{'(not under a session)' if k == '-' else k}")
+        if not any(rd + wr for rd, wr in table.values()):
+            print("  none recorded")
     print(f"\nstalled tasks, by how many of the {n} samples caught them:")
     for k, v in sorted(stalls.items(), key=lambda kv: -kv[1])[:15]:
         print(f"  {v:6d}  {k}")
     if not stalls:
         print("  none caught")
+
+
+def cmd_since(minutes):
+    now = float(NOW) if NOW else time.time()
+    summarise(now - minutes * 60, now)
+
+
+def parse_when(tokens, now):
+    """Consume `HH:MM` (today) or `YYYY-MM-DD HH:MM` from the front of tokens: (epoch, rest)."""
+    try:
+        if tokens and "-" in tokens[0]:
+            day, clock, rest = tokens[0], tokens[1], tokens[2:]
+        else:
+            day, clock, rest = time.strftime("%Y-%m-%d", time.localtime(now)), tokens[0], tokens[1:]
+        return time.mktime(time.strptime(f"{day} {clock}", "%Y-%m-%d %H:%M")), rest
+    except (ValueError, IndexError):
+        raise ValueError
+
+
+def cmd_between(args):
+    now = float(NOW) if NOW else time.time()
+    tokens = " ".join(args).split()
+    try:
+        start, rest = parse_when(tokens, now)
+        end, rest = parse_when(rest, now)
+        if rest:
+            raise ValueError
+    except ValueError:
+        sys.exit("machine-snapshot: between takes START END, each HH:MM (today) or YYYY-MM-DD HH:MM, "
+                 "local time")
+    if end < start:
+        sys.exit("machine-snapshot: between: END is before START")
+    summarise(start, end)
 
 
 def main(argv):
@@ -326,10 +471,12 @@ def main(argv):
             cmd_since(float(argv[2]))
         except ValueError:
             sys.exit("machine-snapshot: since takes a number of minutes")
+    elif cmd == "between" and len(argv) >= 4:
+        cmd_between(argv[2:])
     elif cmd in ("-h", "--help"):
         print(__doc__)
     else:
-        sys.exit("usage: machine-snapshot record | now | since MINUTES")
+        sys.exit("usage: machine-snapshot record | now | since MINUTES | between START END")
 
 
 if __name__ == "__main__":

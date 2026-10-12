@@ -125,7 +125,116 @@ MACHINE_SNAPSHOT_MAX_GAP=99999 MACHINE_SNAPSHOT_KEEP_HOURS=0.5 rec 9015
 eq "prune: a recent first line keeps every line" "$(ts)" "9000.0 9015.0"
 eq "prune: and the file is appended to, not rewritten" "$(ino)" "$before"
 
-# 8) Usage errors are errors.
+# 8) I/O attribution: read_bytes/write_bytes growth per process, like CPU `own`. A process whose io
+#    file cannot be read has no figure (not zero); a process born in the interval counts from zero;
+#    a process with no CPU but real I/O still lands in the history; one with neither does not.
+mb=1048576
+pio() { printf 'rchar: 1\nwchar: 1\nsyscr: 1\nsyscw: 1\nread_bytes: %s\nwrite_bytes: %s\ncancelled_write_bytes: 0\n' "$2" "$3" > "$w/proc/$1/io"; }
+val() { python3 -c "
+import json
+s=json.loads(open('$w/state-io/history.jsonl').read().splitlines()[-1])
+for r in s['rows']:
+    if r['pid']=='$1': print(r.get('$2','none')); break
+else: print('absent')"; }
+export MACHINE_SNAPSHOT_DIR="$w/state-io" MACHINE_SNAPSHOT_MAX_GAP=120
+reset
+proc 100 1 S "$(t 50)" 0 10 claude "$HOME/Devel/proj"
+proc 200 100 S 0 0 20 writer "$HOME/Devel/proj";   pio 200 $((10*mb)) $((5*mb))
+proc 210 100 S 0 0 21 secret "$HOME/Devel/proj"    # no io file: unreadable
+proc 220 100 S 0 0 22 idle "$HOME/Devel/proj";     pio 220 $((3*mb)) $((3*mb))
+rec 20000
+reset
+proc 100 1 S "$(t 50)" 0 10 claude "$HOME/Devel/proj"
+proc 200 100 S 0 0 20 writer "$HOME/Devel/proj";   pio 200 $((14*mb)) $((8*mb))
+proc 210 100 R "$(t 3)" 0 21 secret "$HOME/Devel/proj"
+proc 220 100 S 0 0 22 idle "$HOME/Devel/proj";     pio 220 $((3*mb)) $((3*mb))
+proc 300 100 S 0 0 99 builder "$HOME/Devel/proj";  pio 300 0 $((2*mb))
+rec 20015
+eq "io: read delta since the previous sample" "$(val 200 rd)" "$((4*mb))"
+eq "io: write delta since the previous sample" "$(val 200 wr)" "$((3*mb))"
+eq "io: born in the interval counts from zero" "$(val 300 wr)" "$((2*mb))"
+eq "io: unreadable io file means no figure, not zero" "$(val 210 rd)" "none"
+eq "io: no CPU, no I/O delta: left out of the history" "$(val 220 rd)" "absent"
+# A latest.json from before this field existed (no io on its processes) is no baseline for I/O.
+python3 - "$w/state-io/latest.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for p in d["procs"].values():
+    p.pop("io", None); p.pop("rd", None); p.pop("wr", None)
+json.dump(d, open(sys.argv[1], "w"))
+PY
+reset
+proc 100 1 S "$(t 50)" 0 10 claude "$HOME/Devel/proj"
+proc 200 100 S 0 0 20 writer "$HOME/Devel/proj";   pio 200 $((40*mb)) $((8*mb))
+rec 20030
+eq "io: old latest.json without io gives no delta, no crash" "$(val 200 rd)" "absent"
+# Windows over those samples: the first record was a baseline, so two history lines.
+s=$(MACHINE_SNAPSHOT_NOW=20031 python3 "$TOOL" since 5)
+has "since: I/O by session heading" "$s" "I/O by session"
+has "since: I/O by command heading" "$s" "I/O by command"
+has "since: I/O by session totals" "$s" "     4.0       5.0  100 ~/Devel/proj"
+has "since: I/O by command" "$s" "     0.0       2.0  builder"
+lacks "since: a process with no I/O delta is not listed" "$s" "idle"
+# Old history lines carry none of the new fields; every reader must still work.
+printf '{"ts": 20020.0, "interval": 15, "load": ["1","1","1"], "pressure": {"io_full": 5.0}, "rows": [{"pid": "9", "comm": "old", "state": "R", "wchan": "0", "own": 1.0, "reaped": 0.0, "rss_mb": 1, "cwd": "/", "session": "-", "args": "old"}]}\n' >> "$w/state-io/history.jsonl"
+s=$(MACHINE_SNAPSHOT_NOW=20031 python3 "$TOOL" since 5); rc=$?
+eq "old history line: since does not crash" "$rc" 0
+has "old history line: counted" "$s" "3 samples"
+has "old history line: missing pressure keys say not recorded" "$s" "memory full  not recorded"
+
+# 9) Pressure thresholds and /tmp, summarised over a fixture history.
+export TZ=UTC
+export MACHINE_SNAPSHOT_DIR="$w/state-fx"; mkdir -p "$MACHINE_SNAPSHOT_DIR"
+day=$(python3 -c 'import calendar; print(calendar.timegm((2026,10,12,0,0,0)))')
+# fx HH MM CPU_SOME MEM_FULL IO_FULL TMP_USED_GB : one history line at that time of day
+fx() { python3 -c "
+import json
+g=2**30
+print(json.dumps({'ts': $day+$1*3600+$2*60, 'interval': 15, 'load': ['1','1','1'],
+  'pressure': {'cpu_some': $3, 'memory_full': $4, 'io_full': $5},
+  'tmp': {'used': $6*g, 'size': 10*g}, 'rows': []}))" >> "$MACHINE_SNAPSHOT_DIR/history.jsonl"; }
+fx 8 50 99 99 99 9
+fx 9 10 10 0 5 1
+fx 9 40 60 11 10 2
+fx 10 20 80 20 10.5 3
+fx 10 40 50 5 30 3
+fx 11 50 99 99 99 9
+now=$(python3 -c "print($day+12*3600)")
+s=$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 08:55 11:00)
+has "pressure: cpu some mean, max and count over 50" "$s" "cpu some     mean  50.0%  max  80.0%  over 50%: 2 of 4"
+has "pressure: memory full over 10" "$s" "memory full  mean   9.0%  max  20.0%  over 10%: 2 of 4"
+has "pressure: io full is strictly over 10" "$s" "io full      mean  13.9%  max  30.0%  over 10%: 2 of 4"
+has "tmp: min and max used in the window" "$s" "/tmp used: min 1.00 GB, max 3.00 GB of 10.00 GB"
+
+# 10) between: HH:MM is today in local time; dates are accepted; the window is closed at both ends.
+n() { printf '%s\n' "$1" | head -n1 | awk '{print $1}'; }
+eq "between: today's clock times" "$(n "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 09:00 10:00)")" 2
+eq "between: with dates" "$(n "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 2026-10-12 09:00 2026-10-12 10:30)")" 3
+eq "between: a date and time as one quoted argument" \
+  "$(n "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between '2026-10-12 09:00' '2026-10-12 10:30')")" 3
+eq "between: bounds are inclusive" "$(n "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 09:10 10:20)")" 3
+eq "between: the day before has no samples" \
+  "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 2026-10-11 09:00 2026-10-11 10:00 2>&1 >/dev/null | awk '{print $2, $3, $4}')" "no samples from"
+out=$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 10:00 09:00 2>&1); eq "between: end before start is an error" "$?" 1
+has "between: and says why, not 'no samples'" "$out" "END is before START"
+MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 9am 10am >/dev/null 2>&1; eq "between: bad time is an error" "$?" 1
+MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 09:00 >/dev/null 2>&1; eq "between: one time is an error" "$?" 1
+
+# 11) /tmp usage is recorded per sample; an unreadable /tmp loses the figure, not the sample.
+export MACHINE_SNAPSHOT_DIR="$w/state-tmp" MACHINE_SNAPSHOT_TMP="$w"
+reset; rec 30000; rec 30015
+tmpval() { python3 -c "
+import json
+s=json.loads(open('$w/state-tmp/history.jsonl').read().splitlines()[-1])
+t=s.get('tmp'); print('none' if not t else ('ok' if 0 < t['used'] <= t['size'] else 'bad'))"; }
+eq "tmp: used and size recorded, used within size" "$(tmpval)" ok
+has "now: shows tmp use" "$(MACHINE_SNAPSHOT_NOW=30016 python3 "$TOOL" now)" "$w used"
+MACHINE_SNAPSHOT_TMP="$w/does-not-exist" rec 30030
+eq "tmp: missing directory records no figure" "$(tmpval)" none
+unset MACHINE_SNAPSHOT_TMP TZ MACHINE_SNAPSHOT_MAX_GAP
+export MACHINE_SNAPSHOT_DIR="$w/state"
+
+# 12) Usage errors are errors.
 python3 "$TOOL" bogus >/dev/null 2>&1; eq "unknown command exits non-zero" "$?" 1
 
 echo "passed $pass, failed $fail"
