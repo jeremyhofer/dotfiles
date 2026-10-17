@@ -237,5 +237,49 @@ export MACHINE_SNAPSHOT_DIR="$w/state"
 # 12) Usage errors are errors.
 python3 "$TOOL" bogus >/dev/null 2>&1; eq "unknown command exits non-zero" "$?" 1
 
+# 13) A tree that dies inside one interval. The session process (100) and its child (600) both end
+#     between samples; the child is orphaned first, so the subreaper (50, systemd --user) reaps it,
+#     not the parent it was last seen under. The subreaper's children counters grow by both
+#     processes' whole lives (11 s and 101 s), of which 10 s and 100 s were counted while they were
+#     alive. Only the 2 s used since the last sample is new; the rest must not be counted twice.
+reset
+proc 50 1 S 0 0 5 systemd / 0 '/usr/lib/systemd/systemd --user'
+proc 100 50 S "$(t 10)" 0 10 claude "$HOME/Devel/proj"
+proc 600 100 R "$(t 100)" 0 60 node "$HOME/Devel/proj"
+rec 3000
+reset
+proc 50 1 S 0 "$(t 112)" 5 systemd / 0 '/usr/lib/systemd/systemd --user'
+rec 3015
+eq "orphans: a subreaper's reaped CPU excludes what was counted alive" "$(last_row 50 reaped)" "2.0"
+
+# 14) The same correction must not take more than was counted: an unrelated short-lived child the
+#     subreaper reaped in the same interval (3 s, never seen alive) still counts.
+reset
+proc 50 1 S 0 0 5 systemd / 0 '/usr/lib/systemd/systemd --user'
+proc 100 50 S "$(t 10)" 0 10 claude "$HOME/Devel/proj"
+proc 600 100 R "$(t 100)" 0 60 node "$HOME/Devel/proj"
+rec 4000
+reset
+proc 50 1 S 0 "$(t 115)" 5 systemd / 0 '/usr/lib/systemd/systemd --user'
+rec 4015
+eq "orphans: CPU never seen alive still reaches the subreaper" "$(last_row 50 reaped)" "5.0"
+
+# 15) A window summary checks the attribution against the machine's cores, and says so loudly when
+#     a sample accounts for more CPU than exists.
+export MACHINE_SNAPSHOT_DIR="$w/state-cores" MACHINE_SNAPSHOT_CORES=4; mkdir -p "$MACHINE_SNAPSHOT_DIR"
+cx() { python3 -c "
+import json
+print(json.dumps({'ts': 50000+$1, 'interval': 10, 'load': ['1','1','1'], 'pressure': {},
+  'rows': [{'pid':'9','comm':'x','state':'R','wchan':'','own':$2,'reaped':$3,'rss_mb':1,'cwd':'/','session':'-','args':'x'}]}))" >> "$MACHINE_SNAPSHOT_DIR/history.jsonl"; }
+cx 10 20 0; cx 20 30 0
+s=$(MACHINE_SNAPSHOT_NOW=50030 python3 "$TOOL" since 5)
+has "cores: within the machine is reported plainly" "$s" "CPU accounted: mean 2.5 cores of 4, max 3.0; samples over 4 cores: 0 of 2"
+lacks "cores: no warning when within the machine" "$s" "OVERCOUNTED"
+cx 30 10 50
+s=$(MACHINE_SNAPSHOT_NOW=50040 python3 "$TOOL" since 5)
+has "cores: a sample above the machine is counted" "$s" "samples over 4 cores: 1 of 3"
+has "cores: and flagged" "$s" "ATTRIBUTION OVERCOUNTED"
+unset MACHINE_SNAPSHOT_CORES
+
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

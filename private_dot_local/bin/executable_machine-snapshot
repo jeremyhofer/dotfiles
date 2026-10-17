@@ -32,8 +32,10 @@ child the kernel adds the child's CPU time to the parent's "children" counters (
 /proc/<pid>/stat), so it shows up as growth there. Each row therefore carries two figures: `own`
 (the process itself) and `reaped` (children that ended in the interval). A child seen alive in an
 earlier sample had part of its CPU counted then, so that part is subtracted from its parent's
-reaped figure when it disappears. That correction is approximate (a reparented orphan is credited
-to its new parent), which is why totals are labelled CPU-seconds and not presented as exact.
+reaped figure when it disappears. When its parent has disappeared too, the child was orphaned and
+reaped by a subreaper above it, so the correction goes to its nearest surviving ancestor. It is still
+approximate (the nearest surviving ancestor is not always the subreaper that reaped it), which is why
+totals are labelled CPU-seconds and not presented as exact.
 
 ATTRIBUTION. A row's `session` is the nearest ancestor whose command name, or the first word of
 whose command line, is $MACHINE_SNAPSHOT_SESSION_COMM (default `claude`), shown with that process's
@@ -210,11 +212,27 @@ def cmd_record():
     except (OSError, ValueError, KeyError):
         pass
 
-    # CPU already counted for children that have since disappeared, per parent (see the header).
+    # CPU already counted for children that have since disappeared, per reaper (see the header). The
+    # reaper is the parent the child was last seen under if that parent survives. If the parent died
+    # too, the child was orphaned before it ended and was reaped by a subreaper above it (systemd
+    # --user, a sandbox's init), so the credit walks up the last-seen ancestry to the nearest process
+    # still alive. Crediting the dead parent instead lost the correction, and every process tree that
+    # ended inside one interval (a session or test run shutting down) was counted a second time.
+    def gone(pid):
+        return pid not in procs or procs[pid]["start"] != prev[pid]["start"]
+
+    def reaper(pid):
+        ppid, seen = prev[pid]["ppid"], {pid}
+        while ppid in prev and gone(ppid) and ppid not in seen:
+            seen.add(ppid)
+            ppid = prev[ppid]["ppid"]
+        return ppid
+
     counted = {}
     for pid, p in prev.items():
-        if pid not in procs or procs[pid]["start"] != p["start"]:
-            counted[p["ppid"]] = counted.get(p["ppid"], 0) + p["cpu"] + p["ccpu"]
+        if gone(pid):
+            r = reaper(pid)
+            counted[r] = counted.get(r, 0) + p["cpu"] + p["ccpu"]
 
     rows = []
     for pid, p in procs.items():
@@ -351,6 +369,11 @@ def summarise(start, end):
     io_session, io_comm = {}, {}
     press = {key: [] for key, _, _ in THRESHOLDS}
     tmp_used, tmp_size = [], 0
+    # A sanity check on the CPU attribution itself: no sample can account for more CPU than the
+    # machine has. A sample that does exposes double counting in the reaped figures, which once
+    # inflated the totals to twice the machine for hours before anyone noticed.
+    cores = int(os.environ.get("MACHINE_SNAPSHOT_CORES") or os.cpu_count() or 1)
+    accounted, over_cores = [], 0
     try:
         fh = open(HISTORY)
     except OSError:
@@ -374,6 +397,10 @@ def summarise(start, end):
             if s.get("tmp"):
                 tmp_used.append(s["tmp"]["used"])
                 tmp_size = max(tmp_size, s["tmp"]["size"])
+            if s.get("interval"):
+                c = sum(r["own"] + r["reaped"] for r in s["rows"]) / s["interval"]
+                accounted.append(c)
+                over_cores += c > cores * 1.05   # 5 % for tick rounding and timer jitter
             for r in s["rows"]:
                 cpu = r["own"] + r["reaped"]
                 by_session[r["session"]] = by_session.get(r["session"], 0) + cpu
@@ -390,6 +417,10 @@ def summarise(start, end):
         sys.exit(f"machine-snapshot: no samples from {when(start)} to {when(end)}")
     print(f"{n} samples from {when(start)} to {when(end)}, covering {span / 60:.1f} minutes")
     print(f"load1 mean {sum(loads) / max(len(loads), 1):.1f}, max {max(loads, default=0):.1f}")
+    if accounted:
+        print(f"CPU accounted: mean {sum(accounted) / len(accounted):.1f} cores of {cores}, "
+              f"max {max(accounted):.1f}; samples over {cores} cores: {over_cores} of {len(accounted)}"
+              + ("  ATTRIBUTION OVERCOUNTED: read the CPU tables below as inflated" if over_cores else ""))
     print("\npressure avg10 (mean, max, samples over the threshold):")
     for key, label, limit in THRESHOLDS:
         v = press[key]
