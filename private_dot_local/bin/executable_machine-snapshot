@@ -65,7 +65,19 @@ Files, under $MACHINE_SNAPSHOT_DIR (default $XDG_STATE_HOME/machine-snapshot, el
 line per sample holding only the rows that used CPU or were stalled, kept for
 $MACHINE_SNAPSHOT_KEEP_HOURS (default 24).
 
-Linux only: it reads /proc. $MACHINE_SNAPSHOT_PROC replaces /proc for the test suite.
+LINUX reads /proc; $MACHINE_SNAPSHOT_PROC replaces /proc for the test suite. MACOS reads the same
+facts through libproc (proc_pid_rusage for CPU, the CPU of reaped children, and disk I/O;
+proc_pidinfo for parent, state, start time, name and working directory; the KERN_PROCARGS2 sysctl
+for the command line), run every 15 seconds by a LaunchAgent. Three differences, each shown in the
+output rather than hidden:
+- Pressure: macOS has no /proc/pressure. A sample records the kernel's memory pressure level
+  (1 normal, 2 warning, 4 critical), the thermal pressure level (0 nominal, 1 moderate, 2 heavy,
+  3 trapping, 4 sleeping) and swap in use, and a window summary counts samples at warning or worse.
+- Visibility: as an ordinary user it reads the CPU of its own user's processes only; other users'
+  (root daemons, WindowServer) are listed without CPU. On the CI node the work runs as that user.
+- No "stalled" state: macOS does not expose uninterruptible waits per process, so none are caught.
+Attribution on macOS also anchors on the CI bridge's worker (`ci-bridge/run.sh`) and podman's VM,
+so a CI run's load is filed under the run, not under "(not under a session)".
 """
 import json
 import os
@@ -91,8 +103,20 @@ TMP_DIR = os.environ.get("MACHINE_SNAPSHOT_TMP", "/tmp")
 # history, as MIN_CPU does for CPU: it keeps the file small on a busy machine.
 MIN_IO = float(os.environ.get("MACHINE_SNAPSHOT_MIN_IO_MB", "1")) * 1048576
 # The thresholds a window summary counts samples against.
-THRESHOLDS = (("cpu_some", "cpu some", 50), ("memory_full", "memory full", 10),
-              ("io_full", "io full", 10))
+DARWIN = sys.platform == "darwin" and "MACHINE_SNAPSHOT_PROC" not in os.environ
+# (key, label, threshold, unit): a sample counts as over when its value exceeds the threshold.
+THRESHOLDS = (("cpu_some", "cpu some", 50, "%"), ("memory_full", "memory full", 10, "%"),
+              ("io_full", "io full", 10, "%"))
+if DARWIN:
+    # memory level 2 is "warning", 4 "critical"; thermal 2 is "heavy" (the CPU is being slowed).
+    THRESHOLDS = (("memory_level", "memory pressure level", 1, ""),
+                  ("thermal_level", "thermal pressure level", 1, ""))
+# Processes whose subtree a row is filed under: Claude sessions everywhere, and on the CI node the
+# bridge's worker and podman's VM. Matched against the command name, the first word of the command
+# line, or (for entries containing "/") a substring of the command line.
+ANCHORS = [a for a in os.environ.get(
+    "MACHINE_SNAPSHOT_ANCHORS",
+    SESSION_COMM + (",ci-bridge/run.sh,vfkit,krunkit,gvproxy" if DARWIN else "")).split(",") if a]
 
 LATEST = os.path.join(STATE, "latest.json")
 HISTORY = os.path.join(STATE, "history.jsonl")
@@ -140,6 +164,118 @@ def read_io(base):
     if "read_bytes" in fields and "write_bytes" in fields:
         return fields["read_bytes"], fields["write_bytes"]
     return None
+
+
+# --- macOS: the same facts through libproc ---------------------------------------------------------
+# Layouts from the macOS SDK headers: struct rusage_info_v2 (sys/resource.h), struct proc_bsdinfo and
+# struct proc_vnodepathinfo (sys/proc_info.h). Each figure was checked on the CI node against `ps`
+# and against processes doing a known amount of work (tests/test-machine-snapshot-darwin.sh).
+if DARWIN:
+    import ctypes
+    import ctypes.util
+
+    _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    _proc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+
+    class _RusageV2(ctypes.Structure):
+        _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
+            "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins",
+            "wired_size", "resident_size", "phys_footprint", "proc_start_abstime",
+            "proc_exit_abstime", "child_user_time", "child_system_time", "child_pkg_idle_wkups",
+            "child_interrupt_wkups", "child_pageins", "child_elapsed_abstime",
+            "diskio_bytesread", "diskio_byteswritten")]
+
+    class _BsdInfo(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint32) for n in (
+            "flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid", "svuid",
+            "svgid", "rfu_1")] + [("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32)] + [
+            (n, ctypes.c_uint32) for n in ("nfiles", "pgid", "pjobc", "e_tdev", "e_tpgid")] + [
+            ("nice", ctypes.c_int32), ("start_tvsec", ctypes.c_uint64),
+            ("start_tvusec", ctypes.c_uint64)]
+
+    class _Timebase(ctypes.Structure):
+        _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+    _tb = _Timebase()
+    _libc.mach_timebase_info(ctypes.byref(_tb))
+    # rusage_info times are in mach absolute-time units, not nanoseconds: on Apple Silicon one unit
+    # is 125/3 ns, so reading them as nanoseconds undercounts CPU by a factor of about 42.
+    _UNIT = _tb.numer / _tb.denom / 1e9
+    _STATE = {1: "I", 2: "R", 3: "S", 4: "T", 5: "Z"}
+    _VNODE_INFO_SIZE, _MAXPATHLEN = 152, 1024   # struct vnode_info, then the path, in pvi_cdir
+
+    def _pids():
+        n = _proc.proc_listallpids(None, 0)
+        buf = (ctypes.c_int * (n + 64))()
+        n = _proc.proc_listallpids(buf, ctypes.sizeof(buf))
+        return [buf[i] for i in range(max(n, 0)) if buf[i] > 0]
+
+    def _args(pid):
+        mib = (ctypes.c_int * 3)(1, 49, pid)        # CTL_KERN, KERN_PROCARGS2
+        size = ctypes.c_size_t(65536)
+        buf = ctypes.create_string_buffer(size.value)
+        if _libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+            return ""
+        raw = buf.raw[:size.value]
+        argc = int.from_bytes(raw[:4], "little")
+        rest = raw[4:]
+        end = rest.find(b"\0")                       # the executable path, then NUL padding
+        rest = rest[end:].lstrip(b"\0")
+        return " ".join(a.decode("utf-8", "replace") for a in rest.split(b"\0")[:argc])
+
+    def _cwd(pid):
+        buf = ctypes.create_string_buffer(2 * (_VNODE_INFO_SIZE + _MAXPATHLEN))
+        if _proc.proc_pidinfo(pid, 9, 0, buf, ctypes.sizeof(buf)) <= 0:   # PROC_PIDVNODEPATHINFO
+            return ""
+        return buf.raw[_VNODE_INFO_SIZE:_VNODE_INFO_SIZE + _MAXPATHLEN].split(b"\0", 1)[0].decode(
+            "utf-8", "replace")
+
+    def scan_darwin():
+        procs = {}
+        for pid in _pids():
+            bi = _BsdInfo()
+            if _proc.proc_pidinfo(pid, 3, 0, ctypes.byref(bi), ctypes.sizeof(bi)) != ctypes.sizeof(bi):
+                continue                             # gone between the listing and the read
+            ru = _RusageV2()
+            readable = _proc.proc_pid_rusage(pid, 2, ctypes.byref(ru)) == 0   # RUSAGE_INFO_V2
+            procs[str(pid)] = {
+                # Another user's process refuses rusage: it is listed, with no CPU or I/O figure.
+                "io": [ru.diskio_bytesread, ru.diskio_byteswritten] if readable else None,
+                "ppid": str(bi.ppid),
+                "state": _STATE.get(bi.status, "?"),
+                "cpu": (ru.user_time + ru.system_time) * _UNIT if readable else 0.0,
+                "ccpu": (ru.child_user_time + ru.child_system_time) * _UNIT if readable else 0.0,
+                "start": bi.start_tvsec * 1000000 + bi.start_tvusec,
+                "rss_mb": ru.resident_size // 1048576 if readable else 0,
+                "comm": (bi.name or bi.comm).decode("utf-8", "replace"),
+                "wchan": "",
+                "cwd": tilde(_cwd(pid)),
+                "args": _args(pid)[:200],
+            }
+        return procs
+
+    def _sysctl_int(name):
+        v, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
+        if _libc.sysctlbyname(name.encode(), ctypes.byref(v), ctypes.byref(size), None, 0) != 0:
+            return None
+        return v.value
+
+    def pressure_darwin():
+        out = {}
+        mem = _sysctl_int("kern.memorystatus_vm_pressure_level")
+        if mem is not None:
+            out["memory_level"] = mem
+        token, state = ctypes.c_int(0), ctypes.c_uint64(0)
+        if _libc.notify_register_check(b"com.apple.system.thermalpressurelevel",
+                                       ctypes.byref(token)) == 0:
+            if _libc.notify_get_state(token, ctypes.byref(state)) == 0:
+                out["thermal_level"] = state.value
+            _libc.notify_cancel(token)
+        sw = (ctypes.c_uint64 * 4)()                 # struct xsw_usage: total, avail, used, ...
+        size = ctypes.c_size_t(ctypes.sizeof(sw))
+        if _libc.sysctlbyname(b"vm.swapusage", sw, ctypes.byref(size), None, 0) == 0:
+            out["swap_mb"] = sw[2] // 1048576
+        return out
 
 
 def scan():
@@ -190,8 +326,10 @@ def session_of(pid, procs):
         # `claude bg-spare`, so matching the name alone files every background session's work under
         # no session. Seen on the first live sample, 2026-10-11.
         argv0 = os.path.basename(p["args"].split(" ", 1)[0]) if p["args"] else ""
-        if SESSION_COMM in (p["comm"], argv0):
-            return f"{pid} {p['cwd']}"
+        for a in ANCHORS:
+            if a in (p["comm"], argv0) or ("/" in a and a in p["args"]):
+                label = "" if a == SESSION_COMM else f"{os.path.basename(a)} "
+                return f"{label}{pid} {p['cwd']}"
         pid = p["ppid"]
     return "-"
 
@@ -202,7 +340,7 @@ def cmd_record():
                  "processes are visible here, so the sample would be wrong. The timer records; "
                  "use `now` or `since` to read.")
     now = float(NOW) if NOW else time.time()
-    procs = scan()
+    procs = scan_darwin() if DARWIN else scan()
     prev, interval = {}, None
     try:
         with open(LATEST) as fh:
@@ -267,8 +405,12 @@ def cmd_record():
                 row["rd"], row["wr"] = rd, wr
             rows.append(row)
 
-    sample = {"ts": now, "interval": interval,
-              "load": read(os.path.join(PROC, "loadavg")).split()[:3], "pressure": pressure()}
+    if DARWIN:
+        load = [f"{x:.2f}" for x in os.getloadavg()]
+        press = pressure_darwin()
+    else:
+        load, press = read(os.path.join(PROC, "loadavg")).split()[:3], pressure()
+    sample = {"ts": now, "interval": interval, "load": load, "pressure": press}
     usage = tmp_usage()
     if usage:
         sample["tmp"] = usage
@@ -314,6 +456,10 @@ def when(ts):
 
 def header(s):
     p = s.get("pressure", {})
+    if "memory_level" in p or "thermal_level" in p:
+        return (f"load {' '.join(s.get('load', []))}  |  memory pressure level "
+                f"{p.get('memory_level', '?')} (1 normal, 2 warn, 4 critical)  thermal level "
+                f"{p.get('thermal_level', '?')}  swap {p.get('swap_mb', 0)} MB")
     return (f"load {' '.join(s.get('load', []))}  |  pressure avg10: cpu {p.get('cpu_some', 0):.0f}%"
             f"  io {p.get('io_some', 0):.0f}% (all stalled {p.get('io_full', 0):.0f}%)"
             f"  memory {p.get('memory_some', 0):.0f}%")
@@ -367,7 +513,7 @@ def summarise(start, end):
     n, span = 0, 0.0
     by_session, by_comm, stalls, loads = {}, {}, {}, []
     io_session, io_comm = {}, {}
-    press = {key: [] for key, _, _ in THRESHOLDS}
+    press = {key: [] for key, _, _, _ in THRESHOLDS}
     tmp_used, tmp_size = [], 0
     # A sanity check on the CPU attribution itself: no sample can account for more CPU than the
     # machine has. A sample that does exposes double counting in the reaped figures, which once
@@ -421,13 +567,14 @@ def summarise(start, end):
         print(f"CPU accounted: mean {sum(accounted) / len(accounted):.1f} cores of {cores}, "
               f"max {max(accounted):.1f}; samples over {cores} cores: {over_cores} of {len(accounted)}"
               + ("  ATTRIBUTION OVERCOUNTED: read the CPU tables below as inflated" if over_cores else ""))
-    print("\npressure avg10 (mean, max, samples over the threshold):")
-    for key, label, limit in THRESHOLDS:
+    print("\npressure (mean, max, samples over the threshold):" if DARWIN
+          else "\npressure avg10 (mean, max, samples over the threshold):")
+    for key, label, limit, unit in THRESHOLDS:
         v = press[key]
         if v:
             over = sum(1 for x in v if x > limit)
-            print(f"  {label:<12} mean {sum(v) / len(v):5.1f}%  max {max(v):5.1f}%  "
-                  f"over {limit}%: {over} of {len(v)}")
+            print(f"  {label:<12} mean {sum(v) / len(v):5.1f}{unit}  max {max(v):5.1f}{unit}  "
+                  f"over {limit}{unit}: {over} of {len(v)}")
         else:
             print(f"  {label:<12} not recorded")
     if tmp_used:
@@ -490,8 +637,8 @@ def cmd_between(args):
 
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
-    if not sys.platform.startswith("linux") and "MACHINE_SNAPSHOT_PROC" not in os.environ:
-        print(f"machine-snapshot: nothing to do on {sys.platform}; it reads Linux's /proc")
+    if not (sys.platform.startswith("linux") or DARWIN) and "MACHINE_SNAPSHOT_PROC" not in os.environ:
+        print(f"machine-snapshot: nothing to do on {sys.platform}; it reads Linux's /proc or macOS's libproc")
         return
     if cmd == "record":
         cmd_record()
