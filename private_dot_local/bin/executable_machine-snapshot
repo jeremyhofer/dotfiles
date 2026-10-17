@@ -212,11 +212,17 @@ if DARWIN:
 
     def _args(pid):
         mib = (ctypes.c_int * 3)(1, 49, pid)        # CTL_KERN, KERN_PROCARGS2
-        # The kernel refuses (ENOMEM) a buffer smaller than kern.argmax, however short the
-        # process's real command line is: a 64 KB buffer read every command line as empty.
-        size = ctypes.c_size_t(_ARGMAX)
-        buf = ctypes.create_string_buffer(size.value)
-        if _libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+        # 64 KB holds any ordinary command line; one longer than the buffer is refused (ENOMEM),
+        # and only then is the read repeated at kern.argmax, rather than allocating that megabyte
+        # for every process in every sample.
+        for cap in (65536, _ARGMAX):
+            size = ctypes.c_size_t(cap)
+            buf = ctypes.create_string_buffer(cap)
+            if _libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) == 0:
+                break
+        else:
+            return ""
+        if size.value < 4:
             return ""
         raw = buf.raw[:size.value]
         argc = int.from_bytes(raw[:4], "little")

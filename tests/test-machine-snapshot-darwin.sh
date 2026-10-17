@@ -25,10 +25,12 @@ while time.time() < e: pass"; }
 "$py" "$ms" record
 mkdir -p "$tmp/work"
 # Own CPU: about 3 s of a busy loop, still alive at the second sample.
-(cd "$tmp/work" && exec "$py" -c "import time
+# The marker leads the script: a sample keeps the first 200 characters of a command line, and the
+# Python executable's own path takes about 120 of them on a Mac.
+(cd "$tmp/work" && exec "$py" -c "import time  # ms-darwin-busy-marker
 e = time.time() + 3.0
 while time.time() < e: pass
-time.sleep(30)  # ms-darwin-busy-marker") &
+time.sleep(30)") &
 busy=$!
 # Reaped CPU: a parent shell whose child burns about 2 s and ends before the second sample.
 (burn 2.0; sleep 30) &
