@@ -212,7 +212,9 @@ if DARWIN:
 
     def _args(pid):
         mib = (ctypes.c_int * 3)(1, 49, pid)        # CTL_KERN, KERN_PROCARGS2
-        size = ctypes.c_size_t(65536)
+        # The kernel refuses (ENOMEM) a buffer smaller than kern.argmax, however short the
+        # process's real command line is: a 64 KB buffer read every command line as empty.
+        size = ctypes.c_size_t(_ARGMAX)
         buf = ctypes.create_string_buffer(size.value)
         if _libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0 or size.value < 4:
             return ""
@@ -222,6 +224,8 @@ if DARWIN:
         end = rest.find(b"\0")                       # the executable path, then NUL padding
         rest = rest[end:].lstrip(b"\0")
         return " ".join(a.decode("utf-8", "replace") for a in rest.split(b"\0")[:argc])
+
+    _ARGMAX = 0  # set below, once _sysctl_int exists
 
     def _cwd(pid):
         buf = ctypes.create_string_buffer(2 * (_VNODE_INFO_SIZE + _MAXPATHLEN))
@@ -259,6 +263,8 @@ if DARWIN:
         if _libc.sysctlbyname(name.encode(), ctypes.byref(v), ctypes.byref(size), None, 0) != 0:
             return None
         return v.value
+
+    _ARGMAX = _sysctl_int("kern.argmax") or 1048576
 
     def pressure_darwin():
         out = {}
