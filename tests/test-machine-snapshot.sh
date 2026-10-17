@@ -218,6 +218,11 @@ eq "between: the day before has no samples" \
 out=$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 10:00 09:00 2>&1); eq "between: end before start is an error" "$?" 1
 has "between: and says why, not 'no samples'" "$out" "END is before START"
 MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 9am 10am >/dev/null 2>&1; eq "between: bad time is an error" "$?" 1
+# Exact seconds as @EPOCH, which a CI run uses to keep the load of its own window: 09:10 to 10:20
+# to the second holds three samples, and one second short of 10:20 holds two.
+a=$(python3 -c "print(int($day+9*3600+10*60))"); b=$(python3 -c "print(int($day+10*3600+20*60))")
+eq "between: @EPOCH bounds" "$(n "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between "@$a" "@$b")")" 3
+eq "between: @EPOCH is exact to the second" "$(n "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between "@$a" "@$((b - 1))")")" 2
 MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 09:00 >/dev/null 2>&1; eq "between: one time is an error" "$?" 1
 
 # 11) /tmp usage is recorded per sample; an unreadable /tmp loses the figure, not the sample.

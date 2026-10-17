@@ -61,8 +61,8 @@ cheapest question on the ladder and it has the best hit rate.
 **A test that fails or slows only sometimes may be the machine, not the code.** On a machine several
 sessions share, read what was loading it at the time of the run before treating the failure as a code
 defect: `machine-snapshot since MINUTES` where it is installed (CPU by session and command, pressure,
-stalled tasks; Linux only, 24 hours of history), else the load average and `/proc/pressure/{cpu,memory}`
-now. Re-run on a quiet machine. A failure that passes there, with CPU pressure "some" above 50% or
+stalled tasks, 24 hours of history; on macOS the memory and thermal pressure levels instead of
+/proc/pressure, and no stalled tasks), else the load average and `/proc/pressure/{cpu,memory}` now. Re-run on a quiet machine. A failure that passes there, with CPU pressure "some" above 50% or
 memory "full" above 10% when it failed, is load-induced. Report it, with the time, the command and the
 snapshot reading, to whoever coordinates the shared machine (on a fleet with a systems hub, that
 session), within the day, before the snapshot's history ages out.

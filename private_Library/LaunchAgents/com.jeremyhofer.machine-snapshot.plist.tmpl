@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  machine-snapshot on macOS: one sample every 15 seconds of what is loading this machine, the
+  launchd counterpart of the systemd user timer the Linux machines run (see its help text).
+  Loaded by run_onchange_after_load-machine-snapshot-agent.sh, which re-reads it when it
+  changes. Background priority with low-priority I/O: it must not add to the load it measures.
+  /usr/bin/python3 (the Command Line Tools' Python) is named outright: a LaunchAgent's PATH is
+  launchd's minimal one, and the tool needs nothing beyond the standard library.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jeremyhofer.machine-snapshot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>{{ .chezmoi.homeDir }}/.local/bin/machine-snapshot</string>
+    <string>record</string>
+  </array>
+  <key>StartInterval</key><integer>15</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <key>StandardOutPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/machine-snapshot.log</string>
+  <key>StandardErrorPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/machine-snapshot.log</string>
+</dict>
+</plist>

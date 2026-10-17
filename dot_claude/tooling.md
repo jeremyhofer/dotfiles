@@ -18,7 +18,7 @@ view on demand) ·
 that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
 only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
 `claude-usage-report` (where Claude Code's tokens went, from its transcripts: by project, day, model and subagent, with the weekly-limit history alongside when one exists; counts only, never transcript text; `--days N`, `--since DATE`, `--json`) ·
-`machine-snapshot` (what is loading the machine, by session and command, readable inside a sandbox that hides other sessions' processes: `now`, `since MINUTES`; Linux) ·
+`machine-snapshot` (what is loading the machine, by session and command, readable inside a sandbox that hides other sessions' processes: `now`, `since MINUTES`, `between START END`; Linux, and macOS from a LaunchAgent) ·
 `claude-mask-sweep` (stale Claude Code sandbox placeholder files, the ones `claude update` warns
 about; `--remove` deletes those no running session has mounted; a terminal tool, refuses in a sandbox) ·
 `claude-context-probe` (measures which instruction files, imports, hooks, skills and MCP servers Claude Code loads on this machine; skill `claude-context-probe`) ·

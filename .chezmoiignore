@@ -46,6 +46,11 @@ setup/
 .config/brave-flags.conf
 {{ end }}
 
+{{ if ne .chezmoi.os "darwin" }}
+# --- macOS-only, ignored elsewhere: launchd agents (Linux runs the systemd user timers instead) ---
+Library
+{{ end }}
+
 {{ if eq .domain "work" }}
 # Local-dev TLS cert provisioning is personal-only (home machines); not managed on work.
 setup-dev-tls.sh

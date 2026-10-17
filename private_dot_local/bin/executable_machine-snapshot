@@ -15,7 +15,8 @@ with it: it shows other sessions' processes, and gives no way to signal them.
     machine-snapshot between START END    the same totals over an absolute window, local time:
                                       `between 09:30 10:15` (both today), or with dates,
                                       `between 2026-10-12 09:30 2026-10-12 10:15`; a date
-                                      and time may also be one quoted argument
+                                      and time may also be one quoted argument; `@EPOCH`
+                                      gives exact seconds (a CI run keeps its own window so)
 
 A window summary (`since`, `between`) prints: pressure (mean, max and how many samples crossed a
 threshold, for cpu "some" > 50%, memory "full" > 10% and io "full" > 10%; the first two are the
@@ -620,8 +621,10 @@ def cmd_since(minutes):
 
 
 def parse_when(tokens, now):
-    """Consume `HH:MM` (today) or `YYYY-MM-DD HH:MM` from the front of tokens: (epoch, rest)."""
+    """Consume `HH:MM` (today), `YYYY-MM-DD HH:MM` or `@EPOCH` from the front of tokens: (epoch, rest)."""
     try:
+        if tokens and tokens[0].startswith("@"):
+            return float(tokens[0][1:]), tokens[1:]
         if tokens and "-" in tokens[0]:
             day, clock, rest = tokens[0], tokens[1], tokens[2:]
         else:
@@ -641,7 +644,7 @@ def cmd_between(args):
             raise ValueError
     except ValueError:
         sys.exit("machine-snapshot: between takes START END, each HH:MM (today) or YYYY-MM-DD HH:MM, "
-                 "local time")
+                 "local time, or @EPOCH seconds")
     if end < start:
         sys.exit("machine-snapshot: between: END is before START")
     summarise(start, end)

@@ -32,6 +32,19 @@ Entries are newest first.
 
 ---
 
+## 2026-10-17
+
+### `machine-snapshot` runs on macOS too, from a LaunchAgent
+
+A Mac now records what is loading it every 15 seconds, as the Linux machines do from their systemd
+timer: `~/Library/LaunchAgents/com.jeremyhofer.machine-snapshot.plist`, loaded by a `run_onchange`
+script on apply, with the same `now`, `since MINUTES` and `between START END` (which also takes
+`@EPOCH` seconds now). It reads libproc instead of /proc, records the memory and thermal pressure
+levels and swap instead of /proc/pressure, sees CPU for its own user's processes only, and files load
+under the CI bridge's worker and podman's VM as well as Claude sessions. It runs
+`/usr/bin/python3`, so the Command Line Tools must be installed (they already are wherever Homebrew
+is); the load step needs the user logged in graphically, and fails the apply where nobody is.
+
 ## 2026-10-10
 
 ### Standard clones are the fleet layout; `fleet-repo` learns them (ACTION, per repository)
