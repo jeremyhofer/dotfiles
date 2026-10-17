@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""claude-usage-report -- where Claude Code's tokens went: by project, day, model and subagent.
+
+WHY IT EXISTS. Several long-lived Claude Code sessions, plus the subagents they spawn, can share
+one flat-rate subscription with a weekly usage limit. When the limit runs out early, the first
+question is where the tokens went and whether that was efficient: which project, which day, the
+main session or its subagents, which model, how many subagents. Claude Code's own transcripts hold
+that data. This tool reads them and prints counts. It never prints transcript content: no prompts,
+no message text, no file contents, no subagent descriptions. It only reads; it writes nothing.
+
+    claude-usage-report [--days N | --since YYYY-MM-DD] [--json]
+
+The window is the last 7 days by default, judged by each record's own timestamp. `--since` starts
+at local midnight of that date. `--json` prints the same report as one JSON object.
+
+DATA SOURCE. Transcripts under $CLAUDE_PROJECTS_DIR (default ~/.claude/projects):
+
+    <project-key>/<session-id>.jsonl                          the main session
+    <project-key>/<session-id>/subagents/agent-<id>.jsonl     one subagent
+    <project-key>/<session-id>/subagents/agent-<id>.meta.json its agent type (`agentType`)
+
+Each line is one JSON record. Records of type "assistant" carry message.id, message.model and
+message.usage (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens).
+Files are streamed line by line, since a transcript can be hundreds of megabytes. A line that is
+not JSON, or a record without usage, is skipped. A "<synthetic>" model with zero usage is skipped.
+
+DOUBLE COUNTING. A streamed message is written as several records with the same message.id, and
+the usage in them is cumulative within the stream. Summing them overcounts badly (one session had
+469 usage records for 221 messages). Records are therefore merged by message.id, keeping each usage
+field's MAXIMUM, and a message is dated by its earliest record.
+
+PROJECT. A record's `cwd` reduced to its repository root: a trailing `/.worktrees/<name>` and
+anything below it is stripped, then, if the directory still exists, the nearest ancestor holding a
+`.git` entry is used (sessions often run in a subdirectory). $HOME is shown as `~`. Without a cwd,
+the project-key directory name is used.
+
+READING THE NUMBERS. Cache-read tokens dwarf everything else, and that is expected. Every turn
+re-sends the whole conversation as context, and the part already cached is billed as a cache read,
+so a long session re-reads its history on each turn. The cache-read count therefore grows with
+session length times turn count; it says how much context was carried, not how much was written.
+Output tokens are the model's generated text and cost far more per token.
+
+BLIND SPOTS.
+  - The transcripts give no price weights, and the plan's limit is not published in tokens, so
+    tokens cannot be converted into percent of the limit. The optional limit history (below) is
+    the only direct measure of the limit itself.
+  - Token kinds are counted, not weighed: a cache-read token and an output token count as one each.
+  - Only what survives on disk is seen. Deleted transcripts, and activity from other machines or
+    other accounts, are absent. A message appearing in several files is counted once.
+  - A subagent whose meta.json is missing has type "unknown".
+  - Day boundaries are the machine's local time.
+
+LIMIT HISTORY. If $CLAUDE_USAGE_HISTORY (default ~/.local/state/claude-usage/history.jsonl)
+exists, each line {"ts": epoch seconds, "five_hour_pct", "seven_day_pct", ...} is folded into a
+per-day table: first and last seven_day_pct (their difference is how much of the weekly limit that
+day used) and the maximum five_hour_pct. When the file is absent the report says so in one line.
+
+Test hooks: CLAUDE_USAGE_NOW (epoch seconds) replaces the clock. Python 3 stdlib only.
+"""
+import argparse
+import calendar
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+
+KINDS = ("messages", "output", "cache_creation", "cache_read", "input")
+USAGE_FIELDS = (("output_tokens", "output"), ("cache_creation_input_tokens", "cache_creation"),
+                ("cache_read_input_tokens", "cache_read"), ("input_tokens", "input"))
+
+
+def now_epoch():
+    v = os.environ.get("CLAUDE_USAGE_NOW")
+    return float(v) if v else time.time()
+
+
+def parse_ts(s):
+    """ISO 8601 (with Z or offset) to epoch seconds, or None."""
+    if not isinstance(s, str):
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+_ROOTS = {}
+
+
+def repo_root(path):
+    """The nearest ancestor of path (itself included) holding a .git entry, else path."""
+    if path in _ROOTS:
+        return _ROOTS[path]
+    cur = path
+    while cur and cur != os.path.dirname(cur):
+        if os.path.exists(os.path.join(cur, ".git")):
+            break
+        cur = os.path.dirname(cur)
+    else:
+        cur = path
+    _ROOTS[path] = cur
+    return cur
+
+
+def project_of(cwd, key, home):
+    if not isinstance(cwd, str) or not cwd:
+        return key
+    i = cwd.find("/.worktrees/")
+    if i >= 0:
+        cwd = cwd[:i]
+    elif cwd.endswith("/.worktrees"):
+        cwd = cwd[: -len("/.worktrees")]
+    cwd = repo_root(cwd)
+    if home and (cwd == home or cwd.startswith(home + "/")):
+        cwd = "~" + cwd[len(home):]
+    return cwd
+
+
+def read_messages(root, cutoff, home):
+    """Merge assistant records by message.id. Returns a list of per-message dicts."""
+    msgs = {}
+    anon = 0
+    try:
+        keys = sorted(os.listdir(root))
+    except OSError:
+        return []
+    for key in keys:
+        kdir = os.path.join(root, key)
+        if not os.path.isdir(kdir):
+            continue
+        for path, session, agent in transcript_files(kdir):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    continue  # nothing in it can be newer than the file
+                fh = open(path, encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            with fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(r, dict) or r.get("type") != "assistant":
+                        continue
+                    m = r.get("message")
+                    if not isinstance(m, dict) or not isinstance(m.get("usage"), dict):
+                        continue
+                    u = m["usage"]
+                    vals = {}
+                    for src, dst in USAGE_FIELDS:
+                        v = u.get(src)
+                        vals[dst] = v if isinstance(v, int) and v > 0 else 0
+                    model = m.get("model") if isinstance(m.get("model"), str) else "unknown"
+                    if model == "<synthetic>" or not any(vals.values()):
+                        continue
+                    ts = parse_ts(r.get("timestamp"))
+                    if ts is None:
+                        continue
+                    mid = m.get("id")
+                    if not isinstance(mid, str) or not mid:
+                        anon += 1
+                        mid = "\0anon%d" % anon
+                    cur = msgs.get(mid)
+                    if cur is None:
+                        side = bool(agent) or r.get("isSidechain") is True
+                        aid = agent or (r.get("agentId") if isinstance(r.get("agentId"), str) else "")
+                        msgs[mid] = cur = {
+                            "ts": ts, "iso": r.get("timestamp"), "model": model, "side": side,
+                            "agent": aid if side else "", "session": session or r.get("sessionId") or "?",
+                            "project": project_of(r.get("cwd"), key, home), "key": key, **vals}
+                    else:
+                        for k, v in vals.items():
+                            cur[k] = max(cur[k], v)
+                        if ts < cur["ts"]:
+                            cur["ts"], cur["iso"] = ts, r.get("timestamp")
+    return [m for m in msgs.values() if m["ts"] >= cutoff]
+
+
+def transcript_files(kdir):
+    """Yield (path, session id, agent id or '') for a project-key directory."""
+    for name in sorted(os.listdir(kdir)):
+        p = os.path.join(kdir, name)
+        if name.endswith(".jsonl") and os.path.isfile(p):
+            yield p, name[:-6], ""
+        elif os.path.isdir(p):
+            sub = os.path.join(p, "subagents")
+            if os.path.isdir(sub):
+                for f in sorted(os.listdir(sub)):
+                    if f.startswith("agent-") and f.endswith(".jsonl"):
+                        yield os.path.join(sub, f), name, f[len("agent-"):-6]
+
+
+def agent_type(root, msg):
+    p = os.path.join(root, msg["key"], msg["session"], "subagents", "agent-%s.meta.json" % msg["agent"])
+    try:
+        with open(p, encoding="utf-8") as fh:
+            t = json.load(fh).get("agentType")
+        return t if isinstance(t, str) and t else "unknown"
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+
+
+def zero():
+    return {k: 0 for k in KINDS}
+
+
+def add(tot, m):
+    tot["messages"] += 1
+    for k in KINDS[1:]:
+        tot[k] += m[k]
+
+
+def day_of(ts):
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def build(root, cutoff, home):
+    msgs = read_messages(root, cutoff, home)
+    projects, days, sessions = {}, {}, {}
+    by_type, by_model, agents = {}, {}, {}
+    for m in msgs:
+        side = "subagent" if m["side"] else "main"
+        p = projects.setdefault(m["project"], {"main": zero(), "subagent": zero(),
+                                               "agents": set(), "models": {}})
+        add(p[side], m)
+        p["models"][m["model"]] = p["models"].get(m["model"], 0) + 1
+        d = days.setdefault(day_of(m["ts"]), {"main": zero(), "subagent": zero()})
+        add(d[side], m)
+        s = sessions.setdefault((m["key"], m["session"]), {
+            "session": m["session"], "project": m["project"], "models": {}, "agents": set(),
+            "first": m["ts"], "last": m["ts"], "first_iso": m["iso"], "last_iso": m["iso"],
+            "output": 0, "cache_read": 0})
+        s["output"] += m["output"]
+        s["cache_read"] += m["cache_read"]
+        s["models"][m["model"]] = s["models"].get(m["model"], 0) + 1
+        if m["ts"] < s["first"]:
+            s["first"], s["first_iso"] = m["ts"], m["iso"]
+        if m["ts"] > s["last"]:
+            s["last"], s["last_iso"] = m["ts"], m["iso"]
+        if m["side"]:
+            aid = m["agent"] or "?"
+            p["agents"].add((m["key"], m["session"], aid))
+            s["agents"].add(aid)
+            a = agents.setdefault((m["key"], m["session"], aid), {"type": agent_type(root, m), "models": {}})
+            a["models"][m["model"]] = 1
+            t = by_type.setdefault(a["type"], {"agents": set(), **zero()})
+            t["agents"].add((m["key"], m["session"], aid))
+            add(t, m)
+            g = by_model.setdefault(m["model"], {"agents": set(), **zero()})
+            g["agents"].add((m["key"], m["session"], aid))
+            add(g, m)
+
+    def groups(src):
+        return {k: {"count": len(v["agents"]), **{x: v[x] for x in KINDS}} for k, v in sorted(src.items())}
+
+    top = sorted(sessions.values(), key=lambda s: (-(s["cache_read"] + s["output"]), s["session"]))[:10]
+    return {
+        "projects": {k: {"main": v["main"], "subagent": v["subagent"], "subagents_spawned": len(v["agents"]),
+                         "models": dict(sorted(v["models"].items()))} for k, v in sorted(projects.items())},
+        "days": dict(sorted(days.items())),
+        "subagents": {"by_type": groups(by_type), "by_model": groups(by_model)},
+        "sessions": [{"session": s["session"], "project": s["project"],
+                      "cache_read_plus_output": s["cache_read"] + s["output"],
+                      "models": dict(sorted(s["models"].items())), "subagents": len(s["agents"]),
+                      "first": s["first_iso"], "last": s["last_iso"]} for s in top],
+    }
+
+
+def read_history(path, cutoff):
+    """Per-day limit usage from the history file, or None when it does not exist."""
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    rows = []
+    with fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+                ts = float(r["ts"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if isinstance(r, dict) and ts >= cutoff:
+                rows.append((ts, r))
+    rows.sort(key=lambda x: x[0])
+    out = {}
+    for ts, r in rows:
+        d = out.setdefault(day_of(ts), {})
+        seven, five = r.get("seven_day_pct"), r.get("five_hour_pct")
+        if isinstance(seven, (int, float)):
+            d.setdefault("seven_day_first", seven)
+            d["seven_day_last"] = seven
+        if isinstance(five, (int, float)):
+            d["five_hour_max"] = max(d.get("five_hour_max", five), five)
+    for d in out.values():
+        if "seven_day_first" in d:
+            d["seven_day_delta"] = round(d["seven_day_last"] - d["seven_day_first"], 2)
+    return out
+
+
+def fmt(n):
+    if n >= 1e9:
+        return "%.2fB" % (n / 1e9)
+    if n >= 1e6:
+        return "%.2fM" % (n / 1e6)
+    return "{:,}".format(n)
+
+
+def mix(models):
+    return ", ".join("%s x%d" % kv for kv in sorted(models.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def table(head, rows):
+    rows = [[("..." + str(c)[-57:]) if j == 0 and len(str(c)) > 60 else c for j, c in enumerate(r)] for r in rows]
+    cols = list(zip(*([head] + rows)))
+    w = [max(len(str(c)) for c in col) for col in cols]
+    lines = []
+    for i, r in enumerate([head] + rows):
+        lines.append("  " + "  ".join(str(c).ljust(w[0]) if j == 0 else str(c).rjust(w[j])
+                                      for j, c in enumerate(r)).rstrip())
+        if i == 0:
+            lines.append("  " + "  ".join("-" * x for x in w))
+    return lines
+
+
+def human(rep, window):
+    o = ["claude-usage-report: " + window, "",
+         "Cache-read dominates by design: every turn re-sends the whole conversation, and the",
+         "cached part is billed as a cache read, so long sessions re-read their history each turn.",
+         "Output tokens are the generated text. Blind spot: transcripts carry no price weights, so",
+         "tokens cannot be converted into percent of the weekly limit; compare, do not convert.", ""]
+    head = ["project", "msgs", "output", "cache-new", "cache-read", "input", "agents", "sub msgs", "sub out", "sub cache-read"]
+    rows = []
+    for k, v in rep["projects"].items():
+        m, s = v["main"], v["subagent"]
+        rows.append([k, fmt(m["messages"]), fmt(m["output"]), fmt(m["cache_creation"]), fmt(m["cache_read"]),
+                     fmt(m["input"]), v["subagents_spawned"], fmt(s["messages"]), fmt(s["output"]), fmt(s["cache_read"])])
+    o += ["By project (main session; sub = subagents)"] + table(head, rows)
+    o += [""] + ["  models: %s -> %s" % (k, mix(v["models"])) for k, v in rep["projects"].items()] + [""]
+    head = ["day", "msgs", "output", "cache-read", "sub msgs", "sub out", "sub cache-read"]
+    rows = [[k, fmt(v["main"]["messages"]), fmt(v["main"]["output"]), fmt(v["main"]["cache_read"]),
+             fmt(v["subagent"]["messages"]), fmt(v["subagent"]["output"]), fmt(v["subagent"]["cache_read"])]
+            for k, v in rep["days"].items()]
+    o += ["By day (local time)"] + table(head, rows) + [""]
+    head = ["group", "agents", "msgs", "output", "cache-read"]
+    for label, src in (("type", rep["subagents"]["by_type"]), ("model", rep["subagents"]["by_model"])):
+        rows = [[k, v["count"], fmt(v["messages"]), fmt(v["output"]), fmt(v["cache_read"])] for k, v in src.items()]
+        o += ["Subagents by " + label] + table([label] + head[1:], rows) + [""]
+    head = ["session", "project", "cache-read+out", "subagents", "first", "last", "models"]
+    rows = [[s["session"][:8], s["project"], fmt(s["cache_read_plus_output"]), s["subagents"],
+             s["first"], s["last"], mix(s["models"])] for s in rep["sessions"]]
+    o += ["Top sessions by cache-read + output"] + table(head, rows) + [""]
+    lim = rep["limits"]
+    if lim is None:
+        o.append("Weekly limit: no usage history file found, so limit use per day is not shown.")
+    else:
+        head = ["day", "7d first %", "7d last %", "7d delta", "5h max %"]
+        rows = [[k, v.get("seven_day_first", "-"), v.get("seven_day_last", "-"), v.get("seven_day_delta", "-"),
+                 v.get("five_hour_max", "-")] for k, v in lim.items()]
+        o += ["Weekly limit use per day (from the usage history)"] + table(head, rows)
+    return "\n".join(o)
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="claude-usage-report", description="Token use from Claude Code transcripts.")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--days", type=int, help="window: the last N days (default 7)")
+    g.add_argument("--since", help="window: from local midnight of YYYY-MM-DD")
+    ap.add_argument("--json", action="store_true", help="emit one JSON object")
+    a = ap.parse_args(argv)
+    now = now_epoch()
+    if a.since:
+        try:
+            cutoff = time.mktime(time.strptime(a.since, "%Y-%m-%d"))
+        except ValueError:
+            ap.error("--since wants YYYY-MM-DD")
+        window = "since %s" % a.since
+    else:
+        days = 7 if a.days is None else a.days
+        if days < 0:
+            ap.error("--days must not be negative")
+        cutoff = now - days * 86400
+        window = "last %d days" % days
+    home = os.path.expanduser("~")
+    root = os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.join(home, ".claude", "projects")
+    hist = os.environ.get("CLAUDE_USAGE_HISTORY") or os.path.join(home, ".local", "state", "claude-usage", "history.jsonl")
+    rep = build(root, cutoff, home)
+    rep["window"] = {"description": window, "from_epoch": int(cutoff), "to_epoch": int(now)}
+    rep["limits"] = read_history(hist, cutoff)
+    print(json.dumps(rep, indent=1) if a.json else human(rep, window))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except BrokenPipeError:
+        sys.exit(0)
