@@ -74,8 +74,10 @@ output rather than hidden:
 - Pressure: macOS has no /proc/pressure. A sample records the kernel's memory pressure level
   (1 normal, 2 warning, 4 critical), the thermal pressure level (0 nominal, 1 moderate, 2 heavy,
   3 trapping, 4 sleeping) and swap in use, and a window summary counts samples at warning or worse.
-- Visibility: as an ordinary user it reads the CPU of its own user's processes only; other users'
-  (root daemons, WindowServer) are listed without CPU. On the CI node the work runs as that user.
+- Visibility: as an ordinary user it sees its own user's processes only. macOS answers nothing at
+  all about other users' (473 of 782 processes seen on the CI node, 2026-10-17), so root daemons
+  such as WindowServer and kernel_task show only in the load average. On the CI node the CI work,
+  the forge's VM and the desktop apps all run as that user.
 - No "stalled" state: macOS does not expose uninterruptible waits per process, so none are caught.
 Attribution on macOS also anchors on the CI bridge's worker (`ci-bridge/run.sh`) and podman's VM,
 so a CI run's load is filed under the run, not under "(not under a session)".
