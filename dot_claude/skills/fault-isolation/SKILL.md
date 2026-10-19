@@ -1,6 +1,6 @@
 ---
 name: fault-isolation
-description: Use when something is slow, broken, unreachable or intermittent and the layer at fault is not yet established — "X is slow", "can't reach Y", "it works from here but not there", "this worked yesterday", a timeout, a hang, a connection refused, a failed push, a performance gate that regressed with no code change. Also use when a test fails or slows only sometimes and might be the shared machine's load rather than the code. Also use before believing any single measurement that localises a fault. Covers the rung order (process → host → link → LAN → WAN → remote service), the one cheap command and explicit discriminator per rung, and — most importantly — which rungs are STRUCTURALLY BLIND from which context, so a session does not produce a confident wrong answer from a place that cannot see the fault.
+description: Use when something is slow, broken, unreachable or intermittent and the layer at fault is not yet established — "X is slow", "can't reach Y", "it works from here but not there", "this worked yesterday", a timeout, a hang, a connection refused, a failed push, a performance gate that regressed with no code change. Also use when a test fails or slows only sometimes and might be the shared machine's load rather than the code. Also use before believing any single measurement that localises a fault, and before instrumenting a misbehaving third-party tool (a browser engine, test runner, library or OS service): first check the pinned version against the latest and search its tracker for the symptom. Covers the rung order (process → host → link → LAN → WAN → remote service), the one cheap command and explicit discriminator per rung, and — most importantly — which rungs are STRUCTURALLY BLIND from which context, so a session does not produce a confident wrong answer from a place that cannot see the fault.
 ---
 
 # Fault isolation
@@ -33,6 +33,25 @@ Ask this first, always, because it is the cheapest and it invalidates everything
 - **Is the tool the current build?** A stale deployed copy fails in ways its source cannot explain.
 
 If any of these is unresolved, stop. You are debugging the harness, not the system.
+
+## 0b. Before diagnosing a third-party tool: are we current, and is it already reported?
+
+When the misbehaving thing is someone else's software (a browser engine, a test runner, a library, an
+OS service), spend five minutes on this before any instrumentation:
+
+1. **Which version is pinned, and what is the latest?** Read the lockfile, not memory.
+2. **Search its issue tracker and changelog for the symptom in plain words**: the error text, the
+   shape ("hangs every N navigations", "stalls exactly 10 s"), the platform version. Include closed
+   issues; a fix is usually closed.
+3. **If a newer release plausibly fixes it, update first and re-measure.** Updating a dependency is
+   routine work, not a cost to avoid; an update that turns out unrelated has still cost less than a
+   diagnosis of a bug already fixed upstream.
+
+**Why this is rung zero:** one evening went to instrumenting a browser stall layer by layer (a daemon,
+a helper agent, an OS service, each restarted or removed, then a stack sampler) before a search
+found the identical stack in the test runner's tracker, fixed two minor releases after the pinned
+version. Every measurement was correct and none was needed. Diagnose a third-party fault only once
+you are on a current version and the tracker has nothing.
 
 **Arch's command-not-found message is not evidence the binary exists.** For a missing command it
 prints the package that WOULD provide it and the path it WOULD install to (`extra/pnpm ...
