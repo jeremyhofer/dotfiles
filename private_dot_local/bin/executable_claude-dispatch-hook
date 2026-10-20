@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# claude-dispatch-hook -- Claude Code hook on subagent dispatch: refuses a dispatch that names no
+# model, so every subagent's tier is a decision rather than an inheritance.
+#
+# SUBCOMMANDS (the hook's JSON input on stdin):
+#
+#   require-model [--exempt TYPE[,TYPE...]]
+#                    PreToolUse, matcher "Agent|Task". Refuses an Agent call whose input has no
+#                    `model`, with a reason that gives the tiers to choose from. Passes a fork
+#                    (`subagent_type: "fork"`), which always runs on its parent's model and ignores
+#                    `model`, and any type named in --exempt: agents whose own definition sets
+#                    their model, where a dispatch-time model would override it.
+#
+# WHY. A dispatch that names no model runs on the parent's model, so a session on the top tier
+# hands that tier to every subagent it forgets to tier. Nobody chose it, and nothing records that
+# nobody did. Refusing the dispatch makes the choice explicit at the one point it is made, and the
+# retry costs one turn. It reads only the Agent tool's input: subagents started some other way (a
+# workflow script's agents) are not seen.
+#
+# FAIL OPEN. A hook that breaks a session is worse than one that misses a case: without jq, with
+# unreadable input, or on any internal error, it exits 0 and prints nothing.
+# Portable: bash 3.2 and BSD userland.
+set -u
+
+[ "${1:-}" = require-model ] || exit 0
+shift
+exempt=,fork,
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --exempt) exempt="$exempt${2:-},"; shift 2 || shift ;;
+    *) shift ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || exit 0
+input=$(cat 2>/dev/null) || exit 0
+
+fields=$(printf '%s' "$input" | jq -r '
+  select(.tool_name == "Agent" or .tool_name == "Task")
+  | [(.tool_input.subagent_type // "general-purpose"), (.tool_input.model // "")] | @tsv' 2>/dev/null) || exit 0
+[ -n "$fields" ] || exit 0
+type=${fields%%	*}
+model=${fields#*	}
+
+[ -n "$model" ] && exit 0
+case "$exempt" in *",$type,"*) exit 0 ;; esac
+
+deny() {
+  jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+}
+
+deny "Every subagent dispatch here names its model; this one names none, so it would inherit yours. Re-dispatch with \`model\` set to the cheapest tier that does the task well: haiku for mechanical sweeps, rote edits, enumeration and format churn; sonnet for standard search, build or code work with a clear spec; opus for judgment-heavy design, adversarial verification or ambiguous debugging. Name opus explicitly when that is the choice. A fork (subagent_type \"fork\") inherits your model by design and needs no model."

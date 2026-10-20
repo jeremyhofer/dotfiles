@@ -45,6 +45,7 @@ typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell sp
 `fleet-decl` (reads one declaration from the per-repo record, a mani.yaml; exit 2 means the record is unreadable, never "not declared") ·
 `wt-bootstrap` (installs a fresh worktree's dependencies from whichever lockfile it finds, frozen; wired in as worktrunk's `pre-start` hook) ·
 `wt-fetch-base` (worktrunk hooks: a new worktree starts from its base fetched from `origin`, else the `fetch-base.fallback` remotes, and creation is refused when none answers; opt in with `git config fetch-base.enabled true`) ·
+`claude-dispatch-hook` (Claude Code hook: refuses a subagent dispatch that names no model, giving the tiers to choose from; forks and `--exempt` types pass; wired by a private layer) ·
 `claude-worktree-hook` (Claude Code hooks: refuses a session's raw `git worktree add`/`move` with the `wt` command to use and warns on a raw `remove`, refuses EnterWorktree where sessions work in place (`worktree.bgIsolation` none), warns at dispatch about commits on no remote) ·
 `install-claude-plugins` (installs the Claude Code plugins a private layer's settings fragment declares; opt-in, run from that layer's trigger) · `install-test-gate` (installs a test-suite commit gate into a chezmoi source repo, refusing a pre-commit it did not write; opt-in) ·
 `wt-config-gen` (generates worktrunk's user config from `base.toml`, an optional private fragment, and each repo's `worktrunk:` block in the manifest).
