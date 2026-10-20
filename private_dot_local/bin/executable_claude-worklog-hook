@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# claude-worklog-hook -- Claude Code hooks that append, to a local log, the work a session hands to
+# subagents and what started each of its turns: the record of what agent work costs and produced.
+#
+# SUBCOMMANDS, one per hook event (the hook's JSON input on stdin in every case):
+#
+#   dispatch         PostToolUse, matcher "Agent|Task". Appends a `dispatch` record: the child's
+#                    id, the type, the model asked for and the one resolved, the dispatcher's
+#                    effort, the description, background or not, isolation, and the prompt's
+#                    LENGTH. Other tools are ignored. Prints nothing.
+#   subagent-start   SubagentStart. Appends a `start` record and prints additionalContext that
+#                    tells the subagent to end its report with a WORKNOTE block.
+#   handback         PreToolUse, matcher "SubagentHandback". Appends a `note` record from the
+#                    report's WORKNOTE / COMPLEXITY / COMMITS / MODEL-FIT lines and nothing else of
+#                    the report. A report with no WORKNOTE line is refused, naming the block to
+#                    add; an agent already refused twice is let through with a `note` record
+#                    marked missing, so a confused agent is never trapped. Other tools, and a
+#                    hand-back with no agent id, pass silently.
+#   turn             UserPromptSubmit. Appends a `turn` record: what started the turn (human, peer,
+#                    subagent, task or other) and the prompt's length.
+#
+# LOG. ${CLAUDE_WORKLOG_DIR:-$HOME/.local/state/claude-worklog}/worklog.jsonl, one compact JSON
+# object per line, appended in a single write; directory 0700, file 0600. Every record carries ts
+# (UTC), host, kind, session_id, prompt_id (when present), agent_id (the agent the hook fired in;
+# null for the main session) and cwd. Free text is cut to 1000 characters. Refusal counts live in
+# refusals/<agent_id> beside the log.
+#
+# WHY. The fleet measures what agent work costs against what it produced. Telemetry has tokens per
+# request; this is the other half. It runs in every session at every nesting depth, so it must
+# never break one, and it must never keep prompt or report text beyond the note itself: a human
+# turn leaves only its length, a dispatch only its prompt's length, a hand-back only its four
+# labeled lines.
+#
+# FAIL OPEN. A hook that breaks a session is worse than one that misses a record: without jq, with
+# unreadable or empty input, with an unwritable log directory, or on any internal error, it exits 0
+# and prints nothing. The one exception is the hand-back refusal, which applies whenever the input
+# parsed and the WORKNOTE line is missing, whether or not anything can be logged or counted (an
+# unwritable counter reads as 0). Always exits 0.
+# Portable: bash 3.2 and BSD userland.
+set -u
+
+sub=${1:-}
+case "$sub" in dispatch|subagent-start|handback|turn) ;; *) exit 0 ;; esac
+
+command -v jq >/dev/null 2>&1 || exit 0
+input=$(cat 2>/dev/null) || exit 0
+printf '%s' "$input" | jq -e 'type == "object"' >/dev/null 2>&1 || exit 0
+
+DIR=${CLAUDE_WORKLOG_DIR:-${HOME:-/nonexistent}/.local/state/claude-worklog}
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts=
+host=$( (hostname -s 2>/dev/null || hostname 2>/dev/null) | head -n 1)
+[ -n "$host" ] || host=unknown
+
+# The shared jq prelude: truncation and the fields every record carries.
+PRELUDE='
+  def t: if type == "string" then .[0:1000] else . end;
+  def common($k): {ts: $ts, host: $host, kind: $k, session_id: ((.session_id // null) | t)}
+    + (if .prompt_id then {prompt_id: (.prompt_id | t)} else {} end)
+    + {agent_id: ((.agent_id // null) | t), cwd: ((.cwd // null) | t)};
+'
+
+# append <json>: one write of one line; any failure is swallowed.
+append() {
+  ( umask 077; mkdir -p "$DIR" && printf '%s\n' "$1" >> "$DIR/worklog.jsonl" ) 2>/dev/null
+  return 0
+}
+
+# build <jq program body>: the record for this input, or nothing.
+build() {
+  printf '%s' "$input" | jq -c --arg ts "$ts" --arg host "$host" "$PRELUDE $1" 2>/dev/null
+}
+
+case "$sub" in
+  dispatch)
+    rec=$(build '
+      select(.tool_name == "Agent" or .tool_name == "Task")
+      | common("dispatch") + {
+          tool_use_id: ((.tool_use_id // null) | t),
+          child_agent_id: ((.tool_response.agentId? // null) | t),
+          subagent_type: ((.tool_input.subagent_type // "general-purpose") | t),
+          model_requested: ((.tool_input.model // null) | t),
+          resolved_model: ((.tool_response.resolvedModel? // null) | t),
+          dispatcher_effort: ((.effort.level? // null) | t),
+          description: ((.tool_input.description // null) | t),
+          background: (.tool_response | if type == "object" then .isAsync else null end),
+          isolation: ((.tool_input.isolation // null) | t),
+          prompt_chars: ((.tool_input.prompt // "") | if type == "string" then length else 0 end)
+        }') || exit 0
+    [ -n "$rec" ] && append "$rec"
+    ;;
+
+  subagent-start)
+    rec=$(build 'common("start") + {agent_type: ((.agent_type // null) | t)}') || exit 0
+    [ -n "$rec" ] && append "$rec"
+    text='Your final report must end with this block, one line each:
+WORKNOTE: what you did, in one or two sentences
+COMPLEXITY: low|medium|high, and what made it so
+COMMITS: repo@sha for each commit you made, or none
+MODEL-FIT: right|over|under, and why your model did or did not suit the task
+The hand-back is refused without the WORKNOTE line.'
+    jq -cn --arg c "$text" '{hookSpecificOutput: {hookEventName: "SubagentStart", additionalContext: $c}}' 2>/dev/null
+    ;;
+
+  handback)
+    res=$(build '
+      select(.tool_name == "SubagentHandback")
+      | ((.tool_input.message? // "") | if type == "string" then . else "" end) as $msg
+      | ($msg | split("\n")) as $lines
+      | def field($k): [$lines[] | capture("^[ \t]*" + $k + ":(?<v>.*)$")? | .v | gsub("^\\s+|\\s+$"; "")][0];
+        (field("WORKNOTE") // "") as $note
+      | {present: ($note != ""), agent: (.agent_id // ""),
+         note: (common("note") + {agent_type: ((.agent_type // null) | t),
+            note: ($note | t),
+            complexity: (field("COMPLEXITY") | t),
+            commits: (field("COMMITS") | t),
+            model_fit: (field("MODEL-FIT") | t),
+            report_chars: ($msg | length)}),
+         missing: (common("note") + {agent_type: ((.agent_type // null) | t),
+            note: null, missing: true, report_chars: ($msg | length)})}') || exit 0
+    [ -n "$res" ] || exit 0
+    agent=$(printf '%s' "$res" | jq -r '.agent' 2>/dev/null) || exit 0
+    [ -n "$agent" ] || exit 0
+    if [ "$(printf '%s' "$res" | jq -r '.present' 2>/dev/null)" = true ]; then
+      append "$(printf '%s' "$res" | jq -c '.note')"
+      exit 0
+    fi
+    safe=$(printf '%s' "$agent" | tr -c 'A-Za-z0-9_-' '_')
+    cfile="$DIR/refusals/$safe"
+    count=$(cat "$cfile" 2>/dev/null) || count=0
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    if [ "$count" -ge 2 ]; then
+      append "$(printf '%s' "$res" | jq -c '.missing')"
+      exit 0
+    fi
+    ( umask 077; mkdir -p "$DIR/refusals" && printf '%s\n' "$((count + 1))" > "$cfile" ) 2>/dev/null
+    reason='Every subagent report here ends with a work-note block, and yours has no WORKNOTE line, so it was not delivered. Add these four lines at the end of the report, one each, and hand it back again:
+WORKNOTE: what you did, in one or two sentences
+COMPLEXITY: low|medium|high, and what made it so
+COMMITS: repo@sha for each commit you made, or none
+MODEL-FIT: right|over|under, and why your model did or did not suit the task'
+    deny() {
+      jq -cn --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+    }
+    deny "$reason"
+    ;;
+
+  turn)
+    rec=$(build '
+      (.prompt // "") as $p0 | (if ($p0 | type) == "string" then $p0 else "" end) as $p
+      | ($p | sub("^Another Claude session sent a message:\\s*"; "")) as $s
+      | common("turn") + {prompt_chars: ($p | length)}
+      + (if ($s | startswith("<cross-session-message")) then {source: "peer"}
+         elif ($s | startswith("<agent-message")) then
+           {source: "subagent"}
+           + ([$s | capture("^<agent-message[^>]*?\\sfrom=\"(?<f>[^\"]*)\"")? | .f] | if length > 0 then {from_agent: (.[0] | t)} else {} end)
+         elif ($s | startswith("<task-notification>")) then {source: "task"}
+         elif ($s | test("^<[A-Za-z]")) then {source: "other", tag: ($s | capture("^<(?<n>[A-Za-z][A-Za-z0-9_:.-]*)") | .n | t)}
+         else {source: "human"} end)') || exit 0
+    [ -n "$rec" ] && append "$rec"
+    ;;
+esac
+exit 0

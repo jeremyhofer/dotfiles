@@ -112,6 +112,20 @@ claude-context-probe --fleet    # background sessions, their listing, resume, se
 They carry versions, verdicts and key names only, never paths or values from the machine, which is
 what makes them safe to move off it.
 
+## Applying: in full, on every machine, after the push
+
+- **Apply everything, both instances, every time.** A targeted apply (`chezmoi apply <path>`) leaves
+  "what is deployed here?" unanswerable, because the answer becomes a list of paths nobody kept.
+  After a full apply of both instances the answer is "the pulled head", and drift cannot build up.
+- **On every machine that consumes the change, together.** A change applied on the machine it was
+  written on reaches the others only when someone pulls and applies there, and nothing announces
+  that it has not. A dotfiles change is done when every consuming machine has applied it, not when
+  it is pushed.
+- **Push both repositories before handing over the apply.** Another machine applies what it pulls,
+  so an unpushed commit reaches this machine and silently not the others.
+- **Not while a machine is doing work.** An apply replaces scripts and config under whatever is
+  running; on a machine that runs builds or jobs, check that none is in flight first.
+
 ## Things that will bite
 
 - **`chezmoi apply` does not apply the overlay.** Two instances, two commands. A clean `chezmoi diff`
