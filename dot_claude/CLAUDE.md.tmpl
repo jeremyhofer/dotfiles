@@ -88,7 +88,7 @@ as verifying before asserting, in an environment where the cheap falsifier does 
   does not help; it has the same blind spot. Use `rg -uu` / `command grep -r`, and treat a
   no-match inside an ignored tree as unverified rather than clean. Details: skill
   `writing-zsh-commands` §8.
-- **Run an expensive step ONCE, materialise its output, then operate on the output.** A PDF:
+- **Run an expensive step ONCE, materialize its output, then operate on the output.** A PDF:
   `pdftotext -layout <file>.pdf <out>.txt`, then grep the text. A long test/build run: capture it
   (the Bash tool's background mode already does), then read the file. Applies whenever the command
   is slow, you might get its invocation wrong, or you will do anything ETL-shaped to the result —
