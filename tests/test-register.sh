@@ -146,6 +146,14 @@ fdoc docs/adr/0001-x.md
 echo "Mentions adr-only.md only." >> "$g/docs/adr/0001-x.md"
 echo "Also see 2026-01-01-shared.md" >> "$g/docs/initiatives/ABC-0002-beta/README.md"
 echo "Covers 2026-01-01-solo.md" >> "$gr/ABC-0001-slug.md"
+# The docs index itself names documents: a file only `docs/README.md` names is named. And a durable
+# page one initiative cites is not a move candidate when a decision record or a README also names
+# it, since it already has a home outside that initiative.
+fdoc docs/research/index-only.md
+echo "Research: index-only.md" >> "$g/docs/README.md"
+fdoc docs/reference/cited-and-indexed.md
+echo "Uses cited-and-indexed.md" >> "$gr/ABC-0001-slug.md"
+mkdir -p "$g/docs/reference"; echo "Pages: cited-and-indexed.md" >> "$g/docs/reference/README.md"
 gt add -A >/dev/null
 GIT_COMMITTER_DATE="2026-01-01T00:00:00" GIT_AUTHOR_DATE="2026-01-01T00:00:00" gt commit -q -m old
 # ABC-0001 is touched now, so only ABC-0002's folder is stale.
@@ -179,6 +187,8 @@ assert_has "health names a document only one initiative names" "docs/specs/2026-
 assert_lacks "health leaves a document two initiatives name" "2026-01-01-shared.md" "$out"
 assert_has "health names a document nothing names" "docs/runbooks/orphan-runbook.md" "$(echo "$out" | grep -i 'named by nothing')"
 assert_lacks "a document only an ADR names is neither list" "adr-only.md" "$out"
+assert_lacks "a document only docs/README.md names is named" "index-only.md" "$out"
+assert_lacks "one initiative plus a README naming a page is not a move candidate" "cited-and-indexed.md" "$out"
 python3 "$reg" health --root "$gr" >/dev/null 2>&1 && ok "health exits 0 with findings" || bad "health exits 0 with findings"
 # Near miss: a folder committed today is not stale, at the edge of the window.
 echo x >> "$g/docs/initiatives/ABC-0002-beta/plans/2026-01-01-b.md"; gt add -A >/dev/null; gt commit -q -m touch

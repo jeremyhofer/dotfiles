@@ -566,14 +566,20 @@ def unclaimed_documents(base, entries):
     NAMED means the file name appears in a register entry, a decision record or a folder README.
     Whether it is claimed by an INITIATIVE is narrower: an entry, or that entry's folder README --
     counted once per initiative id, so an entry and its own README naming a document do not make
-    two. A decision record or a subject README makes a document named without making it claimed."""
+    two. A decision record or a subject README makes a document named without making it claimed.
+    `docs/README.md`, the docs index, is one of the READMEs that name documents.
+
+    A move candidate is a document exactly one initiative claims and nothing else names. One that a
+    decision record or a non-initiative README also names already has a home outside that initiative
+    (a durable reference page an entry happens to cite), so it is not reported."""
     docs = base / "docs"
     claimants = []      # (initiative id or None, text)
     for e in entries:
         claimants.append((e.id, e.text))
     for adr in sorted((docs / "adr").glob("*.md")) if (docs / "adr").is_dir() else []:
         claimants.append((None, adr.read_text(encoding="utf-8", errors="replace")))
-    readmes = sorted(docs.glob("*/README.md")) + sorted(docs.glob("initiatives/*/README.md")) \
+    readmes = [docs / "README.md"] if (docs / "README.md").is_file() else []
+    readmes += sorted(docs.glob("*/README.md")) + sorted(docs.glob("initiatives/*/README.md")) \
         + sorted(docs.glob("archive/initiatives/*/README.md"))
     for r in readmes:
         m = re.match(r"^([A-Z][A-Z0-9]*-\d+)", r.parent.name)
@@ -590,7 +596,7 @@ def unclaimed_documents(base, entries):
             initiatives = sorted({i for i, _ in hits if i})
             if not hits:
                 out.append("%s: named by nothing -- no entry, decision record or README" % rel)
-            elif len(initiatives) == 1:
+            elif len(initiatives) == 1 and all(i for i, _ in hits):
                 out.append("%s: named by one initiative (%s) only -- a candidate to move into its "
                            "folder" % (rel, initiatives[0]))
     return out
