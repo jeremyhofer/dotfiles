@@ -1,0 +1,13 @@
+# us-spelling-lint: the commit hook refuses a British spelling on a line a commit adds.
+# Scripts and config are checked as well as markdown, since their comments are prose.
+include: *.sh
+include: *.tmpl
+include: *.lua
+include: *.conf
+include: *.toml
+include: executable_*
+# The spelling lint's own dictionary and tests carry British forms as data.
+exclude: private_dot_local/bin/executable_us-spelling-lint
+exclude: tests/test-us-spelling-lint.sh
+# A changelog section records a released change as it was written.
+exclude: CHANGELOG.md
