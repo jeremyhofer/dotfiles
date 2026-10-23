@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""us-spelling-lint — refuse NEW British spellings in what a commit adds.
+
+WHY THIS EXISTS
+    A repository converted to American English drifts back: sessions and people copy the
+    spelling of whatever they read, and one British word in a file invites the next. A one-off
+    conversion therefore needs a gate behind it. The gate must be cheap to live with, so it
+    judges only what a commit ADDS: existing text, quotations and frozen records never fail
+    it, and a team can adopt it over a corpus that has not been converted yet.
+
+    It enforces the DIALECT rule and nothing else. A general spell checker also flags typos,
+    names and jargon, and "the spelling of ordinary English words" is a different rule that
+    nobody decided to enforce; mixing the two is how a gate gets switched off.
+
+WHERE IT BELONGS — one spelling authority per repository
+    Wire it into a repository's own `.githooks/pre-commit`, and only in a repository that runs
+    no spellchecker of its own. Where a project already runs one (cspell, codespell), put the
+    American rule in THAT tool's configuration instead (cspell's `flagWords`; codespell's
+    `builtin` list gains `en-GB_to_en-US`): two checkers over the same text with different
+    dictionaries disagree, and the project owns its own. For the same reason this is never a
+    global git hook.
+
+WHAT IT CHECKS
+    Added lines of markdown (and of any file a repository includes, see CONFIG) against
+    codespell's British-to-American dictionary (`--builtin en-GB_to_en-US`, and nothing else
+    from codespell, so `teh` passes), plus a short extra dictionary embedded here for common
+    forms the builtin lacks (`whilst`, `amongst`, `travelling`, `rumour`, ...). A small
+    default allow-list covers forms American English accepts (`cancelled`, `catalogue`).
+    Requires `codespell` on PATH; without it the tool exits 2 and says so, because a gate
+    that passes when its engine is missing is no gate.
+
+WHAT IS NOT CHECKED, in markdown files, because names in use live there
+    * fenced code blocks. The fence state is computed from the STAGED file, not from the
+      diff, since the fence that encloses an added line is usually an unchanged line above it.
+    * inline backtick spans, URLs, markdown link targets and HTML tags/attributes.
+    Everything else on an added line is checked, including text in blockquotes.
+
+WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets over-trusted
+    * Non-markdown files that a repository includes are checked on WHOLE added lines: there is
+      no parser for code, so a string literal or an identifier on a line is checked like the
+      comment next to it. Use `allow:` or a `codespell:ignore` comment for those names.
+    * Any British form in neither dictionary passes; the extra dictionary is short on purpose.
+      Choices the builtin makes (it flags `grey`, `judgement`) are the dictionary's, not this
+      tool's; accept one with `allow:`.
+    * A rewritten line counts as added, so touching an old line surfaces its old defects too.
+
+CONFIG
+    `key: value` lines, `#` comments. Read from --config FILE, else $US_SPELLING_LINT_CONFIG,
+    else `.us-spelling-lint` at the repository root. Missing config means defaults (said on
+    stderr only with --verbose). An unknown key is an error, so a mistyped one cannot
+    silently disable a rule.
+
+        exclude: <path prefix>    repeatable. Paths under it are skipped (frozen records).
+        include: <glob>           repeatable. Adds files to the default `*.md`. A glob without
+                                  a slash matches the file name at any depth.
+        allow: <word> [<word>...] repeatable. Words accepted everywhere (names in use).
+
+    A single occurrence can instead carry a trailing comment: `# codespell:ignore <word>`, or
+    `<!-- codespell:ignore <word> -->` in markdown.
+
+USAGE
+    us-spelling-lint [--all] [--config FILE] [--verbose]
+    Default: lint the lines the staged changes add (a commit gate; nothing staged exits 0).
+    --all:   lint every tracked file in scope in full, working-tree content (an audit before
+             adopting the gate). Same exclusions and skipping.
+    Output:  `path:line: <word> ==> <suggestion>`, then one hint line. Paths are relative to
+    the repository root whatever the working directory.
+    Exit:    0 clean, 1 findings, 2 error (including codespell not installed).
+"""
+import fnmatch
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+# Common British forms the codespell builtin lacks. Only unambiguous words belong here.
+EXTRA_DICTIONARY = """\
+whilst->while
+amongst->among
+travelling->traveling
+travelled->traveled
+traveller->traveler
+travellers->travelers
+rumour->rumor
+rumours->rumors
+materialise->materialize
+materialised->materialized
+materialises->materializes
+materialising->materializing
+dialling->dialing
+dialled->dialed
+fuelled->fueled
+fuelling->fueling
+counselling->counseling
+counsellor->counselor
+levelled->leveled
+levelling->leveling
+jewellery->jewelry
+theatre->theater
+theatres->theaters
+harbour->harbor
+harbours->harbors
+offence->offense
+offences->offenses
+fibre->fiber
+fibres->fibers
+calibre->caliber
+ageing->aging
+tyre->tire
+tyres->tires
+kerb->curb
+plough->plow
+sceptic->skeptic
+sceptical->skeptical
+cosy->cozy
+draught->draft
+instalment->installment
+wilful->willful
+paralyse->paralyze
+paralysed->paralyzed
+"""
+
+# American English accepts these, so they are never findings.
+DEFAULT_ALLOW = ["cancelled", "cancelling", "catalogue", "catalogued", "catalogues"]
+
+SCRIPT = "us-spelling-lint"
+HINT = ("hint: to accept a name in use, add `allow: <word>` to .us-spelling-lint, or end the "
+        "line with a `# codespell:ignore <word>` comment.")
+MARKDOWN = (".md", ".markdown")
+KEYS = ("exclude", "include", "allow")
+
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+INLINE_CODE = re.compile(r"(`+)(?:(?!\1).)+?\1")
+URL = re.compile(r"(?:https?|ftp|file)://[^\s<>)\]]+|\bwww\.[^\s<>)\]]+")
+LINK_TARGET = re.compile(r"\]\([^)]*\)")
+HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+class Fail(Exception):
+    """An error that ends the run with exit 2."""
+
+
+def blank(m: "re.Match[str]") -> str:
+    return " " * len(m.group(0))
+
+
+def mask_inline(line: str) -> str:
+    """Blank out, keeping columns, what a markdown line holds that is not prose."""
+    for pat in (INLINE_CODE, URL, LINK_TARGET, HTML_TAG):
+        line = pat.sub(blank, line)
+    return line
+
+
+def fenced_lines(lines: list[str]) -> set[int]:
+    """1-based numbers of lines inside a fenced block, the fence lines themselves included."""
+    inside: set[int] = set()
+    marker = None
+    for i, line in enumerate(lines, 1):
+        m = FENCE.match(line)
+        if marker is None:
+            if m:
+                marker = m.group(1)
+                inside.add(i)
+        else:
+            inside.add(i)
+            if m and m.group(1)[0] == marker[0] and len(m.group(1)) >= len(marker) \
+                    and not line.strip(" ").lstrip(marker[0]):
+                marker = None
+    return inside
+
+
+class Config:
+    def __init__(self) -> None:
+        self.exclude: list[str] = []
+        self.include: list[str] = ["*.md"]
+        self.allow: list[str] = list(DEFAULT_ALLOW)
+
+    def in_scope(self, rel: str) -> bool:
+        if any(rel.startswith(x) for x in self.exclude):
+            return False
+        base = rel.rsplit("/", 1)[-1]
+        return any(fnmatch.fnmatchcase(rel, g) or fnmatch.fnmatchcase(base, g)
+                   for g in self.include)
+
+
+def load_config(root: pathlib.Path, explicit: str | None) -> tuple[Config, str | None]:
+    path = explicit or os.environ.get("US_SPELLING_LINT_CONFIG")
+    if not path:
+        cand = root / ".us-spelling-lint"
+        path = str(cand) if cand.is_file() else None
+    cfg = Config()
+    if path is None:
+        return cfg, None
+    try:
+        text = pathlib.Path(path).read_text(errors="replace")
+    except OSError as e:
+        raise Fail(f"cannot read config {path}: {e.strerror}")
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, sep, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if not sep or key not in KEYS:
+            raise Fail(f"{path}:{n}: unknown key {key!r} (known: {', '.join(KEYS)})")
+        if key == "exclude" and value:
+            cfg.exclude.append(value)
+        elif key == "include" and value:
+            cfg.include.append(value)
+        elif key == "allow":
+            cfg.allow.extend(w.lower() for w in value.split())
+    return cfg, path
+
+
+def git_env(cwd: pathlib.Path) -> dict[str, str] | None:
+    """Environment for git calls about the repository at CWD. Inside a git hook, git exports
+    GIT_DIR and GIT_INDEX_FILE, which override the working directory; they are kept only when
+    the hook's repository IS the one at CWD (so GIT_INDEX_FILE names the index being
+    committed) and are removed otherwise."""
+    if not os.environ.get("GIT_DIR"):
+        return None
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    gd = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=cwd,
+                        capture_output=True, text=True, env=clean)
+    if gd.returncode == 0 and \
+            pathlib.Path(os.environ["GIT_DIR"]).resolve() == pathlib.Path(gd.stdout.strip()).resolve():
+        return None
+    return clean
+
+
+_ENV: dict[str, str] | None = None
+
+
+def git(*args: str, cwd: pathlib.Path) -> str:
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, env=_ENV)
+    if r.returncode != 0:
+        raise Fail(f"git {' '.join(args[:2])} failed: {r.stderr.decode(errors='replace').strip()}")
+    return r.stdout.decode(errors="replace")
+
+
+def split_z(s: str) -> list[str]:
+    return [p for p in s.split("\0") if p]
+
+
+def added_line_numbers(root: pathlib.Path, rel: str) -> set[int]:
+    """New-side line numbers the staged change adds to REL. With -U0 every line of a hunk's
+    new range is an added line."""
+    diff = git("diff", "--cached", "-U0", "--no-color", "--diff-filter=ACMR", "--", rel, cwd=root)
+    out: set[int] = set()
+    for line in diff.splitlines():
+        m = HUNK.match(line)
+        if m:
+            start = int(m.group(1))
+            count = int(m.group(2)) if m.group(2) is not None else 1
+            out.update(range(start, start + count))
+    return out
+
+
+def candidates(root: pathlib.Path, cfg: Config, whole: bool) -> list[tuple[str, int, str]]:
+    """(path, line number, text to check) for every line the run should judge."""
+    if whole:
+        paths = split_z(git("ls-files", "-z", cwd=root))
+    else:
+        paths = split_z(git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR",
+                            cwd=root))
+    found = []
+    for rel in paths:
+        if not cfg.in_scope(rel):
+            continue
+        if whole:
+            try:
+                text = (root / rel).read_bytes().decode(errors="replace")
+            except OSError:
+                continue  # tracked but absent from the working tree
+            wanted = None
+        else:
+            text = git("show", f":{rel}", cwd=root)
+            wanted = added_line_numbers(root, rel)
+            if not wanted:
+                continue
+        lines = text.split("\n")
+        md = rel.endswith(MARKDOWN)
+        skip = fenced_lines(lines) if md else set()
+        for n, line in enumerate(lines, 1):
+            if wanted is not None and n not in wanted:
+                continue
+            line = line.rstrip("\r")
+            if not line.strip() or n in skip:
+                continue
+            found.append((rel, n, mask_inline(line) if md else line))
+    return found
+
+
+def run_codespell(cs: str, cfg: Config, feed: list[tuple[str, int, str]]):
+    """Findings as (path, line, 'word ==> suggestion')."""
+    with tempfile.TemporaryDirectory(prefix=SCRIPT + ".") as d:
+        dic, ign = os.path.join(d, "extra.txt"), os.path.join(d, "allow.txt")
+        pathlib.Path(dic).write_text(EXTRA_DICTIONARY)
+        pathlib.Path(ign).write_text("\n".join(sorted(set(cfg.allow))) + "\n")
+        r = subprocess.run([cs, "--builtin", "en-GB_to_en-US", "-D", "-", "-D", dic,
+                            "-I", ign, "-"],
+                           input="\n".join(t for _, _, t in feed) + "\n",
+                           capture_output=True, text=True, errors="replace")
+    if r.returncode not in (0, 65):
+        raise Fail(f"codespell failed (exit {r.returncode}): {r.stderr.strip()}")
+    findings = []
+    cur = None
+    for line in r.stdout.split("\n"):
+        m = re.match(r"^(\d+): ", line)
+        if m:
+            cur = feed[int(m.group(1)) - 1]
+        elif line.startswith("\t") and cur is not None:
+            findings.append((cur[0], cur[1], line.strip()))
+    return findings
+
+
+def main(argv: list[str]) -> int:
+    whole = verbose = False
+    explicit = None
+    it = iter(argv)
+    for a in it:
+        if a == "--all":
+            whole = True
+        elif a == "--verbose":
+            verbose = True
+        elif a == "--config":
+            explicit = next(it, None)
+            if explicit is None:
+                raise Fail("--config needs a file")
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        else:
+            raise Fail(f"unknown argument {a!r}")
+    cs = shutil.which("codespell")
+    if cs is None:
+        raise Fail("codespell is not installed or not on PATH; this gate cannot run without it")
+    global _ENV
+    start = pathlib.Path.cwd()
+    _ENV = git_env(start)
+    root = pathlib.Path(git("rev-parse", "--show-toplevel", cwd=start).strip())
+    cfg, source = load_config(root, explicit)
+    if verbose:
+        print(f"{SCRIPT}: " + (f"config {source}" if source else
+              "no config found, using defaults (markdown only, nothing excluded)"),
+              file=sys.stderr)
+    feed = candidates(root, cfg, whole)
+    if not feed:
+        return 0
+    findings = sorted(run_codespell(cs, cfg, feed), key=lambda f: (f[0], f[1]))
+    for path, n, what in findings:
+        print(f"{path}:{n}: {what}")
+    if findings:
+        print(HINT)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fail as e:
+        print(f"{SCRIPT}: {e}", file=sys.stderr)
+        sys.exit(2)

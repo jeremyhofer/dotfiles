@@ -27,6 +27,7 @@ about; `--remove` deletes those no running session has mounted; a terminal tool,
 `register` (read a work register — list, stats, show an entry with its initiative folder, what has gone quiet (`health`), the next free id, and render a browsable index on demand rather than committing one that can go stale; skill `register-standard`) ·
 `lint-tasknames` (a repo's task names — just, npm, make, Nx — against the vocabulary in skill `naming-build-tasks`; `--fleet` for every repo the mani manifest declares) ·
 `comment-lint` (fails a source comment that depends on context the file cannot carry) · `doc-lint` (its sibling for markdown prose: references a cold reader cannot resolve; per-repo `.doc-lint` config) ·
+`us-spelling-lint` (commit gate: refuses new British spellings on lines a commit adds, markdown by default, via codespell's GB-to-US dictionary; per-repo `.us-spelling-lint` config; `--all` audits; wired per repository, only where the project runs no spellchecker of its own) ·
 `context-lint` (a repository's `AGENTS.md`/`CLAUDE.md` against the context-file standard: sections, size caps counting imports; skill `project-context-file`) ·
 `git-ai-coauthor` (prepare-commit-msg hook: adds a Claude co-author trailer, naming the session's model when it can, to commits made from a Claude Code session; wired in `~/.gitconfig`, per-repo opt-out `ai-coauthor.enabled false`) ·
 `git-clone-worktree` (the old name for `fleet-repo clone`; a forwarding shim, removed once no manifest names it) · `git-merge-diff` (diff a merge would introduce) ·
