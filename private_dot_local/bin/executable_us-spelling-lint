@@ -24,7 +24,8 @@ WHAT IT CHECKS
     codespell's British-to-American dictionary (`--builtin en-GB_to_en-US`, and nothing else
     from codespell, so `teh` passes), plus a short extra dictionary embedded here for common
     forms the builtin lacks (`whilst`, `amongst`, `travelling`, `rumour`, ...). A small
-    default allow-list covers forms American English accepts (`cancelled`, `catalogue`).
+    default allow-list covers a form American English uses beside its own (`cancelled`);
+    `catalogue` is refused, since American English writes `catalog`.
     Requires `codespell` on PATH; without it the tool exits 2 and says so, because a gate
     that passes when its engine is missing is no gate.
 
@@ -150,7 +151,7 @@ paralysed->paralyzed
 """
 
 # American English accepts these, so they are never findings.
-DEFAULT_ALLOW = ["cancelled", "cancelling", "catalogue", "catalogued", "catalogues"]
+DEFAULT_ALLOW = ["cancelled", "cancelling"]
 
 SCRIPT = "us-spelling-lint"
 HINT = ("hint: to accept a name in use, add `allow: <word>` to .us-spelling-lint, or end the "

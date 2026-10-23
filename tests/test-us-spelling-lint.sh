@@ -85,9 +85,13 @@ printf 'An old colour stays.\nteh cat, a recieve typo.\n' > "$r/a.md"; git -C "$
 run "$r"
 assert_clean "a general typo is not reported (the dialect rule only)"
 
-printf 'An old colour stays.\nThe cancelled order and a catalogue.\n' > "$r/a.md"; git -C "$r" add -A
+printf 'An old colour stays.\nThe cancelled order, the cancelling clerk.\n' > "$r/a.md"; git -C "$r" add -A
 run "$r"
-assert_clean "cancelled and catalogue are accepted by default"
+assert_clean "cancelled and cancelling are accepted by default (American English uses both)"
+
+printf 'An old colour stays.\nA new catalogue.\n' > "$r/a.md"; git -C "$r" add -A
+run "$r"
+assert_reported "catalogue is refused: the fleet writes catalog" "catalogue ==> catalog"
 
 # --- places where names in use live ---------------------------------------------------------
 r=$(repo masks)
