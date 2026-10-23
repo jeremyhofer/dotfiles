@@ -46,6 +46,16 @@
     # 2.54+, and older git skips it silently, so an old git means no scan at all.
     command = sh "$HOME/.local/bin/git-secret-scan"
     event = pre-commit
+# Refuses a commit that adds a British spelling (staged markdown lines, and the commit message),
+# only in a repository the fleet manifest lists and does not tag `upstream`; any other repository,
+# and a machine with no manifest, passes untouched. Refuses when codespell is missing. Needs
+# git 2.54+; older git skips it silently.
+[hook "us-spelling-pre-commit"]
+	command = \"$HOME/.local/bin/us-spelling-lint\" --hook pre-commit
+	event = pre-commit
+[hook "us-spelling-commit-msg"]
+	command = \"$HOME/.local/bin/us-spelling-lint\" --hook commit-msg
+	event = commit-msg
 [gpg]
 	format = ssh
 # NOTE: commit.gpgsign is set per-domain in the overlay gitconfig (~/.dotlocal/gitconfig),

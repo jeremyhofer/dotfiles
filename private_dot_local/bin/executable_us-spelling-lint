@@ -56,8 +56,35 @@ CONFIG
     A single occurrence can instead carry a trailing comment: `# codespell:ignore <word>`, or
     `<!-- codespell:ignore <word> -->` in markdown.
 
+RUNNING AS A GIT CONFIGURED HOOK
+    us-spelling-lint --hook pre-commit            same as the default: the staged added lines
+    us-spelling-lint --hook commit-msg <file>     the commit message in FILE, whole
+    A configured hook in the global git config runs this in every repository, so the hook modes
+    first decide whether the repository is one this rule applies to, exactly as run-repo-gates
+    decides for a repository's own gates: the repository must be listed in the fleet manifest
+    (`fleet-decl --project <toplevel>` exits 0) and must not be tagged `upstream` (a third-party
+    clone follows its own conventions). Any other repository exits 0 silently.
+    fleet-decl's exit codes are read as run-repo-gates reads them: 0 found, 1 not found (skip),
+    2 manifest unreadable (refuse, exit 2 with a message, because treating it as "not found"
+    would quietly switch the rule off everywhere).
+    ONE DELIBERATE DIFFERENCE from run-repo-gates: a machine with no fleet at all exits 0
+    silently. run-repo-gates refuses when `fleet-decl` is missing, and fleet-decl itself exits 2
+    ("no record at ...") when the manifest file is absent. This hook ships in the public base to
+    machines that never had a fleet, where a refusal would block every commit. So the hook
+    exits 0 when `fleet-decl` is not on PATH, or when the manifest file does not exist (the file
+    fleet-decl reads: $FLEET_RECORD, else ~/Devel/mani.yaml). A manifest that EXISTS but cannot
+    be read or parsed still refuses. In hook modes a finding prints the findings and the hint
+    and exits 1; codespell missing exits 2 (for a repository the rule applies to).
+    The commit message: lines starting with git's comment character (core.commentChar, default
+    `#`) and everything from the `# ------------------------ >8 ------------------------`
+    scissors line on are not part of the message and are skipped. Backtick spans, URLs and
+    fenced blocks are skipped as in markdown; `allow:` applies; path excludes do not. Findings
+    read `commit message:<line>: word ==> suggestion`.
+
 USAGE
     us-spelling-lint [--all] [--config FILE] [--verbose]
+    us-spelling-lint --hook pre-commit
+    us-spelling-lint --hook commit-msg <message-file>
     Default: lint the lines the staged changes add (a commit gate; nothing staged exits 0).
     --all:   lint every tracked file in scope in full, working-tree content (an audit before
              adopting the gate). Same exclusions and skipping.
@@ -316,12 +343,68 @@ def run_codespell(cs: str, cfg: Config, feed: list[tuple[str, int, str]]):
     return findings
 
 
+def comment_char(root: pathlib.Path) -> str:
+    r = subprocess.run(["git", "config", "--get", "core.commentChar"], cwd=root,
+                       capture_output=True, text=True, env=_ENV)
+    v = r.stdout.strip() if r.returncode == 0 else ""
+    return v if len(v) == 1 else "#"
+
+
+def message_candidates(root: pathlib.Path, msg_file: str) -> list[tuple[str, int, str]]:
+    """The lines of the commit message in MSG_FILE that the run should judge."""
+    try:
+        text = pathlib.Path(msg_file).read_bytes().decode(errors="replace")
+    except OSError as e:
+        raise Fail(f"cannot read commit message {msg_file}: {e.strerror}")
+    cc = comment_char(root)
+    scissors = f"{cc} ------------------------ >8 ------------------------"
+    lines = []
+    for line in text.split("\n"):
+        if line.rstrip("\r") == scissors:
+            break
+        lines.append(line.rstrip("\r"))
+    skip = fenced_lines(lines)
+    found = []
+    for n, line in enumerate(lines, 1):
+        if line.startswith(cc) or not line.strip() or n in skip:
+            continue
+        found.append(("commit message", n, mask_inline(line)))
+    return found
+
+
+def applies_here(top: pathlib.Path) -> bool:
+    """Whether the hook modes apply to this repository (see RUNNING AS A GIT CONFIGURED HOOK)."""
+    fd = shutil.which("fleet-decl")
+    record = os.environ.get("FLEET_RECORD") or os.path.expanduser("~/Devel/mani.yaml")
+    if fd is None or not os.path.isfile(record):
+        return False  # a machine with no fleet: never block its commits
+    r = subprocess.run([fd, "--project", str(top)], capture_output=True)
+    if r.returncode == 1:
+        return False
+    if r.returncode != 0:
+        raise Fail(f"the fleet manifest could not be read (fleet-decl exit {r.returncode}); "
+                   f"the spelling check did not run -- refusing")
+    t = subprocess.run([fd, str(top), "tags"], capture_output=True, text=True)
+    words = re.sub(r"[\[\],]", " ", t.stdout if t.returncode == 0 else "").split()
+    return "upstream" not in words
+
+
 def main(argv: list[str]) -> int:
     whole = verbose = False
     explicit = None
+    hook = None
+    msg_file = None
     it = iter(argv)
     for a in it:
-        if a == "--all":
+        if a == "--hook":
+            hook = next(it, None)
+            if hook not in ("pre-commit", "commit-msg"):
+                raise Fail("--hook needs pre-commit or commit-msg")
+            if hook == "commit-msg":
+                msg_file = next(it, None)
+                if msg_file is None:
+                    raise Fail("--hook commit-msg needs the message file")
+        elif a == "--all":
             whole = True
         elif a == "--verbose":
             verbose = True
@@ -334,19 +417,27 @@ def main(argv: list[str]) -> int:
             return 0
         else:
             raise Fail(f"unknown argument {a!r}")
-    cs = shutil.which("codespell")
-    if cs is None:
-        raise Fail("codespell is not installed or not on PATH; this gate cannot run without it")
     global _ENV
     start = pathlib.Path.cwd()
     _ENV = git_env(start)
+    if hook:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=start,
+                           capture_output=True, text=True, env=_ENV)
+        if r.returncode != 0:
+            return 0  # no work tree, nothing to commit
+        if not applies_here(pathlib.Path(r.stdout.strip())):
+            return 0
+    cs = shutil.which("codespell")
+    if cs is None:
+        raise Fail("codespell is not installed or not on PATH; this gate cannot run without it")
     root = pathlib.Path(git("rev-parse", "--show-toplevel", cwd=start).strip())
     cfg, source = load_config(root, explicit)
     if verbose:
         print(f"{SCRIPT}: " + (f"config {source}" if source else
               "no config found, using defaults (markdown only, nothing excluded)"),
               file=sys.stderr)
-    feed = candidates(root, cfg, whole)
+    feed = message_candidates(root, msg_file) if hook == "commit-msg" \
+        else candidates(root, cfg, whole)
     if not feed:
         return 0
     findings = sorted(run_codespell(cs, cfg, feed), key=lambda f: (f[0], f[1]))
