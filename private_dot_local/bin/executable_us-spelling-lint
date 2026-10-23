@@ -12,13 +12,11 @@ WHY THIS EXISTS
     names and jargon, and "the spelling of ordinary English words" is a different rule that
     nobody decided to enforce; mixing the two is how a gate gets switched off.
 
-WHERE IT BELONGS — one spelling authority per repository
-    Wire it into a repository's own `.githooks/pre-commit`, and only in a repository that runs
-    no spellchecker of its own. Where a project already runs one (cspell, codespell), put the
-    American rule in THAT tool's configuration instead (cspell's `flagWords`; codespell's
-    `builtin` list gains `en-GB_to_en-US`): two checkers over the same text with different
-    dictionaries disagree, and the project owns its own. For the same reason this is never a
-    global git hook.
+WHERE IT RUNS — the one check of this rule, beside a project's own spellchecker
+    Run it from a git hook in each repository that has adopted the rule. It is the only check of
+    the American-spelling rule there: a repository's general spellchecker (cspell, codespell with
+    its default dictionary) checks typos and is configured not to refuse British forms, so the two
+    never disagree and the list of British forms exists once, here.
 
 WHAT IT CHECKS
     Added lines of markdown (and of any file a repository includes, see CONFIG) against
