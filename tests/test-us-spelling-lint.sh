@@ -93,6 +93,18 @@ printf 'An old colour stays.\nA new catalogue.\n' > "$r/a.md"; git -C "$r" add -
 run "$r"
 assert_reported "catalogue is refused: the fleet writes catalog" "catalogue ==> catalog"
 
+# --- a move carries old text forward; it is not new text ----------------------------------------
+r=$(repo moves)
+mkdir -p "$r/docs"; printf 'One old colour.\nTwo old colours.\n' > "$r/docs/old.md"; commit_all "$r"
+mkdir -p "$r/docs/archive"; git -C "$r" mv docs/old.md docs/archive/old.md
+run "$r"
+assert_clean "a file moved unchanged is not judged as added (its old text carries forward)"
+printf 'One old colour.\nTwo old colours.\nA new behaviour.\n' > "$r/docs/archive/old.md"; git -C "$r" add -A
+run "$r"
+assert_reported "a moved file with a new line reports that line" "docs/archive/old.md:3: behaviour ==> behavior"
+case "$out" in *"old.md:1:"*|*"old.md:2:"*) bad "a moved file's carried lines stay unreported ($out)" ;;
+  *) ok "a moved file's carried lines stay unreported" ;; esac
+
 # --- places where names in use live ---------------------------------------------------------
 r=$(repo masks)
 printf '# T\n\n```sh\nopen\n```\n\nafter\n' > "$r/a.md"; commit_all "$r"

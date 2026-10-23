@@ -273,10 +273,23 @@ def split_z(s: str) -> list[str]:
     return [p for p in s.split("\0") if p]
 
 
-def added_line_numbers(root: pathlib.Path, rel: str) -> set[int]:
-    """New-side line numbers the staged change adds to REL. With -U0 every line of a hunk's
-    new range is an added line."""
-    diff = git("diff", "--cached", "-U0", "--no-color", "--diff-filter=ACMR", "--", rel, cwd=root)
+def staged_renames(root: pathlib.Path) -> dict[str, str]:
+    """New path -> old path for every staged rename. A move carries old text forward, so a moved
+    file is diffed against its old path, not judged as wholly added; archiving a document or moving
+    it into a folder would otherwise refuse every British form it already held."""
+    fields = split_z(git("diff", "--cached", "--name-status", "-z", "-M", "--diff-filter=R",
+                         cwd=root))
+    # -z name-status for a rename is: R<score>, old path, new path.
+    return {fields[i + 2]: fields[i + 1] for i in range(0, len(fields) - 2, 3)
+            if fields[i].startswith("R")}
+
+
+def added_line_numbers(root: pathlib.Path, rel: str, old: str | None = None) -> set[int]:
+    """New-side line numbers the staged change adds to REL (renamed from OLD, if given). With -U0
+    every line of a hunk's new range is an added line."""
+    paths = [old, rel] if old else [rel]
+    diff = git("diff", "--cached", "-M", "-U0", "--no-color", "--diff-filter=ACMR", "--", *paths,
+               cwd=root)
     out: set[int] = set()
     for line in diff.splitlines():
         m = HUNK.match(line)
@@ -294,6 +307,7 @@ def candidates(root: pathlib.Path, cfg: Config, whole: bool) -> list[tuple[str, 
     else:
         paths = split_z(git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR",
                             cwd=root))
+        renames = staged_renames(root)
     found = []
     for rel in paths:
         if not cfg.in_scope(rel):
@@ -306,7 +320,7 @@ def candidates(root: pathlib.Path, cfg: Config, whole: bool) -> list[tuple[str, 
             wanted = None
         else:
             text = git("show", f":{rel}", cwd=root)
-            wanted = added_line_numbers(root, rel)
+            wanted = added_line_numbers(root, rel, renames.get(rel))
             if not wanted:
                 continue
         lines = text.split("\n")
