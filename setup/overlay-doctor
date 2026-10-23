@@ -481,7 +481,7 @@ done
 # co-owned FILE passed silently and became last-apply-wins, each instance behaving correctly by its
 # own lights and neither able to see the other. That is the same silent-loss shape as a stray exact_,
 # and it is invisible after the fact. Repo docs are excluded above with the rest of the metadata.
-# Honour each tree's .chezmoiignore for this comparison: a file both trees carry but neither
+# Honor each tree's .chezmoiignore for this comparison: a file both trees carry but neither
 # DEPLOYS (agent context like CLAUDE.md, repo READMEs) is not a collision. Literal lines only --
 # templated or glob rules are not evaluated here, so this can only ever UNDER-ignore, i.e. it may
 # report a collision that ignores would have excused, never hide a real one.

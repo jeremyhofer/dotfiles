@@ -6,10 +6,10 @@
 # content changing underneath you, but it does nothing for the moment you bump the pin: if
 # upstream has repackaged, the include glob matches nothing and the strip count is wrong, and
 # chezmoi is content to create an empty or mis-nested directory and say nothing. The skill then
-# silently stops existing -- the agent simply never offers it, which looks like normal behaviour.
+# silently stops existing -- the agent simply never offers it, which looks like normal behavior.
 #
 # WHAT IT CHECKS, per skill: the directory exists and is not empty; SKILL.md is at its ROOT
-# (which is what a wrong strip count breaks); the licence came along (its archive path embeds the
+# (which is what a wrong strip count breaks); the license came along (its archive path embeds the
 # version, so it is the piece most likely to be forgotten in a bump); the frontmatter declares a
 # `name` (without it the skill is not discoverable); and the frontmatter `version` EQUALS the
 # pinned version (which catches a stale cache, a moved tag, or the wrong subtree extracted).

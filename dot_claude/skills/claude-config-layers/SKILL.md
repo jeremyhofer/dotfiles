@@ -134,7 +134,7 @@ Easy to confuse with `~/.claude/settings.json` by name alone. `~/.claude.json` i
 Code itself, continuously: the login, onboarding and notice flags, feature-flag caches, usage
 counters, user-scope MCP servers, and a `projects` map keyed by path (last-session stats,
 `activeWorktreeSession`, `hasTrustDialogAccepted`). Nothing manages it, and it is not in the precedence
-order of §1. Read it for diagnosis; change behaviour through a settings layer instead.
+order of §1. Read it for diagnosis; change behavior through a settings layer instead.
 
 **Do not write it, by hand or by script**; accepting a prompt is preferable to risking state
 corruption. The app rewrites the file while it runs, which is where that risk comes

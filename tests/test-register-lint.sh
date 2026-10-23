@@ -43,7 +43,7 @@ _t=${TMPDIR:-/tmp}; _t=${_t%/}   # macOS sets TMPDIR WITH a trailing slash
 tmp=$(mktemp -d "$_t/register-lint-test.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-# A VALID entry, parameterised. Everything planted below is a one-field change to this.
+# A VALID entry, parameterized. Everything planted below is a one-field change to this.
 #   $1 dir  $2 id  $3 status  $4 extra frontmatter  $5 closure-condition body
 #   $6 verified date (default: today)   $7 next action (default: present; empty to omit)
 entry() {

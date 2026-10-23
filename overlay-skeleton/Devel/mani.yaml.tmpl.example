@@ -19,7 +19,7 @@ projects:
     url: https://git.example.com/org/example-repo.git
     branch: main                                   # the checkout's branch (mani; fleet-repo clones the same)
     # single_branch: true                          # fetch only that branch, for a very large repository
-    tags: [internal, active]                       # mani selects by tag; `upstream` and `external` also change tool behaviour
+    tags: [internal, active]                       # mani selects by tag; `upstream` and `external` also change tool behavior
     scope: internal/example-repo                   # path prefix that resolves a checkout to this entry (fleet-decl)
     leakPolicy: strict                             # strict | private | notes | internal — required unless tagged upstream
     # leakPrefix: EXR                              # this repo's own program id prefix(es), comma-separated

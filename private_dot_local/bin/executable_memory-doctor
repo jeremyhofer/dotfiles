@@ -289,7 +289,7 @@ cmd_stale() {
     case "$reg" in "("*) unread="$unread$reg"$'\n'; continue ;; esac
     if rows=$(register list --root "$reg" 2>&1); then
       read_any=1
-      # Normalised in the same pass as norm_id does it, rather than one process per entry.
+      # Normalized in the same pass as norm_id does it, rather than one process per entry.
       awk '$1 ~ /^[A-Z]+-[0-9]+$/ { p=$1; sub(/-[0-9]+$/, "", p); n=substr($1, length(p) + 2);
                                     sub(/^0+/, "", n); if (n == "") n = "0"; print p"-"n"\t"$2 }' \
         <<< "$rows" >> "$map"

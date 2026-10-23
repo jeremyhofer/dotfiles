@@ -56,7 +56,7 @@ A threshold that has never failed is of unknown value. Before reporting coverage
 3. Revert, and see it pass.
 
 Plant at the granularity being claimed: a package-level threshold is proven by a gap in that
-package, not in a neighbour.
+package, not in a neighbor.
 
 ## 5. Runner notes worth checking, not assuming
 
@@ -93,7 +93,7 @@ The split is forced rather than chosen in at least one runner: Angular's Vitest 
 so a run that includes Firefox cannot collect V8 coverage at all. Check the runner in use before
 assuming one run can do both.
 
-A Playwright end-to-end lane is outside this rule; it measures behaviour, not line coverage.
+A Playwright end-to-end lane is outside this rule; it measures behavior, not line coverage.
 
 ## 7. A test runs in the environment its subject needs
 
@@ -104,7 +104,7 @@ and heavier, so nothing goes there that does not need a real engine.
 **Do not use a DOM shim (jsdom, happy-dom) in a node lane for what only a real engine can answer.**
 A shim has no layout engine and only part of the cascade: `getBoundingClientRect` returns zero-size
 boxes, and `elementFromPoint`, `checkVisibility` and `matchMedia` are missing or stubbed. A test of a
-size, a position, a computed colour or a focus order run there passes while measuring nothing,
+size, a position, a computed color or a focus order run there passes while measuring nothing,
 which is the worst kind of green, because it reads as coverage.
 
 **Where one piece of code both reads the page and decides from what it read, split it:** a thin

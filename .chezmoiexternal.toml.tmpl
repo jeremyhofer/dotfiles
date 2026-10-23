@@ -51,7 +51,7 @@
     stripComponents = {{ $strip }}
     include = ["*/{{ .subtree }}/**"]
 
-{{/* The licence sits at the archive root, outside the subtree, and MIT requires the notice
+{{/* The license sits at the archive root, outside the subtree, and MIT requires the notice
      travel with the copy. Its `path` embeds the version, which is exactly the kind of string
      that gets forgotten in a bump -- hence templated from the same single source. */}}
 [".claude/skills/{{ .name }}/LICENSE"]

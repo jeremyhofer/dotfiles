@@ -65,14 +65,14 @@ yq -e '.projects' "$RECORD" >/dev/null 2>&1 \
 # The scope is a path PREFIX rather than a regex. The values it replaces were regexes, and they
 # did not need to be: every one of them was a literal path fragment. A prefix cannot
 # accidentally match an unrelated repo the way an unanchored expression can.
-# Normalise a path so a prefix comparison means what it looks like.
+# Normalize a path so a prefix comparison means what it looks like.
 #
 # NEEDED BECAUSE A SCOPE MAY POINT OUTSIDE THE TREE. A relative scope is relative to the
 # manifest's own directory (an absolute one is used as written), and two managed repos legitimately sit outside it -- reached as
 # `../.local/share/...`. Joined naively that yields `<root>/../.local/share/...`, which is the
 # correct location and the WRONG STRING: it shares no prefix with the resolved path the caller
 # passes in, so the repo silently resolves to nothing and falls to the default. Comparing paths
-# textually without normalising them is the whole bug.
+# textually without normalizing them is the whole bug.
 #
 # `cd` + `pwd -P` rather than `realpath -m` or `readlink -f`: both of those are GNU-only spellings
 # that ERROR on BSD, which would take this out on the Mac only -- the hardest failure to notice
@@ -416,7 +416,7 @@ proj=$(project_for "$1")
 # preserve.
 #
 # STDOUT MUST STAY EMPTY ON THE NOT-DECLARED PATH. The reader prints the literal string `null` for
-# an absent key even while signalling absence through its exit status, so passing its output
+# an absent key even while signaling absence through its exit status, so passing its output
 # straight through hands a caller a four-character value that looks declared. Every caller would
 # then have to know to check the status AND filter a magic word, and the ones that only do the
 # first get "null" written into a config. Capture, then decide.

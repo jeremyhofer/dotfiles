@@ -26,7 +26,7 @@
 #      "I looked at it" is then false confidence rather than a lie. The fix is a SECOND capture:
 #      the changed region only, at native scale, which is what this tool always produces.
 #   2. It reaches for a global or freshly-installed Playwright. The project's own version is the
-#      one whose browsers are downloaded and whose behaviour matches its tests, so this resolves
+#      one whose browsers are downloaded and whose behavior matches its tests, so this resolves
 #      the PROJECT's install and fails loudly rather than falling back.
 #
 # HEADLESS IS NOT A FLAG HERE. There is deliberately no --headed: a visible window is an

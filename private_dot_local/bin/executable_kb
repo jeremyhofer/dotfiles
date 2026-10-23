@@ -262,7 +262,7 @@ kb_body() {
 # The body with CODE removed -- fenced blocks and inline code spans. The no-wikilinks-in-prose
 # rule is about PROSE: a `[[` inside code is a regex, a shell glob, or a doubled test bracket,
 # none of which is a relationship claim and none of which belongs in frontmatter edges. Checking
-# the raw body rejected a Tier-0 commit whose only offence was quoting a character class while
+# the raw body rejected a Tier-0 commit whose only offense was quoting a character class while
 # DESCRIBING the wikilink convention -- i.e. the rule fired on documentation OF itself, which is
 # the one place the construct has to be writable.
 kb_prose() {

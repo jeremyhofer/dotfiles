@@ -14,7 +14,7 @@ ones are the ones that **fail silently**, producing a plausible wrong answer ins
 > gets classified as "shell work" at all. That is the observed failure mode, not a hypothetical
 > one: a session hit three of the traps below in a single sitting while treating each command as
 > plumbing in service of some other goal, and diagnosed each one individually afterwards instead of
-> recognising the class. **Two of the three were already documented here.** If you are about to run
+> recognizing the class. **Two of the three were already documented here.** If you are about to run
 > a shell command, you are in scope.
 
 ## The two failure classes, and why one is far worse
@@ -142,7 +142,7 @@ arr=(first second)
 echo $arr[1]      # first     (bash's ${arr[1]} is "second")
 ```
 
-Off-by-one here does not error; it silently returns the neighbouring element.
+Off-by-one here does not error; it silently returns the neighboring element.
 
 ## 5. LOUD — `print` and `echo` consume leading-dash arguments
 

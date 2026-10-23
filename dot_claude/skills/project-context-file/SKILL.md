@@ -62,7 +62,7 @@ command that measures it. Every path resolves in the repository.
 guidance; the byte cap stops long lines from defeating it (14,000 is 200 lines at 70 bytes).
 
 **An import does not help.** An `@import` loads at session start with the file that names it, so
-moving text into one changes nothing a session loads. Use imports to organise, or to include a file
+moving text into one changes nothing a session loads. Use imports to organize, or to include a file
 another writer maintains, and expect them to count.
 
 Why cap at all: instructions are followed less as a file grows, and every unconditional byte is

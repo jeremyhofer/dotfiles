@@ -22,7 +22,7 @@
 set -uo pipefail
 
 # Bytes per token: a rough divisor for English markdown; tables and code run denser. Every token
-# figure printed is an ESTIMATE and is labelled as one -- this is not a tokenizer.
+# figure printed is an ESTIMATE and is labeled as one -- this is not a tokenizer.
 BYTES_PER_TOKEN=4
 [ -n "${CONTEXT_BYTES_PER_TOKEN:+x}" ] && BYTES_PER_TOKEN=$CONTEXT_BYTES_PER_TOKEN
 
@@ -98,7 +98,7 @@ else
   add_row "global CLAUDE.md" -1 "$g unreadable"
 fi
 
-# Project CLAUDE.md chain: cwd walked up to /. Verified behaviour -- the walk has no .git boundary.
+# Project CLAUDE.md chain: cwd walked up to /. Verified behavior -- the walk has no .git boundary.
 d="$ROOT"; chain=()
 while :; do
   # Prepended, not appended: the walk runs cwd -> root but a session LOADS root -> cwd, and a

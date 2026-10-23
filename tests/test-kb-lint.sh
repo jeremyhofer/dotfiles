@@ -128,7 +128,7 @@ echo "ok:   amendment subsections under Provenance stay legal"
 # (c2) [[ inside CODE is not a prose wikilink.
 # The rule exists because a relationship claim belongs in a typed frontmatter edge. Inside a code
 # span or fence, `[[` is a regex character class or a shell test bracket -- no claim at all.
-# Checking the raw body rejected a real Tier-0 commit whose only offence was quoting a character
+# Checking the raw body rejected a real Tier-0 commit whose only offense was quoting a character
 # class while DESCRIBING the wikilink convention: the rule fired on documentation OF itself, which
 # is the one place the construct has to be writable.
 #

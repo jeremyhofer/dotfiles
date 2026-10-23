@@ -66,7 +66,7 @@ makes three cross-layer checks:
 2. **No conflicting attributes on a co-owned directory** (e.g. `private_` on one side, plain on the
    other → permissions flip-flop on alternating applies).
 3. **No co-owned target FILE** — the same deployed path managed by both layers. Files each tree
-   carries but neither *deploys* (agent context, repo docs) are excused by honouring the literal
+   carries but neither *deploys* (agent context, repo docs) are excused by honoring the literal
    lines of `.chezmoiignore`; templated or glob ignore rules are not evaluated, so this can
    under-excuse and report a collision that ignores would have allowed — never the reverse.
 

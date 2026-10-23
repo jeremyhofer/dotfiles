@@ -15,7 +15,7 @@ TWO HEADER SHAPES, AND THIS TOOL READS BOTH -- deliberately, and it says so ever
     nobody has chosen between them, so refusing one would red a whole repository over an
     unmade decision.
 
-    But reading both SILENTLY would bless the divergence, and a tool that quietly normalises
+    But reading both SILENTLY would bless the divergence, and a tool that quietly normalizes
     two conventions is how a fleet ends up with three. So the minority shape is reported as an
     advisory on every run, with its count. The drift stays visible and costs nothing until
     somebody decides; when they do, this reader loses a branch.
@@ -33,7 +33,7 @@ STATUS VOCABULARY IS ADVISORY BY DEFAULT, not blocking, for the same reason. One
     rather than finding them.
 
 WHAT IS BLOCKING, and it is the narrow set that is wrong under ANY convention:
-    schema          a record with no recognisable header at all, or missing a required field.
+    schema          a record with no recognizable header at all, or missing a required field.
     id-integrity    two records sharing one number.
     filename        a filename whose number disagrees with the record's own id.
     index           a record absent from the directory's README index, where one exists.
@@ -198,7 +198,7 @@ def index_status(index_text, filename):
     other. Locating the column by its header is the only form that survives both.
     """
     # Split on UNESCAPED pipes only. A title may legitimately contain `\|`, and splitting
-    # naively gives that row the wrong cell count -- which reads a neighbouring cell as the
+    # naively gives that row the wrong cell count -- which reads a neighboring cell as the
     # status and reports a correct index as drifted. Met on the first real run.
     def cells(line):
         return [c.strip() for c in UNESCAPED_PIPE.split(line.strip().strip("|"))]
@@ -244,7 +244,7 @@ def declared(text):
     blob = lead_block(text)
     # A relation declared as a header bullet -- `- **Extends:** ADR-0016` -- is read too, but
     # only when its LABEL is a relation word. `- **Ties:**` and `- **Couples to:**` name
-    # neighbours, and reading them would invent relations the record does not assert.
+    # neighbors, and reading them would invent relations the record does not assert.
     header = text.split("\n## ", 1)[0]
     bullets = [clean("%s %s" % (lab, rest)) for lab, rest in
                re.findall(r"^- \*\*([A-Za-z ]+):\*\*\s*(.+)$", header, re.M)
@@ -534,7 +534,7 @@ def check_tracking(records, register, floor):
         #
         # And the bound is the SENTENCE, not the paragraph: ids in the next sentence name
         # related work, not what tracks this record, and counting them would make any record
-        # that mentions a neighbour read as tracked by it.
+        # that mentions a neighbor read as tracked by it.
         header = r.text.split("\n## ", 1)[0]
         decl = re.search(r"Tracked by\b(.*?)(?:\.\s|\.$|\n\n|\Z)", header, re.S)
         num = r.number

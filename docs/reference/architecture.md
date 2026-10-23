@@ -102,7 +102,7 @@ plain configuration under `dot_config/`, and tmux is `dot_tmux.conf`.
 
 ### Git
 
-`~/.gitconfig` sets the shared behaviour (pager, merge style, pull and push defaults) and declares
+`~/.gitconfig` sets the shared behavior (pager, merge style, pull and push defaults) and declares
 git's *configured hooks*, which run in every repository without a per-clone install (git 2.54 or
 later; older git ignores them without a word):
 

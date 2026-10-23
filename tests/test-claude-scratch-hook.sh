@@ -158,7 +158,7 @@ else
   # tested by executing a "resolve the symlink, then rm -rf it" deleter: that shape of dynamic-path
   # removal is exactly what this machine's own rm safety check refuses to run without a human
   # approving it, for the same reason this guard exists -- so the deleting half is covered by the
-  # real-script assertion above, which proves the target survives, plus rm's ordinary behaviour:
+  # real-script assertion above, which proves the target survives, plus rm's ordinary behavior:
   # unlike find, it has no -L-equivalent toggle, so there is no one-line guard on the delete path
   # to remove.)
   root2=$(mktemp -d "/tmp/c-test-XXXXXX")
@@ -186,7 +186,7 @@ else
   eq "real script: silent, jq absent, valid root" "$out" ""
 
   # No plant here: without the guard the hook still exits 0 silently, because every jq call below
-  # it already discards errors. The guard is defence in depth, so removing it cannot be seen red.
+  # it already discards errors. The guard is defense in depth, so removing it cannot be seen red.
   rm -rf "$jqroot"
 
   # The session-end test above deleted $root. The agent and stop tests need a live root, named in

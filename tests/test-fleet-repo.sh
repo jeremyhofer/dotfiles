@@ -6,7 +6,7 @@
 # tool -- so it survives a later rewrite of the tool in another language unchanged.
 #
 # WHAT IS AT RISK. The failures worth guarding look like success: a clone that fetched every one of
-# thousands of branches because a declaration was not honoured; a re-run that "reconciled" by
+# thousands of branches because a declaration was not honored; a re-run that "reconciled" by
 # deleting a local branch or worktree holding unpushed work; a container built in the wrong place
 # because the tool resolved `path` against the directory it was run from; a `check` that reports
 # clean while the disk has drifted. The arms for those are the ones that matter most.

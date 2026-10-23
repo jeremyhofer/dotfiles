@@ -21,7 +21,7 @@ WHY THIS EXISTS
 
 WHAT IT CHECKS — blocking
     closure-condition  an open entry past `idea` whose closure-condition section holds
-                       neither a real condition nor a recognised sentinel.
+                       neither a real condition nor a recognized sentinel.
     undeclared-absence prose that reads as an absence ("not recorded", "TBD", "TODO") with
                        no sentinel. A HEURISTIC, and the only check here that guesses at
                        meaning -- it exists because the spellings already in the wild all
@@ -75,7 +75,7 @@ WHAT IT CHECKS — blocking
                        cycle can start.
     relation-duplicate-status
                        an entry with `duplicates:` whose status is not `dropped`. A duplicate is
-                       finished by being dropped in favour of the other entry.
+                       finished by being dropped in favor of the other entry.
     closure-review     only where the register's README carries a line
                        `Closure review required from: YYYY-MM-DD`: a `done` entry in the closed
                        directory, closed on or after that date, whose Resolution lacks
@@ -171,7 +171,7 @@ SENTINEL_RE = re.compile(
 # cost: a correct entry reworded to satisfy the lint. This is a heuristic and is
 # declared as one: the tool cannot read prose, so it cannot tell a real condition from a
 # sentence explaining there is none -- which is the whole reason the sentinel vocabulary
-# exists. What it CAN do is recognise the spellings that mean "nothing here", and require
+# exists. What it CAN do is recognize the spellings that mean "nothing here", and require
 # them to be said in the vocabulary a checker can count. Every phrase below was found in a
 # real register, or is a placeholder that defeated a real checker.
 ABSENCE_RE = re.compile(
@@ -221,7 +221,7 @@ def initiative_root(root):
 
 
 def folder_artifacts(entry):
-    """Normalised relative paths this entry names with a `folder:` artifact."""
+    """Normalized relative paths this entry names with a `folder:` artifact."""
     block = re.search(r"^artifacts:\s*$(.*?)(?=^\S|\Z)", entry.raw_front, re.M | re.S)
     found = set()
     if block:

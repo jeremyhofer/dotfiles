@@ -5,7 +5,7 @@ description: Use when something is slow, broken, unreachable or intermittent and
 
 # Fault isolation
 
-**Localise before diagnosing.** Every incident behind this skill was eventually localised by improvising
+**Localize before diagnosing.** Every incident behind this skill was eventually localized by improvising
 a different sequence of checks from scratch, and several were chased at the wrong layer first — for
 days, in one case. The cost is never the check; it is picking the wrong layer and then explaining
 evidence away.
@@ -105,7 +105,7 @@ fact about your probe. Both read as "fine".
   but its socket is unreachable from the next call: `curl` returns 000 and `ss` shows nothing while
   `pgrep` still finds the process. Serve and probe inside ONE call. Comparing
   `readlink /proc/self/ns/net` across calls is a false negative, because namespace ids are inode
-  numbers and get recycled; only behaviour discriminates. Before blaming the sandbox, check the
+  numbers and get recycled; only behavior discriminates. Before blaming the sandbox, check the
   bind address with `ss -ltn`: a dev server bound to `[::1]` only answers on `localhost`, not
   `127.0.0.1`, even unsandboxed. Also: `pkill -f 'pattern'` matches its own command line and kills
   the calling shell; use the bracket trick, `pkill -f '[h]ttp.server 8765'`.
@@ -151,7 +151,7 @@ limit rather than implying the stronger claim.
 - **A probe that cannot reproduce the failure has not exonerated anything.** Establish the probe CAN
   detect the failure mode before believing a negative — ideally by making it fail on purpose.
 - **A tool one version behind fails in ways its source cannot explain.** Check the deployed artifact
-  matches its declaration before debugging its behaviour.
+  matches its declaration before debugging its behavior.
 - **Stop at the named exception.** When a diagnosis has a standing rule in the operator's own
   instructions (a cause already settled by policy), follow the rule instead of investigating. Rediscovering a settled
   cause is noise, and the rule exists because it was rediscovered too many times.

@@ -229,7 +229,7 @@ assert_lacks "a record cited for the RULE is not read as a relation" "refines 00
 assert_has "records with no scope statement are listed" "do not state what they decide" "$out"
 # A relation can also be declared as a HEADER BULLET rather than in the lead blockquote --
 # `- **Extends:** ADR-0016`. Read only when the label IS a relation word: a `- **Ties:**` or
-# `- **Couples to:**` bullet names neighbours, not a relation the vocabulary defines.
+# `- **Couples to:**` bullet names neighbors, not a relation the vocabulary defines.
 { echo "# ADR-0040: Passkeys"
   echo "- **Status:** Accepted"; echo "- **Date:** 2026-09-22"
   echo "- **Deciders:** Jeremy"; echo "- **Tags:** secrets"

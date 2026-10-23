@@ -4,7 +4,7 @@
 # The guard's patterns, allow rules and push policy are the domain's own files under ~/.dotlocal, so
 # nothing here may read the machine's real ones: every case runs under a temp $HOME whose
 # .dotlocal holds a fixture markers file, sensitive file, allow file and policy file. The cases
-# assert behaviour (diff-based scanning, line numbers, token naming without leaking the pattern,
+# assert behavior (diff-based scanning, line numbers, token naming without leaking the pattern,
 # allowlist anchoring, escape neutralisation, push delta, fail-closed paths), which holds for any
 # vocabulary. What a particular domain's real patterns say is that domain's own suite to test.
 #
@@ -374,7 +374,7 @@ if gate "$r" pre-commit; then echo "FAIL: token after escaped tab not blocked"; 
 # ---------------------------------------------------------------------------------------
 # NO GUARD CONFIGURED: the mechanism ships in the public base and is wired on every machine, so a
 # domain that supplies no pattern file must see it do nothing at all. These arms are new with that
-# behaviour.
+# behavior.
 # ---------------------------------------------------------------------------------------
 # N1) neither pattern file exists -> a commit carrying a marker AND a sensitive term PASSES.
 # $HOME has no .dotlocal at all here, and the record is the fixture one (the repo is strict).
@@ -589,7 +589,7 @@ r=$(newrepo ownboth_foreign); setprefix "$r" ZZS,ZZT; stage "$r" "cross-referenc
 if gate "$r" pre-commit; then
   echo "FAIL: a multi-prefix grant exempted a prefix it does not name"; exit 1; fi
 
-# 23d) a single-prefix grant did not silently gain its neighbours' prefixes
+# 23d) a single-prefix grant did not silently gain its neighbors' prefixes
 r=$(newrepo ownp_notS); setprefix "$r" ZZP; stage "$r" "see ZZS-04 for detail"
 if gate "$r" pre-commit; then
   echo "FAIL: a single-prefix repo was granted a prefix from another repo's grant"; exit 1; fi

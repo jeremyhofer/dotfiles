@@ -227,7 +227,7 @@ fi
 # only inside the ramp-down hook's message, which by definition arrives once the budget is
 # already nearly gone.
 #
-# Same convention as the reload band below -- the number is the payload and colour is only
+# Same convention as the reload band below -- the number is the payload and color is only
 # reinforcement -- with one addition: the reset time is rendered as plain wall-clock text, because
 # "when can I work again" is the actual question, and an epoch stamp does not answer it.
 #
@@ -267,7 +267,7 @@ fi
 #   < 5% green (ignore) · 5-10% amber (shed depth only at a natural boundary) · >= 10% red
 #
 # THE PERCENTAGE IS THE PAYLOAD; COLOUR IS REINFORCEMENT ONLY. The band word is printed as text
-# for exactly that reason: a colour-only signal cannot be read by someone with limited colour
+# for exactly that reason: a color-only signal cannot be read by someone with limited color
 # vision, and cannot be verified by anyone from a screenshot or a copied line.
 #
 # NOTHING GATES ON THIS VALUE. No hook blocks, no auto-park, no injected instruction. It is

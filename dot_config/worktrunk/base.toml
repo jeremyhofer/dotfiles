@@ -39,7 +39,7 @@
 #
 # THE COST: a nested worktree lives inside a working tree, so `.worktrees/` must be ignored -- in
 # each repository's own .gitignore, committed, so it holds on every machine and in every tool --
-# and tools that walk the tree (prettier, eslint, rg, nx) must honour that ignore or carry their own.
+# and tools that walk the tree (prettier, eslint, rg, nx) must honor that ignore or carry their own.
 worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.worktrees/{{ branch | sanitize }}{% endif %}"
 
 # Pin the JSON output schema. Without this, every `wt config show` prints a migration advisory

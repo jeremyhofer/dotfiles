@@ -31,8 +31,8 @@ WHAT IT CHECKS
 
 WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets over-trusted
     * Whether a comment explains WHY rather than restating WHAT. That is the primary
-      standard and it is a judgement; no pattern sees it.
-    * Whether prose is relevant to the project it sits in. Also a judgement, and the
+      standard and it is a judgment; no pattern sees it.
+    * Whether prose is relevant to the project it sits in. Also a judgment, and the
       reason the sibling standard for documentation is enforced by review instead.
     * A record id in a vocabulary nobody configured. With no vocabulary the category is
       INACTIVE, and says so on stderr rather than passing silently.
@@ -44,7 +44,7 @@ WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets o
 MENTION vs USE — the calibration that decides whether this gate survives
     Some files legitimately name the very tokens this checks for, because matching them is
     what the file DOES: a linter resolving a record id, a test asserting on one, a status
-    line preferring one path spelling over another. Those strings are behaviour, not prose,
+    line preferring one path spelling over another. Those strings are behavior, not prose,
     and removing them breaks the tool.
 
     The discriminator is quoting. A token wholly inside a backtick span or a double-quoted
@@ -130,7 +130,7 @@ import sys
 import tokenize
 
 # --- language table ---------------------------------------------------------------
-# Each flavour names its line-comment tokens, block-comment pairs, and string delimiters.
+# Each flavor names its line-comment tokens, block-comment pairs, and string delimiters.
 # A string delimiter carries whether a backslash escapes inside it, because a shell
 # single-quoted string has no escapes and a C-like one does — getting that backwards
 # swallows the rest of a file at the first apostrophe.
@@ -310,7 +310,7 @@ def _scan(text: str, fl: dict) -> list[tuple[int, str]]:
                     if not line.startswith(tok, i):
                         continue
                     # `://` is a URL, not a comment, and it is the single largest false
-                    # positive for a slash-flavoured scanner.
+                    # positive for a slash-flavored scanner.
                     if tok == "//" and i > 0 and line[i - 1] == ":":
                         continue
                     # A hash starts a comment only at a token boundary. Without this,
@@ -486,7 +486,7 @@ def load_markers(root: pathlib.Path, explicit: str | None) -> re.Pattern | None:
         # A COMMENT is `#` followed by whitespace, or a bare `#`. A pattern may itself begin with
         # `#` (`#[0-9]+` for numbered references), and reading every `#`-line as a comment
         # discarded such a pattern silently. The first file that EXISTS is authoritative: one
-        # holding no pattern is reported, never skipped in favour of the next candidate, because
+        # holding no pattern is reported, never skipped in favor of the next candidate, because
         # a vocabulary that quietly came from somewhere else reads exactly like the intended one.
         for line in p.read_text(encoding="utf-8").splitlines():
             s = line.strip()
@@ -631,7 +631,7 @@ REMEDY = """
   What to write instead — and what NOT to write instead, which is the failure a first
   repair usually walks into:
     * Replace the pointer with the SUBSTANCE it pointed at. A comment that said which
-      record required a behaviour should say what the behaviour is and why it is required.
+      record required a behavior should say what the behavior is and why it is required.
     * Do NOT swap it for a restatement of the code. "Loop over the items" is a worse
       comment than the one you removed, and it will never be flagged by anything.
     * Do NOT swap a marker for a vaguer gesture at the same absent thing — "per the plan",

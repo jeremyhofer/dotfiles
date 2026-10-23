@@ -232,7 +232,7 @@ the work is still hypothetical is the only time it can be written honestly.
   two threads under one id and needs splitting first.
 - **Recovery is often partial.** State the recovered half as binding and mark only the remainder.
 - **Recoverability is judged per moment.** Re-test a sentinel when the entry changes shape (split,
-  decomposed, a decision landed); a sentinel records a judgement nothing else re-examines.
+  decomposed, a decision landed); a sentinel records a judgment nothing else re-examines.
 
 **Blocked and unwritable are independent.** An entry can be fully gated and perfectly defined:
 use `blocked` with a `gate:` and a real condition. Do not park it at `idea` because it cannot start

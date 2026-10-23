@@ -182,7 +182,7 @@ eq "old history line: since does not crash" "$rc" 0
 has "old history line: counted" "$s" "3 samples"
 has "old history line: missing pressure keys say not recorded" "$s" "memory full  not recorded"
 
-# 9) Pressure thresholds and /tmp, summarised over a fixture history.
+# 9) Pressure thresholds and /tmp, summarized over a fixture history.
 export TZ=UTC
 export MACHINE_SNAPSHOT_DIR="$w/state-fx"; mkdir -p "$MACHINE_SNAPSHOT_DIR"
 day=$(python3 -c 'import calendar; print(calendar.timegm((2026,10,12,0,0,0)))')

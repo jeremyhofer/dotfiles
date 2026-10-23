@@ -19,7 +19,7 @@ Makefile is read too (node_modules, .git, dist and similar are pruned), because 
 single-directory read once hid an entire frontend/package.json of 32 scripts and
 under-reported a repo's true naming scope by half. Nx stays root-only on purpose:
 the workspace graph already enumerates every nested project. Findings from a
-nested dir are labelled with its relative path. A build tool with no marker file
+nested dir are labeled with its relative path. A build tool with no marker file
 anywhere in the tree is a skip, not an error; the per-source tally line makes
 skips visible so coverage is never implied.
 

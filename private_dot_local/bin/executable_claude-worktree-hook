@@ -71,7 +71,7 @@ deny() {
 
 # ---- the command scanner -------------------------------------------------------------------
 # Prints the word after `worktree` for every git invocation in the command line, one per line.
-# It tokenizes like a shell, roughly: quotes, backslashes, comments and heredoc bodies are honoured,
+# It tokenizes like a shell, roughly: quotes, backslashes, comments and heredoc bodies are honored,
 # so text that merely mentions `git worktree add` (a commit message, a search pattern, a file being
 # written) is not mistaken for a call. A `git` word is matched anywhere, not only at a command's
 # start, so `env git …`, `command git …` and `/usr/bin/git …` are seen; its global options are

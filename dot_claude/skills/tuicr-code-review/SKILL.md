@@ -99,10 +99,10 @@ tuicr review add --session <path> \
   | line / range | `--target-file X --line N` (+ `--end-line M`) | a specific place |
 
   The file level exists and is easy to overlook — a reviewer who does not know it is there ends up
-  anchoring a whole-file point to line 1 and apologising for it in the comment text.
+  anchoring a whole-file point to line 1 and apologizing for it in the comment text.
 - **`--type` is not validated, and its DEFAULT is wrong.** The CLI advertises `[default: note]`, but
   `note` is **not** one of the configured classifications — so leaving `--type` off, or copying it
-  from `--help`, stamps a comment that nothing can route by and that the TUI cannot colour. Always
+  from `--help`, stamps a comment that nothing can route by and that the TUI cannot color. Always
   pass one of the configured ids explicitly: `issue` · `suggestion` · `nit` · `question` · `praise`.
   An unknown value is accepted silently, so a typo fails the same quiet way.
 - `--input` takes literal JSON, `@file`, or `-` for stdin, which is the sane path for adding several

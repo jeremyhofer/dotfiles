@@ -1,5 +1,5 @@
 #!/bin/sh
-# Test: structural hygiene of the chezmoi SOURCE tree itself, as opposed to the behaviour of
+# Test: structural hygiene of the chezmoi SOURCE tree itself, as opposed to the behavior of
 # anything it ships.
 #
 # CHECK 1 -- no tracked symlink dangles.

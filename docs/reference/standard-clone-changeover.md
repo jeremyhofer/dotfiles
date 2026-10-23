@@ -162,7 +162,7 @@ How to read it:
 | Repository-local config | Re-set what you chose deliberately (`user.email` for a work identity, say) with `git config` in the new clone. **Never carry `core.bare`.** |
 | A hook | Re-run whatever installed it, in the new clone, after dependencies are installed. Do not copy hook files: installers often write absolute paths into them, which point at the old layout. |
 | `info/exclude` lines | Append the ones you added yourself to the new clone's `.git/info/exclude`. |
-| An ignored file | **Restore** when it cannot be recreated cheaply: `local.properties`, keystores and signing properties, `.env` files, `GoogleService-Info.plist` or `google-services.json` if the team distributes them by hand, Xcode `xcuserdata/` (your schemes and breakpoints), local data. **Regenerate** build output and dependencies. **Leave** anything you do not recognise: it stays in `.old`. |
+| An ignored file | **Restore** when it cannot be recreated cheaply: `local.properties`, keystores and signing properties, `.env` files, `GoogleService-Info.plist` or `google-services.json` if the team distributes them by hand, Xcode `xcuserdata/` (your schemes and breakpoints), local data. **Regenerate** build output and dependencies. **Leave** anything you do not recognize: it stays in `.old`. |
 
 Credentials need their file mode kept: copy with `cp -a` (or `cp -p`), never by opening and saving.
 
@@ -319,7 +319,7 @@ that in `.claude/settings.local.json`, which is never committed:
 ```
 
 The setting was observed working by the author on Claude Code 2.1.296. On an older version it may be
-ignored without any message, so check `claude --version` first, and confirm the behaviour once.
+ignored without any message, so check `claude --version` first, and confirm the behavior once.
 
 ## 7. Verify
 
@@ -374,7 +374,7 @@ operation completes and whether the secret-shaped files end up intact.
 4. **A sparse checkout** (git's feature for checking out only some paths of a branch) that excludes
    the secret-shaped files, set up from a terminal. It must be set up from a terminal because
    configuring it inside the sandbox fails: git has to lock `.git/config` to enable it, and the
-   sandbox does not allow that write. Once set up, whether later operations inside the sandbox honour
+   sandbox does not allow that write. Once set up, whether later operations inside the sandbox honor
    it is unmeasured.
 5. **Ask the policy owners for a narrower rule**: deny reads of the files in the project root only,
    or only untracked ones, rather than the name everywhere. This is a request to a person, not

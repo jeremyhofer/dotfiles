@@ -107,7 +107,7 @@ try "$r" b.txt "CANARY-123456" >/dev/null
 refused "a match for the repo's custom rule is refused" "$r" "$b"
 git -C "$r" reset -q
 # Git runs hooks from the top of the worktree, so this holds even for a hook that resolved the
-# config relatively; it pins the behaviour, and is not evidence for the explicit path.
+# config relatively; it pins the behavior, and is not evidence for the explicit path.
 (cd "$r" && mkdir -p sub && cd sub && printf 'CANARY-654321\n' > c.txt && git add c.txt && git commit -q -m probe >/dev/null 2>&1)
 refused "the repo's rules still apply to a commit made from a subdirectory" "$r" "$b"
 rm -rf "$r"

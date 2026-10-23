@@ -231,7 +231,7 @@ Statuses: Proposed, Accepted, Rejected, Deferred, Superseded (by a named record)
 3. **Evidence lives in Context, worked examples in Notes, and a decision carries neither.**
 4. **Name the real category; never coin one.** If nothing existing names what you are governing,
    the scope is probably wrong.
-5. **An outside claim carries a resolvable link and a date**, fetched, never recalled. Characterise
+5. **An outside claim carries a resolvable link and a date**, fetched, never recalled. Characterize
    a statistic (its subject, its sample) rather than quoting it bare.
 6. **Cite, do not import.** If a claim changes, which file must be edited? If not this one, cite it.
 7. **A record that resolves or contradicts an older one amends the older one in the same change.**

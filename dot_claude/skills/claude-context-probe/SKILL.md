@@ -58,7 +58,7 @@ rejects `--mcp-config` at startup, so the probe leaves the flag off and the othe
 | container above a worktree | a CLAUDE.md in a bare-repository container directory reaches every worktree's sessions, and sits outside every worktree's history | instruction files must live inside the working tree, or be projected there |
 | directory above a clone | the walk up the tree continues past a `.git` directory | the walk stops at the repository boundary |
 | `.claude/CLAUDE.md`, `CLAUDE.local.md` | these alternate locations are read | only `CLAUDE.md` at the root is dependable |
-| subdirectory, at session start | unexpected: subdirectory files normally load only when files there are read | the normal, lazy behaviour |
+| subdirectory, at session start | unexpected: subdirectory files normally load only when files there are read | the normal, lazy behavior |
 | `AGENTS.md` alone | Claude Code reads `AGENTS.md` natively on this version | keep a `CLAUDE.md` that imports it |
 | `AGENTS.md` beside a `CLAUDE.md` | both are read | `AGENTS.md` is read only when no `CLAUDE.md` is found; import it from the `CLAUDE.md` |
 | symlink two levels up | a `CLAUDE.md` that is a symlink to a file kept elsewhere is read, with no approval, and shows that file's current content | surface an external file some other way |
@@ -144,8 +144,8 @@ non-zero unless every row before `tool` is `yes`, apart from the two information
 
 - Hooks and MCP servers configured in user or project settings files. It passes them through
   `--settings` and `--mcp-config`, so it measures whether those channels work at all, not whether a
-  particular settings file is honoured.
-- Interactive sessions. Everything runs headless (`claude -p`); interactive-only behaviour, such as
+  particular settings file is honored.
+- Interactive sessions. Everything runs headless (`claude -p`); interactive-only behavior, such as
   approval prompts, is out of scope.
 - Plugins, output styles and user-level `~/.claude` files: it never writes outside its temp tree.
 - Skills synced from a claude.ai account: Claude Code never runs their injected commands, whatever

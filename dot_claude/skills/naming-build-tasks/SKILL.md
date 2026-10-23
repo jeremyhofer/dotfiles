@@ -15,7 +15,7 @@ opened the repo should be able to predict what a task does from its name alone.
    `typecheck-scripts`, `check-csp-hashes` — the same spelling as an Nx target, a `just` recipe, a Make
    target or an npm script. **Never a colon**, even in npm where `:` is the ecosystem habit.
 
-   One separator everywhere is the point: it is what lets a name be recognised without first working
+   One separator everywhere is the point: it is what lets a name be recognized without first working
    out which tool you are looking at. And it costs nothing — npm script names are arbitrary strings, so
    `npm run test-e2e` works exactly as well as `test:e2e`.
 
@@ -64,7 +64,7 @@ so the task listing stays legible without opening the file.
 | `deploy` | push a running app to an environment |
 | `publish` | release a package to a registry |
 | `release` | cut a release — version bump, changelog, signed tag: the release ceremony. Not the registry upload (`publish`) and not shipping a running app (`deploy`); `nx release` and a tag-cutting script both live here |
-| `ci` | the **full gate** — the whole fan-out a CI run executes over the project's own targets. **The one category that is not a verb**, kept deliberately: universally recognised, and it names a composite no verb covers. `ci-check`, `ci-fast` are extensions within it |
+| `ci` | the **full gate** — the whole fan-out a CI run executes over the project's own targets. **The one category that is not a verb**, kept deliberately: universally recognized, and it names a composite no verb covers. `ci-check`, `ci-fast` are extensions within it |
 | `check` · `verify` · `validate` | three different jobs — see below |
 
 **A browser or full-integration suite is `test-e2e`, not `e2e`.** `e2e` is not a verb, and it is a
@@ -100,7 +100,7 @@ three distinct jobs, and the distinguisher is how far out each one reaches:
 
 | Verb | Reads | Answers | Typical |
 | --- | --- | --- | --- |
-| `check` | **the tree** — source, config, generated or built output | *Is it well-formed?* | assert generated JSON-LD has the right shape; palette contrast; no forbidden licence; docs still match the help output |
+| `check` | **the tree** — source, config, generated or built output | *Is it well-formed?* | assert generated JSON-LD has the right shape; palette contrast; no forbidden license; docs still match the help output |
 | `verify` | **this machine and this repo's history** | *Is it actually true?* | installed packages match the committed SBOM; git hooks configured with no bypass; the signing key exists and is the right type; the HEAD signature verifies; a gate really fires on a known-bad input |
 | `validate` | **a deployed, running target** | *Is the thing that's live good?* | e2e + performance audit against the deployed site; assert a release actually landed |
 

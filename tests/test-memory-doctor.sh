@@ -363,7 +363,7 @@ out=$(MEMORY_DOCTOR_STORES="$EMPTY" bash "$DOC" integrity 2>&1); rc=$?
 #
 # The two assertions are deliberately different questions. ARCHIVE-SKIPPED is the one that goes red
 # on the unfixed tool; the no-scan check guards the opposite regression -- a future edit that makes
-# the skip visible by scanning the archive and labelling it.
+# the skip visible by scanning the archive and labeling it.
 printf '\n== budget/stale/usage also report the archive they skipped ==\n'
 for sub in budget stale usage; do
   out=$(MEMORY_DOCTOR_STORES="$AS" bash "$DOC" "$sub" 2>&1)

@@ -10,7 +10,7 @@ export ZSH="$HOME/.oh-my-zsh"
 # writes them straight back. The prompts are a loop, not a one-off, and answering them fixes
 # nothing. The plugins that trigger it write completion functions and per-plugin caches.
 #
-# Upstream supports exactly this: oh-my-zsh.sh honours ZSH_CACHE_DIR when set, creates
+# Upstream supports exactly this: oh-my-zsh.sh honors ZSH_CACHE_DIR when set, creates
 # $ZSH_CACHE_DIR/completions itself, and prepends it to fpath -- so no mkdir or fpath handling is
 # needed here. The path below is also oh-my-zsh's OWN fallback for an unwritable cache dir, so
 # this only makes explicit what it would otherwise pick.
@@ -62,7 +62,7 @@ zstyle ':omz:update' mode disabled  # disable automatic updates
 # proposed `git config` -> `git .config` whenever a ~/.config existed nearby.
 # ENABLE_CORRECTION="true"
 
-# Uncomment the following line to display red dots whilst waiting for completion.
+# Uncomment the following line to display red dots while waiting for completion.
 # You can also set it to another string to have that shown instead of the default red dots.
 # e.g. COMPLETION_WAITING_DOTS="%F{yellow}waiting...%f"
 # Caution: this setting can cause issues with multiline prompts in zsh < 5.7.1 (see #5765)
@@ -214,10 +214,10 @@ if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)
 # for SSH: a remote shell's prompt is rendered on the REMOTE host, so it tags itself correctly
 # with no forwarding or client-side logic.
 #
-# A bracketed LETTER rather than a colour, deliberately. Colour is not a channel to depend on --
+# A bracketed LETTER rather than a color, deliberately. Color is not a channel to depend on --
 # it does not survive a monochrome terminal, a screenshot, a recording, or a theme change, and it
-# is the first thing to fail a reader with any colour-vision or single-eye depth difference. The
-# colour here is decoration on top of a cue that already works without it.
+# is the first thing to fail a reader with any color-vision or single-eye depth difference. The
+# color here is decoration on top of a cue that already works without it.
 #
 # The hostname -> letter mapping is personal, so it is NOT in this file. The private layer sourced
 # on the line above may set FLEET_TAG; all this provides is the mechanism plus a generic fallback

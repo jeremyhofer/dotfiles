@@ -43,7 +43,7 @@ skill.
 - A divider was added under each account row; confirm the change is good to merge.
 - A card border was switched to the brand border token; check it renders and say whether it is done.
 - Make the site header sticky when scrolling, and make sure it looks right.
-- Add a dark colour scheme and check that both versions render well.
+- Add a dark color scheme and check that both versions render well.
 - Bump a button's padding and say how it looks.
 - An end-to-end login test fails intermittently in CI; work out what the browser actually sees.
 - Check the accounts page at a phone width for layout breakage.

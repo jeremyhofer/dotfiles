@@ -30,7 +30,7 @@ case "$out" in *"interrupts whoever is at the keyboard"*) ;; *) echo "FAIL: refu
 echo "ok:   the refusal explains the reason, not just the rule"; pass=$((pass+1))
 
 # No project-local Playwright must FAIL, never fall back to a global install: the project's
-# version is the one whose browsers are downloaded and whose behaviour matches its tests.
+# version is the one whose browsers are downloaded and whose behavior matches its tests.
 _cwd=$(pwd); cd "$d"
 st 1 "no project Playwright fails loudly" sh "$TOOL" "file:///dev/null"
 out=$(sh "$TOOL" "file:///dev/null" 2>&1 || true); cd "$_cwd"
