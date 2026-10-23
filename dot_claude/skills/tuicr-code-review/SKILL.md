@@ -31,7 +31,7 @@ Error: Invalid input: session 'local' was not found for repo <path>.
 
 So the sequence is always **human first, agent second**. If asked to "review this branch with tuicr"
 with no existing session, say that the human needs to open it first — and offer a normal code review
-in the meantime. Do not try to synthesise a session file; the store is an implementation detail.
+in the meantime. Do not try to synthesize a session file; the store is an implementation detail.
 
 ## Reading a review
 

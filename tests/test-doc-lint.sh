@@ -38,7 +38,7 @@ r=$(repo plain)
 put "$r" "See [[some-memory-slug]] for why."
 assert_has "a wikilink is reported" "[wikilink]" "$(run "$r")"
 put "$r" "As recorded (memory some-slug-name), this holds."
-assert_has "a parenthesised memory pointer is reported" "[memory-ptr]" "$(run "$r")"
+assert_has "a parenthesized memory pointer is reported" "[memory-ptr]" "$(run "$r")"
 put "$r" "The memory \`some-slug-name\` says so."
 assert_has "a bare memory pointer is reported" "[memory-ptr]" "$(run "$r")"
 put "$r" "Grounded in (memory: \`colon-form-slug\`) here."

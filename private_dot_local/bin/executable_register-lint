@@ -682,7 +682,7 @@ def check(entries, closed_dir, root=None, today=None):
                          "key belongs to; the other end is derived" % (key, e.id, other))
         if "duplicates" in rels and e.status != "dropped":
             fail("relation-duplicate-status", e,
-                 "has `duplicates:` but status is %r -- a duplicate is dropped in favour of the "
+                 "has `duplicates:` but status is %r -- a duplicate is dropped in favor of the "
                  "entry it duplicates" % e.status)
 
     # A cycle in `blocks:` is a strongly connected group: every member reaches every other.

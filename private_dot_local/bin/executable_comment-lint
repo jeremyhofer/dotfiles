@@ -165,25 +165,25 @@ DASH = {
     "heredoc": False,
 }
 
-FLAVOURS = {}
+FLAVORS = {}
 for _ext in (
     "py pyi sh bash zsh ksh rb pl pm yaml yml toml just tf tfvars cfg conf ini "
     "service timer socket mount network automount nix ps1 r jl"
 ).split():
-    FLAVOURS[_ext] = HASH
+    FLAVORS[_ext] = HASH
 for _ext in (
     "js mjs cjs jsx ts mts cts tsx c h cc cpp hpp rs go java kt kts swift scala "
     "php dart groovy rn proto typ"
 ).split():
-    FLAVOURS[_ext] = SLASH
+    FLAVORS[_ext] = SLASH
 for _ext in "css".split():
-    FLAVOURS[_ext] = BLOCK_ONLY
+    FLAVORS[_ext] = BLOCK_ONLY
 for _ext in "scss sass less".split():
-    FLAVOURS[_ext] = SLASH
+    FLAVORS[_ext] = SLASH
 for _ext in "html htm xml svg xsl".split():
-    FLAVOURS[_ext] = MARKUP
+    FLAVORS[_ext] = MARKUP
 for _ext in "sql lua hs elm".split():
-    FLAVOURS[_ext] = DASH
+    FLAVORS[_ext] = DASH
 
 # Extensionless files whose name is the convention. A shebang is checked first, so this
 # only has to carry names that are not scripts.
@@ -223,7 +223,7 @@ GENERATED_BANNER = re.compile(
 )
 
 
-def flavour_for(path: str, first_line: str = "") -> dict | None:
+def flavor_for(path: str, first_line: str = "") -> dict | None:
     """The scanner rules for this file, or None when the language is unknown."""
     if GENERATED.search(path):
         return None
@@ -232,8 +232,8 @@ def flavour_for(path: str, first_line: str = "") -> dict | None:
         return BY_NAME[name]
     if "." in name:
         ext = name.rsplit(".", 1)[-1]
-        if ext in FLAVOURS:
-            return FLAVOURS[ext]
+        if ext in FLAVORS:
+            return FLAVORS[ext]
     if SHEBANG.match(first_line):
         return HASH
     return None
@@ -383,7 +383,7 @@ def _python(text: str) -> list[tuple[int, str]]:
 def extract(text: str, path: str) -> list[tuple[int, str]]:
     """Every line of commentary in `text`, as (line number, prose)."""
     first = text.split("\n", 1)[0] if text else ""
-    fl = flavour_for(path, first)
+    fl = flavor_for(path, first)
     if fl is None:
         return []
     name = path.rsplit("/", 1)[-1]
@@ -551,7 +551,7 @@ def check_comments(
                     rel,
                     n,
                     f"`{m.group(0)}` — resolves only for whoever was present when this "
-                    "was written. Name the thing: which behaviour, which constraint, "
+                    "was written. Name the thing: which behavior, which constraint, "
                     "which defect.",
                 )
             )
@@ -696,7 +696,7 @@ def main(argv: list[str]) -> int:
             except OSError:
                 continue
         first = text.split("\n", 1)[0] if text else ""
-        if flavour_for(rel, first) is None:
+        if flavor_for(rel, first) is None:
             continue
         comments = extract(text, rel)
         if not comments:

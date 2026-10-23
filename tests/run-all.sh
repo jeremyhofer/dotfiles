@@ -69,7 +69,7 @@ for t in "$here"/test-*.sh; do
   interp=$(sed -n '1s|^#!.*[/ ]||p' "$t")
   case "$interp" in
     sh|bash|zsh) ;;
-    *) printf 'SKIP   %s (unrecognised interpreter: %s)\n' "$name" "${interp:-none}" >&2; continue ;;
+    *) printf 'SKIP   %s (unrecognized interpreter: %s)\n' "$name" "${interp:-none}" >&2; continue ;;
   esac
   if ! command -v "$interp" >/dev/null 2>&1; then
     printf 'SKIP   %s (%s not installed)\n' "$name" "$interp" >&2; continue

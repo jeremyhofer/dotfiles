@@ -506,8 +506,8 @@ kb_reverse_label() {
 # sources-of-truth.md ended up with NO entry for a topic adopted in that window plus four
 # superseded descriptions -- while every projection in the window was correct. The fresh
 # layer is what hid it: people read the projection, saw it current, and took that as
-# evidence the whole derivation had run. Mechanising ONE derived output and leaving a
-# sibling to habit is worse than mechanising neither.
+# evidence the whole derivation had run. Mechanizing ONE derived output and leaving a
+# sibling to habit is worse than mechanizing neither.
 cmd_index() {
   _check=""
   _ifpresent=""

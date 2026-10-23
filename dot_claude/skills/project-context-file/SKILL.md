@@ -34,7 +34,7 @@ Templates: `template-AGENTS.md` and `template-CLAUDE.md` beside this file.
 | Heading | Holds | Keep out |
 | --- | --- | --- |
 | `# <repo name>` + one or two sentences | What it is, who owns it, its boundary: public, private or client-owned, and what must never land in it | A feature tour |
-| `## Tasks` | The entry point, the command that lists tasks live, and the few a session needs first: set up, the fast check, the full gate | A full command catalogue; it drifts |
+| `## Tasks` | The entry point, the command that lists tasks live, and the few a session needs first: set up, the fast check, the full gate | A full command catalog; it drifts |
 | `## Layout` | That `docs/` follows the standard layout and `docs/README.md` indexes it (skill `project-documentation`); the project's own `docs/` subjects, each named as `docs/<name>/`; top-level directories whose purpose is not obvious | A tour of what `ls` shows |
 | `## Deeper context` | Where to read before acting, each with the situation that calls for it; that the decision log wins over summaries; project skills | The documents' content |
 | `## Rules` | Only rules no hook or gate can enforce | Anything a check enforces; generic good practice |

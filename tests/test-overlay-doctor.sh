@@ -201,7 +201,7 @@ mv "$tmp/ovt/dot_dotlocal/ssh/config"    "$tmp/ovt/dot_dotlocal/ssh/config.tmpl"
 out=$(OVERLAY_SRC="$tmp/ovt" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || { echo "FAIL(E): .tmpl-authored overlay reported non-compliant (exit $rc)"; echo "$out"; exit 1; }
 echo "$out" | grep -q 'MISSING' && { echo "FAIL(E): .tmpl pieces flagged MISSING"; echo "$out"; exit 1; }
-echo "ok:   required pieces authored as .tmpl are recognised"
+echo "ok:   required pieces authored as .tmpl are recognized"
 
 # Case F — the SAME TARGET FILE owned by both layers must be flagged.
 # The header promises "their managed sets must stay disjoint", but only directory ATTRIBUTES

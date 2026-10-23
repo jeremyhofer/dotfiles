@@ -93,10 +93,10 @@ git -C "$C" show-ref --verify --quiet refs/heads/w-none && no "branch w-none was
 (cd "$C" && wt -y --config "$CONF" switch rel --no-cd) >/dev/null 2>"$T/err" \
   && ok "an existing branch still switches offline" || no "existing branch refused offline: $(cat "$T/err")"
 
-echo "== not opted in: unchanged behaviour =="
+echo "== not opted in: unchanged behavior =="
 git -C "$C" config --unset fetch-base.enabled
 create "$C" w-off && [ "$(at "$C" w-off)" = "$(at "$C" main)" ] \
-  && ok "without fetch-base.enabled, created from the local base, offline" || no "opt-out not honoured: $(cat "$T/err")"
+  && ok "without fetch-base.enabled, created from the local base, offline" || no "opt-out not honored: $(cat "$T/err")"
 
 echo "== bases the remote does not have, and a local base ahead of it =="
 fixture "$T/c"; C="$T/c/clone"

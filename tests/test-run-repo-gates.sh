@@ -199,7 +199,7 @@ rm -rf "$h/.husky"
 h="$root/work/ours"
 printf '#!/usr/bin/env bash\nset -e\narr=(a b); [[ ${#arr[@]} -eq 2 ]] && echo bash-ok >> "%s/ran"\n' "$h" > "$h/.githooks/pre-commit"; chmod +x "$h/.githooks/pre-commit"
 run "$h" pre-commit
-grep -q bash-ok "$h/ran" 2>/dev/null && ok ".githooks: executable #! file runs under its interpreter" || bad "#! honoured" "rc=$rc out=$(cat "$tmp/out")"
+grep -q bash-ok "$h/ran" 2>/dev/null && ok ".githooks: executable #! file runs under its interpreter" || bad "#! honored" "rc=$rc out=$(cat "$tmp/out")"
 printf '#!/bin/sh\nfalse\necho reached >> "%s/ran"\n' "$h" > "$h/.githooks/pre-commit"; chmod -x "$h/.githooks/pre-commit"
 run "$h" pre-commit
 { [ $rc != 0 ] && ! grep -q reached "$h/ran" 2>/dev/null; } && ok ".githooks: non-executable file runs under sh -e" || bad "non-exec sh -e" "rc=$rc ran=$(cat "$h/ran" 2>/dev/null)"

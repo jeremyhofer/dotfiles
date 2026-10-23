@@ -220,7 +220,7 @@ r="$tmp/subj"; mkdir -p "$r"
 } > "$r/0028-ssh.md"
 out=$(python3 "$lint" "$r" --subjects 2>&1)
 assert_has "the subject view groups by tag" "## secrets (2)" "$out"
-assert_has "a labelled scope statement is shown" "Where every secret lives." "$out"
+assert_has "a labeled scope statement is shown" "Where every secret lives." "$out"
 assert_lacks "only the FIRST sentence of a scope statement is taken" "A second sentence" "$out"
 assert_has "a declared relation is extracted" "refines 0016" "$out"
 # "Refines ADR-0016 (one-decision-per-file, ADR-0002)" names a second record for an unrelated
@@ -308,7 +308,7 @@ r="$tmp/rv-optin"; bullet "$r" 0010 Accepted; review "$r/0010-a-decision.md" "Fr
 assert_has "a Review below the floor is still checked once present" "[review]" "$(rf "$r")"
 # a repo may name its own dimensions
 r="$tmp/rv-custom"; bullet "$r" 0079 Accepted; review "$r/0079-a-decision.md" "Review 2026-09-22:" "- **security** — none found."
-assert_lacks "custom dimensions are honoured" "[review]" "$(run "$r" --review-floor 0079 --review-dimensions security)"
+assert_lacks "custom dimensions are honored" "[review]" "$(run "$r" --review-floor 0079 --review-dimensions security)"
 
 
 echo ""

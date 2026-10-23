@@ -238,7 +238,7 @@ def declared(text):
     A lead block is used for scope in a minority of records and for supersession notes,
     glossaries, stubs and status updates in the rest. Reading it as a scope statement rendered
     an acronym glossary as though it declared territory -- worse than a blank, because a
-    mislabelled answer is still an answer. So a scope statement counts only when the record
+    mislabeled answer is still an answer. So a scope statement counts only when the record
     labels it as one, and relations are read separately.
     """
     blob = lead_block(text)
@@ -278,7 +278,7 @@ def declared(text):
     return scope, rels
 
 
-def normalise_tag(tag):
+def normalize_tag(tag):
     """Fold spellings for DETECTION only -- the view still renders the tag as written, because
     silently merging two spellings hides the drift this report exists to surface."""
     n = clean(tag).lower().replace("_", "-").replace(" ", "-")
@@ -297,7 +297,7 @@ def render_subjects(records, pattern):
 
     norm = collections.defaultdict(set)
     for tag in by_tag:
-        norm[normalise_tag(tag)].add(tag)
+        norm[normalize_tag(tag)].add(tag)
     collisions = {k: sorted(v) for k, v in norm.items() if len(v) > 1}
     singles = sorted(t for t, rs in by_tag.items() if len(rs) == 1)
     decl = {r.path.name: declared(r.text) for r in records}
@@ -367,7 +367,7 @@ def check(records, adr_dir, register, floor, review_floor=None, dimensions=()):
         out.append(("header-shape", str(adr_dir),
                     "%d record(s) use the %s header and %d use the other -- both are read here, "
                     "and neither is wrong until somebody chooses. Reported so the split stays "
-                    "visible rather than silently normalised."
+                    "visible rather than silently normalized."
                     % (shapes[minority], minority, sum(shapes.values()) - shapes[minority])))
 
     by_number = collections.defaultdict(list)

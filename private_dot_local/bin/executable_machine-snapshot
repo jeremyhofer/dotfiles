@@ -36,7 +36,7 @@ earlier sample had part of its CPU counted then, so that part is subtracted from
 reaped figure when it disappears. When its parent has disappeared too, the child was orphaned and
 reaped by a subreaper above it, so the correction goes to its nearest surviving ancestor. It is still
 approximate (the nearest surviving ancestor is not always the subreaper that reaped it), which is why
-totals are labelled CPU-seconds and not presented as exact.
+totals are labeled CPU-seconds and not presented as exact.
 
 ATTRIBUTION. A row's `session` is the nearest ancestor whose command name, or the first word of
 whose command line, is $MACHINE_SNAPSHOT_SESSION_COMM (default `claude`), shown with that process's
@@ -523,7 +523,7 @@ def cmd_now():
             print(f"  {v / iv:6.2f}  {'(not under a session)' if k == '-' else k}")
 
 
-def summarise(start, end):
+def summarize(start, end):
     """Print the totals for samples with start <= ts <= end. `since` and `between` both land here."""
     n, span = 0, 0.0
     by_session, by_comm, stalls, loads = {}, {}, {}, []
@@ -619,7 +619,7 @@ def summarise(start, end):
 
 def cmd_since(minutes):
     now = float(NOW) if NOW else time.time()
-    summarise(now - minutes * 60, now)
+    summarize(now - minutes * 60, now)
 
 
 def parse_when(tokens, now):
@@ -649,7 +649,7 @@ def cmd_between(args):
                  "local time, or @EPOCH seconds")
     if end < start:
         sys.exit("machine-snapshot: between: END is before START")
-    summarise(start, end)
+    summarize(start, end)
 
 
 def main(argv):

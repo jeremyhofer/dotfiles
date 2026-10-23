@@ -90,7 +90,7 @@ impossible to deliberately run a session on a different model.
 
 Two gotchas when checking a model value: the CLI's `--model` help lists only the bare aliases, but
 context-qualified forms such as `opus[1m]` are accepted — and **the CLI exits 0 even for an
-unrecognised model**, so exit status is not a usable check. The rejection appears only in the output.
+unrecognized model**, so exit status is not a usable check. The rejection appears only in the output.
 
 ## 5. Repo-level settings: shared vs local
 

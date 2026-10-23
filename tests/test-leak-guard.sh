@@ -5,7 +5,7 @@
 # nothing here may read the machine's real ones: every case runs under a temp $HOME whose
 # .dotlocal holds a fixture markers file, sensitive file, allow file and policy file. The cases
 # assert behavior (diff-based scanning, line numbers, token naming without leaking the pattern,
-# allowlist anchoring, escape neutralisation, push delta, fail-closed paths), which holds for any
+# allowlist anchoring, escape neutralization, push delta, fail-closed paths), which holds for any
 # vocabulary. What a particular domain's real patterns say is that domain's own suite to test.
 #
 # Fixture vocabulary: markers are ZZP/ZZQ/... program ids (optionally the -ADR form); the sensitive
@@ -44,7 +44,7 @@ mkdir -p "$tmp/.dotlocal"
 printf '# fixture markers: program ids, optionally in the -ADR form\n\\b(ZZP|ZZQ|ZZR|ZZS|ZZT|ZZU)(-ADR)?-[0-9]+\n' \
   > "$tmp/.dotlocal/git-leak-markers"
 # `corp\.example` is in the vocabulary because the ALLOWLIST cases need a real sensitive term to
-# exempt; `nin` is a term that a string-escape artifact can spell (see the neutralisation cases).
+# exempt; `nin` is a term that a string-escape artifact can spell (see the neutralization cases).
 printf 'hush-term|corp-secret|corp\\.example|\\bVAULTHOST\\b|\\bnin\\b\n' > "$tmp/.dotlocal/git-leak-sensitive"
 cat > "$tmp/.dotlocal/git-leak-allow" <<'EOF'
 # fixture allow rule: one generated lockfile line shape, in one file name, at any depth
@@ -355,7 +355,7 @@ if ! push "$r" "$sha" "$Z" origin https://public.example/x/y; then echo "FAIL: p
 
 # 34) ESCAPED-NEWLINE ARTIFACT -> ALLOW. Generated single-line files encode line breaks as literal
 # "\n"; "...pull it.\n\nIn the end" contains the chars "nIn", which a case-insensitive `nin` branch
-# flags although the rendered text has a line break there, not the token. Without neutralisation
+# flags although the rendered text has a line break there, not the token. Without neutralization
 # every regeneration of such a file re-trips the gate.
 r=$(newrepo esc_fp); stage "$r" 'over the string, grip it, and pull it.\n\nIn the next step'
 if ! gate "$r" pre-commit; then echo "FAIL: escaped-newline artifact (nIn) wrongly blocked"; exit 1; fi

@@ -605,7 +605,7 @@ FR clone sfresh > "$TMP/out" 2>&1; rc=$?
 check "standard: a fresh clone is ordinary: .git a directory, not bare, on the declared branch with an upstream, nothing made beside it" \
   '[ "$rc" = 0 ] && [ -d dom/sfresh/.git ] && [ "$(git -C dom/sfresh rev-parse --is-bare-repository)" = false ] && [ "$(git -C dom/sfresh branch --show-current)" = main ] && [ "$(upstream dom/sfresh)" = origin/main ] && [ "$(ls -A dom | LC_ALL=C sort | tr "\n" " ")" = "README sfresh " ]'
 FR clone sdev > "$TMP/out" 2>&1; rc=$?
-check "standard: branch: develop is honoured where the remote's default is main" \
+check "standard: branch: develop is honored where the remote's default is main" \
   '[ "$rc" = 0 ] && [ "$(git -C dom/sdev branch --show-current)" = develop ] && [ "$(upstream dom/sdev)" = origin/develop ]'
 FR clone swt > "$TMP/out" 2>&1; rc=$?
 check "standard: a declared worktree is NESTED at <path>/.worktrees/<name>, on its branch, with an upstream, sharing <path>/.git" \

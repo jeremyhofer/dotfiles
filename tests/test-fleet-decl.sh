@@ -28,7 +28,7 @@ trap 'rm -rf "$TMP"' EXIT
 ROOT="$TMP/Devel"; mkdir -p "$ROOT"
 REC="$TMP/rec.yaml"
 
-# The fixture creates real directories because resolution NORMALISES paths before comparing them,
+# The fixture creates real directories because resolution NORMALIZES paths before comparing them,
 # and normalizing resolves symlinks and `..` against the filesystem. That is not an implementation
 # detail to work around: a scope that is not checked out on this machine genuinely cannot contain
 # the repo you are standing in, so "skipped" is the right answer and the fixture must be able to
@@ -483,7 +483,7 @@ a mistyped fleet default key|    scope2: x|containerDefaults:\n  branchs: defaul
 a near-miss of containerDefaults|    scope2: x|containerDefault:\n  branches: default|[unknown-key] fleet: containerDefault
 a lower-case claudeTrust|    claudetrust: false|-|[unknown-key] alpha: claudetrust
 a snake-case claudeTrust|    claude_trust: false|-|[unknown-key] alpha: claude_trust
-a capitalised claudeTrust|    ClaudeTrust: false|-|[unknown-key] alpha: ClaudeTrust
+a capitalized claudeTrust|    ClaudeTrust: false|-|[unknown-key] alpha: ClaudeTrust
 a quoted claudeTrust false|    claudeTrust: "false"|-|[claudeTrust-value] alpha: claudeTrust
 claudeTrust: no, a string in YAML 1.2|    claudeTrust: no|-|[claudeTrust-value] alpha: claudeTrust
 CASES

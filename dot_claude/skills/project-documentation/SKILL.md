@@ -280,7 +280,7 @@ anything not verified marked **unverified**. A newer note supersedes it; the old
 ## A reference page
 
 The project's manual, in `docs/reference/`, for a person or an agent: architecture, the command
-catalogue, code style, testing, a release or drafting workflow. Each page the context file's
+catalog, code style, testing, a release or drafting workflow. Each page the context file's
 `## Deeper context` points at is named there with the situation that calls for it ("read before
 cutting a release"); that pointer is how a session finds it on demand. A dated audit is research,
 and a migration plan is a plan, even when an agent wrote them: file them by type.

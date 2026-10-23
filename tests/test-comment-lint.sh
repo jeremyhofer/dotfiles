@@ -83,7 +83,7 @@ INNER
 SH
 
 # Two file types whose comments were silently skipped until 2026-09-23: Typst, where `#` opens
-# CODE and `//` a comment, and .gitignore, found by name. An unrecognised extension is a quiet
+# CODE and `//` a comment, and .gitignore, found by name. An unrecognized extension is a quiet
 # no-op, which is correct for the tool and invisible in a gate, so each type gets a case.
 printf '// Task 3 decides the layout\n#set page(width: 10cm)\n' > doc.typ
 printf '# Task 4 added this\nbuild/\n' > .gitignore

@@ -207,7 +207,7 @@ r="$tmp/blankgate"; mkdir -p "$r/closed"
 entry "$r" "ABC-01" "active" "gate:" "The thing is measurably finished."
 out=$(run "$r")
 assert_has "a present-but-EMPTY key is reported" "[empty-field]" "$out"
-assert_lacks "and it is not miscategorised as a stray value" "must not carry a 'gate'" "$out"
+assert_lacks "and it is not miscategorized as a stray value" "must not carry a 'gate'" "$out"
 
 # A '#' in an unquoted list value starts a YAML comment, so the value truncates silently. The
 # frontmatter parser skips list items by design, which is why this check reads the raw block.

@@ -266,7 +266,7 @@ fi
 #   rate: Fable 5 50k · Opus 5 100k · Sonnet 5 167k · Haiku 4.5 500k
 #   < 5% green (ignore) · 5-10% amber (shed depth only at a natural boundary) · >= 10% red
 #
-# THE PERCENTAGE IS THE PAYLOAD; COLOUR IS REINFORCEMENT ONLY. The band word is printed as text
+# THE PERCENTAGE IS THE PAYLOAD; COLOR IS REINFORCEMENT ONLY. The band word is printed as text
 # for exactly that reason: a color-only signal cannot be read by someone with limited color
 # vision, and cannot be verified by anyone from a screenshot or a copied line.
 #
@@ -274,7 +274,7 @@ fi
 # ambient exposure -- it cannot know whether the user is about to walk away, and a gate calibrated
 # from a single observation would manufacture confidence it has not earned.
 #
-# Matched on the model FAMILY, so "Opus 5 (1M context)" resolves like "Opus 5". An unrecognised
+# Matched on the model FAMILY, so "Opus 5 (1M context)" resolves like "Opus 5". An unrecognized
 # model renders "n/a" rather than borrowing another model's rate: a wrong number here is worse
 # than no number, because it reads exactly as authoritative as a right one.
 case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in

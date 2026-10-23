@@ -103,7 +103,7 @@ pw=$(find "$root" -maxdepth 6 -type d -name playwright -path '*/node_modules/pla
 [ -n "$pw" ] || {
   printf '%s\n' "ui-shot: no project-local Playwright under $root" >&2
   printf '%s\n' "  Install it in the project (npm i -D playwright) rather than globally: the project's" >&2
-  printf '%s\n' "  version is the one whose browsers are downloaded and whose behaviour matches its tests." >&2
+  printf '%s\n' "  version is the one whose browsers are downloaded and whose behavior matches its tests." >&2
   exit 1
 }
 nm=${pw%/playwright}

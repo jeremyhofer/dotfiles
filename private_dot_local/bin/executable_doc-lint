@@ -98,7 +98,7 @@ WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets o
     * An undefined taxonomy: a naming scheme used consistently and defined nowhere.
     * References into other repositories: this process cannot resolve another repo's index.
     * A single-token memory name: `memory-ptr` requires a hyphen in the slug, because the
-      bare parenthesised word is ordinary English prose.
+      bare parenthesized word is ordinary English prose.
     * A memory pointer that WRAPS across a line break (`memory` at the end of one line, the
       slug on the next): the check reads one line at a time.
     * A decision record cited by bare number with no decision after it (`0073 states

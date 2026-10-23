@@ -111,7 +111,7 @@ CLAUDE_CODE_TMPDIR="$outside2" runhook "$broken" session-end "" "" >/dev/null 2>
 if [ ! -e "$outside2" ]; then
   ok "plant: removing the /tmp-parent guard lets session-end delete a directory outside /tmp"
 else
-  no "plant: removing the /tmp-parent guard did not change behaviour -- the guard may not be load-bearing"
+  no "plant: removing the /tmp-parent guard did not change behavior -- the guard may not be load-bearing"
 fi
 
 
@@ -142,7 +142,7 @@ echo "== a symlink INSIDE the root pointing outside it is not followed =="
 # is literally /tmp. A sandbox that denies writes directly under /tmp cannot produce one.
 root=$(mktemp -d "/tmp/c-test-XXXXXX" 2>/dev/null)
 if [ -z "$root" ] || [ ! -d "$root" ]; then
-  sk "valid-root behavioural tests (symlink, threshold, home-glob, newer-than, stop_hook_active, session-end deletion)" \
+  sk "valid-root behavioral tests (symlink, threshold, home-glob, newer-than, stop_hook_active, session-end deletion)" \
      "cannot create a directory directly under /tmp in this environment (mktemp -d /tmp/c-test-XXXXXX failed)"
 else
   outside_target=$(mktemp -d "$TESTROOT/c-test-symlink-target.XXXXXX")
@@ -173,7 +173,7 @@ else
   if [ -n "$out" ]; then
     ok "plant: find -L pulls the symlinked outside data into the measurement"
   else
-    no "plant: find -L did not change behaviour -- check the sed edit landed"
+    no "plant: find -L did not change behavior -- check the sed edit landed"
   fi
   rm -rf "$target2" "$root2" 2>/dev/null
 
@@ -244,7 +244,7 @@ else
   if [ -n "$out" ]; then
     ok "plant: removing the stop_hook_active guard makes stop emit even when active=true"
   else
-    no "plant: removing the stop_hook_active guard did not change behaviour -- check the sed edit landed"
+    no "plant: removing the stop_hook_active guard did not change behavior -- check the sed edit landed"
   fi
 
   unset CLAUDE_CODE_TMPDIR
@@ -261,7 +261,7 @@ else
   if [ -n "$out" ]; then
     ok "plant: dropping the -home-* exclusion pulls task output into the measurement"
   else
-    no "plant: dropping the -home-* exclusion did not change behaviour -- check the sed edit landed"
+    no "plant: dropping the -home-* exclusion did not change behavior -- check the sed edit landed"
   fi
   rm -rf "$clean"
 
@@ -286,7 +286,7 @@ else
   if [ ! -e "$live" ]; then
     ok "plant: judging a profile by its own mtime alone deletes one in use"
   else
-    no "plant: judging by the directory's own mtime did not change behaviour -- check the sed edit landed"
+    no "plant: judging by the directory's own mtime did not change behavior -- check the sed edit landed"
   fi
   rm -rf "$pr"
 
@@ -302,7 +302,7 @@ else
   if [ -e "$fresh2" ]; then
     ok "plant: removing the deletion line leaves the root behind"
   else
-    no "plant: removing the deletion line did not change behaviour -- check the sed edit landed"
+    no "plant: removing the deletion line did not change behavior -- check the sed edit landed"
   fi
   rm -rf "$fresh2" 2>/dev/null
 

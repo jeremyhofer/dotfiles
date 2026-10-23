@@ -35,7 +35,7 @@
 # default for every repo at once, on every commit, with nothing to see. The caller decides what to
 # do; this program's job is to make the two distinguishable.
 #
-# THE READER IS PINNED BY BEHAVIOUR, NOT BY NAME. Two different programs in common package repos
+# THE READER IS PINNED BY BEHAVIOR, NOT BY NAME. Two different programs in common package repos
 # install a `yq`, and their query syntaxes are incompatible -- one is a Go implementation, the
 # other a Python wrapper around jq. A machine with the wrong one would not error in an obvious
 # way; it would fail to parse and look like an empty record. So the version probe below checks the

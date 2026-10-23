@@ -536,7 +536,7 @@ EOF
   fi
 
   say "$TARGET ready (default branch: $default)"
-  # ABSOLUTISE before handing the path over. $TARGET may come from the caller relative, and a hook
+  # ABSOLUTIZE before handing the path over. $TARGET may come from the caller relative, and a hook
   # that receives a relative path resolves it against whatever directory it runs in, so it would
   # inspect the wrong tree and report confidently either way. `cd`+`pwd` rather than `realpath`,
   # which is not present on both userlands.
