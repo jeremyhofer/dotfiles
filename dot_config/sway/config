@@ -68,10 +68,9 @@ output eDP-1 {
 # components that rely on those vars. Requires sway to have been launched via `uwsm start sway`.
 exec uwsm finalize
 
-# Polkit authentication agent (parity with i3's lxqt-policykit-agent): provides GUI
-# auth prompts for privileged actions (mounts, nm, and notably non-root fprintd-enroll).
-# Wrapped in `uwsm app` so it's scoped as a proper systemd user unit under the session.
-exec uwsm app -- lxqt-policykit-agent
+# Polkit authentication agent (parity with i3's lxqt-policykit-agent): NOT started here. It runs
+# as the systemd user service lxqt-policykit-agent.service, started with graphical-session.target
+# and restarted on failure; that unit's header says why.
 
 # Idle + lock manager: hypridle locks the screen (hyprlock) after 30 min idle (matches
 # i3's `xset s 1800`) and before the system sleeps. Config: ~/.config/hypr/hypridle.conf,
@@ -338,7 +337,7 @@ hide_edge_borders both
 # (Dynamic bottom-right positioning is a backlog idea — see notes ideas-from-notes.md.)
 for_window [title="^Picture in picture$"] floating enable, sticky enable, resize set 832 px 468 px
 
-# Float and focus every polkit agent dialog (lxqt-policykit-agent, started above): the password
+# Float and focus every polkit agent dialog (lxqt-policykit-agent, run as a user service): the password
 # prompt and the fingerprint info and error boxes. They have no parent window, so sway tiles them
 # by default, and a tiled dialog sits under any floating window. An app that opens its own
 # floating dialog and then asks polkit (a password manager's quick unlock does) left the prompt

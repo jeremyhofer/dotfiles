@@ -1,0 +1,20 @@
+# The polkit authentication agent for the sway session: it shows the prompts for privileged
+# actions (systemctl, resolvectl, mounts, a password manager's quick unlock, fprintd-enroll).
+# A service rather than a one-off `exec` from the sway config so that a crash costs one retry:
+# lxqt-policykit 2.4.0 intermittently segfaults as an authentication completes, and with no agent
+# left every later polkit request fails with "no authentication agent" until something restarts
+# it. Started with graphical-session.target, which uwsm reaches after `uwsm finalize` has
+# exported WAYLAND_DISPLAY. The i3 session (no uwsm) keeps its own `exec` in the i3 config.
+[Unit]
+Description=Polkit authentication agent (lxqt-policykit-agent)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/lxqt-policykit-agent
+Restart=on-failure
+RestartSec=1
+Slice=session.slice
+
+[Install]
+WantedBy=graphical-session.target
