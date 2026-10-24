@@ -155,7 +155,8 @@ DEFAULT_ALLOW = ["cancelled", "cancelling"]
 
 SCRIPT = "us-spelling-lint"
 HINT = ("hint: to accept a name in use, add `allow: <word>` to .us-spelling-lint, or end the "
-        "line with a `# codespell:ignore <word>` comment.")
+        "line with a `# codespell:ignore <word>` comment (`<!-- codespell:ignore <word> -->` "
+        "in markdown).")
 MARKDOWN = (".md", ".markdown")
 KEYS = ("exclude", "include", "allow")
 

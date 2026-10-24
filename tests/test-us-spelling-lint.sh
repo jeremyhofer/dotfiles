@@ -74,6 +74,8 @@ case "$out" in *"a.md:1:"*) bad "a pre-existing colour on an unchanged line is n
   *) ok "a pre-existing colour on an unchanged line is not reported" ;; esac
 case "$out" in *"allow:"*"codespell:ignore"*) ok "the hint names both ways to allow a name" ;;
   *) bad "the hint names both ways to allow a name ($out)" ;; esac
+case "$out" in *"<!-- codespell:ignore"*) ok "the hint gives the markdown comment form" ;;
+  *) bad "the hint gives the markdown comment form ($out)" ;; esac
 
 printf 'An old colour stays.\nDo it whilst waiting; amongst friends; travelling.\n' > "$r/a.md"; git -C "$r" add -A
 run "$r"
