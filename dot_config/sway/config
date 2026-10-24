@@ -338,13 +338,13 @@ hide_edge_borders both
 # (Dynamic bottom-right positioning is a backlog idea — see notes ideas-from-notes.md.)
 for_window [title="^Picture in picture$"] floating enable, sticky enable, resize set 832 px 468 px
 
-# Float and focus the polkit password dialog (lxqt-policykit-agent, started above). It has no
-# parent window, so sway tiles it by default, and a tiled dialog sits under any floating window.
-# An app that opens its own floating dialog and then asks polkit (a password manager's quick
-# unlock does) left the prompt underneath it, where it was dismissed rather than answered. Matched on the
-# app_id Qt derives from the executable name and, in case that differs, on the dialog's title.
+# Float and focus every polkit agent dialog (lxqt-policykit-agent, started above): the password
+# prompt and the fingerprint info and error boxes. They have no parent window, so sway tiles them
+# by default, and a tiled dialog sits under any floating window. An app that opens its own
+# floating dialog and then asks polkit (a password manager's quick unlock does) left the prompt
+# underneath it, where it was dismissed rather than answered. The app_id is the only stable
+# match: the dialogs map with no title and are titled per message afterwards.
 for_window [app_id="^lxqt-policykit-agent$"] floating enable, focus
-for_window [title="^Authentication Required$"] floating enable, focus
 
 include /etc/sway/config.d/*
 # User drop-ins, loaded last so they can override the above (e.g. the overlay's wallpaper).
