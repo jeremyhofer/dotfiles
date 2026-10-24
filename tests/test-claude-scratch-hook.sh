@@ -56,7 +56,11 @@ start_payload() { jq -cn --arg id "$1" '{agent_id: $id, agent_type: "t", session
 substop_payload() { jq -cn --arg id "$1" --argjson active "$2" '{agent_id: $id, stop_hook_active: $active, session_id: "s", cwd: "/x", hook_event_name: "SubagentStop"}'; }
 stop_payload() { jq -cn --argjson active "$1" '{stop_hook_active: $active, session_id: "s", cwd: "/x", hook_event_name: "Stop"}'; }
 
-runhook() { printf '%s' "$3" | "$1" "$2"; }  # <hook-path> <subcommand> <payload-json>
+# printf's own stderr is discarded: the hook exits before reading stdin on its no-root paths, and
+# when the caller ignores SIGPIPE (git's hook runner can), printf then reports "write error: Broken
+# pipe", which the cases that assert "no output" would read as the hook's. A race, so it failed
+# only sometimes.
+runhook() { printf '%s' "$3" 2>/dev/null | "$1" "$2"; }  # <hook-path> <subcommand> <payload-json>
 
 bigfile() { dd if=/dev/zero of="$1" bs=1M count="${2:-2}" 2>/dev/null; }     # over the 1 MB threshold
 smallfile() { dd if=/dev/zero of="$1" bs=1k count="${2:-100}" 2>/dev/null; } # under it
