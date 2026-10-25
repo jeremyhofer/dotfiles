@@ -310,6 +310,7 @@ case "${1:-}" in
           worktrunk) ;;
           container) ;;
           claudeTrust) ;;
+          claudeLocalSettings) ;;   # read by claude-project-settings
           leak*|canonical*|container*|claude*|Claude*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac

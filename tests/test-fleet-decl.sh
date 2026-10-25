@@ -453,7 +453,7 @@ for good in '    container:
       branches: default' '    container:
       branches: [main, develop, release/1.0]
       filter: blob:none' '    container:
-      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true'; do
+      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true' '    claudeLocalSettings: claude/projects/alpha.json'; do
   out=$(cont_check "$good"); rc=$?
   [ "$rc" -eq 0 ] && ok "--check accepts a container block: $(printf '%s' "$good" | tr -s ' \n' ' ')" || bad "--check container valid" "rc=$rc $out :: $good"
 done
@@ -484,6 +484,8 @@ a near-miss of containerDefaults|    scope2: x|containerDefault:\n  branches: de
 a lower-case claudeTrust|    claudetrust: false|-|[unknown-key] alpha: claudetrust
 a snake-case claudeTrust|    claude_trust: false|-|[unknown-key] alpha: claude_trust
 a capitalized claudeTrust|    ClaudeTrust: false|-|[unknown-key] alpha: ClaudeTrust
+a lower-case claudeLocalSettings|    claudelocalsettings: x.json|-|[unknown-key] alpha: claudelocalsettings
+a near-miss of claudeLocalSettings|    claudeLocalSetting: x.json|-|[unknown-key] alpha: claudeLocalSetting
 a quoted claudeTrust false|    claudeTrust: "false"|-|[claudeTrust-value] alpha: claudeTrust
 claudeTrust: no, a string in YAML 1.2|    claudeTrust: no|-|[claudeTrust-value] alpha: claudeTrust
 CASES
