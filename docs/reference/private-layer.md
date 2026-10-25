@@ -87,6 +87,17 @@ needs different.
 domain's signatures. The commit hooks, and how to switch any of them off from this file, are in
 [`architecture.md`](architecture.md#switching-a-hook-off).
 
+## tmux
+
+`~/.tmux.conf` reads `~/.dotlocal/tmux.conf`, if it exists, after its own settings and before TPM
+loads the plugins. A private value therefore overrides the base's, and that includes plugin options
+such as tmux-continuum's.
+
+```tmux
+# ~/.dotlocal/tmux.conf
+set -g @continuum-restore 'off'   # this domain builds its starting session itself
+```
+
 ## SSH
 
 `~/.ssh/config` starts with `Include ~/.dotlocal/ssh/config`. ssh takes the FIRST value it finds for
