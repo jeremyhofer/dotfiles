@@ -60,7 +60,9 @@ case "$1" in
   volume) exit 0 ;;
   machine)
     shift 2
-    if [ "$1" = cp ]; then case "$2" in *.pre-*) echo up > "$FX/health" ;; esac; fi
+    if [ "$1" = cp ]; then case "$2" in *.pre-*)
+      [ -f "$FX/restore-fails" ] && exit 1
+      [ -f "$FX/stays-down" ] || echo up > "$FX/health" ;; esac; fi
     exit 0 ;;
 esac
 exit 0
@@ -86,6 +88,9 @@ scenario() {
   printf '%s@%s\n' "$IMG" "${RUNNING:-$D0}" > "$FX/running"
   echo "${EXISTS:-0}" > "$FX/exists"
   echo "${HEALTH:-up}" > "$FX/health"
+  rm -f "$FX/stays-down" "$FX/restore-fails"
+  [ -n "${STAYSDOWN:-}" ] && : > "$FX/stays-down"
+  [ -n "${RESTOREFAILS:-}" ] && : > "$FX/restore-fails"
   echo 0 > "$FX/install-rc"; echo 0 > "$FX/flaky-count"
   if [ "${INSTALL:-vm-copy}" = script ]; then
     install='{"kind": "script", "path": "install.sh"}'
@@ -147,7 +152,7 @@ PYEOF
     sed "s/^digest: .*/digest: $DX/; s/^migrates: .*/migrates: yes/" "$d/scans/widget-1.3.0-2026-10-27.txt" > "$d/scans/widget-1.2.9-2026-10-01.txt"
   fi
   if [ -n "${ROLLED:-}" ]; then mkdir -p "$w/state/image-bump"; echo "$ROLLED" > "$w/state/image-bump/svc.rolled-back"; fi
-  MIG=; INSTALL=; HEALTH=; RUNNING=; EXISTS=; ROLLED=; NORECORD=; FLAKY=
+  MIG=; INSTALL=; HEALTH=; RUNNING=; EXISTS=; ROLLED=; NORECORD=; FLAKY=; STAYSDOWN=; RESTOREFAILS=
 }
 go() { "$PY" "$BIN" deploy svc --root "$w/root" "$@" >"$w/out" 2>"$w/err"; echo $? >"$w/rc"; }
 KEPT="$VMU.pre-1.3.0"
@@ -217,6 +222,15 @@ grep -qF "the checks pass again" "$w/out" && ok "the restored service's result i
 grep -qx "$DA" "$RB" 2>/dev/null && ok "the applied digest is listed as rolled back" || no "rolled-back list: $(cat "$RB" 2>&1)"
 go --wait 0
 expect "a second deploy of that digest refuses" 4 "was rolled back before"
+
+# ---------- a rollback that does not bring the service back: stop, never "rolled back" ----------
+HEALTH=down STAYSDOWN=1 scenario
+go --wait 0
+expect "rolled back but still failing: exit 6, not 5" 6 "NOT RECOVERED"
+grep -qx "$DA" "$RB" 2>/dev/null && ok "the digest is still listed, so nothing retries it" || no "not listed"
+HEALTH=down RESTOREFAILS=1 scenario
+go --wait 0
+expect "the restore command itself fails: exit 6" 6 "ROLLBACK FAILED"
 
 # ---------- a migrating version that fails ----------
 MIG=yes HEALTH=down scenario

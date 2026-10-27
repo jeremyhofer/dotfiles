@@ -112,8 +112,9 @@ and must name the descriptor's image.
 
 EXIT STATUSES
 =============
-  0  pass, or up to date          5  rolled back; revert the pin
-  2  usage or environment error   6  failed on a migrating version; stopped for a person
+  0  pass, or up to date          5  rolled back and up again; revert the pin
+  2  usage or environment error   6  failed and not recovered (a migrating version, or a
+                                    rollback that did not bring it back); stopped for a person
   3  exception the gate allows   7  a newer release exists (`latest`)
      only with the operator's
      approval
@@ -139,7 +140,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-OK, USAGE, APPROVAL, REFUSED, ROLLED_BACK, MIGRATING, NEWER = 0, 2, 3, 4, 5, 6, 7
+OK, USAGE, APPROVAL, REFUSED, ROLLED_BACK, STOPPED, NEWER = 0, 2, 3, 4, 5, 6, 7
 
 RELEASE_LINES = ("patch-of-pinned-major", "github-latest-stable")
 RELEASE_HOSTS = ("codeberg", "github")
@@ -737,7 +738,8 @@ def deploy_service(args, desc, directory):
     if migrates:  # guard: migrating-no-restore
         print("not restoring anything: the version migrates, and restoring is a person's call")
         print("the volume export is %s; the previous unit is %s" % (export, kept))
-        return MIGRATING
+        return STOPPED
+    back = False
     try:
         vm("cp", kept, vm_unit)
         vm("systemctl", "--user", "daemon-reload")
@@ -748,6 +750,11 @@ def deploy_service(args, desc, directory):
         print("ROLLBACK FAILED: %s" % exc)
     record_rolled_back(args.service, applied)
     print("%s is listed as rolled back; the pin must be reverted by a commit" % applied)
+    if not back:  # guard: not-recovered
+        # Exit 5 tells the caller the service is up on the previous version; here it is not.
+        print("NOT RECOVERED: the service is not passing its checks on the previous unit (%s); "
+              "stopped for a person" % kept)
+        return STOPPED
     return ROLLED_BACK
 
 
