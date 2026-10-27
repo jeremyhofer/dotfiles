@@ -20,10 +20,29 @@ VERBS
   image-bump check    <service> <version> [--no-write] [--root DIR]
                                            resolve, scan, decide; writes a scan record
   image-bump deploy   <service> [--root DIR]   install the checked pin, run the checks, roll back
-  image-bump latest   <service> [--root DIR]   is a newer release out than the pin
+  image-bump latest   <service> [--root DIR] [--pin VERSION]
+                                           is a newer release out than the pin
   image-bump validate <service> [--root DIR]   load the descriptor and refuse a malformed one
 
-`latest` is not implemented yet and exits 2.
+LATEST
+======
+`latest` asks the release host (`release_api.host`: Codeberg or GitHub) whether a release newer
+than the pinned version exists; it never reads the registry. The current version is the pin
+file's tag with `tag_suffix` and a leading "v" removed, or --pin VERSION when given (so a live
+run can pretend the pin is older and see an alert; nothing is ever written). Versions compare as
+tuples of integers. A tag that does not map back through `git_tag` to a purely numeric dotted
+version (`v15.0.12-rc1`, `nightly`) is skipped, never compared.
+
+  patch-of-pinned-major  GET <api>/repos/<repo>/releases (limit=50 on Codeberg, per_page=50 on
+                         GitHub); drops drafts and pre-releases; the answer is the newest
+                         release with the pinned major and a greater version.
+  github-latest-stable   GET <api>/repos/<repo>/releases/latest (the host leaves pre-releases
+                         out); the answer is its tag when newer than the pin, any major.
+
+It prints `newer <service> <current> -> <newest> (<git tag>)` and exits 7, or
+`up to date <service> <current>` and exits 0. A transport failure, an HTTP error, a body that
+is not JSON or not the expected shape, or a tag it cannot read is exit 2 with a one-line reason:
+failing to read is never "up to date".
 
 DEPLOY
 ======
@@ -578,6 +597,101 @@ def check_service(args, desc, directory):
     return OK
 
 
+def get_json(url):
+    """GET `url` and parse the body as JSON. A transport failure, an HTTP error status or a body
+    that is not JSON is an EnvError: failing to read is never an answer."""
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+    except (OSError, ValueError) as exc:
+        raise EnvError("reading %s: %s" % (url, exc))
+    return parse_json(body, url)
+
+
+VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
+
+
+def numeric_version(text):
+    """(1, 2, 3) for "1.2.3"; None for anything that is not purely numeric and dotted."""
+    if not isinstance(text, str) or not VERSION_RE.match(text):
+        return None
+    return tuple(int(n) for n in text.split("."))
+
+
+def version_of_git_tag(template, tag):
+    """The numeric version tuple a git tag stands for under the descriptor's `git_tag` template
+    (e.g. "v{version}"), or None when the tag does not fit the template or is not numeric."""
+    head, _, tail = template.partition("{version}")
+    if not isinstance(tag, str) or len(tag) < len(head) + len(tail):
+        return None
+    if not tag.startswith(head) or (tail and not tag.endswith(tail)):
+        return None
+    middle = tag[len(head):len(tag) - len(tail)]
+    return numeric_version(middle)
+
+
+def dotted(version):
+    return ".".join(str(n) for n in version)
+
+
+def latest_service(args, desc, directory):
+    pin_path = resolve_path(desc.pin_file, directory)
+    try:
+        _image, cur_tag, _digest = read_pin(pin_path)
+    except ValueError as exc:
+        raise EnvError(str(exc))
+    text = args.pin if args.pin is not None else version_from_tag(
+        cur_tag, getattr(desc, "tag_suffix", ""))
+    current = numeric_version(text)
+    if current is None:
+        raise EnvError("the %s version %r is not a numeric dotted version"
+                       % ("--pin" if args.pin is not None else "pinned", text))
+    host = desc.release_api["host"]
+    env, default = RELEASE_APIS[host]
+    base = (os.environ.get(env) or default).rstrip("/")
+    repo = desc.release_api["repo"]
+    template = desc.git_tag
+    newest = None
+    if desc.release_line == "github-latest-stable":
+        url = "%s/repos/%s/releases/latest" % (base, repo)
+        doc = get_json(url)
+        if not isinstance(doc, dict):
+            raise EnvError("%s: not a release object" % url)
+        found = version_of_git_tag(template, doc.get("tag_name"))
+        if found is None:
+            raise EnvError("%s: tag %r is not a numeric version under %r"
+                           % (url, doc.get("tag_name"), template))
+        if found > current:
+            newest = found
+    else:
+        query = "limit=50" if host == "codeberg" else "per_page=50"
+        url = "%s/repos/%s/releases?%s" % (base, repo, query)
+        doc = get_json(url)
+        if not isinstance(doc, list):
+            raise EnvError("%s: not a list of releases" % url)
+        for rel in doc:
+            if not isinstance(rel, dict):
+                raise EnvError("%s: a release is not an object" % url)
+            if rel.get("draft") or rel.get("prerelease"):
+                continue
+            found = version_of_git_tag(template, rel.get("tag_name"))
+            if found is None or found[0] != current[0] or found <= current:
+                continue
+            if newest is None or found > newest:
+                newest = found
+    shown = dotted(current)
+    if newest is None:
+        print("up to date %s %s" % (args.service, shown))
+        return OK
+    print("newer %s %s -> %s (%s)" % (args.service, shown, dotted(newest),
+                                      git_tag_for(template, dotted(newest))))
+    return NEWER
+
+
+def cmd_latest(args):
+    return with_descriptor(args, latest_service)
+
+
 def cmd_check(args):
     return with_descriptor(args, check_service)
 
@@ -781,26 +895,22 @@ def cmd_deploy(args):
     return with_descriptor(args, deploy_service)
 
 
-def make_stub(verb):
-    def stub(args):
-        sys.stderr.write("image-bump: %s: not implemented yet\n" % verb)
-        return USAGE
-    return stub
-
-
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="image-bump", description="Move a service's digest-pinned image to a newer release.")
     sub = parser.add_subparsers(dest="verb", metavar="{check,deploy,latest,validate}")
     sub.required = True
     for verb, func in (("check", cmd_check), ("deploy", cmd_deploy),
-                       ("latest", make_stub("latest")), ("validate", cmd_validate)):
+                       ("latest", cmd_latest), ("validate", cmd_validate)):
         p = sub.add_parser(verb)
         p.add_argument("service")
         if verb == "check":
             p.add_argument("version")
             p.add_argument("--no-write", action="store_true",
                            help="decide and report; write neither the record nor the pin")
+        if verb == "latest":
+            p.add_argument("--pin", default=None, metavar="VERSION",
+                           help="compare against this version instead of the pinned one")
         if verb == "deploy":
             p.add_argument("--wait", type=int, default=60,
                            help="seconds to retry the checks before declaring failure (default 60)")

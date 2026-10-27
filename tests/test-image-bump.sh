@@ -123,8 +123,9 @@ validate absent;       expect "no descriptor" 4 "no descriptor at"
 mkdir -p "$w/root/boom"; printf 'raise RuntimeError("boom")\n' > "$w/root/boom/image_bump.py"
 validate boom;         expect "descriptor raising at import" 2 "RuntimeError: boom"
 
-# ---------- the verb not built yet (`check` and `deploy` have their own suites) ----------
-run latest good --root "$w/root"; expect "latest is not implemented yet" 2 "not implemented yet"
+# ---------- `latest` has its own suite; here only that an unreachable host is status 2 ----------
+IMAGE_BUMP_GITHUB_API=http://127.0.0.1:1 IMAGE_BUMP_CODEBERG_API=http://127.0.0.1:1 \
+  run latest good --root "$w/root"; expect "latest on an unreachable host is an environment error" 2 "reading http://127.0.0.1:1"
 run bogus good;        expect "unknown verb is a usage error" 2
 
 # ---------- default roots come from the environment ----------
