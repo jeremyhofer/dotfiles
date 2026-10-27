@@ -50,7 +50,7 @@ platform = "linux/arm64"
 pin_file = "IMAGE"
 scan_dir = "scans"
 gate = {"kind": "fixable-count-floor"}
-migrations = {"kind": "forgejo-compare", "path": "models/migrations"}
+migrations = {"kind": "added-files", "path": "models/migrations"}
 volume = "widget-data"
 vm_unit = "/etc/containers/systemd/widget.container"
 install = {"kind": "vm-copy", "applied_unit": "/tmp/widget.container"}
@@ -77,7 +77,7 @@ validate nofield;      expect "missing field" 4 "volume: missing"
 mk badgate 's/fixable-count-floor/count-everything/'
 validate badgate;      expect "unknown gate kind" 4 "gate: unknown kind 'count-everything'"
 
-mk badmig 's/forgejo-compare/always-maybe/'
+mk badmig 's/added-files/always-maybe/'
 validate badmig;       expect "unknown migrations kind" 4 "migrations: unknown kind 'always-maybe'"
 
 mk badinst 's/vm-copy/teleport/'

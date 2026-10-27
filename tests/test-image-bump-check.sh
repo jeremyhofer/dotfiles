@@ -2,8 +2,10 @@
 # Test: `image-bump check` -- resolve, scan, gate, migrations, record, pin rewrite.
 #
 # Every external command is a stub first on PATH: `skopeo` and `trivy` log their argv to a file and
-# answer from fixture files keyed by their arguments; the compare API is a directory of files read
-# through file:// URLs. Nothing reaches the network. Services and registries are invented.
+# answer from fixture files keyed by their arguments; the release API is a tiny stdlib HTTP server
+# bound to 127.0.0.1 that serves files from a directory, mapping "<path>?ref=<tag>" to the file
+# "<path>@<tag>" (a file:// URL drops the query, so it cannot serve per-tag listings) and answering
+# 404 for a file that is absent. Only the loopback is used. Nothing reaches the network. Services and registries are invented.
 # Each case asserts the exit status, a specific message, and what the stubs were called with.
 #
 # Overrides: IMAGE_BUMP_BIN (the executable under test), PYTHON (the interpreter).
@@ -19,7 +21,32 @@ w=$(mktemp -d "$t/image-bump-check.XXXXXX") || exit 1
 trap 'rm -rf "${w:?}"' EXIT
 HOME="$w/home"; export HOME; mkdir -p "$HOME"
 unset IMAGE_BUMP_ROOT IMAGE_BUMP_SOURCE_ROOT IMAGE_BUMP_CODEBERG_API
-IMAGE_BUMP_GITHUB_API="file://$w/api"; export IMAGE_BUMP_GITHUB_API
+
+cat > "$w/api-server.py" <<'PYEOF'
+import http.server, os, sys, urllib.parse
+root = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        ref = urllib.parse.parse_qs(u.query).get("ref", [""])[0]
+        f = os.path.join(root, u.path.lstrip("/") + "@" + ref)
+        if not os.path.isfile(f):
+            self.send_response(404); self.end_headers(); return
+        body = open(f, "rb").read()
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(srv.server_address[1], flush=True)
+srv.serve_forever()
+PYEOF
+mkdir -p "$w/api"
+"$PY" "$w/api-server.py" "$w/api" > "$w/api-port" &
+api_pid=$!
+trap 'kill $api_pid 2>/dev/null; rm -rf "${w:?}"' EXIT
+i=0; while [ ! -s "$w/api-port" ] && [ $i -lt 50 ]; do i=$((i+1)); "$PY" -c 'import time; time.sleep(0.1)'; done
+[ -s "$w/api-port" ] || { echo "FAIL: the stub API server did not start"; exit 1; }
+IMAGE_BUMP_GITHUB_API="http://127.0.0.1:$(cat "$w/api-port")"; export IMAGE_BUMP_GITHUB_API
 
 fail=0
 ok() { printf '  ok    %s\n' "$1"; }
@@ -92,9 +119,9 @@ PYEOF
 # scenario: a fresh descriptor, pin file and fixtures. The variables NEW_ARCH, GATE and MIG tune
 # it for one call and are cleared at its end.
 scenario() {
-  rm -rf "${w:?}/root" "${FX:?}" "${w:?}/api"; : > "$STUB_LOG"
-  migv=${MIG:-'{"kind": "forgejo-compare", "path": "models/migrations"}'}
-  mkdir -p "$w/root/svc" "$FX/skopeo" "$FX/trivy" "$w/api/repos/acme/widget/compare"
+  rm -rf "${w:?}/root" "${FX:?}" "${w:?}/api"/*; : > "$STUB_LOG"
+  migv=${MIG:-'{"kind": "added-files", "path": "models/migrations"}'}
+  mkdir -p "$w/root/svc" "$FX/skopeo" "$FX/trivy" "$w/api/repos/acme/widget/contents/models/migrations"
   printf '%s:v1.2.3-rootless@%s\n' "$IMG" "$D0" > "$w/root/svc/IMAGE"
   cat > "$w/root/svc/image_bump.py" <<PYEOF
 image = "$IMG"
@@ -125,12 +152,20 @@ JEOF
     > "$FX/trivy-version.json"
   findings "$FX/trivy/$(key "$IMG@$DA").json"
   findings "$FX/trivy/$(key "$IMG@$D0").json" "CVE-1:libfoo:1.1" "CVE-2:libbar:" "CVE-3:libbaz:2.0"
-  printf '{"files": []}\n' > "$w/api/repos/acme/widget/compare/v1.2.3...v1.3.0"
+  listing v1.2.3 a.go b.go
+  listing v1.3.0 a.go b.go
   GATE=; NEW_ARCH=; MIG=
 }
 newfind() { findings "$FX/trivy/$(key "$IMG@$DA").json" "$@"; }
 curfind() { findings "$FX/trivy/$(key "$IMG@$D0").json" "$@"; }
-compare() { printf '%s\n' "$1" > "$w/api/repos/acme/widget/compare/v1.2.3...v1.3.0"; }
+# listing <git tag> <file name>...: the migrations directory's listing at a tag, as the contents API
+listing() {
+  tg=$1; shift
+  "$PY" - "$w/api/repos/acme/widget/contents/models/migrations@$tg" "$@" <<'PYEOF'
+import json, sys
+json.dump([{"name": n, "type": "file"} for n in sys.argv[2:]], open(sys.argv[1], "w"))
+PYEOF
+}
 go() { "$PY" "$BIN" check svc "$@" --root "$w/root" >"$w/out" 2>"$w/err"; echo $? >"$w/rc"; }
 pin() { cat "$w/root/svc/IMAGE"; }
 record() { ls "$w/root/svc/scans/widget-1.3.0-"*.txt 2>/dev/null | head -1; }
@@ -262,24 +297,33 @@ go 1.3.0
 expect "a subset of the current findings passes" 0
 
 # ---------- migrations ----------
-scenario
-compare '{"files": [{"filename": "models/migrations/v9_add.go", "status": "added"}]}'
+scenario; listing v1.3.0 a.go b.go v9_add.go
 go 1.3.0
-expect "an added file under the migrations path" 0 "migrates: yes"
+expect "a name only in the new listing" 0 "migrates: yes"
 grep -qx 'migrates: yes' "$(record)" && ok "record says migrates: yes" || no "record migrates"
 scenario
-compare '{"files": [{"filename": "models/other/v9_add.go", "status": "added"}, {"filename": "docs/models/migrations/x", "status": "added"}]}'
 go 1.3.0
-expect "near miss: added files only outside the path" 0 "migrates: no"
-scenario
-compare '{"files": [{"filename": "models/migrations/v1.go", "status": "modified"}, {"filename": "models/migrations/v0.go", "status": "removed"}]}'
+expect "near miss: identical listings" 0 "migrates: no"
+scenario; listing v1.3.0 a.go
 go 1.3.0
-expect "near miss: only modified or removed files under the path" 0 "migrates: no"
-scenario
-rm "$w/api/repos/acme/widget/compare/v1.2.3...v1.3.0"
+expect "near miss: a file only in the OLD listing" 0 "migrates: no"
+scenario; listing v1.3.0 a.go b.go sub
+"$PY" - "$w/api/repos/acme/widget/contents/models/migrations@v1.3.0" <<'PYEOF'
+import json, sys
+json.dump([{"name": "a.go", "type": "file"}, {"name": "b.go", "type": "file"}, {"name": "sub", "type": "dir"}], open(sys.argv[1], "w"))
+PYEOF
 go 1.3.0
-expect "an unreadable compare is an environment error" 2 "environment: compare"
+expect "near miss: a new directory is not a new file" 0 "migrates: no"
+scenario; rm "$w/api/repos/acme/widget/contents/models/migrations@v1.3.0"
+go 1.3.0
+expect "no listing at the new tag (a 404) is an environment error" 2 "environment: listing"
 [ "$(pin)" = "$OLDPIN" ] && ok "nothing written then" || no "pin changed"
+scenario; rm "$w/api/repos/acme/widget/contents/models/migrations@v1.2.3"
+go 1.3.0
+expect "no listing at the old tag is an environment error" 2 "environment: listing"
+scenario; echo '{"message": "Not Found"}' > "$w/api/repos/acme/widget/contents/models/migrations@v1.3.0"
+go 1.3.0
+expect "a non-list response is an environment error" 2 "not a list of files"
 MIG='{"kind": "always"}'; scenario
 go 1.3.0
 expect "migrations kind always" 0 "migrates: yes"

@@ -40,12 +40,13 @@ digest with trivy (the vulnerability database is fetched once, then both scans r
                        in the current pin's findings, fixed or not; otherwise refused (4).
 
 It then asks the descriptor's migration detector whether the version changes the data schema
-(`forgejo-compare`: files ADDED under the descriptor's path between the two git tags, read from
-the release host's compare API; `always`). Unless refused or run with --no-write it writes a
+(`added-files`: the directory listing of the descriptor's path at the old and at the new git tag,
+read from the release host's contents API; migrating when the new listing names a file the old
+lacks. An unreadable listing is an environment error, never "no migration"; `always`). Unless refused or run with --no-write it writes a
 scan record <scan_dir>/<image name>-<version>-<date>.txt (a title line, `key: value` header lines,
 a blank line, the findings tables; `deploy` reads `replaces`, `migrates` and `digest` from it
 through read_record) and rewrites the pin file. An existing record is never overwritten.
-The compare API bases are overridable with IMAGE_BUMP_CODEBERG_API and IMAGE_BUMP_GITHUB_API.
+The release API bases are overridable with IMAGE_BUMP_CODEBERG_API and IMAGE_BUMP_GITHUB_API.
 
 ROOTS
 =====
@@ -68,7 +69,7 @@ TOML reader is assumed), loaded by path. Every field below is required unless ma
                       directory, and "~" is expanded
   scan_dir      str   directory the scan records are written to (same path rules)
   gate          dict  {"kind": "fixable-count-floor" | "no-new-findings"}
-  migrations    dict  {"kind": "forgejo-compare", "path": "<repo path>"} or {"kind": "always"}
+  migrations    dict  {"kind": "added-files", "path": "<repo path>"} or {"kind": "always"}
   volume        str   the data volume a migration would touch
   vm_unit       str   the unit's path inside the VM
   install       dict  {"kind": "vm-copy", "applied_unit": "<path>"} or
@@ -116,7 +117,7 @@ OK, USAGE, APPROVAL, REFUSED, ROLLED_BACK, MIGRATING, NEWER = 0, 2, 3, 4, 5, 6, 
 RELEASE_LINES = ("patch-of-pinned-major", "github-latest-stable")
 RELEASE_HOSTS = ("codeberg", "github")
 GATE_KINDS = ("fixable-count-floor", "no-new-findings")
-MIGRATION_KINDS = ("forgejo-compare", "always")
+MIGRATION_KINDS = ("added-files", "always")
 INSTALL_KINDS = ("vm-copy", "script")
 
 # (field, what it is) for the plain string fields, validated by one loop.
@@ -125,7 +126,7 @@ REQUIRED = ("image", "release_line", "release_api", "git_tag", "platform", "pin_
             "scan_dir", "gate", "migrations", "volume", "vm_unit", "install", "checks",
             "checklist")
 
-COMPARE_APIS = {
+RELEASE_APIS = {
     "codeberg": ("IMAGE_BUMP_CODEBERG_API", "https://codeberg.org/api/v1"),
     "github": ("IMAGE_BUMP_GITHUB_API", "https://api.github.com"),
 }
@@ -258,7 +259,7 @@ def descriptor_problems(module, directory):
         problems += _kind_problems("gate", get("gate"), GATE_KINDS, {})
     if hasattr(module, "migrations"):
         problems += _kind_problems("migrations", get("migrations"), MIGRATION_KINDS,
-                                   {"forgejo-compare": "path"})
+                                   {"added-files": "path"})
     if hasattr(module, "install"):
         problems += _kind_problems("install", get("install"), INSTALL_KINDS,
                                    {"vm-copy": "applied_unit", "script": "path"})
@@ -420,26 +421,35 @@ def apply_gate(kind, new, cur):
     raise EnvError("unknown gate kind %r" % kind)
 
 
-def detect_migration(desc, old_version, new_version):
-    kind = desc.migrations["kind"]
-    if kind == "always":
-        return True
-    env, default = COMPARE_APIS[desc.release_api["host"]]
-    base = (os.environ.get(env) or default).rstrip("/")
-    old_tag = urllib.parse.quote(git_tag_for(desc.git_tag, old_version), safe="")
-    new_tag = urllib.parse.quote(git_tag_for(desc.git_tag, new_version), safe="")
-    url = "%s/repos/%s/compare/%s...%s" % (base, desc.release_api["repo"], old_tag, new_tag)
+def fetch_listing(base, repo, path, ref):
+    """The names of the files in directory `path` of `repo` at git tag `ref`, from the release
+    host's contents API: GET <base>/repos/<repo>/contents/<path>?ref=<ref>, a JSON list of
+    objects with `name` and `type`. Anything else (a transport failure, a 404, a response that
+    is not a list) is an EnvError: an unreadable listing is never read as "no migration"."""
+    url = "%s/repos/%s/contents/%s?ref=%s" % (
+        base, repo, urllib.parse.quote(path.strip("/")), urllib.parse.quote(ref, safe=""))
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             body = resp.read().decode("utf-8")
     except (OSError, ValueError) as exc:
-        raise EnvError("compare %s: %s" % (url, exc))
-    files = parse_json(body, "compare response").get("files")
-    if not isinstance(files, list):
-        raise EnvError("compare response has no 'files' list")
-    prefix = desc.migrations["path"].strip("/") + "/"
-    return any(f.get("status") == "added" and (f.get("filename") or "").startswith(prefix)
-               for f in files)
+        raise EnvError("listing %s: %s" % (url, exc))
+    doc = parse_json(body, "listing %s" % url)
+    if not isinstance(doc, list):
+        raise EnvError("listing %s: not a list of files" % url)
+    return set(e.get("name") for e in doc
+               if isinstance(e, dict) and e.get("type") == "file" and e.get("name"))
+
+
+def detect_migration(desc, old_version, new_version):
+    kind = desc.migrations["kind"]
+    if kind == "always":
+        return True
+    env, default = RELEASE_APIS[desc.release_api["host"]]
+    base = (os.environ.get(env) or default).rstrip("/")
+    repo, path = desc.release_api["repo"], desc.migrations["path"]
+    old = fetch_listing(base, repo, path, git_tag_for(desc.git_tag, old_version))
+    new = fetch_listing(base, repo, path, git_tag_for(desc.git_tag, new_version))
+    return bool(new - old)
 
 
 def table(findings):
