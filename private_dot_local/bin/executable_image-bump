@@ -17,12 +17,35 @@ service selects among them and supplies the values.
 
 VERBS
 =====
-  image-bump check    <service> [--root DIR]   resolve, scan, decide; writes a scan record
+  image-bump check    <service> <version> [--no-write] [--root DIR]
+                                           resolve, scan, decide; writes a scan record
   image-bump deploy   <service> [--root DIR]   install the checked pin, run the checks, roll back
   image-bump latest   <service> [--root DIR]   is a newer release out than the pin
   image-bump validate <service> [--root DIR]   load the descriptor and refuse a malformed one
 
-`check`, `deploy` and `latest` are not implemented in this frame yet and exit 2.
+`deploy` and `latest` are not implemented yet and exit 2.
+
+CHECK
+=====
+`check` turns <version> into a tag (the pinned tag with its version part replaced), resolves it
+with `skopeo inspect --raw` to the manifest digest of the descriptor's platform (refusing an
+image whose configuration is for another platform), then scans that digest and the current pin's
+digest with trivy (the vulnerability database is fetched once, then both scans run with
+--skip-db-update so both see the same database). The descriptor's gate rule decides:
+
+  fixable-count-floor  no fixable HIGH/CRITICAL finding: pass; fewer than the current pin
+                       carries: exception (3); otherwise refused (4). Unfixed findings are
+                       recorded, not counted.
+  no-new-findings      pass when every (vulnerability id, package) of the new image is already
+                       in the current pin's findings, fixed or not; otherwise refused (4).
+
+It then asks the descriptor's migration detector whether the version changes the data schema
+(`forgejo-compare`: files ADDED under the descriptor's path between the two git tags, read from
+the release host's compare API; `always`). Unless refused or run with --no-write it writes a
+scan record <scan_dir>/<image name>-<version>-<date>.txt (a title line, `key: value` header lines,
+a blank line, the findings tables; `deploy` reads `replaces`, `migrates` and `digest` from it
+through read_record) and rewrites the pin file. An existing record is never overwritten.
+The compare API bases are overridable with IMAGE_BUMP_CODEBERG_API and IMAGE_BUMP_GITHUB_API.
 
 ROOTS
 =====
@@ -75,10 +98,18 @@ Targets Python 3.9, standard library only.
 """
 
 import argparse
+import datetime
+import hashlib
 import importlib.util
+import json
 import os
 import re
+import socket
+import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 OK, USAGE, APPROVAL, REFUSED, ROLLED_BACK, MIGRATING, NEWER = 0, 2, 3, 4, 5, 6, 7
 
@@ -94,10 +125,20 @@ REQUIRED = ("image", "release_line", "release_api", "git_tag", "platform", "pin_
             "scan_dir", "gate", "migrations", "volume", "vm_unit", "install", "checks",
             "checklist")
 
+COMPARE_APIS = {
+    "codeberg": ("IMAGE_BUMP_CODEBERG_API", "https://codeberg.org/api/v1"),
+    "github": ("IMAGE_BUMP_GITHUB_API", "https://api.github.com"),
+}
+SEVERITIES = "HIGH,CRITICAL"
+
 PLATFORM_RE = re.compile(r"^[a-z0-9_]+/[a-z0-9_]+$")
 PIN_RE = re.compile(
     r"^(?P<image>[^\s@]+):(?P<tag>[A-Za-z0-9_][A-Za-z0-9._-]{0,127})"
     r"@sha256:(?P<digest>[0-9a-f]{64})$")
+
+
+class EnvError(Exception):
+    """The environment, not the request, is at fault: a command missing or failing, bad JSON."""
 
 
 class DescriptorError(Exception):
@@ -275,6 +316,248 @@ def cmd_validate(args):
     return OK
 
 
+# ---------------------------------------------------------------- check
+
+def run_cmd(argv):
+    """Run an external command; return its stdout as BYTES (a manifest digest is the hash of
+    the exact bytes, so no newline translation). Any failure is an EnvError."""
+    try:
+        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise EnvError("cannot run %s: %s" % (argv[0], exc.strerror))
+    if proc.returncode != 0:
+        raise EnvError("%s failed (status %d): %s"
+                       % (" ".join(argv[:3]), proc.returncode, proc.stderr.decode('utf-8', 'replace').strip()[:300]))
+    return proc.stdout
+
+
+def parse_json(text, what):
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise EnvError("%s: unreadable JSON (%s)" % (what, exc))
+
+
+def resolve_digest(image, tag, platform):
+    """The manifest digest of `platform` for image:tag; raises DescriptorError-like Refusal."""
+    want_os, want_arch = platform.split("/", 1)
+    raw = run_cmd(["skopeo", "inspect", "--raw", "docker://%s:%s" % (image, tag)])
+    doc = parse_json(raw, "skopeo inspect --raw")
+    if not isinstance(doc, dict):
+        raise EnvError("skopeo inspect --raw: not a JSON object")
+    if "manifests" in doc:
+        for entry in doc["manifests"]:
+            plat = entry.get("platform") or {}
+            if plat.get("os") == want_os and plat.get("architecture") == want_arch:
+                return entry["digest"]
+        raise Refusal("%s:%s is an index with no %s entry" % (image, tag, platform))
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def verify_platform(image, digest, platform):
+    """Refuse when the image configuration behind `digest` is not for `platform`."""
+    want_os, want_arch = platform.split("/", 1)
+    conf = parse_json(run_cmd(["skopeo", "inspect", "--config",
+                               "docker://%s@%s" % (image, digest)]), "skopeo inspect --config")
+    got = "%s/%s" % (conf.get("os"), conf.get("architecture"))
+    if got != platform:
+        raise Refusal("%s@%s is built for %s, the descriptor says %s"
+                      % (image, digest, got, platform))
+
+
+class Refusal(Exception):
+    """The request is refused (status 4); the message says why."""
+
+
+def trivy_database():
+    """Fetch the vulnerability database once; return (trivy version, database timestamp)."""
+    run_cmd(["trivy", "image", "--download-db-only"])
+    info = parse_json(run_cmd(["trivy", "version", "--format", "json"]), "trivy version")
+    db = (info.get("VulnerabilityDB") or {}).get("UpdatedAt")
+    if not db:
+        raise EnvError("trivy version: no VulnerabilityDB.UpdatedAt")
+    return info.get("Version", "unknown"), db
+
+
+def scan(image, digest, platform):
+    """Scan image@digest; return findings as dicts, de-duplicated, sorted."""
+    out = run_cmd(["trivy", "image", "--skip-db-update", "--scanners", "vuln",
+                   "--image-src", "remote", "--platform", platform,
+                   "--severity", SEVERITIES, "--format", "json", "%s@%s" % (image, digest)])
+    doc = parse_json(out, "trivy image")
+    seen, found = set(), []
+    for result in doc.get("Results") or []:
+        for v in result.get("Vulnerabilities") or []:
+            f = {"id": v.get("VulnerabilityID", ""), "pkg": v.get("PkgName", ""),
+                 "installed": v.get("InstalledVersion", ""), "fixed": v.get("FixedVersion", ""),
+                 "severity": v.get("Severity", "")}
+            key = (f["id"], f["pkg"], f["installed"])
+            if key not in seen:
+                seen.add(key)
+                found.append(f)
+    return sorted(found, key=lambda f: (f["id"], f["pkg"], f["installed"]))
+
+
+def fixable(findings):
+    return [f for f in findings if f["fixed"]]
+
+
+def apply_gate(kind, new, cur):
+    """Return (verdict, message): verdict is 'pass', 'exception' or 'refused'."""
+    if kind == "fixable-count-floor":
+        n, c = len(fixable(new)), len(fixable(cur))
+        if n == 0:
+            return "pass", "no fixable finding (current pin: %d)" % c
+        if n < c:
+            return "exception", ("%d fixable findings, fewer than the current pin's %d" % (n, c))
+        return "refused", ("%d fixable findings, not fewer than the current pin's %d" % (n, c))
+    if kind == "no-new-findings":
+        old = set((f["id"], f["pkg"]) for f in cur)
+        added = sorted(set((f["id"], f["pkg"]) for f in new) - old)
+        if not added:
+            return "pass", "no finding the current pin lacks"
+        return "refused", "new findings: " + ", ".join("%s (%s)" % a for a in added)
+    raise EnvError("unknown gate kind %r" % kind)
+
+
+def detect_migration(desc, old_version, new_version):
+    kind = desc.migrations["kind"]
+    if kind == "always":
+        return True
+    env, default = COMPARE_APIS[desc.release_api["host"]]
+    base = (os.environ.get(env) or default).rstrip("/")
+    old_tag = urllib.parse.quote(git_tag_for(desc.git_tag, old_version), safe="")
+    new_tag = urllib.parse.quote(git_tag_for(desc.git_tag, new_version), safe="")
+    url = "%s/repos/%s/compare/%s...%s" % (base, desc.release_api["repo"], old_tag, new_tag)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+    except (OSError, ValueError) as exc:
+        raise EnvError("compare %s: %s" % (url, exc))
+    files = parse_json(body, "compare response").get("files")
+    if not isinstance(files, list):
+        raise EnvError("compare response has no 'files' list")
+    prefix = desc.migrations["path"].strip("/") + "/"
+    return any(f.get("status") == "added" and (f.get("filename") or "").startswith(prefix)
+               for f in files)
+
+
+def table(findings):
+    rows = [("VULNERABILITY", "PACKAGE", "INSTALLED", "FIXED", "SEVERITY")]
+    rows += [(f["id"], f["pkg"], f["installed"], f["fixed"] or "-", f["severity"])
+             for f in findings]
+    widths = [max(len(r[i]) for r in rows) for i in range(5)]
+    return "\n".join("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows)
+
+
+def render_record(name, header, new, cur):
+    lines = ["%s image CVE scan record" % name]
+    lines += ["%s: %s" % kv for kv in header]
+    lines.append("")
+    for title, digest, fs in (("New image", header[1][1], new), ("Current pin", header[3][1], cur)):
+        lines.append("%s findings (%s): %d total, %d fixable" % (title, digest, len(fs),
+                                                                  len(fixable(fs))))
+        lines.append(table(fs))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def read_record(path):
+    """The header of a scan record as a dict: the `key: value` lines before the first blank."""
+    with open(path) as fh:
+        lines = fh.read().splitlines()
+    header = {}
+    for line in lines[1:]:
+        if not line.strip():
+            break
+        key, sep, value = line.partition(": ")
+        if sep:
+            header[key] = value
+    return header
+
+
+def check_service(args, desc, directory):
+    pin_path = resolve_path(desc.pin_file, directory)
+    image, cur_tag, cur_digest = read_pin(pin_path)
+    suffix = getattr(desc, "tag_suffix", "")
+    old_version = version_from_tag(cur_tag, suffix)
+    if not old_version or old_version not in cur_tag:
+        raise Refusal("cannot find version %r in the current tag %r" % (old_version, cur_tag))
+    new_tag = cur_tag.replace(old_version, args.version, 1)
+    platform = desc.platform
+
+    digest = resolve_digest(image, new_tag, platform)
+    verify_platform(image, digest, platform)
+    print("resolved %s:%s -> %s" % (image, new_tag, digest))
+    if digest == cur_digest:
+        if not args.no_write:
+            raise Refusal("%s:%s is already pinned (%s)" % (image, new_tag, digest))
+        print("note: already pinned; continuing because of --no-write")
+
+    scanner, database = trivy_database()
+    new = scan(image, digest, platform)
+    cur = scan(image, cur_digest, platform)
+    verdict, why = apply_gate(desc.gate["kind"], new, cur)
+    print("gate %s: %s: %s" % (desc.gate["kind"], verdict, why))
+    if verdict == "refused":
+        raise Refusal("gate %s: %s" % (desc.gate["kind"], why))
+
+    migrates = detect_migration(desc, old_version, args.version)
+    print("migrates: %s" % ("yes" if migrates else "no"))
+
+    name = image.rsplit("/", 1)[-1]
+    now = datetime.datetime.now().astimezone()
+    header = [("image", "%s:%s" % (image, new_tag)), ("digest", digest), ("platform", platform),
+              ("replaces", cur_digest), ("scanner", scanner), ("database", database),
+              ("scanned", "%s %s" % (now.isoformat(timespec="seconds"), socket.gethostname())),
+              ("gate", desc.gate["kind"]), ("verdict", verdict),
+              ("migrates", "yes" if migrates else "no")]
+    if args.no_write:
+        print("not written (--no-write)")
+    else:
+        scan_dir = resolve_path(desc.scan_dir, directory)
+        record = os.path.join(scan_dir, "%s-%s-%s.txt" % (name, args.version,
+                                                          now.strftime("%Y-%m-%d")))
+        if os.path.exists(record):
+            raise Refusal("scan record %s exists; records are never overwritten" % record)
+        os.makedirs(scan_dir, exist_ok=True)
+        with open(record, "w") as fh:
+            fh.write(render_record(name, header, new, cur))
+        tmp = pin_path + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write("%s:%s@%s\n" % (image, new_tag, digest))
+        os.replace(tmp, pin_path)
+        print("wrote %s and %s" % (record, pin_path))
+
+    for line in desc.checklist:
+        print("checklist: %s" % line)
+    if verdict == "exception":
+        print("APPROVAL: %s:%s carries %d fixable HIGH/CRITICAL findings (%d in all); the "
+              "current pin carries %d (%d in all). This needs the operator's explicit approval."
+              % (image, new_tag, len(fixable(new)), len(new), len(fixable(cur)), len(cur)))
+        return APPROVAL
+    return OK
+
+
+def cmd_check(args):
+    try:
+        desc, directory = load_descriptor(args.root, args.service)
+        problems = descriptor_problems(desc, directory)
+        if problems:
+            raise DescriptorError(problems)
+        return check_service(args, desc, directory)
+    except DescriptorError as exc:
+        for p in exc.problems:
+            sys.stderr.write("image-bump: %s: %s\n" % (args.service, p))
+        return REFUSED
+    except Refusal as exc:
+        sys.stderr.write("image-bump: refused: %s\n" % exc)
+        return REFUSED
+    except EnvError as exc:
+        sys.stderr.write("image-bump: environment: %s\n" % exc)
+        return USAGE
+
+
 def make_stub(verb):
     def stub(args):
         sys.stderr.write("image-bump: %s: not implemented yet\n" % verb)
@@ -287,10 +570,14 @@ def build_parser():
         prog="image-bump", description="Move a service's digest-pinned image to a newer release.")
     sub = parser.add_subparsers(dest="verb", metavar="{check,deploy,latest,validate}")
     sub.required = True
-    for verb, func in (("check", make_stub("check")), ("deploy", make_stub("deploy")),
+    for verb, func in (("check", cmd_check), ("deploy", make_stub("deploy")),
                        ("latest", make_stub("latest")), ("validate", cmd_validate)):
         p = sub.add_parser(verb)
         p.add_argument("service")
+        if verb == "check":
+            p.add_argument("version")
+            p.add_argument("--no-write", action="store_true",
+                           help="decide and report; write neither the record nor the pin")
         p.add_argument("--root", default=None,
                        help="directory holding the service directories (default: see --help of "
                             "the tool's header)")

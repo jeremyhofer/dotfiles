@@ -112,8 +112,8 @@ validate absent;       expect "no descriptor" 4 "no descriptor at"
 mkdir -p "$w/root/boom"; printf 'raise RuntimeError("boom")\n' > "$w/root/boom/image_bump.py"
 validate boom;         expect "descriptor raising at import" 2 "RuntimeError: boom"
 
-# ---------- the verbs not built yet ----------
-for verb in check deploy latest; do
+# ---------- the verbs not built yet (`check` has its own suite, test-image-bump-check.sh) ----------
+for verb in deploy latest; do
   run "$verb" good --root "$w/root"; expect "$verb is not implemented yet" 2 "not implemented yet"
 done
 run bogus good;        expect "unknown verb is a usage error" 2
