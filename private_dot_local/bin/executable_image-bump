@@ -23,7 +23,31 @@ VERBS
   image-bump latest   <service> [--root DIR]   is a newer release out than the pin
   image-bump validate <service> [--root DIR]   load the descriptor and refuse a malformed one
 
-`deploy` and `latest` are not implemented yet and exit 2.
+`latest` is not implemented yet and exits 2.
+
+DEPLOY
+======
+`deploy` runs on the container host, after the pin file has been applied there. It reads the
+applied pin and the scan record for that digest (the one in <scan_dir> whose `digest` header
+equals it), reads the running image's digest from the container (`podman inspect <container>
+--format {{.ImageName}}`), and refuses (4), each with its own message, unless:
+
+  - the applied digest differs from the running one (else: pin not applied or already running);
+  - the running digest is the record's `replaces`;
+  - `podman image exists <image>@<replaces>` succeeds, since the rollback needs that image;
+  - the applied digest is not listed in <state>/image-bump/<service>.rolled-back, where <state>
+    is XDG_STATE_HOME or ~/.local/state.
+
+Then, in order: when the record says `migrates: yes`, stop the service in the VM and export the
+volume to ~/<volume>-pre-<version>.tar; keep the VM's unit as <vm_unit>.pre-<version>; install
+(`vm-copy`: copy the applied unit into the VM and reload systemd; `script`: run the script, whose
+non-zero exit is a failed check); for `vm-copy` restart the service; run every descriptor check
+(a command, no shell; a pass is exit 0), retrying for up to --wait seconds (default 60).
+
+A failure with no migration restores the kept unit, reloads, restarts, re-runs the checks, lists
+the applied digest as rolled back and exits 5: the pin must then be reverted by a commit. A
+failure on a migrating version restores nothing and exits 6, naming the export. Success exits 0
+and prints the reminders.
 
 CHECK
 =====
@@ -71,6 +95,8 @@ TOML reader is assumed), loaded by path. Every field below is required unless ma
   gate          dict  {"kind": "fixable-count-floor" | "no-new-findings"}
   migrations    dict  {"kind": "added-files", "path": "<repo path>"} or {"kind": "always"}
   volume        str   the data volume a migration would touch
+  container     str   the container's name, whose running image `deploy` reads
+  service       str   the systemd user unit inside the VM that runs it, e.g. "widget.service"
   vm_unit       str   the unit's path inside the VM
   install       dict  {"kind": "vm-copy", "applied_unit": "<path>"} or
                       {"kind": "script", "path": "<path>"}
@@ -108,6 +134,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -121,10 +148,11 @@ MIGRATION_KINDS = ("added-files", "always")
 INSTALL_KINDS = ("vm-copy", "script")
 
 # (field, what it is) for the plain string fields, validated by one loop.
-STR_FIELDS = ("image", "git_tag", "platform", "pin_file", "scan_dir", "volume", "vm_unit")
+STR_FIELDS = ("image", "git_tag", "platform", "pin_file", "scan_dir", "volume", "vm_unit",
+              "container", "service")
 REQUIRED = ("image", "release_line", "release_api", "git_tag", "platform", "pin_file",
-            "scan_dir", "gate", "migrations", "volume", "vm_unit", "install", "checks",
-            "checklist")
+            "scan_dir", "gate", "migrations", "volume", "vm_unit", "container", "service", "install",
+            "checks", "checklist")
 
 RELEASE_APIS = {
     "codeberg": ("IMAGE_BUMP_CODEBERG_API", "https://codeberg.org/api/v1"),
@@ -550,12 +578,186 @@ def check_service(args, desc, directory):
 
 
 def cmd_check(args):
+    return with_descriptor(args, check_service)
+
+
+# ---------------------------------------------------------------- deploy
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "image-bump")
+
+
+def rolled_back_path(service):
+    return os.path.join(state_dir(), "%s.rolled-back" % service)
+
+
+def read_rolled_back(service):
+    try:
+        with open(rolled_back_path(service)) as fh:
+            return set(ln.strip() for ln in fh if ln.strip())
+    except FileNotFoundError:
+        return set()
+
+
+def record_rolled_back(service, digest):
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(rolled_back_path(service), "a") as fh:
+        fh.write(digest + "\n")
+
+
+def find_record(scan_dir, digest):
+    """The scan record whose `digest` header is `digest` (the newest by name), or None."""
+    try:
+        names = sorted(n for n in os.listdir(scan_dir) if n.endswith(".txt"))
+    except FileNotFoundError:
+        return None
+    for name in reversed(names):
+        path = os.path.join(scan_dir, name)
+        if read_record(path).get("digest") == digest:
+            return path
+    return None
+
+
+def podman(*args):
+    return run_cmd(["podman"] + list(args))
+
+
+def vm(*args):
+    """Run a command inside the podman VM."""
+    return podman("machine", "ssh", *args)
+
+
+def running_digest(container):
+    """The digest of the image the container runs, read as the hardening check does."""
+    ref = podman("inspect", container, "--format", "{{.ImageName}}").decode("utf-8").strip()
+    if "@sha256:" not in ref:
+        raise Refusal("container %s runs %r, which is not digest-pinned" % (container, ref))
+    return ref.rsplit("@", 1)[1]
+
+
+def image_exists(ref):
+    try:
+        return subprocess.run(["podman", "image", "exists", ref]).returncode == 0
+    except OSError as exc:
+        raise EnvError("cannot run podman: %s" % exc.strerror)
+
+
+def check_passes(check):
+    """Run one descriptor check (an argv list, no shell); a pass is exit 0."""
+    try:
+        proc = subprocess.run(check["command"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError as exc:
+        print("check %s: cannot run %s: %s" % (check["name"], check["command"][0], exc.strerror))
+        return False
+    if proc.returncode != 0:
+        tail = proc.stdout.decode("utf-8", "replace").strip()[-200:]
+        print("check %s: failed (status %d) %s" % (check["name"], proc.returncode, tail))
+        return False
+    return True
+
+
+def run_checks(checks, wait):
+    """True when every check passes, trying again once a second for up to `wait` seconds."""
+    deadline = time.monotonic() + wait
+    while True:
+        results = [check_passes(c) for c in checks]
+        if all(results):
+            print("checks passed: %s" % ", ".join(c["name"] for c in checks))
+            return True
+        if time.monotonic() >= deadline:  # guard: bounded-wait
+            return False
+        time.sleep(1)
+
+
+def deploy_service(args, desc, directory):
+    image, tag, applied = read_pin(resolve_path(desc.pin_file, directory))
+    version = version_from_tag(tag, getattr(desc, "tag_suffix", ""))
+    record = find_record(resolve_path(desc.scan_dir, directory), applied)
+    if record is None:  # guard: record-found
+        raise Refusal("no scan record for %s in %s: run `image-bump check` first"
+                      % (applied, resolve_path(desc.scan_dir, directory)))
+    header = read_record(record)
+    replaces, migrates = header.get("replaces", ""), header.get("migrates")
+    if not replaces or migrates not in ("yes", "no"):
+        raise Refusal("scan record %s lacks `replaces` or a yes/no `migrates`" % record)
+    migrates = migrates == "yes"
+
+    running = running_digest(desc.container)
+    if running == applied:  # guard: applied-differs
+        raise Refusal("pin not applied or already running: %s runs %s, the applied pin"
+                      % (desc.container, running))
+    if running != replaces:  # guard: running-is-replaces
+        raise Refusal("%s runs %s, but the scan record says this version replaces %s"
+                      % (desc.container, running, replaces))
+    if not image_exists("%s@%s" % (image, replaces)):  # guard: image-exists
+        raise Refusal("the running image %s@%s is not in the VM's storage, so a rollback would "
+                      "have nothing to restore" % (image, replaces))
+    if applied in read_rolled_back(args.service):  # guard: rolled-back
+        raise Refusal("%s was rolled back before; revert the pin instead (%s)"
+                      % (applied, rolled_back_path(args.service)))
+
+    vm_unit, kept = desc.vm_unit, "%s.pre-%s" % (desc.vm_unit, version)
+    export = os.path.expanduser("~/%s-pre-%s.tar" % (desc.volume, version))
+    try:
+        if migrates:  # step: export
+            vm("systemctl", "--user", "stop", desc.service)
+            podman("volume", "export", desc.volume, "-o", export)
+            print("exported %s to %s" % (desc.volume, export))
+        vm("cp", vm_unit, kept)  # step: keep
+        print("kept the unit as %s" % kept)
+    except EnvError as exc:
+        raise EnvError("%s (nothing was installed%s)" % (exc, "; the service may be stopped" if migrates else ""))
+
+    failed = None
+    try:
+        install = desc.install
+        if install["kind"] == "vm-copy":  # step: install
+            vm("cp", resolve_path(install["applied_unit"], directory), vm_unit)
+            vm("systemctl", "--user", "daemon-reload")
+            vm("systemctl", "--user", "restart", desc.service)
+        else:
+            sys.stdout.flush()
+            rc = subprocess.run([resolve_path(install["path"], directory)]).returncode
+            if rc != 0:
+                failed = "the install script exited %d" % rc
+    except (EnvError, OSError) as exc:
+        failed = str(exc)
+    if failed is None and not run_checks(desc.checks, args.wait):
+        failed = "a check failed"
+
+    if failed is None:
+        print("deployed %s:%s@%s; the unit before it is kept as %s" % (image, tag, applied, kept))
+        print("reminder: tell the other users of the service before and after any restart of it")
+        if migrates:
+            print("reminder: delete %s once the nightly backup has taken it" % export)
+        return OK
+
+    print("FAILED: %s" % failed)
+    if migrates:  # guard: migrating-no-restore
+        print("not restoring anything: the version migrates, and restoring is a person's call")
+        print("the volume export is %s; the previous unit is %s" % (export, kept))
+        return MIGRATING
+    try:
+        vm("cp", kept, vm_unit)
+        vm("systemctl", "--user", "daemon-reload")
+        vm("systemctl", "--user", "restart", desc.service)
+        back = run_checks(desc.checks, args.wait)
+        print("rolled back to %s; the checks %s" % (kept, "pass again" if back else "STILL FAIL"))
+    except EnvError as exc:
+        print("ROLLBACK FAILED: %s" % exc)
+    record_rolled_back(args.service, applied)
+    print("%s is listed as rolled back; the pin must be reverted by a commit" % applied)
+    return ROLLED_BACK
+
+
+def with_descriptor(args, work):
     try:
         desc, directory = load_descriptor(args.root, args.service)
         problems = descriptor_problems(desc, directory)
         if problems:
             raise DescriptorError(problems)
-        return check_service(args, desc, directory)
+        return work(args, desc, directory)
     except DescriptorError as exc:
         for p in exc.problems:
             sys.stderr.write("image-bump: %s: %s\n" % (args.service, p))
@@ -566,6 +768,10 @@ def cmd_check(args):
     except EnvError as exc:
         sys.stderr.write("image-bump: environment: %s\n" % exc)
         return USAGE
+
+
+def cmd_deploy(args):
+    return with_descriptor(args, deploy_service)
 
 
 def make_stub(verb):
@@ -580,7 +786,7 @@ def build_parser():
         prog="image-bump", description="Move a service's digest-pinned image to a newer release.")
     sub = parser.add_subparsers(dest="verb", metavar="{check,deploy,latest,validate}")
     sub.required = True
-    for verb, func in (("check", cmd_check), ("deploy", make_stub("deploy")),
+    for verb, func in (("check", cmd_check), ("deploy", cmd_deploy),
                        ("latest", make_stub("latest")), ("validate", cmd_validate)):
         p = sub.add_parser(verb)
         p.add_argument("service")
@@ -588,6 +794,9 @@ def build_parser():
             p.add_argument("version")
             p.add_argument("--no-write", action="store_true",
                            help="decide and report; write neither the record nor the pin")
+        if verb == "deploy":
+            p.add_argument("--wait", type=int, default=60,
+                           help="seconds to retry the checks before declaring failure (default 60)")
         p.add_argument("--root", default=None,
                        help="directory holding the service directories (default: see --help of "
                             "the tool's header)")

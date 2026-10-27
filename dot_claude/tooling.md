@@ -36,7 +36,7 @@ about; `--remove` deletes those no running session has mounted; a terminal tool,
 `~/.dotlocal/git-leak-*` files, outside the repos the fleet record allows it in; passes everything
 where the domain supplies none) · `run-repo-gates` (runs a manifest repo's tracked `.githooks/<event>`)
 · `git-staged-run` (runs a command against what is staged, unstaged edits set aside and put back; every commit gate runs through it) · `hook-doctor` (is the leak-guard live per worktree; `--path <dir>`) ·
-`image-bump` (moves a service's digest-pinned container image to a newer release behind a scan gate, from a per-service descriptor; `validate <service>` checks a descriptor, `check <service> <version>` resolves, scans and gates a candidate and writes the scan record and pin; `deploy` and `latest` are still being built) ·
+`image-bump` (moves a service's digest-pinned container image to a newer release behind a scan gate, from a per-service descriptor; `validate <service>` checks a descriptor, `check <service> <version>` resolves, scans and gates a candidate and writes the scan record and pin; `deploy <service>` runs on the container host: preconditions, optional volume export, the unit kept, install, checks, rollback on failure; `latest` is still being built) ·
 `git-snapshot` (capture uncommitted work before a destructive command) · `kb` (markdown KB with
 typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell spellings) · `register-lint` (a work register's entries against the contract its README states) ·
 `spell-capture` · `ui-shot` (headless render for visual review) ·

@@ -52,6 +52,8 @@ scan_dir = "scans"
 gate = {"kind": "fixable-count-floor"}
 migrations = {"kind": "added-files", "path": "models/migrations"}
 volume = "widget-data"
+container = "widget"
+service = "widget.service"
 vm_unit = "/etc/containers/systemd/widget.container"
 install = {"kind": "vm-copy", "applied_unit": "/tmp/widget.container"}
 checks = [{"name": "health", "command": ["curl", "-f", "http://localhost/health"], "pass": "exit 0"}]
@@ -92,6 +94,15 @@ validate badplat;      expect "platform not os/arch" 4 "platform: 'arm64' is not
 mk nearplat 's|linux/arm64|darwin/amd64|'
 validate nearplat;     expect "near miss: another os/arch passes" 0
 
+mk nocontainer '/^container = /d'
+validate nocontainer;  expect "missing container" 4 "container: missing"
+
+mk noservice '/^service = /d'
+validate noservice;    expect "missing service" 4 "service: missing"
+
+mk badservice 's|^service = .*|service = ""|'
+validate badservice;   expect "empty service" 4 "service: expected a non-empty str"
+
 mk badtype 's|^volume = .*|volume = 7|'
 validate badtype;      expect "wrong type" 4 "volume: expected a non-empty str"
 
@@ -112,10 +123,8 @@ validate absent;       expect "no descriptor" 4 "no descriptor at"
 mkdir -p "$w/root/boom"; printf 'raise RuntimeError("boom")\n' > "$w/root/boom/image_bump.py"
 validate boom;         expect "descriptor raising at import" 2 "RuntimeError: boom"
 
-# ---------- the verbs not built yet (`check` has its own suite, test-image-bump-check.sh) ----------
-for verb in deploy latest; do
-  run "$verb" good --root "$w/root"; expect "$verb is not implemented yet" 2 "not implemented yet"
-done
+# ---------- the verb not built yet (`check` and `deploy` have their own suites) ----------
+run latest good --root "$w/root"; expect "latest is not implemented yet" 2 "not implemented yet"
 run bogus good;        expect "unknown verb is a usage error" 2
 
 # ---------- default roots come from the environment ----------
