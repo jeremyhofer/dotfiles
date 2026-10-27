@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""image-bump -- move a service's pinned container image to a newer release, with a gate.
+
+WHY THIS EXISTS
+===============
+A service run from a container image is pinned by DIGEST, not by tag: a tag can be re-pointed
+at different bytes, a digest cannot. A pin is a single line in a file the service's unit reads:
+
+    <image>:<tag>@sha256:<64 hex digits>
+
+Moving it is a procedure that gets repeated for every release: resolve the new tag to the
+digest of one platform, scan the image, decide whether the scan allows the move, and later
+install the new pin and check that the service came back, rolling back if it did not. Done by
+hand each time, a step gets skipped or done differently. This tool is that procedure, written
+once. It knows the procedure and offers a few named strategies; a DESCRIPTOR beside each
+service selects among them and supplies the values.
+
+VERBS
+=====
+  image-bump check    <service> [--root DIR]   resolve, scan, decide; writes a scan record
+  image-bump deploy   <service> [--root DIR]   install the checked pin, run the checks, roll back
+  image-bump latest   <service> [--root DIR]   is a newer release out than the pin
+  image-bump validate <service> [--root DIR]   load the descriptor and refuse a malformed one
+
+`check`, `deploy` and `latest` are not implemented in this frame yet and exit 2.
+
+ROOTS
+=====
+The descriptor of a service is <root>/<service>/image_bump.py. --root names the directory that
+holds the service directories. Without it: `check` reads the source tree of the private layer,
+named by IMAGE_BUMP_SOURCE_ROOT (default ~/.local/share/chezmoi-overlay/dot_dotlocal); the
+other verbs read the deployed tree, named by IMAGE_BUMP_ROOT (default ~/.dotlocal).
+
+DESCRIPTOR
+==========
+A Python module holding ASSIGNMENTS ONLY (the system Python on some machines is 3.9, so no
+TOML reader is assumed), loaded by path. Every field below is required unless marked optional.
+
+  image         str   image name without tag, e.g. "registry.example/acme/widget"
+  release_line  str   "patch-of-pinned-major" or "github-latest-stable"
+  release_api   dict  {"host": "codeberg" | "github", "repo": "owner/name"}
+  git_tag       str   the version as a git tag; must contain "{version}", e.g. "v{version}"
+  platform      str   the one platform whose manifest digest is pinned, "os/arch"
+  pin_file      str   path of the pin file; relative paths are taken from the descriptor's
+                      directory, and "~" is expanded
+  scan_dir      str   directory the scan records are written to (same path rules)
+  gate          dict  {"kind": "fixable-count-floor" | "no-new-findings"}
+  migrations    dict  {"kind": "forgejo-compare", "path": "<repo path>"} or {"kind": "always"}
+  volume        str   the data volume a migration would touch
+  vm_unit       str   the unit's path inside the VM
+  install       dict  {"kind": "vm-copy", "applied_unit": "<path>"} or
+                      {"kind": "script", "path": "<path>"}
+  checks        list  of {"name": str, "command": [str, ...], "pass": str}, where "pass"
+                      says what a pass is (an exit status, or text to find in the output)
+  checklist     list  of str: lines printed for the person or agent to work through
+  tag_suffix    str   optional; a suffix of the tag that is not part of the version, such as
+                      "-rootless"
+
+The version of the pinned image is its tag with `tag_suffix` and a leading "v" removed; its git
+tag is `git_tag` with {version} replaced. `validate` also reads the pin file, which must parse
+and must name the descriptor's image.
+
+EXIT STATUSES
+=============
+  0  pass, or up to date          5  rolled back; revert the pin
+  2  usage or environment error   6  failed on a migrating version; stopped for a person
+  3  exception the gate allows   7  a newer release exists (`latest`)
+     only with the operator's
+     approval
+  4  refused (validate: a malformed descriptor)
+Status 1 is never used on purpose: an uncaught Python exception exits 1, so main() turns one
+into a one-line message and status 2.
+
+Targets Python 3.9, standard library only.
+"""
+
+import argparse
+import importlib.util
+import os
+import re
+import sys
+
+OK, USAGE, APPROVAL, REFUSED, ROLLED_BACK, MIGRATING, NEWER = 0, 2, 3, 4, 5, 6, 7
+
+RELEASE_LINES = ("patch-of-pinned-major", "github-latest-stable")
+RELEASE_HOSTS = ("codeberg", "github")
+GATE_KINDS = ("fixable-count-floor", "no-new-findings")
+MIGRATION_KINDS = ("forgejo-compare", "always")
+INSTALL_KINDS = ("vm-copy", "script")
+
+# (field, what it is) for the plain string fields, validated by one loop.
+STR_FIELDS = ("image", "git_tag", "platform", "pin_file", "scan_dir", "volume", "vm_unit")
+REQUIRED = ("image", "release_line", "release_api", "git_tag", "platform", "pin_file",
+            "scan_dir", "gate", "migrations", "volume", "vm_unit", "install", "checks",
+            "checklist")
+
+PLATFORM_RE = re.compile(r"^[a-z0-9_]+/[a-z0-9_]+$")
+PIN_RE = re.compile(
+    r"^(?P<image>[^\s@]+):(?P<tag>[A-Za-z0-9_][A-Za-z0-9._-]{0,127})"
+    r"@sha256:(?P<digest>[0-9a-f]{64})$")
+
+
+class DescriptorError(Exception):
+    """A descriptor or pin file cannot be used; carries one line per problem."""
+
+    def __init__(self, problems):
+        Exception.__init__(self, "; ".join(problems))
+        self.problems = list(problems)
+
+
+def load_descriptor(root, service):
+    """Load <root>/<service>/image_bump.py by path; return (module, directory)."""
+    directory = os.path.join(root, service)
+    path = os.path.join(directory, "image_bump.py")
+    if not os.path.isfile(path):
+        raise DescriptorError(["no descriptor at %s" % path])
+    spec = importlib.util.spec_from_file_location("image_bump_descriptor_" + service, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, directory
+
+
+def resolve_path(value, directory):
+    value = os.path.expanduser(value)
+    return value if os.path.isabs(value) else os.path.join(directory, value)
+
+
+def parse_pin(text):
+    """Parse '<image>:<tag>@sha256:<64 hex>' into (image, tag, digest).
+
+    Blank lines and '#' comment lines are ignored; exactly one pin line must remain.
+    Raises ValueError with a one-line reason for anything else.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith("#")]
+    if len(lines) != 1:
+        raise ValueError("expected exactly one pin line, found %d" % len(lines))
+    m = PIN_RE.match(lines[0])
+    if not m:
+        raise ValueError("not of the form <image>:<tag>@sha256:<64 hex>: %r" % lines[0])
+    return m.group("image"), m.group("tag"), "sha256:" + m.group("digest")
+
+
+def read_pin(path):
+    """Read and parse a pin file; return (image, tag, digest)."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise ValueError("cannot read pin file %s: %s" % (path, exc.strerror))
+    return parse_pin(text)
+
+
+def version_from_tag(tag, suffix=""):
+    """The version a tag stands for: `suffix` and a leading 'v' removed."""
+    if suffix and tag.endswith(suffix):
+        tag = tag[:-len(suffix)]
+    if tag.startswith("v"):
+        tag = tag[1:]
+    return tag
+
+
+def git_tag_for(git_tag, version):
+    """The git tag of a version, from the descriptor's template (e.g. 'v{version}')."""
+    return git_tag.replace("{version}", version)
+
+
+def _is_str(v):
+    return isinstance(v, str) and v != ""
+
+
+def _kind_problems(name, value, kinds, extra):
+    """Problems of a {'kind': ...} dict; `extra` maps kind -> required string key or None."""
+    if not isinstance(value, dict):
+        return ["%s: expected a dict with a 'kind', got %s" % (name, type(value).__name__)]
+    kind = value.get("kind")
+    if kind not in kinds:
+        return ["%s: unknown kind %r (known: %s)" % (name, kind, ", ".join(kinds))]
+    key = extra.get(kind)
+    if key and not _is_str(value.get(key)):
+        return ["%s: kind %s needs a non-empty string %r" % (name, kind, key)]
+    return []
+
+
+def descriptor_problems(module, directory):
+    """Every problem of a loaded descriptor, one string each; empty means valid."""
+    problems = []
+    get = lambda n: getattr(module, n, None)
+    for name in REQUIRED:
+        if not hasattr(module, name):
+            problems.append("%s: missing" % name)
+    for name in STR_FIELDS:
+        if hasattr(module, name) and not _is_str(get(name)):
+            problems.append("%s: expected a non-empty str, got %r" % (name, get(name)))
+
+    if hasattr(module, "release_line") and get("release_line") not in RELEASE_LINES:
+        problems.append("release_line: unknown strategy %r (known: %s)"
+                        % (get("release_line"), ", ".join(RELEASE_LINES)))
+
+    if hasattr(module, "release_api"):
+        api = get("release_api")
+        if not isinstance(api, dict):
+            problems.append("release_api: expected a dict, got %s" % type(api).__name__)
+        elif api.get("host") not in RELEASE_HOSTS:
+            problems.append("release_api: unknown host %r (known: %s)"
+                            % (api.get("host"), ", ".join(RELEASE_HOSTS)))
+        elif not _is_str(api.get("repo")) or "/" not in api.get("repo"):
+            problems.append("release_api: 'repo' must be a string like owner/name")
+
+    if _is_str(get("git_tag")) and "{version}" not in get("git_tag"):
+        problems.append("git_tag: must contain {version}, got %r" % get("git_tag"))
+
+    if _is_str(get("platform")) and not PLATFORM_RE.match(get("platform")):
+        problems.append("platform: %r is not of the form os/arch" % get("platform"))
+
+    if hasattr(module, "gate"):
+        problems += _kind_problems("gate", get("gate"), GATE_KINDS, {})
+    if hasattr(module, "migrations"):
+        problems += _kind_problems("migrations", get("migrations"), MIGRATION_KINDS,
+                                   {"forgejo-compare": "path"})
+    if hasattr(module, "install"):
+        problems += _kind_problems("install", get("install"), INSTALL_KINDS,
+                                   {"vm-copy": "applied_unit", "script": "path"})
+
+    if hasattr(module, "checks"):
+        checks = get("checks")
+        if not isinstance(checks, list) or not checks:
+            problems.append("checks: expected a non-empty list")
+        else:
+            for i, c in enumerate(checks):
+                if not (isinstance(c, dict) and _is_str(c.get("name"))
+                        and _is_str(c.get("pass")) and isinstance(c.get("command"), list)
+                        and c["command"] and all(_is_str(a) for a in c["command"])):
+                    problems.append("checks[%d]: expected {'name': str, 'command': "
+                                    "[str, ...], 'pass': str}" % i)
+    if hasattr(module, "checklist"):
+        cl = get("checklist")
+        if not isinstance(cl, list) or not all(_is_str(x) for x in cl):
+            problems.append("checklist: expected a list of non-empty str")
+    if hasattr(module, "tag_suffix") and not isinstance(get("tag_suffix"), str):
+        problems.append("tag_suffix: expected a str, got %r" % get("tag_suffix"))
+
+    if not problems:
+        try:
+            image, _tag, _digest = read_pin(resolve_path(get("pin_file"), directory))
+        except ValueError as exc:
+            problems.append("pin_file: %s" % exc)
+        else:
+            if image != get("image"):
+                problems.append("pin_file: pins image %r, descriptor says %r"
+                                % (image, get("image")))
+    return problems
+
+
+def default_root(verb):
+    if verb == "check":
+        return os.environ.get("IMAGE_BUMP_SOURCE_ROOT") or os.path.expanduser(
+            "~/.local/share/chezmoi-overlay/dot_dotlocal")
+    return os.environ.get("IMAGE_BUMP_ROOT") or os.path.expanduser("~/.dotlocal")
+
+
+def cmd_validate(args):
+    try:
+        module, directory = load_descriptor(args.root, args.service)
+    except DescriptorError as exc:
+        for p in exc.problems:
+            sys.stderr.write("image-bump: %s: %s\n" % (args.service, p))
+        return REFUSED
+    problems = descriptor_problems(module, directory)
+    if problems:
+        for p in problems:
+            sys.stderr.write("image-bump: %s: %s\n" % (args.service, p))
+        return REFUSED
+    print("ok %s" % args.service)
+    return OK
+
+
+def make_stub(verb):
+    def stub(args):
+        sys.stderr.write("image-bump: %s: not implemented yet\n" % verb)
+        return USAGE
+    return stub
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="image-bump", description="Move a service's digest-pinned image to a newer release.")
+    sub = parser.add_subparsers(dest="verb", metavar="{check,deploy,latest,validate}")
+    sub.required = True
+    for verb, func in (("check", make_stub("check")), ("deploy", make_stub("deploy")),
+                       ("latest", make_stub("latest")), ("validate", cmd_validate)):
+        p = sub.add_parser(verb)
+        p.add_argument("service")
+        p.add_argument("--root", default=None,
+                       help="directory holding the service directories (default: see --help of "
+                            "the tool's header)")
+        p.set_defaults(func=func)
+    return parser
+
+
+def main(argv=None):
+    try:
+        args = build_parser().parse_args(argv)
+        if args.root is None:
+            args.root = default_root(args.verb)
+        return args.func(args)
+    except SystemExit as exc:
+        # argparse exits 2 on usage errors and 0 on --help; never let a 1 through.
+        code = exc.code
+        return code if isinstance(code, int) and code != 1 else (OK if code in (None, 0) else USAGE)
+    except Exception as exc:  # noqa: BLE001 -- the contract is: never exit 1
+        sys.stderr.write("image-bump: error: %s: %s\n" % (type(exc).__name__, exc))
+        return USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())
