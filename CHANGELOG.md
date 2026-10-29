@@ -53,6 +53,11 @@ Entries are newest first.
   `launchctl` there would fail the apply. With `domain = "work"` neither the agent nor its loader is
   deployed unless the machine's generated config has `machineSnapshot = true` in `[data]` (never
   prompted; `chezmoi init` keeps it, like `skipSkills`). Personal machines are unchanged.
+- **`overlay-doctor`'s directory-conflict report names the fix**, and skill `dotfiles-update` now
+  runs the full doctor BEFORE applying as well as after. A directory both layers manage with
+  different attributes (the base's `private_dot_local` against an overlay's `dot_local`, say) makes
+  chezmoi ask to overwrite it on every apply, as each instance resets the mode the other set. The
+  report now gives both source entries and the overlay-side `git mv` that makes them agree.
 - `hook-doctor` switches the spelling hooks off during its leak-guard probes, as it already did the
   repository gates: a spelling refusal of its clean input used to read as `BLOCKED`, a broken guard.
 - **ACTION for a private layer, if anything outside the layers adds Claude Code hooks:** for every hook

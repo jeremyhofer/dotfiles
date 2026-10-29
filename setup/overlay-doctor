@@ -475,11 +475,25 @@ if [ -n "$_dz" ]; then
 fi
 
 # (2) Directory attribute conflicts on co-owned dirs (e.g. private_ vs plain -> 0700<->0755 flip-flop).
+#     Seen on a machine as chezmoi asking, on every apply, to overwrite the directory: each instance
+#     resets the mode the other set. The report names both source entries and the rename that makes
+#     the overlay agree, taking the base's own name for the same target as the one to match.
+_srcdir() {  # _srcdir <tree> <target>: the source path (relative to <tree>) of the directory deploying <target>
+  ( CDPATH= cd -- "$1" && find . -type d ! -path './.git' ! -path './.git/*' -print ) \
+  | while IFS= read -r _sp; do
+      [ "$_sp" = "." ] && continue
+      [ "$(_totarget "${_sp#./}" | cut -f1)" = "$2" ] && { printf '%s\n' "${_sp#./}"; break; }
+    done
+}
 _emit_dirs "$BSRC" > "$btmp"
 _emit_dirs "$OSRC" | while IFS="$TAB" read -r _otgt _oattr; do
   [ -n "$_otgt" ] || continue
   if _battr=$(awk -F"$TAB" -v t="$_otgt" '$1==t{print $2; f=1} END{exit !f}' "$btmp"); then
-    [ "$_battr" = "$_oattr" ] || xbad "directory '$_otgt' co-owned with CONFLICTING attributes — base:[${_battr:-none}] overlay:[${_oattr:-none}] (perms flip-flop on alternating applies). Make them agree."
+    if [ "$_battr" != "$_oattr" ]; then
+      _osp=$(_srcdir "$OSRC" "$_otgt"); _bsp=$(_srcdir "$BSRC" "$_otgt")
+      _want="$(dirname -- "$_osp")/$(basename -- "$_bsp")"; _want=${_want#./}
+      xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [${_battr:-none}] as '$_bsp', overlay [${_oattr:-none}] as '$_osp'. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Fix in the overlay repository: git mv '$_osp' '$_want'"
+    fi
   fi
 done
 

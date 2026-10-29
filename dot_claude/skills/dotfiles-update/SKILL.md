@@ -70,11 +70,21 @@ brew bundle --file ~/.local/share/chezmoi/Brewfile    # macOS: install what the 
 exec zsh -l                                           # a new login shell, so PATH changes take effect
 sh ~/.local/share/chezmoi/private_dot_local/bin/executable_fleet-decl --check   # the manifest the git hooks read
 sh ~/.local/share/chezmoi/setup/overlay-doctor --machine   # BEFORE the apply: what can this machine do?
+chezmoi-overlay git pull                              # if the machine has a private layer
+sh ~/.local/share/chezmoi/setup/overlay-doctor        # BEFORE the apply too: cross-layer conflicts
 chezmoi diff        # read it; a long diff is expected after weeks
 chezmoi apply
 chezmoi-overlay diff && chezmoi-overlay apply         # if the machine has a private layer
 sh ~/.local/share/chezmoi/setup/overlay-doctor        # overlay compliance, then the assessment again
 ```
+
+**Why the full `overlay-doctor` runs before the apply as well as after:** its cross-layer section
+compares the two source trees, which are both current once pulled, so it can name a conflict before
+either instance acts on it. The one met in practice is a directory both layers manage with different
+attributes, for instance `private_dot_local` in the base and `dot_local` in the overlay: each apply
+resets the mode the other set, and chezmoi asks to overwrite the directory on every apply. The
+doctor reports it as a `CONFLICT` naming both source entries and the `git mv` that makes the overlay
+agree. Fix that in the overlay repository before applying, and the prompts never start.
 
 **Why the Brewfile comes first:** the base can start requiring a tool (`gitleaks` for the secret scan
 on every commit, `yq` for the apply itself), and applying before installing it either stops the apply

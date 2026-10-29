@@ -180,8 +180,22 @@ echo "ok:   destructive exact_ attribute flagged (exit 1)"
 mk "$tmp/ov"; b="$tmp/base"; rm -rf "$b"; mkdir -p "$b/dot_local/bin" "$b/dot_config"
 out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "${rc:-0}" -eq 1 ] || { echo "FAIL(G): attr conflict should exit 1, got ${rc:-0}"; echo "$out"; exit 1; }
-echo "$out" | grep -q "CONFLICT.*'.local'" || { echo "FAIL(G): .local conflict not flagged"; echo "$out"; exit 1; }
-echo "ok:   co-owned dir attribute conflict flagged (exit 1)"
+echo "$out" | grep -q "CONFLICT.*'~/.local'" || { echo "FAIL(G): .local conflict not flagged"; echo "$out"; exit 1; }
+# The report names the fix: the overlay's entry renamed to the base's name for the same target.
+_ovl=$(cd "$tmp/ov" && find . -maxdepth 1 -type d -name '*dot_local' | sed 's|^\./||' | head -1)
+echo "$out" | grep -qF "git mv '$_ovl' 'dot_local'" || { echo "FAIL(G): the fix (git mv '$_ovl' 'dot_local') not named"; echo "$out"; exit 1; }
+echo "ok:   co-owned dir attribute conflict flagged (exit 1), with the rename that fixes it"
+
+# Case G2 — the conflict one level down (~/.local/bin private in the overlay only): the suggested
+# rename keeps the parent's name and changes only the conflicting component.
+mk "$tmp/ov"; b="$tmp/base"; rm -rf "$b"; mkdir -p "$b/private_dot_local/bin" "$b/dot_config"
+_par=$(cd "$tmp/ov" && find . -maxdepth 1 -type d -name '*dot_local' | sed 's|^\./||' | head -1)
+[ -n "$_par" ] || { mkdir -p "$tmp/ov/private_dot_local"; _par=private_dot_local; }
+rm -rf "$tmp/ov/$_par"; mkdir -p "$tmp/ov/private_dot_local/private_bin"
+out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(G2): nested attr conflict should exit 1, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -qF "git mv 'private_dot_local/private_bin' 'private_dot_local/bin'" || { echo "FAIL(G2): nested fix not named"; echo "$out"; exit 1; }
+echo "ok:   nested co-owned dir conflict flagged with the rename of that component only"
 
 # Case H — clean fake base + complete overlay, agreeing attrs -> exit 0, NO false-positive CONFLICT.
 mk "$tmp/ov"; mkbase "$tmp/base"
