@@ -73,8 +73,8 @@ Written before the first effect run (2026-10-04), so a result cannot move it.
 
 - **Reached for:** on Opus 5.5, at least 80% of should-fire trials and at most 20% of near-miss
   trials invoke the skill, at three trials per prompt, and a copy with its description replaced by a
-  generic phrase of the same length fires clearly less. Also run on the two models used at work,
-  Opus 4.8 and Sonnet 5, as floors.
+  generic phrase of the same length fires clearly less. Also run on the models used at work, as
+  floors: Opus 5.5 served through Amazon Bedrock (since 2026-10-29), and the older Sonnet served there.
 - **Effect, per claim:** first, 5 trials with the skill removed. If all 5 pass, a session already
   gets this right without the skill; the claim cannot show an effect and is a candidate to cut from
   the body. Otherwise, 10 trials with the skill as deployed against 10 without, started together. The

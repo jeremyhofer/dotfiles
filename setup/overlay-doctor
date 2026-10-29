@@ -81,7 +81,7 @@ assess() {
     note "git                   missing"
   fi
   # Tools the base expects. Override the list with ASSESS_TOOLS (space-separated).
-  for _t in ${ASSESS_TOOLS:-git zsh jq yq gitleaks chezmoi mani wt claude}; do
+  for _t in ${ASSESS_TOOLS:-git zsh jq yq gitleaks codespell chezmoi mani wt claude}; do
     if command -v "$_t" >/dev/null 2>&1; then note "present               $_t"; else note "missing               $_t"; fi
   done
   _sh=${SHELL##*/}
@@ -89,6 +89,13 @@ assess() {
     note "login shell           zsh $(zsh --version 2>/dev/null | awk '{print $2}')"
   else
     note "login shell           ${_sh:-unknown}"
+  fi
+  # The base's Python tools, two of them on every commit's hook path, run on whichever python3 is
+  # first on PATH; they are written for 3.9, the version macOS's command-line tools ship.
+  if command -v python3 >/dev/null 2>&1; then
+    note "python3               $(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null) ($(command -v python3))"
+  else
+    note "python3               missing"
   fi
   note "operating system      $(uname -s) $( [ "$(uname -s)" = Darwin ] && sw_vers -productVersion 2>/dev/null || uname -r)"
   if command -v claude >/dev/null 2>&1; then

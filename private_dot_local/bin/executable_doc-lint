@@ -129,6 +129,7 @@ USAGE
     No PATH lints every tracked markdown file. Exit 1 if any BLOCKING finding.
     Output: `[category] path:line: message`.
 """
+from __future__ import annotations  # PEP 604 unions in annotations, on Python 3.9 (macOS's own)
 import os
 import pathlib
 import re

@@ -107,7 +107,7 @@ for keys, they mirror the long options):
 ```toml
 [tool.codespell]
 skip = "*.lock,*.svg,node_modules,data"
-ignore-words-list = "finmodel,roth"
+ignore-words-list = "acmecalc,wint"
 quiet-level = 2
 ```
 

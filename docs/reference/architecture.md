@@ -108,10 +108,9 @@ later; older git ignores them without a word):
 
 | Hook | Event | Does |
 | --- | --- | --- |
-| Hook name | Event | Does |
-| --- | --- | --- |
 | `ai-coauthor` | prepare-commit-msg | adds a co-author trailer, naming the model when it can, to a commit made from a Claude Code session; leaves a message that already has one alone |
 | `secret-scan` | pre-commit | gitleaks over the staged changes, with a floor no repository config can weaken; refuses the commit if gitleaks is missing |
+| `us-spelling-pre-commit`, `us-spelling-commit-msg` | pre-commit, commit-msg | `us-spelling-lint`: refuses a commit that adds a British spelling to a staged markdown line or to the commit message; acts only in a repository the fleet manifest lists and does not tag `upstream`, passes any other; refuses when `codespell` is missing |
 | `publish-guard-pre-commit`, `publish-guard-commit-msg`, `publish-guard-pre-push` | as named | `leak-guard`: the domain's private terms, outside the repositories allowed them; passes everything where the domain supplies no terms |
 | `repo-gates-pre-commit`, `repo-gates-commit-msg`, `repo-gates-pre-push` | as named | `run-repo-gates`: a manifest repository's own tracked `.githooks/<event>` (or `.husky/<event>`) |
 

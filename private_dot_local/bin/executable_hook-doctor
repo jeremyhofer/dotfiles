@@ -222,6 +222,9 @@ cfg_hook_run() {
   local tostdin=(); [ -n "$in" ] && tostdin=(--to-stdin="$in")
   local off=""
   for e in $CFG_EVENTS; do off="$off -c hook.repo-gates-$e.enabled=false"; done
+  # The spelling gate is switched off too: it refuses for its own reasons (a British word, codespell
+  # missing), and a refusal of the CLEAN input would otherwise read as the guard being broken.
+  off="$off -c hook.us-spelling-pre-commit.enabled=false -c hook.us-spelling-commit-msg.enabled=false"
   # $off is word-split on purpose: it is a list of `-c key=value` pairs with no spaces inside.
   # shellcheck disable=SC2086
   err=$(cd "$wt" 2>/dev/null && git -c core.hooksPath="$CFG_EMPTY_HOOKS" $off hook run ${tostdin[@]+"${tostdin[@]}"} "$ev" ${1+"$@"} 2>&1 >/dev/null </dev/null)

@@ -32,6 +32,69 @@ Entries are newest first.
 
 ---
 
+## 2026-10-29
+
+### Python tools run on Python 3.9 again; `gitleaks` and `codespell` are REQUIRED (ACTION on a Mac: `brew bundle`)
+
+- **`us-spelling-lint`, `comment-lint` and `doc-lint` crashed on Python 3.9**, the `python3` that
+  macOS's command-line tools ship, at load (`TypeError: unsupported operand type(s) for |`): their
+  annotations used the `X | None` form, which 3.9 evaluates. `us-spelling-lint` runs from a
+  configured hook on every commit (2026-10-23 below), so in any context where 3.9 is the first
+  `python3` on PATH (a GUI git client, an IDE, a launchd job) every commit in every repository was
+  refused. Each now carries `from __future__ import annotations`, and their suites pass under 3.9.
+  `overlay-doctor --machine` now reports which `python3` is first on PATH and its version.
+- **`gitleaks` and `codespell` carry the Brewfile's `REQUIRED` marker.** Both are called by hooks that
+  run on every commit and refuse when the tool is missing, which is what the marker means, so a Mac
+  without them now has `chezmoi apply` refuse up front, naming `brew bundle`, instead of every commit
+  refusing later. **ACTION on a Mac:** `brew bundle --file "$(chezmoi source-path)/Brewfile"` before
+  applying. `overlay-doctor --machine` now lists `codespell` among the tools it assesses.
+- `hook-doctor` switches the spelling hooks off during its leak-guard probes, as it already did the
+  repository gates: a spelling refusal of its clean input used to read as `BLOCKED`, a broken guard.
+- **ACTION for a private layer, if anything outside the layers adds Claude Code hooks:** for every hook
+  event the base or a layer's settings fragment declares (the base now declares `PreToolUse` and
+  `SubagentStart`, since 2026-10-10), the joined list REPLACES that event's list in
+  `~/.claude/settings.json` on apply. A hook present only in the live file for those events, added by
+  hand or by other tooling, is removed. Declare every such hook in the layer's fragment.
+  `docs/reference/private-layer.md` now describes the join.
+- Documentation corrected for adopting a work or other second-domain machine: the configured-hooks
+  table in `docs/reference/architecture.md` lists the spelling hooks; `docs/reference/private-layer.md`
+  lists `sandbox.excludedCommands` among the keys `claude-project-settings` accepts and three more
+  checks; `docs/reference/standard-clone-changeover.md` addresses machines with a private layer, the
+  global ignore file the base does point git at, the `fleet-repo` support that landed 2026-10-10,
+  and a container still in the `.bare` shape (no rename needed first).
+
+## 2026-10-25
+
+### A private layer can set tmux options in `~/.dotlocal/tmux.conf`
+
+`~/.tmux.conf` now runs `source-file -q ~/.dotlocal/tmux.conf` after the base's own settings and
+before TPM loads the plugins, so a layer's file overrides the base's values, plugin options
+included. With no such file nothing changes (`-q`). Optional; the example is in
+`docs/reference/private-layer.md`, "tmux". Linux and macOS alike.
+
+## 2026-10-23
+
+### New commit gate: `us-spelling-lint` refuses new British spellings (ACTION: install `codespell`; decide where it applies)
+
+Two configured git hooks in `~/.gitconfig`, `us-spelling-pre-commit` and `us-spelling-commit-msg`,
+run `us-spelling-lint --hook ...`. They refuse a commit that ADDS a British spelling to a staged
+markdown line, or to the commit message; existing text is never judged. They act only in a
+repository the fleet manifest lists and does not tag `upstream`; with no manifest they pass, and a
+manifest that exists but cannot be read makes them refuse. Like every configured hook they need git
+2.54+, and an older git skips them silently.
+
+- **ACTION:** the engine is `codespell` (in the Brewfile, `REQUIRED` from 2026-10-29). While it is
+  missing, the gate refuses every commit in a listed repository (exit 2). `command -v codespell` is
+  the quick test; `us-spelling-lint --all` audits a repository's existing text.
+- **ACTION, decide per domain:** a listed repository whose spelling is not yours to change (a
+  client's, a third party's, an employer's with its own style) gets the gate too. Tag it `upstream` in
+  the manifest, or switch the hooks off in the layer's git config: `hook.us-spelling-pre-commit.enabled
+  false` and `hook.us-spelling-commit-msg.enabled false` (`docs/reference/architecture.md`, "Switching
+  a hook off").
+- A per-repository `.us-spelling-lint` file configures it (`exclude:`, `include:`, `allow:`), and a
+  trailing `codespell:ignore <word>` comment exempts one word. Skill `spellcheck-standard` has the
+  split between this check and a project's own spellchecker.
+
 ## 2026-10-17
 
 ### `machine-snapshot` runs on macOS too, from a LaunchAgent
@@ -45,6 +108,46 @@ users' entirely; their load shows only in the load average), and files load
 under the CI bridge's worker and podman's VM as well as Claude sessions. It runs
 `/usr/bin/python3`, so the Command Line Tools must be installed (they already are wherever Homebrew
 is); the load step needs the user logged in graphically, and fails the apply where nobody is.
+
+## 2026-10-12
+
+### Commit gates judge what is staged, not the working tree (silently different; ACTION if a layer installed a test gate)
+
+`run-repo-gates` now runs a repository's tracked `.githooks/pre-commit` through the new
+`git-staged-run`, which sets unstaged edits to tracked files aside for the gate's run and puts them
+back afterwards. Before, a gate read the disk while the commit was made from the index, so it could
+pass or refuse on code the commit did not contain. Untracked files stay visible; during a merge the
+gate runs on the working tree; if the edits cannot be put back, both patches are kept in `$TMPDIR`
+and named. A gate refuses to run when `git-staged-run` is not on PATH, so apply the base first. An
+unstaged fix no longer changes a gate's verdict: stage it.
+
+- The base's own source-tree gate is now written by `install-test-gate`, which judges the staged tree
+  the same way.
+- **ACTION, only if a private layer installed a test gate with `install-test-gate`:** the layer's
+  trigger hashes its `tests/run-all.sh`, not the tool, so the installed `.git/hooks/pre-commit` keeps
+  judging the working tree until `install-test-gate` is run again. Re-run the command the layer's
+  `run_onchange_install-test-gate.sh.tmpl` runs (`overlay-skeleton/opt-in/`).
+
+### `claude-project-settings`: per-project Claude Code settings declared in the manifest (opt-in)
+
+A project's `.claude/settings.local.json` can be declared instead of hand-edited on each machine:
+`claudeLocalSettings: claude/projects/<project>.json` in its manifest entry names a JSON file under
+`~/.dotlocal`. `claude-project-settings apply` validates and merges each one (declared keys win, an
+array replaces the live one, other live keys are kept), `check` reports drift, and `validate` holds
+a file to closed rules: only `sandbox.filesystem.allowWrite` and `sandbox.excludedCommands`, never
+`permissions`. Nothing happens unless a manifest declares the key, and `fleet-decl --check` accepts
+it (from 2026-10-25). **ACTION when adopting:** copy
+`overlay-skeleton/opt-in/run_onchange_after_apply-project-claude-settings.sh.tmpl.example` into the
+layer without `.example`; `overlay-doctor` requires that trigger whenever the manifest declares the
+key. A sandboxed session cannot run `apply`. Reference: `docs/reference/private-layer.md`.
+
+### `fleet-repo clone` runs an optional `~/.dotlocal/hooks/post-clone`
+
+At the end of every `fleet-repo clone <project>`, fresh or reconciling, an executable
+`~/.dotlocal/hooks/post-clone` is called with the repository's path and the project name, so a layer
+can finish a clone with what only it knows (remotes, say). Unlike `post-worktree-create` it is not
+advisory: a failing hook makes `fleet-repo` exit 1, the clone left in place, and it runs on every
+re-run, so it must be idempotent. `clone --url` does not run it. No hook, no change.
 
 ## 2026-10-10
 

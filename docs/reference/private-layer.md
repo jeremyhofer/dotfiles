@@ -163,6 +163,12 @@ Rules the merge imposes:
 - **Never declare `permissions.allow`** (the app appends to it as permissions are granted; declaring
   it would discard them) **or `model`** (an enforced default belongs in the machine's managed
   settings).
+- **Hook lists are joined, then replace the live list.** For every hook event that the base or the
+  fragment declares (the base declares `PreToolUse` and `SubagentStart`), the two lists are joined,
+  base first with a duplicate entry kept once, and the result REPLACES that event's list in
+  `~/.claude/settings.json`. A hook a machine has only in its live file for such an event, added by
+  hand or by other tooling, is removed on the next apply, so a layer must declare in its fragment
+  every hook it relies on for those events. An event neither declares is left as the live file has it.
 - **`retiredHooks`** lists hook script names to remove from every event: the merge can only add, so
   a hook dropped from `declared` would otherwise keep firing.
 - Managed settings (`/etc/claude-code/managed-settings.json`, or the macOS equivalent) outrank this
@@ -293,10 +299,13 @@ A project's own Claude Code settings, such as the extra directories its sessions
 one plain JSON file per project, in settings.json's own shape, which the project's entry points at:
 `claudeLocalSettings: claude/projects/<project>.json`, relative to `~/.dotlocal`. Document each grant
 beside the files (a README), not in them. `claude-project-settings validate` checks a file against
-closed rules: only `sandbox.filesystem.allowWrite` may be declared, as `~/...` paths with no globs, no
-`.` or `..` segments, and nothing under `~/.ssh`, `~/.gnupg` or `~/.claude`; run it in the layer's
-commit gate. `apply` validates, then merges each file into the project's `.claude/settings.local.json`:
-declared keys win, an array replaces the live one, every other key is kept. `check` reports drift.
+closed rules: only two keys may be declared. `sandbox.filesystem.allowWrite` takes `~/...` paths with
+no globs, no `.` or `..` segments, and nothing under `~/.ssh`, `~/.gnupg` or `~/.claude`.
+`sandbox.excludedCommands`, the commands that run outside the sandbox in that project, takes entries of
+exactly the form `<command> *` (one plain command name, a space, a star), never a shell, interpreter
+or wrapper, since excluding one would take every command written through it out of the sandbox.
+Run it in the layer's commit gate. `apply` validates, then merges each file into the project's
+`.claude/settings.local.json`: declared keys win, an array replaces the live one, every other key is kept. `check` reports drift.
 The layer runs `apply` through its trigger (below); a sandboxed session cannot, because the sandbox
 protects these files.
 
@@ -335,6 +344,9 @@ a layer's trigger is a few lines that say where its inputs are.
 | `setup/overlay-doctor` | from the base checkout, after changing either layer | required private pieces present and filled, the trigger for every input the layer ships (Tier T), every private file has a recorded reason, no file owned by both layers, the manifest's schema |
 | `setup/overlay-doctor --machine` | on a machine | git, tools and Claude Code on that machine |
 | `fleet-decl --check` | after editing the manifest | the manifest's declarations |
+| `claude-project-settings validate`, then `check` | before committing a project settings file, then after an apply | `validate`: the files obey the closed rules above; `check`: the live `.claude/settings.local.json` of each declaring project matches its file (exit 1 on drift) |
+| `fleet-repo check` | after editing the manifest or changing a clone | each repository on disk matches its manifest entry's layout (exit 1 on drift) |
+| `claude-trust-check` | on a new machine, before launching background sessions | which manifest directories still need Claude Code's workspace-trust prompt accepted (exit 3: state unknown) |
 | `hook-doctor check` | after configuring the guard | each configured git hook is live, and the guard refuses a planted marker |
 | `chezmoi diff`, `chezmoi-overlay diff` | before applying | what an apply would change |
 

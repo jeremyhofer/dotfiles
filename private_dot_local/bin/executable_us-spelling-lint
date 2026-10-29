@@ -94,6 +94,7 @@ USAGE
     the repository root whatever the working directory.
     Exit:    0 clean, 1 findings, 2 error (including codespell not installed).
 """
+from __future__ import annotations  # PEP 604 unions in annotations, on Python 3.9 (macOS's own)
 import fnmatch
 import os
 import pathlib

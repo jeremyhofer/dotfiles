@@ -1,7 +1,7 @@
 # Changing a repository from a bare container to a standard clone
 
-For a machine that runs only the public dotfiles base: no private overlay, possibly no custom Claude
-Code hooks, and Claude Code running inside a managed sandbox. Change one repository at a time,
+For any machine, with or without a private layer, including one with no custom Claude Code hooks and
+Claude Code running inside a managed sandbox. Change one repository at a time,
 starting with one you rarely touch. `docs/reference/repository-layouts.md` describes the layouts;
 this page is the procedure for moving between them.
 
@@ -67,11 +67,20 @@ no longer commit, stash or run `git status` there.
   would stage it. A tool's own ignore list is a separate file from `.gitignore` (Prettier reads
   `.prettierignore`, ESLint reads its ignore patterns): check each one the repository uses.
 - Optionally, also cover `.worktrees/` in your global ignore file, so repositories you have not
-  converted yet behave. Git reads one global ignore file, named by `git config core.excludesfile`,
-  and the base does not supply one. The repository's own `.gitignore` is the one that protects every
+  converted yet behave. Git reads one global ignore file, named by `git config core.excludesfile`;
+  the base's `~/.gitconfig` points it at `~/.gitignore_global`, whose content the private layer
+  owns, and `setup/overlay-doctor` requires that file to carry `.worktrees/` among the base's
+  defaults. A machine with no private layer must create the file itself. The repository's own
+  `.gitignore` is the one that protects every
   clone and every teammate, so it is not optional.
 
 ## 2. Inventory: what would a fresh clone not have?
+
+**A container that still keeps its repository in `.bare/`** (the CHANGELOG entry "A bare container's
+repository is named `.git`...", 2026-10-09, describes the rename to `.git`) does not need that rename
+first. The script below reads the old shape too, following the one-line `.git` pointer file to
+`.bare`, and nothing else in this procedure depends on the name. Go straight to the changeover; step
+4's `git fetch ../app.old/.git ...` works unchanged, because git follows the pointer file there too.
 
 Save this as `inventory.sh` anywhere outside the repository and run `bash inventory.sh <repo>` for
 each container, saving the output (`bash inventory.sh ~/src/app > ~/app-inventory.txt`). It only
@@ -223,10 +232,11 @@ projects:
     branch: main
 ```
 
-Then run `wt-config-gen`, so worktrunk stops placing this repository's worktrees as siblings. Until
-the CHANGELOG entry announcing standard-clone support in `fleet-repo`, do not run `fleet-repo clone`
-or `fleet-repo check` on a converted entry: it is written for the bare shape. After a `git pull` of
-the base, read the CHANGELOG to see whether that entry has landed.
+Then run `wt-config-gen`, so worktrunk stops placing this repository's worktrees as siblings. Once
+your copy of the base includes the CHANGELOG entry "Standard clones are the fleet layout; `fleet-repo`
+learns them" (2026-10-10), `fleet-repo clone`, `update` and `check` handle a standard entry. On an
+older copy of the base they are written for the bare shape, so do not run them on a converted entry
+until you have pulled the base and read that entry.
 
 ## 5. Restore from the inventory
 

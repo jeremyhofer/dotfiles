@@ -82,7 +82,7 @@ v "the whole home directory" '{"sandbox":{"filesystem":{"allowWrite":["~/"]}}}' 
 v "a protected directory" '{"sandbox":{"filesystem":{"allowWrite":["~/.ssh"]}}}' "protected"
 v "under a protected directory" '{"sandbox":{"filesystem":{"allowWrite":["~/.claude/settings.json"]}}}' "protected"
 v "a sibling of a protected directory is fine" '{"sandbox":{"filesystem":{"allowWrite":["~/.sshfoo"]}}}' ""
-v "excludedCommands of the form <command> *" '{"sandbox":{"excludedCommands":["ssh *","ci-trigger *"]}}' ""
+v "excludedCommands of the form <command> *" '{"sandbox":{"excludedCommands":["ssh *","mytool *"]}}' ""
 v "excludedCommands beside allowWrite" '{"sandbox":{"excludedCommands":["ssh *"],"filesystem":{"allowWrite":["~/x"]}}}' ""
 v "excludedCommands that is not a list" '{"sandbox":{"excludedCommands":"ssh *"}}' "must be a list"
 v "an excludedCommands entry with no star" '{"sandbox":{"excludedCommands":["ssh"]}}' "one command name followed by"

@@ -120,6 +120,7 @@ USAGE
     No PATH arguments lints every tracked source file. Exit 1 if any BLOCKING finding.
     Output format matches the repo's other linters: `[category] path:line: message`.
 """
+from __future__ import annotations  # PEP 604 unions in annotations, on Python 3.9 (macOS's own)
 import ast
 import io
 import os
