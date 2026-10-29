@@ -78,6 +78,10 @@ Entries are newest first.
   (`fleet-decl --values <key>`, new), and `overlay-doctor` skips its Tier W trust report on the work
   domain unless `OVERLAY_DOCTOR_TRUST=1`. On a manifest of hundreds of repositories the per-project
   reads took minutes, and there most repositories never host a background session.
+- **The `machine-snapshot` LaunchAgent is now `local.dotfiles.machine-snapshot`**, a label tied to no
+  person. On a Mac that ran it under its old label, the next apply removes the old plist
+  (`.chezmoiremove`) and the loader boots the old agent out before loading the new one, so only one
+  sampler runs. Check with `launchctl list | grep machine-snapshot`: one line, the new label.
 - `hook-doctor` switches the spelling hooks off during its leak-guard probes, as it already did the
   repository gates: a spelling refusal of its clean input used to read as `BLOCKED`, a broken guard.
 - **ACTION for a private layer, if anything outside the layers adds Claude Code hooks:** for every hook

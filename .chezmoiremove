@@ -20,3 +20,7 @@
 # fleet-manifest retired 2026-10-09: what it said is in docs/reference/fleet-manifest.md, and
 # fleet-repo's refusals and `check` drift codes catch the mistakes it warned about.
 .claude/skills/fleet-manifest
+
+# machine-snapshot's LaunchAgent renamed 2026-10-29 to
+# local.dotfiles.machine-snapshot; the loader boots the old one out. Drop once every Mac has applied.
+Library/LaunchAgents/com.jeremyhofer.machine-snapshot.plist

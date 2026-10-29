@@ -2,17 +2,20 @@
 #!/bin/sh
 # Loads machine-snapshot's LaunchAgent on macOS, and reloads it whenever the plist or the tool
 # changes (chezmoi re-runs this script when the hashes below change):
-#   plist: {{ include "private_Library/LaunchAgents/com.jeremyhofer.machine-snapshot.plist.tmpl" | sha256sum }}
+#   plist: {{ include "private_Library/LaunchAgents/local.dotfiles.machine-snapshot.plist.tmpl" | sha256sum }}
 #   tool:  {{ include "private_dot_local/bin/executable_machine-snapshot" | sha256sum }}
 # bootout first, so a changed plist is re-read: bootstrap alone fails as "already loaded" and keeps
 # the old definition. The gui domain is the logged-in user's; on a machine nobody is logged in to
 # graphically this fails, and the apply reports it.
 set -eu
-label=com.jeremyhofer.machine-snapshot
+label=local.dotfiles.machine-snapshot
 plist="$HOME/Library/LaunchAgents/$label.plist"
 domain="gui/$(id -u)"
 mkdir -p "$HOME/Library/Logs"
 launchctl bootout "$domain/$label" 2>/dev/null || true
+# The agent's label until 2026-10-29. A Mac that loaded it before the rename would otherwise run two
+# samplers; its plist file goes through .chezmoiremove. Drop this line once every Mac has applied.
+launchctl bootout "$domain/com.jeremyhofer.machine-snapshot" 2>/dev/null || true
 launchctl bootstrap "$domain" "$plist"
 launchctl enable "$domain/$label"
 echo "machine-snapshot: loaded $label (sampling every 15 s); check: machine-snapshot now"
