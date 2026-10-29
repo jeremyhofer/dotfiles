@@ -66,6 +66,10 @@ Entries are newest first.
   neither source tree showed a conflict. The doctor now reads each tree's `.chezmoiexternal.toml`
   (and `.toml.tmpl`) and reports such a directory with its fix: declare it in the overlay as the base
   does, `private_dot_local/.keep`. YAML and JSON externals files are not read.
+- The first version of that change (`23e96bb`) did not parse under bash, so on a Mac, where `sh` is
+  bash, `overlay-doctor` stopped at once with an "unexpected EOF while looking for matching" quote
+  error. Fixed, and a
+  new test parses every shell script in the repository under both `bash` and `sh`.
 - **`overlay-doctor` honors a `.chezmoiroot`.** An overlay whose repository moves its source root into
   a subdirectory was read from the repository root, so every entry mapped to the wrong target and no
   co-owned directory or file could be found. The doctor now follows the file and says so on its

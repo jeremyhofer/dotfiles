@@ -501,11 +501,12 @@ _srcdir() {  # _srcdir <tree> <target>: the source path (relative to <tree>) of 
 # every apply and nothing here to see. Each key is a target path; a templated key contributes the
 # part before its first `{{`. YAML and JSON externals files are not read.
 _ext_parents() {  # _ext_parents <tree>: each parent directory an external implies, one per line
+  _tpl='{{'
   for _ef in "$1/.chezmoiexternal.toml" "$1/.chezmoiexternal.toml.tmpl"; do
     [ -f "$_ef" ] || continue
     sed -n 's/^[[:space:]]*\[[[:space:]]*"\([^"]*\)"[[:space:]]*\][[:space:]]*$/\1/p' "$_ef"
   done | while IFS= read -r _k; do
-    case "$_k" in *'{{'*) _k=${_k%%'{{'*}; _k=${_k%/}; _k="$_k/x" ;; esac
+    case "$_k" in *"$_tpl"*) _k=${_k%%"$_tpl"*}; _k=${_k%/}; _k="$_k/x" ;; esac
     _d=$(dirname -- "$_k")
     while [ -n "$_d" ] && [ "$_d" != . ] && [ "$_d" != / ]; do printf '%s\n' "$_d"; _d=$(dirname -- "$_d"); done
   done | sort -u
@@ -526,7 +527,7 @@ _all_dirs "$OSRC" "$_oimp" | while IFS="$TAB" read -r _otgt _oattr; do
     if [ "$_battr" != "$_oattr" ]; then
       _bsp=$(_srcdir "$BSRC" "$_otgt")
       if grep -qxF "$_otgt" "$_oimp"; then
-        xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [${_battr:-none}] as '${_bsp:-an external's parent}', overlay [none] as the parent of an external in its .chezmoiexternal file, which has no entry for it in the source tree. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Fix in the overlay repository: declare it as the base does, mkdir -p '$_bsp' && touch '$_bsp/.keep', and commit the .keep"
+        xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [${_battr:-none}] as '$_bsp', overlay [none] as the parent of an external in its .chezmoiexternal file, which has no entry for it in the source tree. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Fix in the overlay repository: declare it as the base does, mkdir -p '$_bsp' && touch '$_bsp/.keep', and commit the .keep"
       elif grep -qxF "$_otgt" "$_bimp"; then
         _osp=$(_srcdir "$OSRC" "$_otgt")
         xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [none] as the parent of an external in its .chezmoiexternal file, overlay [${_oattr:-none}] as '$_osp'. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Make the overlay's entry plain, or report it against the base."
