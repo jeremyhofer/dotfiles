@@ -58,6 +58,22 @@ Entries are newest first.
   different attributes (the base's `private_dot_local` against an overlay's `dot_local`, say) makes
   chezmoi ask to overwrite it on every apply, as each instance resets the mode the other set. The
   report now gives both source entries and the overlay-side `git mv` that makes them agree.
+- **`overlay-doctor` counts the directories an external implies (ACTION if an overlay has externals
+  under a directory the base declares private).** An external makes chezmoi create every parent of
+  its target, with plain attributes unless that instance's source declares the directory. An
+  overlay cloning into `~/.local/share/<name>` therefore made `~/.local` 0755 against the base's
+  `private_dot_local` (0700), and chezmoi asked to overwrite `~/.local` on every apply, though
+  neither source tree showed a conflict. The doctor now reads each tree's `.chezmoiexternal.toml`
+  (and `.toml.tmpl`) and reports such a directory with its fix: declare it in the overlay as the base
+  does, `private_dot_local/.keep`. YAML and JSON externals files are not read.
+- **`overlay-doctor` honors a `.chezmoiroot`.** An overlay whose repository moves its source root into
+  a subdirectory was read from the repository root, so every entry mapped to the wrong target and no
+  co-owned directory or file could be found. The doctor now follows the file and says so on its
+  first line.
+- **`claude-trust-check` reads the manifest in three calls instead of two per project**
+  (`fleet-decl --values <key>`, new), and `overlay-doctor` skips its Tier W trust report on the work
+  domain unless `OVERLAY_DOCTOR_TRUST=1`. On a manifest of hundreds of repositories the per-project
+  reads took minutes, and there most repositories never host a background session.
 - `hook-doctor` switches the spelling hooks off during its leak-guard probes, as it already did the
   repository gates: a spelling refusal of its clean input used to read as `BLOCKED`, a broken guard.
 - **ACTION for a private layer, if anything outside the layers adds Claude Code hooks:** for every hook

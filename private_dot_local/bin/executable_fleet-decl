@@ -11,6 +11,7 @@
 #          fleet-decl --canonical-list <name> <key>  # ...when that key holds a sequence
 #          fleet-decl --projects-with <key>      # every project that declares <key>, one per line
 #          fleet-decl --entry <project> <key>    # a key on the project named <project>
+#          fleet-decl --values <key>             # <project><TAB><value> for every project declaring <key>
 #          fleet-decl --entry-list <project> <key> [<item-key>]
 #                                                # the items of a sequence on <project>, one per line;
 #                                                # with <item-key> the items are maps and that key is
@@ -208,6 +209,17 @@ case "${1:-}" in
     [ $# -eq 2 ] || { printf 'usage: fleet-decl --projects-with <key>\n' >&2; exit 2; }
     valid_key "$2"
     yq -e -r ".projects | to_entries[] | select(.value.$2 != null) | .key" "$RECORD" 2>/dev/null || exit 1
+    exit 0 ;;
+  --values)
+    # The bulk form of --projects-with plus --entry: one parse of the record instead of one per
+    # project, for a caller reading one key of every project (a manifest of hundreds of repositories
+    # made the per-project form take minutes). A scalar prints as YAML gives it, so a declared false
+    # prints `false` here where --entry reports it as not declared. Exit 1 when no project declares it.
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --values <key>\n' >&2; exit 2; }
+    valid_key "$2"
+    _out=$(yq -e -r ".projects | to_entries[] | select(.value.$2 != null) | .key + \"\t\" + (.value.$2 | tostring)" "$RECORD" 2>/dev/null) || exit 1
+    [ -n "$_out" ] || exit 1
+    printf '%s\n' "$_out"
     exit 0 ;;
   --entry)
     # By project NAME rather than by path. A project name is interpolated into the query, so it is

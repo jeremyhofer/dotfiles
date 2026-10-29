@@ -197,6 +197,32 @@ out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
 echo "$out" | grep -qF "git mv 'private_dot_local/private_bin' 'private_dot_local/bin'" || { echo "FAIL(G2): nested fix not named"; echo "$out"; exit 1; }
 echo "ok:   nested co-owned dir conflict flagged with the rename of that component only"
 
+# Case R — the overlay's source root is moved by .chezmoiroot: its entries are read from that root,
+# so a co-owned ~/.local conflict under it is still found (it was invisible before).
+mk "$tmp/ovr"; mkdir -p "$tmp/ovroot"; rm -rf "$tmp/ovroot/home"; mv "$tmp/ovr" "$tmp/ovroot/home"
+echo home > "$tmp/ovroot/.chezmoiroot"
+b="$tmp/base"; rm -rf "$b"; mkdir -p "$b/dot_local/bin" "$b/dot_config"
+out=$(OVERLAY_SRC="$tmp/ovroot" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q "moves the source root to home" || { echo "FAIL(R): .chezmoiroot not honored"; echo "$out"; exit 1; }
+echo "$out" | grep -q "CONFLICT.*'~/.local'" || { echo "FAIL(R): conflict under a moved source root not found"; echo "$out"; exit 1; }
+echo "ok:   .chezmoiroot honored; a conflict under the moved root is found"
+
+# Case X — an overlay external cloning into ~/.local/share makes chezmoi create ~/.local plain
+# (0755) against a base that declares it private: found, with the .keep that fixes it; and the fix
+# itself clears it.
+mk "$tmp/ov"; rm -rf "$tmp/ov/private_dot_local"
+printf '[".local/share/thing"]\n    type = "git-repo"\n    url = "https://example.invalid/r.git"\n' > "$tmp/ov/.chezmoiexternal.toml"
+b="$tmp/base"; rm -rf "$b"; mkdir -p "$b/private_dot_local/bin" "$b/dot_config"
+out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 1 ] || { echo "FAIL(X): external-parent conflict should exit 1, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "$out" | grep -q "CONFLICT.*'~/.local'.*parent of an external" || { echo "FAIL(X): conflict from an external's parent not found"; echo "$out"; exit 1; }
+echo "$out" | grep -qF "touch 'private_dot_local/.keep'" || { echo "FAIL(X): the .keep fix not named"; echo "$out"; exit 1; }
+mkdir -p "$tmp/ov/private_dot_local"; : > "$tmp/ov/private_dot_local/.keep"
+out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$b" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q "CONFLICT.*'~/.local'" && { echo "FAIL(X): the declared directory is still reported"; echo "$out"; exit 1; }
+rm -f "$tmp/ov/.chezmoiexternal.toml"
+echo "ok:   an external's implied parent conflicting with the base is found, with its fix; the fix clears it"
+
 # Case H — clean fake base + complete overlay, agreeing attrs -> exit 0, NO false-positive CONFLICT.
 mk "$tmp/ov"; mkbase "$tmp/base"
 out=$(OVERLAY_SRC="$tmp/ov" BASE_SRC="$tmp/base" sh "$script" 2>&1) && rc=0 || rc=$?
@@ -441,5 +467,15 @@ notool=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/c
 notool=${notool%:}
 out=$(PATH="$notool" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'Tier W' && { echo "FAIL(W4): reported without the tool on PATH"; echo "$out"; exit 1; }
-echo "ok:   Tier W: trust reported as advisory (all trusted, names needing a click, unknown, absent tool)"
+# On the work domain (a stand-in chezmoi reports it) the check is skipped, saying how to run it;
+# OVERLAY_DOCTOR_TRUST=1 runs it there.
+stub_trust 0 ""
+printf '#!/bin/sh\n[ "$1" = data ] && { printf "{\\"domain\\":\\"work\\"}\\n"; exit 0; }\nexit 1\n' > "$tmp/trbin/chezmoi"; chmod +x "$tmp/trbin/chezmoi"
+out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'skipped .*Tier W: .*work domain.*OVERLAY_DOCTOR_TRUST=1' || { echo "FAIL(W5): not skipped on the work domain"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'OK .*Tier W' && { echo "FAIL(W5): the check ran on the work domain"; echo "$out"; exit 1; }
+out=$(PATH="$tmp/trbin:$PATH" OVERLAY_DOCTOR_TRUST=1 OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$out" | grep -q 'OK .*Tier W' || { echo "FAIL(W6): OVERLAY_DOCTOR_TRUST=1 did not run it on the work domain"; echo "$out"; exit 1; }
+rm -f "$tmp/trbin/chezmoi" "$tmp/trbin/claude-trust-check"
+echo "ok:   Tier W: trust reported as advisory (all trusted, names needing a click, unknown, absent tool; skipped on work unless asked)"
 echo "PASS"

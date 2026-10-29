@@ -362,6 +362,25 @@ out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --projects-wi
 [ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--projects-with: none declaring is exit 1, empty" || bad "--projects-with none" "rc=$rc out=$out"
 out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --projects-with worktrunk 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "--projects-with: unreadable record is exit 2" || bad "--projects-with unreadable" "rc=$rc"
+# --values: one key of every project in one parse, a declared false printed as `false`.
+cat > "$TMP/vals.yaml" <<'YAML'
+projects:
+  alpha:
+    path: internal/alpha
+    claudeTrust: false
+  beta:
+    path: internal/beta
+  gamma:
+    claudeTrust: true
+YAML
+out=$(FLEET_RECORD="$TMP/vals.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values path 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "$(printf 'alpha\tinternal/alpha\nbeta\tinternal/beta')" ] && ok "--values: name and value of every declaring project" || bad "--values path" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/vals.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values claudeTrust 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "$(printf 'alpha\tfalse\ngamma\ttrue')" ] && ok "--values: a declared false prints as false" || bad "--values claudeTrust" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/vals.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values nosuchkey 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--values: none declaring is exit 1, empty" || bad "--values none" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values path 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--values: unreadable record is exit 2" || bad "--values unreadable" "rc=$rc"
 out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry alpha worktrunk.layout 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ "$out" = "bare" ] && ok "--entry reads a nested key by project name" || bad "--entry" "rc=$rc out=$out"
 out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry beta url 2>&1); rc=$?

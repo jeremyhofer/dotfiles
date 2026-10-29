@@ -143,6 +143,15 @@ require() {
   fi
 }
 
+# A .chezmoiroot file moves a source tree's root into a subdirectory, which chezmoi honors; every
+# check below reads from that root. Missing it made each overlay entry map to the wrong target
+# (`home/.local` rather than `.local`), so no co-owned directory or file could ever be found.
+if [ -f "$OSRC/.chezmoiroot" ]; then
+  _oroot=$(sed -n '1{s/[[:space:]]*$//;p;}' "$OSRC/.chezmoiroot")
+  [ -n "$_oroot" ] && [ -d "$OSRC/$_oroot" ] || { echo "overlay-doctor: $OSRC/.chezmoiroot names '$_oroot', which is not a directory there" >&2; exit 2; }
+  echo "overlay-doctor: $OSRC/.chezmoiroot moves the source root to $_oroot"
+  OSRC="$OSRC/$_oroot"
+fi
 echo "overlay-doctor: auditing $OSRC"
 
 # --- Tier A: generic mechanism (base-provided; auto-propagated, non-gating) ---
@@ -485,17 +494,52 @@ _srcdir() {  # _srcdir <tree> <target>: the source path (relative to <tree>) of 
       [ "$(_totarget "${_sp#./}" | cut -f1)" = "$2" ] && { printf '%s\n' "${_sp#./}"; break; }
     done
 }
-_emit_dirs "$BSRC" > "$btmp"
-_emit_dirs "$OSRC" | while IFS="$TAB" read -r _otgt _oattr; do
+# An external (.chezmoiexternal.toml, or .toml.tmpl) makes its instance create every parent of its
+# target, with plain attributes unless the source tree declares that directory itself. Those
+# directories never appear in the tree, so the overlay's clone into ~/.local/share/<name> made
+# ~/.local 0755 against the base's private 0700, with chezmoi asking to overwrite ~/.local on
+# every apply and nothing here to see. Each key is a target path; a templated key contributes the
+# part before its first `{{`. YAML and JSON externals files are not read.
+_ext_parents() {  # _ext_parents <tree>: each parent directory an external implies, one per line
+  for _ef in "$1/.chezmoiexternal.toml" "$1/.chezmoiexternal.toml.tmpl"; do
+    [ -f "$_ef" ] || continue
+    sed -n 's/^[[:space:]]*\[[[:space:]]*"\([^"]*\)"[[:space:]]*\][[:space:]]*$/\1/p' "$_ef"
+  done | while IFS= read -r _k; do
+    case "$_k" in *'{{'*) _k=${_k%%'{{'*}; _k=${_k%/}; _k="$_k/x" ;; esac
+    _d=$(dirname -- "$_k")
+    while [ -n "$_d" ] && [ "$_d" != . ] && [ "$_d" != / ]; do printf '%s\n' "$_d"; _d=$(dirname -- "$_d"); done
+  done | sort -u
+}
+_all_dirs() {  # _all_dirs <tree> <implicit-list-out>: explicit source dirs, then implied ones not declared
+  _emit_dirs "$1" > "$2.explicit"
+  _ext_parents "$1" | while IFS= read -r _d; do
+    awk -F"$TAB" -v t="$_d" '$1==t{f=1} END{exit !f}' "$2.explicit" || printf '%s\n' "$_d"
+  done > "$2"
+  cat "$2.explicit"; while IFS= read -r _d; do printf '%s\t\n' "$_d"; done < "$2"
+  rm -f "$2.explicit"
+}
+_bimp=$(mktemp "$_TMP/xdoctor-bi.XXXXXX"); _oimp=$(mktemp "$_TMP/xdoctor-oi.XXXXXX")
+_all_dirs "$BSRC" "$_bimp" > "$btmp"
+_all_dirs "$OSRC" "$_oimp" | while IFS="$TAB" read -r _otgt _oattr; do
   [ -n "$_otgt" ] || continue
   if _battr=$(awk -F"$TAB" -v t="$_otgt" '$1==t{print $2; f=1} END{exit !f}' "$btmp"); then
     if [ "$_battr" != "$_oattr" ]; then
-      _osp=$(_srcdir "$OSRC" "$_otgt"); _bsp=$(_srcdir "$BSRC" "$_otgt")
-      _want="$(dirname -- "$_osp")/$(basename -- "$_bsp")"; _want=${_want#./}
-      xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [${_battr:-none}] as '$_bsp', overlay [${_oattr:-none}] as '$_osp'. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Fix in the overlay repository: git mv '$_osp' '$_want'"
+      _bsp=$(_srcdir "$BSRC" "$_otgt")
+      if grep -qxF "$_otgt" "$_oimp"; then
+        xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [${_battr:-none}] as '${_bsp:-an external's parent}', overlay [none] as the parent of an external in its .chezmoiexternal file, which has no entry for it in the source tree. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Fix in the overlay repository: declare it as the base does, mkdir -p '$_bsp' && touch '$_bsp/.keep', and commit the .keep"
+      elif grep -qxF "$_otgt" "$_bimp"; then
+        _osp=$(_srcdir "$OSRC" "$_otgt")
+        xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [none] as the parent of an external in its .chezmoiexternal file, overlay [${_oattr:-none}] as '$_osp'. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Make the overlay's entry plain, or report it against the base."
+      else
+        _osp=$(_srcdir "$OSRC" "$_otgt")
+        _want="$(dirname -- "$_osp")/$(basename -- "$_bsp")"; _want=${_want#./}
+        xbad "directory '~/$_otgt' is managed by both layers with different attributes — base [${_battr:-none}] as '$_bsp', overlay [${_oattr:-none}] as '$_osp'. Each apply resets the other's mode, so chezmoi asks to overwrite it every time. Fix in the overlay repository: git mv '$_osp' '$_want'"
+      fi
     fi
   fi
 done
+
+rm -f "$_bimp" "$_oimp"
 
 # (2b) The SAME TARGET FILE owned by BOTH layers. The rule at the top of this section -- managed
 # sets stay disjoint -- was stated but never enforced: only directory ATTRIBUTES were compared, so a
@@ -599,7 +643,13 @@ fi
 # only a person can accept it. claude-trust-check lists the manifest's directories still waiting.
 # Names only, never a path: this report is read aloud or retyped off a machine. Silent when the tool
 # or the deployed manifest is absent (nothing to check yet).
-if command -v claude-trust-check >/dev/null 2>&1 && [ -f "$_rec" ]; then
+# Skipped on the work domain unless asked for (OVERLAY_DOCTOR_TRUST=1): there the manifest lists
+# hundreds of repositories, few of them places a background session is launched, so the list is noise
+# and the check is slow. The domain is this machine's chezmoi data; with no chezmoi it runs.
+_domain=$(chezmoi data --format json 2>/dev/null | jq -r '.domain // empty' 2>/dev/null || true)
+if [ "$_domain" = work ] && [ "${OVERLAY_DOCTOR_TRUST:-0}" != 1 ]; then
+  note "skipped     Tier W: workspace trust is not checked on the work domain (OVERLAY_DOCTOR_TRUST=1 runs it)"
+elif command -v claude-trust-check >/dev/null 2>&1 && [ -f "$_rec" ]; then
   _trc=0; _trn=$(FLEET_RECORD="$_rec" claude-trust-check --names-only 2>/dev/null) || _trc=$?
   case "$_trc" in
     0) note "OK          Tier W: every manifest directory has accepted Claude Code's workspace trust" ;;

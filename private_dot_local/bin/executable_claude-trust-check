@@ -132,39 +132,24 @@ decl() {
 
 # --- enumerate ----------------------------------------------------------------------------------
 # $W/cand: name<TAB>absolute dir<TAB>priority (0 launch dir, 1 project path), in manifest order.
+# Each key is read for every project in ONE fleet-decl call (--values). Reading it project by
+# project re-parsed the whole manifest each time, which took minutes on a manifest of hundreds.
 : >"$W/cand"
-if decl --projects-with path; then
-  cp "$W/out" "$W/names"
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    decl --entry "$n" path || continue
-    p=$(cat "$W/out")
+for _kp in "path 1" "canonicalLaunchDir 0"; do
+  _key=${_kp% *}; _pri=${_kp#* }
+  decl --values "$_key" || continue
+  while IFS="$(printf '\t')" read -r n p; do
+    [ -n "$n" ] && [ -n "$p" ] || continue
     case "$p" in /*) ;; *) p="$MDIR/$p" ;; esac
     p=$(lexnorm "$p")
-    printf '%s\t%s\t1\n' "$n" "$p" >>"$W/cand"
-  done <"$W/names"
-fi
-if decl --projects-with canonicalLaunchDir; then
-  cp "$W/out" "$W/names"
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    decl --entry "$n" canonicalLaunchDir || continue
-    p=$(cat "$W/out")
-    case "$p" in /*) ;; *) p="$MDIR/$p" ;; esac
-    p=$(lexnorm "$p")
-    printf '%s\t%s\t0\n' "$n" "$p" >>"$W/cand"
-  done <"$W/names"
-fi
+    printf '%s\t%s\t%s\n' "$n" "$p" "$_pri" >>"$W/cand"
+  done <"$W/out"
+done
 
-# Opted out: declared `claudeTrust`, and the value reads as absent. fleet-decl reads a YAML false as
-# "not declared" (exit 1), so a project listed by --projects-with whose --entry says nothing is false.
+# Opted out: `claudeTrust: false`.
 : >"$W/optout"
-if decl --projects-with claudeTrust; then
-  cp "$W/out" "$W/names"
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    decl --entry "$n" claudeTrust || printf '%s\n' "$n" >>"$W/optout"
-  done <"$W/names"
+if decl --values claudeTrust; then
+  awk -F '\t' '$2 == "false" { print $1 }' "$W/out" >"$W/optout"
 fi
 if [ -s "$W/optout" ]; then
   awk -F '\t' 'NR == FNR { out[$0] = 1; next } !($1 in out)' "$W/optout" "$W/cand" >"$W/cand.in"
