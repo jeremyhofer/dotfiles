@@ -3,6 +3,10 @@
 {{- /* skipSkills is never prompted: a machine lists base skills it does not want by editing this
        value in its generated config; carrying it forward here keeps it across `chezmoi init`. */ -}}
 {{- $skipSkills := get . "skipSkills" | default list -}}
+{{- /* machineSnapshot is never prompted either: on the work domain the machine-snapshot LaunchAgent
+       is deployed only when this is true (.chezmoiignore), set by editing the generated config. A
+       15-second process sampler on an employer's machine is that employer's call, so it is opt-in. */ -}}
+{{- $machineSnapshot := get . "machineSnapshot" | default false -}}
 {{- /* dpi is an X11/.Xresources concern (Linux only); with Wayland primary + X break-glass,
        macOS should never be prompted for it. .Xresources is darwin-ignored, so no consumer. */ -}}
 {{- if eq .chezmoi.os "linux" -}}
@@ -12,6 +16,7 @@
     domain = {{ $domain | quote }}
     overlayRepo = {{ $overlayRepo | quote }}
     skipSkills = [{{ range $i, $s := $skipSkills }}{{ if $i }}, {{ end }}{{ $s | quote }}{{ end }}]
+    machineSnapshot = {{ $machineSnapshot }}
 {{- if eq .chezmoi.os "linux" }}
     dpi = {{ .dpi | quote }}
 {{- end }}

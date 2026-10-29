@@ -56,6 +56,13 @@ Library
 setup-dev-tls.sh
 # Alacritty's config is deployed in the personal domain only.
 .config/alacritty
+{{- if not (get . "machineSnapshot") }}
+# The machine-snapshot LaunchAgent samples every process every 15 seconds; on a work machine it is
+# opt-in (machineSnapshot = true in the generated config), so neither the agent nor its loader is
+# deployed by default.
+Library/LaunchAgents/com.jeremyhofer.machine-snapshot.plist
+load-machine-snapshot-agent.sh
+{{- end }}
 {{ end }}
 
 # Per-machine skill exclusion: skills named in the skipSkills config value (a list in the [data] of

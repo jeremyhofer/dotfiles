@@ -48,6 +48,11 @@ Entries are newest first.
   without them now has `chezmoi apply` refuse up front, naming `brew bundle`, instead of every commit
   refusing later. **ACTION on a Mac:** `brew bundle --file "$(chezmoi source-path)/Brewfile"` before
   applying. `overlay-doctor --machine` now lists `codespell` among the tools it assesses.
+- **The `machine-snapshot` LaunchAgent (2026-10-17) is opt-in on the work domain.** It samples every
+  process every 15 seconds, which on an employer's machine is the employer's call, and a refused
+  `launchctl` there would fail the apply. With `domain = "work"` neither the agent nor its loader is
+  deployed unless the machine's generated config has `machineSnapshot = true` in `[data]` (never
+  prompted; `chezmoi init` keeps it, like `skipSkills`). Personal machines are unchanged.
 - `hook-doctor` switches the spelling hooks off during its leak-guard probes, as it already did the
   repository gates: a spelling refusal of its clean input used to read as `BLOCKED`, a broken guard.
 - **ACTION for a private layer, if anything outside the layers adds Claude Code hooks:** for every hook
