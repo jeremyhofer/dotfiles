@@ -119,8 +119,9 @@ plugins=(
   fzf
   # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/git
   git
-  # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/git-prompt
-  git-prompt
+  # Not git-prompt: it runs `git status` before every prompt and on every cd, and the prompt waits
+  # for it (seconds in a large repo). The theme's own branch and dirty marker, from oh-my-zsh's
+  # lib/git.zsh, is computed in the background and is the one git status the prompt shows.
   # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/isodate
   isodate
   # https://github.com/ohmyzsh/ohmyzsh/tree/master/plugins/jsontools
