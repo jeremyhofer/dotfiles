@@ -18,6 +18,9 @@
 	# 230 ms in a work repo of 24,460 directories). Needs a filesystem that updates directory
 	# mtimes, as APFS and ext4 do; `git update-index --test-untracked-cache` checks one.
 	untrackedCache = true
+	# core.fsmonitor stays off: it took the same repo only from 230 ms to 80 ms, and Claude Code's
+	# sandbox kills its daemon at the end of each command, leaving a stale socket that costs the
+	# next command's first git call about a second (measured 2026-10-30).
 [merge]
 	conflictStyle = zdiff3
 [interactive]
