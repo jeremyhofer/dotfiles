@@ -13,6 +13,11 @@
 [core]
     excludesfile = ~/.gitignore_global
 	pager = delta
+	# Keep each directory's untracked-file scan in the index and reuse it while the directory's
+	# mtime is unchanged, so `git status` stops listing every directory on every run (2000 ms to
+	# 230 ms in a work repo of 24,460 directories). Needs a filesystem that updates directory
+	# mtimes, as APFS and ext4 do; `git update-index --test-untracked-cache` checks one.
+	untrackedCache = true
 [merge]
 	conflictStyle = zdiff3
 [interactive]
