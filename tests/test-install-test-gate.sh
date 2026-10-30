@@ -45,13 +45,14 @@ commit_one "$tmp/r" bin/tool; rc=$?
 check "a failing suite refuses a commit of a non-doc file" '[ "$rc" != 0 ] && grep -q "my layer" "$tmp/out" && grep -q SKIP_MY_TESTS "$tmp/out"'
 git -C "$tmp/r" reset -q
 commit_one "$tmp/r" docs/page.md; rc=$?
-check "a documentation-only commit skips the suite" '[ "$rc" = 0 ] && ! grep -q suite-ran "$tmp/out"'
+check "a documentation-only commit skips the suite" '[ "$rc" = 0 ] && ! grep -q suite-ran "$tmp/out" && ! grep -q "running the test suite" "$tmp/out"'
 echo x >> "$tmp/r/bin/tool"; git -C "$tmp/r" add bin/tool
 SKIP_MY_TESTS=1 git -C "$tmp/r" commit -qm skipped > "$tmp/out" 2>&1; rc=$?
 check "the skip variable lets a deliberate WIP commit through" '[ "$rc" = 0 ]'
 printf '#!/bin/sh\nexit 0\n' > "$tmp/r/tests/run-all.sh"; git -C "$tmp/r" add tests/run-all.sh
 commit_one "$tmp/r" bin/tool; rc=$?
 check "a passing suite lets the commit through" '[ "$rc" = 0 ]'
+check "the gate says the suite is running before it runs" 'grep -q "running the test suite" "$tmp/out"'
 
 # Installed with --paths: only matching staged paths run the suite.
 mkrepo "$tmp/p" 1

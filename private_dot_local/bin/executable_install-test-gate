@@ -92,6 +92,9 @@ if [ -z "$staged_run" ]; then
 ' "$GATE_SKIP_VAR" >&2
   exit 1
 fi
+# Said before the suite starts, since its output is held until it ends: a slow suite must not read
+# as a hung commit.
+printf '%s pre-commit: running the test suite (tests/run-all.sh); its output shows only if it fails\n' "$GATE_LABEL" >&2
 if ! out=$(cd "$root" && sh "$staged_run" sh tests/run-all.sh 2>&1); then
   printf '\n%s pre-commit: the test suite failed -- commit refused:\n' "$GATE_LABEL" >&2
   printf '%s\n' "$out" >&2
