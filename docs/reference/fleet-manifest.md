@@ -78,7 +78,7 @@ Every other tag is the domain's own vocabulary and only selects.
 | `canonicalIdentity` | text | the session launcher | yes when `canonical` is set |
 | `canonicalLaunchDir` | a path | the session launcher; `memory-doctor` | yes when `canonical` is set |
 | `canonicalLaunchModel` | a model id | the session launcher | yes when `canonical` is set |
-| `canonicalMachines` | list of machine names | the session launcher | yes when `canonical` is set |
+| `canonicalMachines` | list of hostnames, each exactly as `hostname` prints it on that machine (a whole, case-sensitive match; not an alias or a free label) | the session launcher | yes when `canonical` is set. A machine expects, and launches, only the canonicals that list its `hostname`, so a name that does not match leaves the canonical unexpected there, silently |
 
 **The layout is declared, and `fleet-decl --layout <name>` reads it.** An entry is a bare container
 when it has a `container:` block, a `clone:` command that runs `fleet-repo` (or its older name

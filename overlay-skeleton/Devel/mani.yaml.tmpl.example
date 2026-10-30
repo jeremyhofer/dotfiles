@@ -46,7 +46,7 @@ projects:
     # canonicalIdentity: "..."                     #   with `canonical`, all four companions are required
     # canonicalLaunchDir: internal/journal
     # canonicalLaunchModel: claude-opus-5-5
-    # canonicalMachines: [workstation]
+    # canonicalMachines: [workstation]          #   each exactly as `hostname` prints it on that machine
 
   # Somebody else's repository, cloned to read or build: no policy needed, its hooks are not run.
   some-upstream-tool:
