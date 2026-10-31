@@ -282,17 +282,25 @@ usage_window_seg() {
 win_seg=$(usage_window_seg "$five_pct" "$five_resets" "$seven_pct" "$seven_resets")
 [ -n "$win_seg" ] && parts+=("$win_seg")
 
-# --- Reload band: "walking away right now costs N% of a 5-hour window" ------
+# --- Reload band: what walking away right now costs ------------------------
 # The prompt cache is a sliding window refreshed for free on every read, so continuous work never
 # pays. Crossing an idle gap longer than the cache TTL rebuilds the whole context at 2x input
 # price, once, in proportion to how deep the session is. That -- not context fill and not quota --
 # is the only thing about a long session that costs real money.
 #
-#   reload % of a 5-hour window ~= depth / rate
+# The cost is expressed against whichever rate limit the plan has:
+#   with a 5-hour window:  reload % of a 5-hour window ~= depth / rate
+#   with no 5-hour window: the cached context depth in tokens (e.g. "260k"). There is then no
+#     5-hour window for a percentage to be a share OF, so "% of a window" would mean nothing; the
+#     depth is what is being rebuilt, and it is the figure to act on.
 #   rate: Fable 5 50k · Opus 5 100k · Sonnet 5 167k · Haiku 4.5 500k
 #   < 5% green (ignore) · 5-10% amber (shed depth only at a natural boundary) · >= 10% red
+# The band does not depend on which form is shown: both use the same thresholds at each model's
+# rate, which in tokens is 5% = 5 x rate and 10% = 10 x rate (Opus 500k and 1M, Fable 250k and
+# 500k, Sonnet 835k and 1.67M, Haiku 2.5M and 5M). Switching plans therefore moves the units and
+# leaves the color where it was.
 #
-# THE PERCENTAGE IS THE PAYLOAD; COLOR IS REINFORCEMENT ONLY. The band word is printed as text
+# THE FIGURE IS THE PAYLOAD; COLOR IS REINFORCEMENT ONLY. The band word is printed as text
 # for exactly that reason: a color-only signal cannot be read by someone with limited color
 # vision, and cannot be verified by anyone from a screenshot or a copied line.
 #
@@ -303,16 +311,38 @@ win_seg=$(usage_window_seg "$five_pct" "$five_resets" "$seven_pct" "$seven_reset
 # Matched on the model FAMILY, so "Opus 5 (1M context)" resolves like "Opus 5". An unrecognized
 # model renders "n/a" rather than borrowing another model's rate: a wrong number here is worse
 # than no number, because it reads exactly as authoritative as a right one.
-case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
-  *fable*)  reload_rate=50000  ;;
-  *opus*)   reload_rate=100000 ;;
-  *sonnet*) reload_rate=167000 ;;
-  *haiku*)  reload_rate=500000 ;;
-  *)        reload_rate=       ;;
-esac
-
-if [ -n "$reload_rate" ] && [ -n "$used_tokens" ] && [ "$used_tokens" != "null" ]; then
-  reload_pct=$(awk -v d="$used_tokens" -v r="$reload_rate" 'BEGIN { printf "%.1f", d/r }')
+#
+# reload_seg <model> <input tokens> <5h pct, empty/"null" when the plan has no 5-hour window>
+#            <cache state text>; prints the segment.
+reload_seg() {
+  local model=$1 tokens=$2 five=$3 cache=$4 rate reload_pct band band_color shown k
+  [ "$five" = null ] && five=
+  case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
+    *fable*)  rate=50000  ;;
+    *opus*)   rate=100000 ;;
+    *sonnet*) rate=167000 ;;
+    *haiku*)  rate=500000 ;;
+    *)        rate=       ;;
+  esac
+  if [ -z "$rate" ] || [ -z "$tokens" ] || [ "$tokens" = null ]; then
+    printf '%s' "${C_ICON}${ICON_RELOAD}${RESET}  ${C_DETAIL}n/a · ${cache}${RESET}"
+    return 0
+  fi
+  if [ -n "$five" ]; then
+    reload_pct=$(awk -v d="$tokens" -v r="$rate" 'BEGIN { printf "%.1f", d/r }')
+    shown="${reload_pct}%"
+  else
+    # Whole thousands, and the band is derived from the figure AS SHOWN, for the reason below.
+    k=$(awk -v d="$tokens" 'BEGIN { printf "%.0f", d/1000 }')
+    # Four decimals, not one: the figure shown is the token count, so the band should turn at the
+    # token count the thresholds name (Opus 500k), not at the nearest 0.1% of it.
+    reload_pct=$(awk -v k="$k" -v r="$rate" 'BEGIN { printf "%.4f", k*1000/r }')
+    if [ "$k" -ge 1000 ]; then
+      shown=$(awk -v k="$k" 'BEGIN { printf "%.1fM", k/1000 }')
+    else
+      shown="${k}k"
+    fi
+  fi
   # Band is derived from the SAME rounded value that is displayed, so the word can never
   # contradict the number on screen. The cost is deliberate: 4.99% renders "5.0% amber" rather
   # than "5.0% green" -- a reader can only act on what they can actually see, and a word that
@@ -323,10 +353,10 @@ if [ -n "$reload_rate" ] && [ -n "$used_tokens" ] && [ "$used_tokens" != "null" 
     amber) band_color="$C_CTX_MED"  ;;
     *)     band_color="$C_CTX_HIGH" ;;
   esac
-  parts+=("${C_ICON}${ICON_RELOAD}${RESET}  ${band_color}${reload_pct}%${RESET} ${C_DETAIL}${band} · $(cache_state)${RESET}")
-else
-  parts+=("${C_ICON}${ICON_RELOAD}${RESET}  ${C_DETAIL}n/a · $(cache_state)${RESET}")
-fi
+  printf '%s' "${C_ICON}${ICON_RELOAD}${RESET}  ${band_color}${shown}${RESET} ${C_DETAIL}${band} · ${cache}${RESET}"
+}
+
+parts+=("$(reload_seg "$model" "$used_tokens" "$five_pct" "$(cache_state)")")
 
 # Effort (reasoning models only)
 [ -n "$effort" ] && parts+=("${C_ICON}${ICON_EFFORT}${RESET}  ${C_EFFORT}${effort}${RESET}")

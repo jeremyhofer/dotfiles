@@ -43,4 +43,34 @@ check 'W  42% · resets 17:00'         'only the 5-hour window' \
 check ''                              'no window at all renders nothing' \
       null null null null
 
+# --- reload band: the cost of a cold prompt cache -------------------------------------------------
+# With a 5-hour window the cost is a percentage of it; with none (five_hour null) there is nothing
+# for a percentage to be a share of, so the cached depth is shown in tokens. The band thresholds are
+# the same depth either way (5% and 10% of the window at each model's rate), so the word and color
+# must not move when the unit does.
+reload() {  # reload <model> <tokens> <5h pct> -> the segment, plain text
+    bash -c '
+        C_ICON= C_DETAIL= C_CTX_LOW=LOW: C_CTX_MED=MED: C_CTX_HIGH=HIGH: RESET= ICON_RELOAD=R
+        '"$(sed -n '/^reload_seg() {/,/^}/p' "$LINE")"'
+        reload_seg "$1" "$2" "$3" "CACHE"
+    ' _ "$@"
+}
+rcheck() {  # rcheck <expected> <description> <args...>
+    local want=$1 what=$2; shift 2
+    local got; got=$(reload "$@")
+    [[ "$got" == "$want" ]] && ok "$what -> '$got'" || bad "$what: got '$got', expected '$want'"
+}
+rcheck 'R  LOW:2.6% green · CACHE'  '5-hour window present: % of the window, as before' 'Opus 5' 260000 42
+rcheck 'R  MED:5.2% amber · CACHE'  '5-hour window present, amber' 'Fable 5' 260000 42
+rcheck 'R  HIGH:10.0% red · CACHE'  '5-hour window present, red' 'Opus 5' 1000000 42
+rcheck 'R  LOW:260k green · CACHE'  'no 5-hour window (null): depth in tokens' 'Opus 5' 260000 null
+rcheck 'R  LOW:260k green · CACHE'  'no 5-hour window (empty): depth in tokens' 'Opus 5' 260000 ''
+rcheck 'R  MED:260k amber · CACHE'  'tokens form: same band as the percent form (Fable at 5.2% is amber)' 'Fable 5' 260000 null
+rcheck 'R  MED:500k amber · CACHE'  'tokens form: 5% of Opus is 500k, the amber edge' 'Opus 5' 500000 null
+rcheck 'R  LOW:499k green · CACHE'  'tokens form: just under the amber edge stays green' 'Opus 5' 499000 null
+rcheck 'R  HIGH:1.0M red · CACHE'   'tokens form: 10% of Opus is 1M, the red edge, shown in millions' 'Opus 5' 1000000 null
+rcheck 'R  MED:900k amber · CACHE'  'tokens form: Sonnet at 900k is 5.4%, amber' 'Sonnet 5' 900000 null
+rcheck 'R  n/a · CACHE'             'unrecognized model renders n/a in either form' 'Mystery 1' 260000 null
+rcheck 'R  n/a · CACHE'             'no token figure renders n/a' 'Opus 5' '' null
+
 exit $fail
