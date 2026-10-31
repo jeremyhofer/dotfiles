@@ -57,18 +57,31 @@ known=$(jq -r 'keys[]' "$plugins_dir/known_marketplaces.json" 2>/dev/null || tru
 installed=$(jq -r '.plugins | keys[]' "$plugins_dir/installed_plugins.json" 2>/dev/null || true)
 failed=0
 
-# 1. Marketplaces: register each declared one this machine does not know. Only the github source
-#    type is handled; anything else is reported rather than guessed at.
+# 1. Marketplaces: register each declared one this machine does not know. Two source types are
+#    handled; anything else is reported rather than guessed at.
+#    - github: a catalog in a GitHub repository, added by `owner/repo`.
+#    - directory: a catalog the layer itself deploys to this machine (a directory holding
+#      .claude-plugin/marketplace.json), added by its path. This is how a layer pins a plugin whose
+#      own repository has no catalog: the deployed catalog's entries name each repository at a full
+#      commit sha. A path with no catalog in it is a failure, since adding it would register nothing.
 for name in $(printf '%s' "$declared" | jq -r '.extraKnownMarketplaces // {} | keys[]'); do
   printf '%s\n' "$known" | grep -qx "$name" && continue
   kind=$(printf '%s' "$declared" | jq -r --arg n "$name" '.extraKnownMarketplaces[$n].source.source')
-  if [ "$kind" != "github" ]; then
-    echo "install-claude-plugins: marketplace '$name' has source type '$kind' -- add it by hand" >&2
-    failed=1; continue
-  fi
-  repo=$(printf '%s' "$declared" | jq -r --arg n "$name" '.extraKnownMarketplaces[$n].source.repo')
-  echo "install-claude-plugins: adding marketplace $name ($repo)"
-  claude plugin marketplace add "$repo" || { echo "install-claude-plugins: FAILED to add $name" >&2; failed=1; }
+  case "$kind" in
+    github)
+      where=$(printf '%s' "$declared" | jq -r --arg n "$name" '.extraKnownMarketplaces[$n].source.repo') ;;
+    directory)
+      where=$(printf '%s' "$declared" | jq -r --arg n "$name" '.extraKnownMarketplaces[$n].source.path')
+      if [ ! -f "$where/.claude-plugin/marketplace.json" ]; then
+        echo "install-claude-plugins: marketplace '$name': no catalog at $where/.claude-plugin/marketplace.json -- not added" >&2
+        failed=1; continue
+      fi ;;
+    *)
+      echo "install-claude-plugins: marketplace '$name' has source type '$kind' -- add it by hand" >&2
+      failed=1; continue ;;
+  esac
+  echo "install-claude-plugins: adding marketplace $name ($where)"
+  claude plugin marketplace add "$where" || { echo "install-claude-plugins: FAILED to add $name" >&2; failed=1; }
 done
 
 # 2. Plugins: install each one the layer declares enabled and this machine lacks.

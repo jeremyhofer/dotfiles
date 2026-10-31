@@ -54,4 +54,16 @@ rc=$(HOME=$H PATH="$H/bin:$PATH" sh "$script" "$H/fragment" >/dev/null 2>"$H/err
 setup '{}' '{"plugins":{}}' 0
 rc=$(HOME=$H PATH="$H/bin:$PATH" sh "$script" >/dev/null 2>&1; echo $?)
 [ "$rc" = 2 ] && [ ! -f "$H/calls" ] && ok "no fragment and no declaration: usage, exit 2" || bad "no fragment" "rc=$rc"
+# 9. a DIRECTORY marketplace (a catalog the layer deploys) is added by its path; a missing path is a
+#    failure, not a guess, and no marketplace is added from it.
+DECL='{"extraKnownMarketplaces":{"fleet-mods":{"source":{"source":"directory","path":"MKT"}}},"enabledPlugins":{"m@fleet-mods":true}}'
+setup '{}' '{"plugins":{}}' 0
+mkdir -p "$H/mkt/.claude-plugin"; printf '{}' > "$H/mkt/.claude-plugin/marketplace.json"
+sed "s|MKT|$H/mkt|" "$H/declared.json" > "$H/d2" && mv "$H/d2" "$H/declared.json"
+rc=$(run); c=$(cat "$H/calls" 2>/dev/null | tr '\n' '|')
+[ "$rc" = 0 ] && [ "$c" = "plugin marketplace add $H/mkt|plugin install m@fleet-mods|" ] && ok "directory marketplace: added by path, plugin installed" || bad "directory marketplace" "rc=$rc calls=$c err=$(cat $H/err)"
+setup '{}' '{"plugins":{}}' 0
+sed "s|MKT|$H/absent|" "$H/declared.json" > "$H/d2" && mv "$H/d2" "$H/declared.json"
+rc=$(run); c=$(cat "$H/calls" 2>/dev/null | tr '\n' '|')
+[ "$rc" != 0 ] && case "$c" in *"marketplace add"*) false;; *) true;; esac && ok "directory marketplace with no catalog: fails, adds nothing" || bad "absent directory" "rc=$rc calls=$c"
 echo "passed: $pass failed: $fail"; [ "$fail" -eq 0 ]
