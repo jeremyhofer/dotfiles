@@ -94,6 +94,7 @@ transcript=$(echo "$input" | jq -r '.transcript_path // empty')
 five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 five_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 seven_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+seven_resets=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 
 # --- Helper: when the prompt cache goes cold -------------------------------------------------
 # The reload band below says what walking away COSTS. This says WHEN that cost starts applying:
@@ -221,40 +222,65 @@ if [ -n "$used_pct" ]; then
   parts+=("$ctx_seg")
 fi
 
-# --- Rolling usage window: "N% of the 5-hour window spent, and when it resets" ---------------
-# The 5-hour window is ACCOUNT-WIDE, not per-session: a second session working in parallel
-# spends the same budget. That is precisely why it belongs on screen continuously rather than
-# only inside the ramp-down hook's message, which by definition arrives once the budget is
-# already nearly gone.
+# --- Rolling usage windows: "N% spent, and when it resets" ----------------------------------
+# Both windows are ACCOUNT-WIDE, not per-session: a second session working in parallel spends the
+# same budget. That is why they belong on screen continuously rather than only inside the
+# ramp-down hook's message, which by definition arrives once the budget is already nearly gone.
+#
+# Which windows exist depends on the plan, so the segment renders whichever the payload carries.
+# On a plan with a 5-hour window, that window is the headline and the 7-day one trails as dim
+# detail. On a plan with only the 7-day window (rate_limits.five_hour arrives null), the 7-day
+# window is the headline, colored and with its reset as weekday and time, because it is then the
+# only limit there is. An earlier version rendered nothing at all when the 5-hour value was
+# absent, which hid the one limit that still applied.
 #
 # Same convention as the reload band below -- the number is the payload and color is only
-# reinforcement -- with one addition: the reset time is rendered as plain wall-clock text, because
-# "when can I work again" is the actual question, and an epoch stamp does not answer it.
+# reinforcement -- and the reset is plain wall-clock text, because "when can I work again" is the
+# actual question and an epoch stamp does not answer it.
 #
-# UNLIKE the reload band, this value DOES have gates attached (ramp-down hooks read the
-# persisted copy written at the top of this file). Showing it here does not add a gate; it means
-# the human can see the same number the gate will act on, before it acts.
-if [ -n "$five_pct" ] && [ "$five_pct" != "null" ]; then
-  five_int=$(printf '%.0f' "$five_pct")
-  if [ "$five_int" -lt 50 ]; then
-    win_color="$C_CTX_LOW"
-  elif [ "$five_int" -lt 80 ]; then
-    win_color="$C_CTX_MED"
+# These values DO have gates attached (ramp-down hooks read the persisted copy written at the top
+# of this file). Showing them here adds no gate; it lets the human see the number a gate acts on.
+#
+# usage_window_seg <5h pct> <5h resets_at> <7d pct> <7d resets_at>; any may be empty or "null".
+# Prints the segment, or nothing when neither window is present.
+usage_window_seg() {
+  local five_pct=$1 five_resets=$2 seven_pct=$3 seven_resets=$4
+  local head_pct head_resets reset_fmt reset_txt seg int color
+  [ "$five_pct" = null ] && five_pct=
+  [ "$five_resets" = null ] && five_resets=
+  [ "$seven_pct" = null ] && seven_pct=
+  [ "$seven_resets" = null ] && seven_resets=
+  if [ -n "$five_pct" ]; then
+    head_pct=$five_pct; head_resets=$five_resets; reset_fmt='%H:%M'
+  elif [ -n "$seven_pct" ]; then
+    head_pct=$seven_pct; head_resets=$seven_resets; reset_fmt='%a %H:%M'
   else
-    win_color="$C_CTX_HIGH"
+    return 0
   fi
-  win_seg="${C_ICON}${ICON_WINDOW}${RESET}  ${win_color}${five_int}%${RESET}"
-  if [ -n "$five_resets" ] && [ "$five_resets" != "null" ]; then
-    reset_hhmm=$(fmt_epoch "$five_resets" '%H:%M')
-    [ -n "$reset_hhmm" ] && win_seg="${win_seg} ${C_DETAIL}· resets ${reset_hhmm}${RESET}"
+  int=$(printf '%.0f' "$head_pct")
+  if [ "$int" -lt 50 ]; then
+    color="$C_CTX_LOW"
+  elif [ "$int" -lt 80 ]; then
+    color="$C_CTX_MED"
+  else
+    color="$C_CTX_HIGH"
   fi
-  # Weekly window, dim: it is the limit that actually bites across a working week, but it moves
-  # slowly enough to be detail rather than headline.
-  if [ -n "$seven_pct" ] && [ "$seven_pct" != "null" ]; then
-    win_seg="${win_seg} ${C_DETAIL}· 7d $(printf '%.0f' "$seven_pct")%${RESET}"
+  seg="${C_ICON}${ICON_WINDOW}${RESET}  ${color}${int}%${RESET}"
+  # With no 5-hour window the headline is the weekly one, labeled so it is not read as a session.
+  [ -z "$five_pct" ] && seg="${seg} ${C_DETAIL}7d${RESET}"
+  if [ -n "$head_resets" ]; then
+    reset_txt=$(fmt_epoch "$head_resets" "$reset_fmt")
+    [ -n "$reset_txt" ] && seg="${seg} ${C_DETAIL}· resets ${reset_txt}${RESET}"
   fi
-  parts+=("$win_seg")
-fi
+  # Both present: the weekly window trails, dim, since it moves slowly.
+  if [ -n "$five_pct" ] && [ -n "$seven_pct" ]; then
+    seg="${seg} ${C_DETAIL}· 7d $(printf '%.0f' "$seven_pct")%${RESET}"
+  fi
+  printf '%s' "$seg"
+}
+
+win_seg=$(usage_window_seg "$five_pct" "$five_resets" "$seven_pct" "$seven_resets")
+[ -n "$win_seg" ] && parts+=("$win_seg")
 
 # --- Reload band: "walking away right now costs N% of a 5-hour window" ------
 # The prompt cache is a sliding window refreshed for free on every read, so continuous work never
