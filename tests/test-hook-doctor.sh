@@ -118,13 +118,17 @@ want "P5 hook.<event>.enabled=false -> DARK" "commit-msg (planted" "$(run "$tmp/
 git_q -C "$k" config --unset hook.commit-msg.enabled
 
 # --- P6: a refusal by something OTHER than the guard is not coverage -----------------------------
-# The guard entry is off, and a local hook refuses only messages carrying the marker. The planted
-# probe IS refused -- by the wrong thing -- and must still read DARK.
+# The guard entry is off, and a local hook refuses only messages carrying the marker. That hook must
+# not stand in for the guard: the probe switches every non-guard hook on the event off, so the
+# planted marker passes (rc=0) and the event reads DARK. Before that isolation the look-alike did
+# refuse it, and the verdict rested on its refusal lacking the guard's text (rc=1, OTHER).
 git_q -C "$k" config hook.publish-guard-commit-msg.enabled false
 # git appends "$@" to a configured hook's command, so the logic sits in a function that receives it.
 git_q -C "$k" config hook.lookalike.command 'f() { grep -q ZZP- "$1" && exit 1; exit 0; }; f'
 git_q -C "$k" config --add hook.lookalike.event commit-msg
-want "P6 non-guard refusal -> DARK" "commit-msg (planted rc=1, OTHER)" "$(run "$tmp/gcfg" check)"
+p6=$(run "$tmp/gcfg" check)
+want "P6 non-guard refusal -> DARK" "DARK — fail-open" "$p6"
+want "P6 the look-alike never answers for the guard" "commit-msg (planted rc=0" "$p6"
 git_q -C "$k" config --remove-section hook.lookalike
 git_q -C "$k" config --unset hook.publish-guard-commit-msg.enabled
 
@@ -142,6 +146,15 @@ p8=$(HOME="$fh" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 FLEET_RECORD
      FLEET_DEVEL_ROOT="$devel" sh "$doctor" check --path "$k" 2>&1; printf ' rc=%s' "$?")
 want "P8 guard refusing clean input -> BLOCKED" "BLOCKED" "$p8"
 lacks "P8 not reported DARK" "DARK" "$p8"
+
+# --- P9: another configured hook on the event refusing a CLEAN input does not decide the verdict --
+# A Git LFS pre-push hook exits 2 on the probe's push, because the probe's remote name is not a real
+# remote; it read as the guard refusing clean input (BLOCKED) on every repository using LFS. The
+# probe isolates the guard: every configured hook on the event but the guard's own is switched off.
+git_q -C "$k" config hook.lfslike.command 'f() { exit 2; }; f'
+git_q -C "$k" config --add hook.lfslike.event pre-push
+want "P9 another configured hook refusing clean input -> still GUARDED" "GUARDED 1 " "$(run "$tmp/gcfg" check)"
+git_q -C "$k" config --remove-section hook.lfslike
 
 # --- I1: no configured entries -> refuse to report (exit 2), no per-repo findings ----------------
 # If the fragment is not applied, every repo is dark at once. A tool that prints "N repos DARK"

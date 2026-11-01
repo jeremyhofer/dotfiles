@@ -220,11 +220,21 @@ CFG_EVENTS="commit-msg pre-commit pre-push"
 cfg_hook_run() {
   local wt=$1 ev=$2 in=${3:-} err rc e; shift 2; [ $# -gt 0 ] && shift
   local tostdin=(); [ -n "$in" ] && tostdin=(--to-stdin="$in")
-  local off=""
-  for e in $CFG_EVENTS; do off="$off -c hook.repo-gates-$e.enabled=false"; done
-  # The spelling gate is switched off too: it refuses for its own reasons (a British word, codespell
-  # missing), and a refusal of the CLEAN input would otherwise read as the guard being broken.
-  off="$off -c hook.us-spelling-pre-commit.enabled=false -c hook.us-spelling-commit-msg.enabled=false"
+  # Every configured hook on this event except the guard's own entry is switched off: the repo
+  # gates, the spelling gate and any other (a Git LFS pre-push hook exits 2 on the probe's push,
+  # since the probe's remote name is not a real remote). Each refuses for reasons of its own, and a
+  # refusal of the CLEAN input would otherwise read as the guard being broken. The guard's entry is
+  # left as configured, so a disabled or replaced guard still shows. A hook name is whatever sits
+  # between "hook." and ".event", dots included.
+  local off="" name
+  while IFS=' ' read -r key val; do
+    [ "$val" = "$ev" ] || continue
+    name=${key#hook.}; name=${name%.event}
+    [ "$name" = "publish-guard-$ev" ] && continue
+    off="$off -c hook.$name.enabled=false"
+  done <<EOF_HOOKS
+$(git -C "$wt" config --get-regexp '^hook\..*\.event$' 2>/dev/null)
+EOF_HOOKS
   # $off is word-split on purpose: it is a list of `-c key=value` pairs with no spaces inside.
   # shellcheck disable=SC2086
   err=$(cd "$wt" 2>/dev/null && git -c core.hooksPath="$CFG_EMPTY_HOOKS" $off hook run ${tostdin[@]+"${tostdin[@]}"} "$ev" ${1+"$@"} 2>&1 >/dev/null </dev/null)
