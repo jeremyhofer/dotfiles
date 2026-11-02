@@ -11,8 +11,11 @@ repeated every turn is a cost paid every turn.
 
 It prints, only when there is something to say:
   * the ntfy messages NAME has not been shown (`ntfy-inbox show --new NAME`), at most 10 lines;
-  * the Healthchecks checks that went into or out of a problem state (`down` or `grace`) since
-    NAME's last report, asking `hc-status --problems --json` at most once every five minutes;
+  * the Healthchecks checks that went into or out of a problem state since NAME's last report,
+    asking `hc-status --problems --json` at most once every five minutes: `down` at once, and
+    `grace` only when the check was already in trouble on the previous read, since a grace that
+    clears within one interval is a run a little late (a 15-minute job pinging a few seconds past
+    its timeout is in grace on most cycles);
   * that ntfy-inbox stopped writing, or started again, or that hc-status could not read a project.
 With --session-start it asks hc-status whatever the interval and shows the checks in a problem
 state now, even if they were reported before: a new session has seen none of it. The first line
@@ -91,7 +94,7 @@ def digest(args, state, now):
         state["hc_checked"] = now
         status, out = tool("hc-status", "--problems", "--json")
         if status is None:
-            report = {"problems": state.get("hc_problems", []), "errors": [out]}
+            report = {"problems": state.get("hc_seen", []), "errors": [out]}
         else:
             try:
                 doc = json.loads(out)
@@ -101,23 +104,29 @@ def digest(args, state, now):
                 errors = sorted("hc-status could not read %s: %s" % (e.get("project", "?"), e.get("error", "?"))
                                 for e in doc.get("errors", []))
             except (ValueError, AttributeError, TypeError):
-                problems, errors = state.get("hc_problems", []), ["hc-status gave output that is not JSON"]
+                problems, errors = state.get("hc_seen", []), ["hc-status gave output that is not JSON"]
             report = {"problems": problems, "errors": errors}
-        before = set(state.get("hc_problems", []))
-        now_set = set(report["problems"])
         name = lambda p: p.rsplit(" ", 1)[0]
+        # A check is reported when it is down, or when it was already in trouble on the previous
+        # read: a grace that clears within one interval is a run a little late, not a problem.
+        raw = set(report["problems"])
+        seen_before = set(map(name, state.get("hc_seen", [])))
+        before = set(state.get("hc_problems", []))
+        now_set = {p for p in raw if p.endswith(" down") or name(p) in seen_before
+                   or name(p) in set(map(name, before))}
         if args.session_start and now_set:
             lines.append("Healthchecks, in trouble now: " + ", ".join(sorted(now_set)))
         else:
             added = sorted(now_set - before)
             if added:
                 lines.append("Healthchecks, now in trouble: " + ", ".join(added))
-        gone = sorted(set(map(name, before)) - set(map(name, now_set)))
+        gone = sorted(set(map(name, before)) - set(map(name, raw)))
         if gone:
             lines.append("Healthchecks, cleared: " + ", ".join(gone))
         if report["errors"] != state.get("hc_errors", []) or (args.session_start and report["errors"]):
             lines += report["errors"]
         state["hc_problems"] = sorted(now_set)
+        state["hc_seen"] = sorted(raw)
         state["hc_errors"] = report["errors"]
     return lines
 

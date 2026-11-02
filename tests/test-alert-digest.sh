@@ -73,31 +73,39 @@ lacks "  the 11th line is not printed" "$out" "msg 11"
 has "  and the rest are pointed at" "$out" "and 4 more: ntfy-inbox show --since 1d"
 
 echo "== Healthchecks problems, reported when they change"
-hc "[$(check fleet scrub-framework grace)]"
+hc "[$(check fleet mirror grace)]"
 ALERT_DIGEST_NOW=2000 run --reader r1 --triage "skill t"
-has "a new problem is reported" "$out" "Healthchecks, now in trouble: fleet/scrub-framework grace"
+eq "a grace seen on one read only is not reported (a run a little late)" "$out" ""
+hc '[]'
 ALERT_DIGEST_NOW=2400 run --reader r1 --triage "skill t"
+eq "  and its clearing, never reported, says nothing" "$out" ""
+hc "[$(check fleet scrub-framework grace)]"
+ALERT_DIGEST_NOW=2800 run --reader r1 --triage "skill t"
+eq "  a first sighting of another grace: nothing yet" "$out" ""
+ALERT_DIGEST_NOW=3200 run --reader r1 --triage "skill t"
+has "a grace on two reads in a row is reported" "$out" "Healthchecks, now in trouble: fleet/scrub-framework grace"
+ALERT_DIGEST_NOW=3600 run --reader r1 --triage "skill t"
 eq "  the same problem is not repeated" "$out" ""
 hc "[$(check fleet scrub-framework down)]"
-ALERT_DIGEST_NOW=2500 run --reader r1 --triage "skill t"
+ALERT_DIGEST_NOW=3700 run --reader r1 --triage "skill t"
 eq "  hc-status is not asked again within five minutes" "$out" ""
-ALERT_DIGEST_NOW=2701 run --reader r1 --triage "skill t"
+ALERT_DIGEST_NOW=3901 run --reader r1 --triage "skill t"
 has "  a changed state is reported once the interval passes" "$out" "Healthchecks, now in trouble: fleet/scrub-framework down"
 hc '[]'
-ALERT_DIGEST_NOW=3100 run --reader r1 --triage "skill t"
+ALERT_DIGEST_NOW=4300 run --reader r1 --triage "skill t"
 has "  a cleared problem is reported" "$out" "Healthchecks, cleared: fleet/scrub-framework"
-hc "[$(check fleet scrub-framework grace)]"
-ALERT_DIGEST_NOW=3200 ALERT_DIGEST_HC_EVERY=60 run --reader r1 --triage "skill t"
-has "  the interval is set by ALERT_DIGEST_HC_EVERY" "$out" "now in trouble"
+hc "[$(check fleet other down)]"
+ALERT_DIGEST_NOW=4400 ALERT_DIGEST_HC_EVERY=60 run --reader r1 --triage "skill t"
+has "a down is reported on its first read (and the interval is set by ALERT_DIGEST_HC_EVERY)" "$out" "Healthchecks, now in trouble: fleet/other down"
 
 echo "== session start"
-ALERT_DIGEST_NOW=3510 run --reader r1 --triage "skill t" --session-start
-has "a session start shows a standing problem again" "$out" "Healthchecks, in trouble now: fleet/scrub-framework grace"
+ALERT_DIGEST_NOW=4410 run --reader r1 --triage "skill t" --session-start
+has "a session start shows a standing problem again" "$out" "Healthchecks, in trouble now: fleet/other down"
 hc '[]'
-ALERT_DIGEST_NOW=3520 run --reader r1 --triage "skill t" --session-start
+ALERT_DIGEST_NOW=4420 run --reader r1 --triage "skill t" --session-start
 lacks "  and asks hc-status whatever the interval" "$out" "in trouble now"
-has "  (so the clearing shows)" "$out" "cleared: fleet/scrub-framework"
-ALERT_DIGEST_NOW=3530 run --reader r1 --triage "skill t" --session-start
+has "  (so the clearing shows)" "$out" "cleared: fleet/other"
+ALERT_DIGEST_NOW=4430 run --reader r1 --triage "skill t" --session-start
 eq "  a session start with nothing wrong is quiet" "$out" ""
 
 echo "== readers are independent"
