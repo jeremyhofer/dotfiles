@@ -7,6 +7,8 @@ that anything can read, so "what has been alerting?" is a file read.
 
     ntfy-inbox run                       subscribe and keep the file current (run as a service)
     ntfy-inbox show [--since DURATION] [--topic T] [--json]
+    ntfy-inbox show --new READER [--topic T] [--json]
+                                         only what READER has not been shown yet, in arrival order
     ntfy-inbox status                    is the file being written; is the user service active
 
 CONFIG, under ${XDG_CONFIG_HOME:-$HOME/.config}/ntfy-inbox/:
@@ -19,6 +21,12 @@ STATE, under ${XDG_STATE_HOME:-$HOME/.local/state}/ntfy-inbox/:
     messages.jsonl   one `message` event per line, in arrival order, each message id once
     state.json       last_id, last_connect, last_event, last_message_time (epoch seconds), which the
                      daemon rewrites so `status` can tell a live daemon from a stale file
+    readers/<READER>.json
+                     `show --new`'s cursor for one reader: the id of the last message it was shown
+                     and the newest message time it has seen. A reader with no cursor is shown the
+                     last 24 hours. If the cursor's id is no longer in the file (the file was
+                     rewritten), the messages newer than its time are shown. The cursor moves only
+                     after the messages are printed.
 
 HOW `run` WORKS. It opens GET <server>/<topic1,topic2>/json (ntfy's JSON stream: one JSON object per
 line; events `open`, `keepalive`, `message`, ...). Only `message` events are stored. The first start
@@ -221,6 +229,28 @@ def clean(text):
     return "".join(ch if ch.isprintable() else "?" for ch in text)
 
 
+READER_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
+FIRST_LOOK = 86400  # seconds: what a reader with no cursor is shown
+
+
+def reader_path(name):
+    if not name or name[0] == "." or not set(name) <= READER_CHARS:
+        print("ntfy-inbox: a reader name is lower-case letters, digits, '-', '_' and '.', not "
+              "starting with '.': %r" % name, file=sys.stderr)
+        raise SystemExit(2)
+    return os.path.join(state_dir(), "readers", name + ".json")
+
+
+def unseen(msgs, cursor, now):
+    """The messages after the cursor, in arrival (file) order."""
+    if not cursor:
+        return [m for m in msgs if m["time"] >= now - FIRST_LOOK]
+    ids = [m.get("id") for m in msgs]
+    if cursor.get("last_id") in ids:
+        return msgs[ids.index(cursor["last_id"]) + 1:]
+    return [m for m in msgs if m["time"] > cursor.get("last_time", 0)]
+
+
 def cmd_show(args):
     path = os.path.join(state_dir(), "messages.jsonl")
     msgs = []
@@ -237,19 +267,42 @@ def cmd_show(args):
         print("ntfy-inbox: no messages file at %s (has `ntfy-inbox run` started?)" % path,
               file=sys.stderr)
         return 1
+    now = float(os.environ.get("NTFY_INBOX_NOW") or time.time())
+    advance = None
+    if args.new:
+        if args.since:
+            print("ntfy-inbox: --new and --since do not combine", file=sys.stderr)
+            return 2
+        rpath = reader_path(args.new)
+        try:
+            with open(rpath) as fh:
+                cursor = json.load(fh)
+        except (OSError, ValueError):
+            cursor = None
+        if msgs:
+            advance = {"last_id": msgs[-1].get("id"),
+                       "last_time": max([m["time"] for m in msgs] + [(cursor or {}).get("last_time", 0)])}
+        msgs = unseen(msgs, cursor, now)
     if args.since:
-        cutoff = float(os.environ.get("NTFY_INBOX_NOW") or time.time()) - parse_duration(args.since)
+        cutoff = now - parse_duration(args.since)
         msgs = [m for m in msgs if m["time"] >= cutoff]
     if args.topic:
         msgs = [m for m in msgs if m.get("topic") == args.topic]
-    msgs.sort(key=lambda m: m["time"])
+    if not args.new:
+        msgs.sort(key=lambda m: m["time"])
     if args.json:
         print(json.dumps(msgs, indent=2, sort_keys=True))
-        return 0
-    for m in msgs:
-        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(m["time"]))
-        print("%s  %s  p%s  %s  %s" % (when, clean(m.get("topic", "?")), m.get("priority", 3),
-                                       clean(m.get("title") or "-"), clean(m.get("message", ""))))
+    else:
+        for m in msgs:
+            when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(m["time"]))
+            print("%s  %s  p%s  %s  %s" % (when, clean(m.get("topic", "?")), m.get("priority", 3),
+                                           clean(m.get("title") or "-"), clean(m.get("message", ""))))
+    sys.stdout.flush()
+    if advance:
+        os.makedirs(os.path.dirname(rpath), exist_ok=True)
+        with open(rpath + ".tmp", "w") as fh:
+            json.dump(advance, fh)
+        os.replace(rpath + ".tmp", rpath)
     return 0
 
 
@@ -292,6 +345,8 @@ def main(argv=None):
     sp.add_argument("--since", help="only messages newer than this long ago, e.g. 30m, 12h, 2d")
     sp.add_argument("--topic", help="only this topic")
     sp.add_argument("--json", action="store_true", help="print a JSON array")
+    sp.add_argument("--new", metavar="READER",
+                    help="only messages READER has not been shown, in arrival order; moves its cursor")
     sub.add_parser("status", help="is the file being written; is the service active")
     args = ap.parse_args(argv)
     if args.cmd == "run":

@@ -165,6 +165,47 @@ run show
 eq "no file is exit 1" "$rc" 1
 unset NTFY_INBOX_NOW
 
+echo "== show --new: one reader's unseen messages"
+mkdir -p "$XDG_STATE_HOME/ntfy-inbox"
+export NTFY_INBOX_NOW=1793567000
+{
+  M b0 t1 1793394200 3 "" "two days ago"; echo
+  M b1 t1 1793563400 3 "" "an hour ago"; echo
+  M b2 t2 1793565200 4 "" "half an hour ago"; echo
+} > "$msgs"
+run show --new r1
+eq "a first look is exit 0" "$rc" 0
+eq "a first look shows the last 24 hours only" "$(printf '%s\n' "$out" | grep -c 'ago')" 2
+lacks "  nothing older" "$out" "two days ago"
+run show --new r1
+eq "a second look shows nothing" "$out" ""
+eq "  and is exit 0" "$rc" 0
+{ M b3 t1 1793566000 5 "" "just now"; echo; } >> "$msgs"
+run show --new r1
+eq "an appended message alone is new" "$out" "$(printf '%s' "$out" | grep 'just now')"
+has "  and it is shown" "$out" "just now"
+run show --new r2
+eq "another reader has its own cursor" "$(printf '%s\n' "$out" | grep -c 'ago\|just now')" 3
+{ M b4 t2 1793565900 3 "" "arrived late"; echo; } >> "$msgs"
+run show --new r1
+has "new is by arrival, not by time" "$out" "arrived late"
+{
+  M b1 t1 1793563400 3 "" "an hour ago"; echo
+  M b3 t1 1793566000 5 "" "just now"; echo
+  M b5 t1 1793566500 3 "" "after the rewrite"; echo
+} > "$msgs"
+run show --new r1
+eq "a rewritten file: newer than the last seen, by time" "$out" "$(printf '%s' "$out" | grep 'after the rewrite')"
+has "  and it is shown" "$out" "after the rewrite"
+{ M b6 t1 1793566600 3 "" "json one"; echo; } >> "$msgs"
+run show --new r1 --json
+eq "--json prints the new messages as an array" "$(printf '%s' "$out" | python3 -c 'import json,sys; print([m["id"] for m in json.load(sys.stdin)])')" "['b6']"
+run show --new ../x
+eq "a reader name with a path in it is refused, exit 2" "$rc" 2
+run show --new r1 --since 1h
+eq "--new with --since is refused, exit 2" "$rc" 2
+unset NTFY_INBOX_NOW
+
 echo "== status"
 mkdir -p "$XDG_STATE_HOME/ntfy-inbox"
 printf '{"last_id":"x","last_connect":1793566000,"last_event":1793566990,"last_message_time":1793565000}' > "$state_file"

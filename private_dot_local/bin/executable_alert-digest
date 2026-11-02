@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""alert-digest -- what is new in the alerts since a reader last looked, or nothing at all.
+
+WHY IT EXISTS. ntfy-inbox keeps a local copy of the ntfy messages and hc-status reads the
+Healthchecks.io check states, but both only answer when asked, and a session that is busy with
+something else does not ask. This tool is meant to run from a hook at every turn of one session, so
+it must say NOTHING when nothing changed: its output goes into the session's context, and a line
+repeated every turn is a cost paid every turn.
+
+    alert-digest --reader NAME --triage TEXT [--session-start]
+
+It prints, only when there is something to say:
+  * the ntfy messages NAME has not been shown (`ntfy-inbox show --new NAME`), at most 10 lines;
+  * the Healthchecks checks that went into or out of a problem state (`down` or `grace`) since
+    NAME's last report, asking `hc-status --problems --json` at most once every five minutes;
+  * that ntfy-inbox stopped writing, or started again, or that hc-status could not read a project.
+With --session-start it asks hc-status whatever the interval and shows the checks in a problem
+state now, even if they were reported before: a new session has seen none of it. The first line
+names the reader and the TEXT given by --triage, which says where the reader is to look for what to
+do (a skill, a runbook). Exit 0 always, except for a bad argument (2): a hook must never block the
+session it reports to, so a failure of the readers is reported as a line, not as a status.
+
+STATE, ${XDG_STATE_HOME:-$HOME/.local/state}/alert-digest/<NAME>.json: when hc-status was last
+asked, the problems last reported, and whether ntfy-inbox was last seen writing.
+
+ENVIRONMENT (tests and tuning). ALERT_DIGEST_NOW (epoch seconds) fixes "now"; ALERT_DIGEST_HC_EVERY
+(seconds, default 300) is the least time between two hc-status runs. ntfy-inbox and hc-status are
+found on PATH.
+
+Standard library only: it runs unchanged on Linux and macOS.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+READER_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
+MAX_LINES = 10
+PROBLEM = ("down", "grace")
+
+
+def state_path(reader):
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "alert-digest", reader + ".json")
+
+
+def tool(name, *args):
+    """(status, stdout) of a reader command, or (None, why) when it cannot be run."""
+    if not shutil.which(name):
+        return None, "%s is not installed" % name
+    try:
+        r = subprocess.run([name] + list(args), capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, "%s could not be run: %s" % (name, type(e).__name__)
+    return r.returncode, r.stdout
+
+
+def digest(args, state, now):
+    lines = []
+
+    status, out = tool("ntfy-inbox", "show", "--new", args.reader)
+    if status is None:
+        if state.get("inbox_error") != out:
+            lines.append(out)
+        state["inbox_error"] = out
+    else:
+        state.pop("inbox_error", None)
+        new = [ln for ln in out.splitlines() if ln.strip()]
+        if new:
+            lines.append("ntfy, %d new:" % len(new))
+            lines += ["  " + ln for ln in new[:MAX_LINES]]
+            if len(new) > MAX_LINES:
+                lines.append("  and %d more: ntfy-inbox show --since 1d" % (len(new) - MAX_LINES))
+        live, _ = tool("ntfy-inbox", "status")
+        live = live == 0
+        was = state.get("inbox_live", True)
+        if args.session_start and not live:
+            lines.append("ntfy-inbox is not writing: see `ntfy-inbox status`")
+        elif was and not live:
+            lines.append("ntfy-inbox is not writing (no stream event for 5 minutes): see `ntfy-inbox status`")
+        elif live and not was:
+            lines.append("ntfy-inbox is writing again")
+        state["inbox_live"] = live
+
+    every = float(os.environ.get("ALERT_DIGEST_HC_EVERY") or 300)
+    if args.session_start or now - state.get("hc_checked", 0) >= every:
+        state["hc_checked"] = now
+        status, out = tool("hc-status", "--problems", "--json")
+        if status is None:
+            report = {"problems": state.get("hc_problems", []), "errors": [out]}
+        else:
+            try:
+                doc = json.loads(out)
+                problems = sorted("%s/%s %s" % (c.get("project", "?"), c.get("name") or c.get("slug", "?"),
+                                                c.get("status")) for c in doc.get("checks", [])
+                                  if c.get("status") in PROBLEM)
+                errors = sorted("hc-status could not read %s: %s" % (e.get("project", "?"), e.get("error", "?"))
+                                for e in doc.get("errors", []))
+            except (ValueError, AttributeError, TypeError):
+                problems, errors = state.get("hc_problems", []), ["hc-status gave output that is not JSON"]
+            report = {"problems": problems, "errors": errors}
+        before = set(state.get("hc_problems", []))
+        now_set = set(report["problems"])
+        name = lambda p: p.rsplit(" ", 1)[0]
+        if args.session_start and now_set:
+            lines.append("Healthchecks, in trouble now: " + ", ".join(sorted(now_set)))
+        else:
+            added = sorted(now_set - before)
+            if added:
+                lines.append("Healthchecks, now in trouble: " + ", ".join(added))
+        gone = sorted(set(map(name, before)) - set(map(name, now_set)))
+        if gone:
+            lines.append("Healthchecks, cleared: " + ", ".join(gone))
+        if report["errors"] != state.get("hc_errors", []) or (args.session_start and report["errors"]):
+            lines += report["errors"]
+        state["hc_problems"] = sorted(now_set)
+        state["hc_errors"] = report["errors"]
+    return lines
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="alert-digest", description="New alerts since a reader last looked.")
+    ap.add_argument("--reader", required=True, help="whose cursor and state: lower-case letters, digits, -_.")
+    ap.add_argument("--triage", required=True, help="where the reader looks for what to do, e.g. a skill")
+    ap.add_argument("--session-start", action="store_true", help="show standing problems too")
+    args = ap.parse_args(argv)
+    if args.reader[0] == "." or not set(args.reader) <= READER_CHARS:
+        print("alert-digest: a reader name is lower-case letters, digits, '-', '_' and '.', not "
+              "starting with '.': %r" % args.reader, file=sys.stderr)
+        return 2
+    now = float(os.environ.get("ALERT_DIGEST_NOW") or time.time())
+    path = state_path(args.reader)
+    try:
+        with open(path) as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        state = {}
+    try:
+        lines = digest(args, state, now)
+    except Exception as e:  # a hook must not fail the turn it reports to
+        lines = ["alert-digest failed: %s: %s" % (type(e).__name__, e)]
+    if lines:
+        print("[alert-digest] %s: triage with %s" % (args.reader, args.triage))
+        print("\n".join(lines))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as fh:
+            json.dump(state, fh)
+        os.replace(path + ".tmp", path)
+    except OSError as e:
+        print("[alert-digest] could not save its state: %s" % e)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
