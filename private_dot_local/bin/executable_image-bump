@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""image-bump -- move a service's pinned container image to a newer release, with a gate.
+"""image-bump -- move a service's pinned container image, or an image build's pinned inputs, to a
+newer release, with a gate.
 
 WHY THIS EXISTS
 ===============
@@ -19,6 +20,7 @@ VERBS
 =====
   image-bump check    <service> <version> [--no-write] [--root DIR]
                                            resolve, scan, decide; writes a scan record
+                                           (and the pin: see ARTIFACTS for pinned inputs)
   image-bump deploy   <service> [--root DIR]   install the checked pin, run the checks, roll back
   image-bump latest   <service> [--root DIR] [--pin VERSION]
                                            is a newer release out than the pin
@@ -91,6 +93,95 @@ a blank line, the findings tables; `deploy` reads `replaces`, `migrates` and `di
 through read_record) and rewrites the pin file. An existing record is never overwritten.
 The release API bases are overridable with IMAGE_BUMP_CODEBERG_API and IMAGE_BUMP_GITHUB_API.
 
+ARTIFACTS
+=========
+An image build keeps a pinned-inputs file per architecture (one input per line, fields separated
+by spaces). Besides container images it holds two kinds of line this tool can move:
+
+    file <path> <https URL> sha256:<hex>     a binary fetched from the URL, installed at <path>
+    deb <name> <https URL> sha256:<hex>      a Debian package from outside Debian
+
+A descriptor with an `artifact` field is an ARTIFACT descriptor. It names both architectures and
+both pins files, and `check` moves both together: it resolves, verifies, downloads and scans the
+artifact for every architecture BEFORE it writes either pins file, so the files never disagree on a
+version and one architecture failing leaves both untouched. There is no `deploy`: the next image
+build bakes the pin in, so `deploy` refuses an artifact descriptor (4). `latest` works as for a
+container, reading the current version from the arm pins line's URL (the first architecture, in
+name order, when none is called arm). `check` and `latest` refuse (4) pins files that name
+different versions; `validate`, `check` and `latest` refuse (4) a pins file with no line, or more
+than one, for the artifact.
+
+  artifact    dict  {"kind": "release-file", "path": "<absolute install path>",
+                     "asset": "<name>", "sbom": "<name>"}  or
+                    {"kind": "release-deb", "package": "<Debian package name>", "asset": "<name>"}
+                    `asset` (and the optional `sbom`) must hold both {version} and {arch}; the
+                    file name under which a release publishes the artifact for one architecture.
+                    The pins line it owns is `file <path>` or `deb <package>`.
+  arches      dict  {"arm": "arm64", "x86": "amd64"}: pins-file key -> the spelling of {arch}
+  pins_files  dict  the same keys -> the pins file. A relative path is taken from the CURRENT
+                    DIRECTORY, because the file belongs to the repository the tool is run from
+                    (descriptors live in that repository, under the --root directory); `scan_dir`
+                    is read the same way. Only `verify.key_file` is relative to the descriptor.
+  verify      dict  how the hash is trusted, one of:
+                    {"kind": "cosign-bundle", "checksums": "<name>", "bundle": "<name>",
+                     "certificate_identity": "<identity>", "certificate_oidc_issuer": "<url>"}
+                    {"kind": "apt-release", "repo": "<https URL>", "suite": "<suite>",
+                     "component": "<component>", "fingerprint": "<40 hex>",
+                     "key_file": "<public key file>"}
+                    `release-file` takes `cosign-bundle`, `release-deb` takes `apt-release`.
+  release_line, release_api, git_tag, scan_dir, gate, checklist
+                    as for a container (`latest` and the scan record use them); `gate` is
+                    fixable-count-floor or no-new-findings. None of the container fields
+                    (image, platform, pin_file, migrations, volume, container, service, vm_unit,
+                    install, checks, tag_suffix) may be present.
+
+cosign-bundle  The release's checksums file and the sigstore bundle over it are fetched from
+               <github>/<repo>/releases/download/<git tag>/ and checked with
+               `cosign verify-blob --bundle <bundle> --certificate-identity <identity>
+               --certificate-oidc-issuer <issuer> <checksums>`; {version} in `asset`, `sbom`,
+               `checksums`, `bundle` and `certificate_identity` is replaced. A non-zero status is a
+               refusal (4), and nothing else is fetched first. Each asset's hash is then taken only
+               from that verified file (a name it lacks, or lists with two hashes, is refused),
+               the asset is downloaded, and bytes that do not hash to it are refused. The pin is
+               the release URL and that hash. The `sbom` asset, when named, is fetched and its
+               hash recorded; it is not in the signed file, and the record says so. <github> is
+               https://github.com, or IMAGE_BUMP_GITHUB_DOWNLOAD.
+apt-release    `fingerprint` is the full fingerprint of the one key that signs the suite. The key
+               file must hold exactly one primary key whose fingerprint is that one (else refused:
+               a key is trusted because its fingerprint is pinned, never because it is in a
+               file); it is imported into a throwaway gpg home and exported as a keyring holding
+               only it. <repo>/dists/<suite>/Release is checked with `gpgv` against Release.gpg,
+               or the clearsigned InRelease when there is no Release.gpg, and must be signed by a
+               key whose primary fingerprint is the pinned one (an expired key fails). The
+               Release's SHA256 section gives the hash of <component>/binary-<arch>/Packages
+               (or .gz, .xz, in that order of preference); the index is fetched and refused unless
+               it matches that hash and size. The package's entry is the one with Package,
+               Architecture and a Filename whose last component is `asset`, exactly one; its
+               SHA256 and Filename give the pin (<repo>/<Filename>), and the downloaded .deb is
+               refused unless it hashes to that SHA256.
+
+Scanning. Each architecture's artifact is laid out as a root filesystem (a file at its install
+path; a .deb unpacked, by this tool, regular files only) and scanned with `trivy rootfs`; the
+findings of both architectures are merged, and the current pin's artifacts (downloaded from the
+pinned URLs and refused if they no longer match their pinned hash) are scanned the same way for
+the gate to compare. A pin that is still PLACEHOLDER has no findings to compare. When trivy
+detects NO PACKAGE in an architecture's artifact (a binary with no readable dependency list), the
+scan says nothing about it: that is printed as NO COVERAGE, recorded as `coverage: none`, and the
+verdict becomes an exception (3) however clean the findings look, never a pass. A refusal by the
+gate stays a refusal.
+
+The scan record <scan_dir>/<name>-<version>-<date>.txt (`<name>` is the install path's last
+component, or the package) has a title line, then header lines: artifact, version, `verify` (what
+signed what), one line per architecture (URL and hash), `sbom-<arch>` lines, replaces (the
+version it replaces or none), scanner, database, scanned, gate, verdict, packages (how many
+trivy detected per architecture), coverage (yes or none); then the findings tables. The pins
+line is rewritten in place: only the URL and hash change, a trailing comment stays, and no other
+line is touched. A pinned URL must be https (http only to the loopback, for tests). A download
+that ends before the length the server announced is an environment error (2), not a refusal.
+`check` also refuses a version that is not dotted numbers, and a version already pinned (with
+--no-write it continues; if the release now serves a different hash for a version already
+pinned, it is refused either way).
+
 ROOTS
 =====
 The descriptor of a service is <root>/<service>/image_bump.py. --root names the directory that
@@ -137,9 +228,13 @@ EXIT STATUSES
   3  exception the gate allows   7  a newer release exists (`latest`)
      only with the operator's
      approval
-  4  refused (validate: a malformed descriptor)
+  4  refused (validate: a malformed descriptor; deploy: an artifact descriptor)
 Status 1 is never used on purpose: an uncaught Python exception exits 1, so main() turns one
 into a one-line message and status 2.
+
+External commands are run without a shell: skopeo, trivy and podman for containers; for
+artifacts cosign (cosign-bundle; it needs the sigstore trust root, which it fetches itself, so a
+sandbox must let it write its TUF cache, named by TUF_ROOT), gpg and gpgv (apt-release).
 
 Targets Python 3.9, standard library only.
 """
@@ -154,6 +249,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -272,17 +368,11 @@ def _kind_problems(name, value, kinds, extra):
     return []
 
 
-def descriptor_problems(module, directory):
-    """Every problem of a loaded descriptor, one string each; empty means valid."""
+def _release_problems(module):
+    """Problems of the fields that say where releases are found: release_line, release_api and
+    git_tag. Shared by container and artifact descriptors."""
     problems = []
     get = lambda n: getattr(module, n, None)
-    for name in REQUIRED:
-        if not hasattr(module, name):
-            problems.append("%s: missing" % name)
-    for name in STR_FIELDS:
-        if hasattr(module, name) and not _is_str(get(name)):
-            problems.append("%s: expected a non-empty str, got %r" % (name, get(name)))
-
     if hasattr(module, "release_line") and get("release_line") not in RELEASE_LINES:
         problems.append("release_line: unknown strategy %r (known: %s)"
                         % (get("release_line"), ", ".join(RELEASE_LINES)))
@@ -299,6 +389,26 @@ def descriptor_problems(module, directory):
 
     if _is_str(get("git_tag")) and "{version}" not in get("git_tag"):
         problems.append("git_tag: must contain {version}, got %r" % get("git_tag"))
+    return problems
+
+
+def descriptor_problems(module, directory):
+    """Every problem of a loaded descriptor, one string each; empty means valid."""
+    if is_artifact(module):
+        return artifact_problems(module, directory)
+    problems = []
+    get = lambda n: getattr(module, n, None)
+    for name in ARTIFACT_FIELDS[1:]:
+        if hasattr(module, name):
+            problems.append("%s: only valid with an 'artifact'" % name)
+    for name in REQUIRED:
+        if not hasattr(module, name):
+            problems.append("%s: missing" % name)
+    for name in STR_FIELDS:
+        if hasattr(module, name) and not _is_str(get(name)):
+            problems.append("%s: expected a non-empty str, got %r" % (name, get(name)))
+
+    problems += _release_problems(module)
 
     if _is_str(get("platform")) and not PLATFORM_RE.match(get("platform")):
         problems.append("platform: %r is not of the form os/arch" % get("platform"))
@@ -433,7 +543,11 @@ def scan(image, digest, platform):
     out = run_cmd(["trivy", "image", "--skip-db-update", "--scanners", "vuln",
                    "--image-src", "remote", "--platform", platform,
                    "--severity", SEVERITIES, "--format", "json", "%s@%s" % (image, digest)])
-    doc = parse_json(out, "trivy image")
+    return findings_of(parse_json(out, "trivy image"))
+
+
+def findings_of(doc):
+    """The HIGH/CRITICAL findings of a trivy JSON report, de-duplicated and sorted."""
     seen, found = set(), []
     for result in doc.get("Results") or []:
         for v in result.get("Vulnerabilities") or []:
@@ -635,13 +749,18 @@ def dotted(version):
 
 
 def latest_service(args, desc, directory):
-    pin_path = resolve_path(desc.pin_file, directory)
-    try:
-        _image, cur_tag, _digest = read_pin(pin_path)
-    except ValueError as exc:
-        raise EnvError(str(exc))
-    text = args.pin if args.pin is not None else version_from_tag(
-        cur_tag, getattr(desc, "tag_suffix", ""))
+    if is_artifact(desc):
+        text = args.pin if args.pin is not None else pinned_version(desc)
+        if text is None:
+            raise EnvError("the pins files hold no version yet (a placeholder), so there is "
+                           "nothing to compare; pass --pin VERSION")
+    else:
+        try:
+            _image, cur_tag, _digest = read_pin(resolve_path(desc.pin_file, directory))
+        except ValueError as exc:
+            raise EnvError(str(exc))
+        text = args.pin if args.pin is not None else version_from_tag(
+            cur_tag, getattr(desc, "tag_suffix", ""))
     current = numeric_version(text)
     if current is None:
         raise EnvError("the %s version %r is not a numeric dotted version"
@@ -693,7 +812,664 @@ def cmd_latest(args):
 
 
 def cmd_check(args):
-    return with_descriptor(args, check_service)
+    return with_descriptor(args, check_dispatch)
+
+
+def check_dispatch(args, desc, directory):
+    work = check_artifact if is_artifact(desc) else check_service
+    return work(args, desc, directory)
+
+
+# ---------------------------------------------------------------- artifacts
+# An image build's pinned inputs file holds, besides container images, `file` and `deb` lines:
+# a binary or a Debian package fetched from a URL and checked against a sha256. An artifact
+# descriptor moves those lines. Its hash is trusted only after a signature has been verified, and
+# both architectures are resolved, verified, downloaded and scanned before either file is touched.
+
+ARTIFACT_KINDS = ("release-file", "release-deb")
+VERIFY_KINDS = ("cosign-bundle", "apt-release")
+# Fields only an artifact descriptor has; the first names the kind of descriptor.
+ARTIFACT_FIELDS = ("artifact", "arches", "pins_files", "verify")
+ARTIFACT_REQUIRED = ARTIFACT_FIELDS + ("release_line", "release_api", "git_tag", "scan_dir",
+                                       "gate", "checklist")
+# Fields of a container descriptor; an artifact descriptor has none of them.
+CONTAINER_FIELDS = ("image", "platform", "pin_file", "migrations", "volume", "container",
+                    "service", "vm_unit", "install", "checks", "tag_suffix")
+VERSION_CORE = r"[0-9]+(?:\.[0-9]+)*"
+FINGERPRINT_RE = re.compile(r"^[0-9A-F]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+DEB_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]+$")
+PINS_LINE_RE = re.compile(r"^(?P<kind>file|deb)[ \t]+(?P<name>\S+)[ \t]+(?P<url>\S+)[ \t]+"
+                          r"(?P<hash>\S+)(?P<tail>[ \t]*(?:#.*)?)$")
+PLACEHOLDER = "PLACEHOLDER"
+DOWNLOAD_BASE = ("IMAGE_BUMP_GITHUB_DOWNLOAD", "https://github.com")
+
+
+def is_artifact(module):
+    return hasattr(module, "artifact")
+
+
+def url_ok(url):
+    """A pinned URL is https; plain http is allowed only to the loopback, which the tests use."""
+    return isinstance(url, str) and (url.startswith("https://") or url.startswith("http://127.0.0.1"))
+
+
+def _asset_problems(name, value):
+    if not _is_str(value) or "{version}" not in value or "{arch}" not in value:
+        return ["%s: must be a string containing both {version} and {arch}, got %r" % (name, value)]
+    return []
+
+
+def _str_key_problems(name, value, keys):
+    return ["%s: needs a non-empty string %r" % (name, k) for k in keys if not _is_str(value.get(k))]
+
+
+def artifact_problems(module, directory):
+    """Every problem of an artifact descriptor, one string each; empty means valid."""
+    problems = []
+    get = lambda n: getattr(module, n, None)
+    for name in ARTIFACT_REQUIRED:
+        if not hasattr(module, name):
+            problems.append("%s: missing" % name)
+    for name in CONTAINER_FIELDS:
+        if hasattr(module, name):
+            problems.append("%s: not used by an artifact descriptor" % name)
+    problems += _release_problems(module)
+    if hasattr(module, "scan_dir") and not _is_str(get("scan_dir")):
+        problems.append("scan_dir: expected a non-empty str, got %r" % get("scan_dir"))
+    if hasattr(module, "gate"):
+        problems += _kind_problems("gate", get("gate"), GATE_KINDS, {})
+    if hasattr(module, "checklist"):
+        cl = get("checklist")
+        if not isinstance(cl, list) or not all(_is_str(x) for x in cl):
+            problems.append("checklist: expected a list of non-empty str")
+
+    art, kind = get("artifact"), None
+    if hasattr(module, "artifact"):
+        if not isinstance(art, dict) or art.get("kind") not in ARTIFACT_KINDS:
+            problems.append("artifact: expected a dict whose kind is one of %s"
+                            % ", ".join(ARTIFACT_KINDS))
+        else:
+            kind = art["kind"]
+            if kind == "release-file":
+                if not _is_str(art.get("path")) or not art["path"].startswith("/"):
+                    problems.append("artifact: kind release-file needs an absolute 'path'")
+                if "sbom" in art:
+                    problems += _asset_problems("artifact.sbom", art["sbom"])
+            else:
+                if not _is_str(art.get("package")) or not DEB_NAME_RE.match(art["package"]):
+                    problems.append("artifact: kind release-deb needs a Debian package name in "
+                                    "'package'")
+            problems += _asset_problems("artifact.asset", art.get("asset"))
+
+    arches, pins = get("arches"), get("pins_files")
+    for name, value in (("arches", arches), ("pins_files", pins)):
+        if hasattr(module, name) and (not isinstance(value, dict) or not value
+                                      or not all(_is_str(k) and _is_str(v)
+                                                 for k, v in value.items())):
+            problems.append("%s: expected a non-empty dict of non-empty strings" % name)
+    if (isinstance(arches, dict) and isinstance(pins, dict)
+            and set(arches) != set(pins)):
+        problems.append("pins_files: must have the same keys as arches (%s)"
+                        % ", ".join(sorted(arches)))
+
+    verify = get("verify")
+    vkind = None
+    if hasattr(module, "verify"):
+        if not isinstance(verify, dict) or verify.get("kind") not in VERIFY_KINDS:
+            problems.append("verify: expected a dict whose kind is one of %s"
+                            % ", ".join(VERIFY_KINDS))
+        else:
+            vkind = verify["kind"]
+            if vkind == "cosign-bundle":
+                problems += _str_key_problems("verify", verify, (
+                    "checksums", "bundle", "certificate_identity", "certificate_oidc_issuer"))
+            else:
+                problems += _str_key_problems("verify", verify, (
+                    "repo", "suite", "component", "fingerprint", "key_file"))
+                if _is_str(verify.get("repo")) and not url_ok(verify["repo"]):
+                    problems.append("verify: 'repo' must be an https URL")
+                fpr = verify.get("fingerprint")
+                if _is_str(fpr) and not FINGERPRINT_RE.match(fpr.replace(" ", "").upper()):
+                    problems.append("verify: 'fingerprint' must be 40 hex digits")
+                if _is_str(verify.get("key_file")) and not os.path.isfile(
+                        resolve_path(verify["key_file"], directory)):
+                    problems.append("verify: key_file %s does not exist" % verify["key_file"])
+    if kind and vkind and (kind, vkind) not in (("release-file", "cosign-bundle"),
+                                                ("release-deb", "apt-release")):
+        problems.append("verify: kind %s cannot verify an artifact of kind %s (supported: "
+                        "release-file with cosign-bundle, release-deb with apt-release)"
+                        % (vkind, kind))
+
+    if not problems:
+        for arch_key, path in sorted(pins.items()):
+            try:
+                read_pins(resolve_path(path, os.getcwd()), art)
+            except (Refusal, EnvError) as exc:
+                problems.append("pins_files.%s: %s" % (arch_key, exc))
+    return problems
+
+
+def pins_key(art):
+    """(line kind, name) of the pins line an artifact owns."""
+    if art["kind"] == "release-file":
+        return "file", art["path"]
+    return "deb", art["package"]
+
+
+def read_pins(path, art):
+    """(lines, index, match) of the one pins line the artifact owns in the file at `path`.
+    Anything but exactly one such line is a Refusal."""
+    try:
+        with open(path) as fh:
+            lines = fh.read().splitlines(True)
+    except OSError as exc:
+        raise EnvError("cannot read pins file %s: %s" % (path, exc.strerror))
+    want = pins_key(art)
+    found = []
+    for i, line in enumerate(lines):
+        m = PINS_LINE_RE.match(line.rstrip("\r\n"))
+        if m and (m.group("kind"), m.group("name")) == want:
+            found.append((i, m))
+    if len(found) != 1:
+        raise Refusal("%s has %d `%s %s` lines, expected exactly one" % (path, len(found), *want))
+    return lines, found[0][0], found[0][1]
+
+
+def asset_name(template, version, arch):
+    return template.replace("{version}", version).replace("{arch}", arch)
+
+
+def version_in_filename(template, arch, filename):
+    """The version `filename` carries under an asset template, or None when it does not fit."""
+    out, seen = [], False
+    for part in re.split(r"(\{version\}|\{arch\})", template):
+        if part == "{version}":
+            out.append("(?P=v)" if seen else "(?P<v>%s)" % VERSION_CORE)
+            seen = True
+        elif part == "{arch}":
+            out.append(re.escape(arch))
+        else:
+            out.append(re.escape(part))
+    m = re.match("^%s$" % "".join(out), filename)
+    return m.group("v") if m else None
+
+
+def pinned_state(desc, arch_key):
+    """What an architecture's pins line holds now: {'url', 'hash', 'version'}; each is None
+    while the line says PLACEHOLDER (or, for the version, names something else)."""
+    art = desc.artifact
+    _lines, _i, m = read_pins(resolve_path(desc.pins_files[arch_key], os.getcwd()), art)
+    url, digest = m.group("url"), m.group("hash")
+    state = {"url": None, "hash": None, "version": None}
+    if url != PLACEHOLDER:
+        state["url"] = url
+        state["version"] = version_in_filename(art["asset"], desc.arches[arch_key],
+                                               url.rsplit("/", 1)[-1])
+        if state["version"] is None:
+            raise Refusal("the pinned URL %s does not fit the asset %s" % (url, art["asset"]))
+    if digest.startswith("sha256:") and SHA256_RE.match(digest[7:]):
+        state["hash"] = digest[7:]
+    elif digest != "sha256:" + PLACEHOLDER:
+        raise Refusal("the pinned hash %r is neither sha256:<64 hex> nor sha256:PLACEHOLDER"
+                      % digest)
+    return state
+
+
+def pinned_version(desc):
+    """The version the pins files name, read from the arm line's URL (the first architecture
+    when none is called arm); None while it is a placeholder. The architectures must agree."""
+    keys = sorted(desc.arches)
+    versions = dict((k, pinned_state(desc, k)["version"]) for k in keys)
+    real = set(v for v in versions.values() if v is not None)
+    if len(real) > 1:
+        raise Refusal("the pins files disagree on the version: %s"
+                      % ", ".join("%s %s" % kv for kv in sorted(versions.items())))
+    return versions["arm" if "arm" in versions else keys[0]] or next(iter(real), None)
+
+
+class HttpMissing(EnvError):
+    """A server answered 404."""
+
+
+def download(url, dest):
+    """Fetch `url` to the file `dest`; return the sha256 hex of the bytes. Only http(s)."""
+    if not url.startswith(("http://", "https://")):
+        raise EnvError("refusing to fetch %s: not an http(s) URL" % url)
+    digest, size = hashlib.sha256(), 0
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, open(dest, "wb") as out:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+                out.write(chunk)
+            announced = resp.headers.get("Content-Length")
+        if announced is not None and announced.isdigit() and int(announced) != size:
+            # http.client does not report a body that ends early; a cut-off transfer is the
+            # environment's fault, not evidence about the release.
+            raise EnvError("fetching %s: got %d bytes of the %s announced" % (url, size, announced))
+    except urllib.error.HTTPError as exc:
+        cls = HttpMissing if exc.code == 404 else EnvError
+        raise cls("fetching %s: HTTP %d" % (url, exc.code))
+    except (OSError, ValueError) as exc:
+        raise EnvError("fetching %s: %s" % (url, exc))
+    return digest.hexdigest()
+
+
+def run_status(argv):
+    """Run a command with no shell; return (status, stdout bytes, stderr text). A command that
+    cannot start is an EnvError; any exit status is the caller's to judge."""
+    try:
+        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise EnvError("cannot run %s: %s" % (argv[0], exc.strerror))
+    return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", "replace").strip()[:400]
+
+
+def release_base(desc, version):
+    env, default = DOWNLOAD_BASE
+    base = (os.environ.get(env) or default).rstrip("/")
+    return "%s/%s/releases/download/%s/" % (base, desc.release_api["repo"],
+                                           git_tag_for(desc.git_tag, version))
+
+
+def parse_checksums(text):
+    """{file name: sha256 hex} from a `<hex>  <name>` checksums file; a name listed twice with
+    different hashes is dropped from the answer by being mapped to None."""
+    out = {}
+    for line in text.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2 or not SHA256_RE.match(parts[0]):
+            continue
+        name = parts[1].strip().lstrip("*")
+        out[name] = None if name in out and out[name] != parts[0] else parts[0]
+    return out
+
+
+def resolve_cosign(desc, directory, version, work):
+    """Verify the release's checksums file by its sigstore bundle, then take each architecture's
+    hash from it and check the downloaded asset against that hash.
+    Returns ({arch key: {'url', 'hash', 'file'}}, the `verify:` record line)."""
+    v = desc.verify
+    base = release_base(desc, version)
+    names = {"checksums": asset_name(v["checksums"], version, ""),
+             "bundle": asset_name(v["bundle"], version, "")}
+    files = {}
+    for what, name in sorted(names.items()):
+        files[what] = os.path.join(work, what)
+        download(base + urllib.parse.quote(name), files[what])
+    identity = v["certificate_identity"].replace("{version}", version)
+    issuer = v["certificate_oidc_issuer"]
+    status, _out, err = run_status([
+        "cosign", "verify-blob", "--bundle", files["bundle"],
+        "--certificate-identity", identity, "--certificate-oidc-issuer", issuer,
+        files["checksums"]])
+    if status != 0:
+        raise Refusal("cosign verify-blob refused %s (status %d): %s" % (names["checksums"], status, err))
+    print("verified %s by %s (identity %s)" % (names["checksums"], names["bundle"], identity))
+    with open(files["checksums"], encoding="utf-8", errors="replace") as fh:
+        sums = parse_checksums(fh.read())
+    resolved = {}
+    for arch_key in sorted(desc.arches):
+        name = asset_name(desc.artifact["asset"], version, desc.arches[arch_key])
+        want = sums.get(name)
+        if want is None:
+            raise Refusal("%s %s" % (names["checksums"], "lists %s twice with different hashes" % name
+                                     if name in sums else "does not list %s" % name))
+        dest = os.path.join(work, "asset-" + arch_key)
+        url = base + urllib.parse.quote(name)
+        got = download(url, dest)
+        if got != want:
+            raise Refusal("%s: the downloaded bytes hash to %s, the verified checksums say %s"
+                          % (name, got, want))
+        resolved[arch_key] = {"url": url, "hash": want, "file": dest}
+    note = "cosign-bundle: %s signed by %s via %s" % (names["checksums"], identity, issuer)
+    return resolved, note
+
+
+def gpg_home(work):
+    home = os.path.join(work, "gnupg")
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    return home
+
+
+def pinned_keyring(key_file, fingerprint, work):
+    """A keyring file holding only the key `key_file` carries, after proving that the file holds
+    exactly one primary key and that its fingerprint is the pinned one. A key is trusted because
+    its fingerprint is in the descriptor, never because it is in a file."""
+    home = gpg_home(work)
+    gpg = ["gpg", "--homedir", home, "--batch", "--no-autostart"]
+    listing = run_cmd(gpg + ["--show-keys", "--with-colons", key_file]).decode("utf-8", "replace")
+    primaries, expect_fpr = [], False
+    for line in listing.splitlines():
+        fields = line.split(":")
+        if fields[0] == "pub":
+            primaries.append(None)
+            expect_fpr = True
+        elif fields[0] == "fpr" and expect_fpr:
+            primaries[-1] = fields[9].upper()
+            expect_fpr = False
+    want = fingerprint.replace(" ", "").upper()
+    if primaries != [want]:
+        raise Refusal("the key file %s holds keys %s, not exactly the pinned %s"
+                      % (key_file, primaries or "none", want))
+    run_cmd(gpg + ["--import", key_file])
+    ring = os.path.join(work, "keyring.gpg")
+    with open(ring, "wb") as fh:
+        fh.write(run_cmd(gpg + ["--export"]))
+    return ring, want
+
+
+def verify_release(desc, directory, base, work):
+    """Fetch and verify the suite's Release with the pinned key; return its text."""
+    v = desc.verify
+    ring, fpr = pinned_keyring(resolve_path(v["key_file"], directory), v["fingerprint"], work)
+    sig = os.path.join(work, "Release.gpg")
+    try:
+        download(base + "Release.gpg", sig)
+    except HttpMissing:
+        # No detached signature: the clearsigned InRelease carries the text and the signature.
+        inrelease = os.path.join(work, "InRelease")
+        download(base + "InRelease", inrelease)
+        text_file = os.path.join(work, "InRelease.text")
+        argv = ["gpgv", "--keyring", ring, "--status-fd", "1", "--output", text_file, inrelease]
+    else:
+        release = os.path.join(work, "Release")
+        download(base + "Release", release)
+        text_file = release
+        argv = ["gpgv", "--keyring", ring, "--status-fd", "1", sig, release]
+    status, out, err = run_status(argv)
+    signers = [ln.split()[-1].upper() for ln in out.decode("utf-8", "replace").splitlines()
+               if ln.startswith("[GNUPG:] VALIDSIG ")]
+    if status != 0 or fpr not in signers:
+        raise Refusal("the suite's Release is not signed by the pinned key %s (gpgv status %d): %s"
+                      % (fpr, status, err))
+    with open(text_file, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def release_hashes(text):
+    """{path: (sha256 hex, size)} from the SHA256 section of an apt Release."""
+    out, inside = {}, False
+    for line in text.splitlines():
+        if line.startswith("SHA256:"):
+            inside = True
+        elif inside and line[:1] in (" ", "\t"):
+            parts = line.split()
+            if len(parts) == 3 and SHA256_RE.match(parts[0]) and parts[1].isdigit():
+                out[parts[2]] = (parts[0], int(parts[1]))
+        else:
+            inside = False
+    return out
+
+
+def packages_stanzas(text):
+    """The `Key: value` fields of each stanza of a Packages index (continuations ignored)."""
+    for block in re.split(r"\n\s*\n", text):
+        fields = {}
+        for line in block.splitlines():
+            if line[:1] not in (" ", "\t") and ": " in line:
+                key, _, value = line.partition(": ")
+                fields[key] = value.strip()
+        if fields:
+            yield fields
+
+
+def resolve_apt(desc, directory, version, work):
+    """Verify the suite's Release by the pinned key, follow its hash to each architecture's
+    Packages index, take the package's SHA256 and Filename from there and check the .deb.
+    Returns ({arch key: {'url', 'hash', 'file'}}, the `verify:` record line)."""
+    v = desc.verify
+    repo = v["repo"].rstrip("/")
+    base = "%s/dists/%s/" % (repo, v["suite"])
+    hashes = release_hashes(verify_release(desc, directory, base, work))
+    print("verified the Release of %s %s by key %s" % (repo, v["suite"], v["fingerprint"]))
+    resolved = {}
+    for arch_key in sorted(desc.arches):
+        arch = desc.arches[arch_key]
+        wanted = asset_name(desc.artifact["asset"], version, arch)
+        rel = None
+        for suffix in ("", ".gz", ".xz"):
+            cand = "%s/binary-%s/Packages%s" % (v["component"], arch, suffix)
+            if cand in hashes:
+                rel = cand
+                break
+        if rel is None:
+            raise Refusal("the Release lists no Packages index for %s/binary-%s"
+                          % (v["component"], arch))
+        packed = os.path.join(work, "Packages-" + arch_key)
+        got = download(base + rel, packed)
+        with open(packed, "rb") as fh:
+            raw = fh.read()
+        if got != hashes[rel][0] or len(raw) != hashes[rel][1]:
+            raise Refusal("%s does not match the hash the signed Release gives it" % rel)
+        if rel.endswith(".gz"):
+            import gzip
+            raw = gzip.decompress(raw)
+        elif rel.endswith(".xz"):
+            import lzma
+            raw = lzma.decompress(raw)
+        entries = [f for f in packages_stanzas(raw.decode("utf-8", "replace"))
+                   if f.get("Package") == desc.artifact["package"]
+                   and f.get("Architecture") == arch
+                   and os.path.basename(f.get("Filename", "")) == wanted]
+        if len(entries) != 1:
+            raise Refusal("%s lists %d entries for %s (%s)" % (rel, len(entries), wanted, arch))
+        entry = entries[0]
+        filename, want = entry["Filename"], entry.get("SHA256", "")
+        if filename.startswith("/") or ".." in filename.split("/") or not SHA256_RE.match(want):
+            raise Refusal("%s: the entry for %s has an unusable Filename or SHA256" % (rel, wanted))
+        dest = os.path.join(work, "asset-" + arch_key)
+        url = "%s/%s" % (repo, urllib.parse.quote(filename))
+        got = download(url, dest)
+        if got != want:
+            raise Refusal("%s: the downloaded bytes hash to %s, the signed Packages index says %s"
+                          % (wanted, got, want))
+        resolved[arch_key] = {"url": url, "hash": want, "file": dest}
+    note = ("apt-release: Release of %s %s signed by key %s; the Packages hash is from the "
+            "Release, the .deb hash from Packages" % (repo, v["suite"], v["fingerprint"]))
+    return resolved, note
+
+
+def extract_deb(path, dest):
+    """Unpack the files of a .deb (an ar archive whose data.tar.* member is a tar) under `dest`,
+    regular files and directories only, refusing a member that would land outside it."""
+    import io
+    import tarfile
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    if blob[:8] != b"!<arch>\n":
+        raise Refusal("%s is not a .deb (no ar header)" % os.path.basename(path))
+    pos, data = 8, None
+    while pos + 60 <= len(blob):
+        name = blob[pos:pos + 16].decode("ascii", "replace").strip().rstrip("/")
+        try:
+            size = int(blob[pos + 48:pos + 58])
+        except ValueError:
+            raise Refusal("%s: a damaged ar header" % os.path.basename(path))
+        body = blob[pos + 60:pos + 60 + size]
+        if name.startswith("data.tar"):
+            data = (name, body)
+            break
+        pos += 60 + size + (size % 2)
+    if data is None:
+        raise Refusal("%s has no data.tar member" % os.path.basename(path))
+    if data[0].endswith(".zst"):
+        raise EnvError("the data member is zstd-compressed, which Python 3.9 cannot read")
+    with tarfile.open(fileobj=io.BytesIO(data[1]), mode="r:*") as tf:
+        for member in tf:
+            parts = [p for p in member.name.split("/") if p not in ("", ".")]
+            if ".." in parts or member.name.startswith("/"):
+                raise Refusal("the package holds a member that escapes its directory: %s"
+                              % member.name)
+            target = os.path.join(dest, *parts)
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+            elif member.isreg():
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "wb") as out:
+                    out.write(tf.extractfile(member).read())
+                os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
+
+
+def unpack(desc, file, dest):
+    """Lay an artifact out as a root filesystem under `dest` for trivy to read."""
+    os.makedirs(dest, exist_ok=True)
+    art = desc.artifact
+    if art["kind"] == "release-file":
+        target = os.path.join(dest, art["path"].lstrip("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(file, "rb") as src, open(target, "wb") as out:
+            out.write(src.read())
+        os.chmod(target, 0o755)
+    else:
+        extract_deb(file, dest)
+
+
+def scan_rootfs(directory):
+    """Scan an unpacked artifact; return (findings, number of packages trivy detected)."""
+    out = run_cmd(["trivy", "rootfs", "--skip-db-update", "--scanners", "vuln",
+                   "--severity", SEVERITIES, "--format", "json", "--list-all-pkgs", directory])
+    doc = parse_json(out, "trivy rootfs")
+    found = findings_of(doc)
+    packages = sum(len(r.get("Packages") or []) for r in doc.get("Results") or [])
+    return found, max(packages, len(found))
+
+
+def scan_artifacts(desc, files, work, label):
+    """Scan every architecture's file; return (findings merged, {arch key: package count})."""
+    merged, counts = {}, {}
+    for arch_key in sorted(files):
+        root = os.path.join(work, "root-%s-%s" % (label, arch_key))
+        unpack(desc, files[arch_key], root)
+        found, counts[arch_key] = scan_rootfs(root)
+        for f in found:
+            merged[(f["id"], f["pkg"], f["installed"])] = f
+    return sorted(merged.values(), key=lambda f: (f["id"], f["pkg"], f["installed"])), counts
+
+
+def render_artifact_record(name, header, new, cur, version, old):
+    lines = ["%s %s CVE scan record" % (name, header[0][1].split()[0])]
+    lines += ["%s: %s" % kv for kv in header]
+    lines.append("")
+    for title, fs in (("New artifact findings (%s)" % version, new),
+                      ("Current pin findings (%s)" % (old or "none"), cur)):
+        lines.append("%s: %d total, %d fixable" % (title, len(fs), len(fixable(fs))))
+        lines.append(table(fs))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def check_artifact(args, desc, directory):
+    art = desc.artifact
+    if not VERSION_RE.match(args.version):
+        raise Refusal("%r is not a dotted numeric version" % args.version)
+    keys = sorted(desc.arches)
+    old_version = pinned_version(desc)
+    states = dict((k, pinned_state(desc, k)) for k in keys)
+    with tempfile.TemporaryDirectory(prefix="image-bump-") as work:
+        resolve = resolve_cosign if desc.verify["kind"] == "cosign-bundle" else resolve_apt
+        resolved, note = resolve(desc, directory, args.version, work)
+        for k in keys:
+            if not url_ok(resolved[k]["url"]):
+                raise Refusal("%s: refusing to pin the non-https URL %s" % (k, resolved[k]["url"]))
+            print("resolved %s %s sha256:%s" % (k, resolved[k]["url"], resolved[k]["hash"]))
+        if old_version == args.version:
+            same = all(states[k]["hash"] == resolved[k]["hash"] for k in keys)
+            if not same:
+                raise Refusal("version %s is already pinned, but with a different hash than the "
+                              "release serves now: a re-published release needs a person" % old_version)
+            if not args.no_write:
+                raise Refusal("version %s is already pinned" % old_version)
+            print("note: already pinned; continuing because of --no-write")
+
+        current = {}
+        for k in keys:
+            st = states[k]
+            if st["url"] and st["hash"]:
+                dest = os.path.join(work, "current-" + k)
+                got = download(st["url"], dest)
+                if got != st["hash"]:
+                    raise Refusal("the current pin of %s no longer matches its own hash (%s)"
+                                  % (k, st["url"]))
+                current[k] = dest
+
+        scanner, database = trivy_database()
+        new, new_counts = scan_artifacts(desc, dict((k, resolved[k]["file"]) for k in keys),
+                                         work, "new")
+        cur, _counts = scan_artifacts(desc, current, work, "cur") if current else ([], {})
+        verdict, why = apply_gate(desc.gate["kind"], new, cur)
+        uncovered = sorted(k for k in keys if new_counts[k] == 0)
+        print("gate %s: %s: %s" % (desc.gate["kind"], verdict, why))
+        if verdict == "refused":
+            raise Refusal("gate %s: %s" % (desc.gate["kind"], why))
+        if uncovered:
+            print("NO COVERAGE: trivy detected no package in the %s artifact; its scan says "
+                  "nothing about it" % ", ".join(uncovered))
+            verdict = "exception"
+
+        sboms = {}
+        if art.get("sbom"):
+            base = release_base(desc, args.version)
+            for k in keys:
+                name = asset_name(art["sbom"], args.version, desc.arches[k])
+                sboms[k] = (name, download(base + urllib.parse.quote(name),
+                                           os.path.join(work, "sbom-" + k)))
+
+    name = os.path.basename(art["path"]) if art["kind"] == "release-file" else art["package"]
+    now = datetime.datetime.now().astimezone()
+    header = [("artifact", "%s %s" % pins_key(art)), ("version", args.version), ("verify", note)]
+    for k in keys:
+        header.append((k, "%s sha256:%s" % (resolved[k]["url"], resolved[k]["hash"])))
+    for k in sorted(sboms):
+        header.append(("sbom-" + k, "%s sha256:%s (not covered by the verified checksums)"
+                       % sboms[k]))
+    header += [("replaces", old_version or "none"), ("scanner", scanner), ("database", database),
+               ("scanned", "%s %s" % (now.isoformat(timespec="seconds"), socket.gethostname())),
+               ("gate", desc.gate["kind"]), ("verdict", verdict),
+               ("packages", ", ".join("%s %d" % (k, new_counts[k]) for k in keys)),
+               ("coverage", "none" if uncovered else "yes")]
+    if args.no_write:
+        print("not written (--no-write)")
+    else:
+        scan_dir = resolve_path(desc.scan_dir, os.getcwd())
+        record = os.path.join(scan_dir, "%s-%s-%s.txt" % (name, args.version,
+                                                          now.strftime("%Y-%m-%d")))
+        if os.path.exists(record):
+            raise Refusal("scan record %s exists; records are never overwritten" % record)
+        staged = []
+        for k in keys:
+            path = resolve_path(desc.pins_files[k], os.getcwd())
+            lines, i, m = read_pins(path, art)
+            ending = lines[i][len(lines[i].rstrip("\r\n")):]
+            lines[i] = "%s %s %s sha256:%s%s%s" % (m.group("kind"), m.group("name"),
+                                                   resolved[k]["url"], resolved[k]["hash"],
+                                                   m.group("tail"), ending)
+            staged.append((path, "".join(lines)))
+        os.makedirs(scan_dir, exist_ok=True)
+        with open(record, "w") as fh:
+            fh.write(render_artifact_record(name, header, new, cur, args.version, old_version))
+        for path, text in staged:
+            with open(path + ".tmp", "w") as fh:
+                fh.write(text)
+        for path, _text in staged:
+            os.replace(path + ".tmp", path)
+        print("wrote %s and %s" % (record, ", ".join(p for p, _t in staged)))
+
+    for line in desc.checklist:
+        print("checklist: %s" % line)
+    if verdict == "exception":
+        reason = ("trivy detected no package in the %s artifact, so there is no coverage"
+                  % ", ".join(uncovered)) if uncovered else (
+                      "%d fixable HIGH/CRITICAL findings (%d in all) against the current pin's "
+                      "%d (%d in all)" % (len(fixable(new)), len(new), len(fixable(cur)), len(cur)))
+        print("APPROVAL: %s %s %s: %s. This needs the operator's explicit approval."
+              % (name, args.version, art["kind"], reason))
+        return APPROVAL
+    return OK
 
 
 # ---------------------------------------------------------------- deploy
@@ -786,6 +1562,10 @@ def run_checks(checks, wait):
 
 
 def deploy_service(args, desc, directory):
+    if is_artifact(desc):  # guard: no-artifact-deploy
+        raise Refusal("%s is an artifact descriptor: an image build's pinned inputs are moved by "
+                      "`check` and installed by the next build, so there is nothing to deploy"
+                      % args.service)
     image, tag, applied = read_pin(resolve_path(desc.pin_file, directory))
     version = version_from_tag(tag, getattr(desc, "tag_suffix", ""))
     record = find_record(resolve_path(desc.scan_dir, directory), applied)
