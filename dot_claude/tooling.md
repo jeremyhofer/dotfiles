@@ -18,6 +18,7 @@ view on demand) ·
 that nudge an agent to tidy a session's scratch tree and delete it outright at session end; acts
 only on a `CLAUDE_CODE_TMPDIR` that resolves to a `c-*` directory directly under `/tmp`) ·
 `claude-usage-report` (where Claude Code's tokens went, from its transcripts: by project, day, model and subagent, with the weekly-limit history alongside when one exists; counts only, never transcript text; `--days N`, `--since DATE`, `--json`) ·
+`hc-status` (the states of the fleet's Healthchecks.io checks, from read-only API keys in `~/.config/hc-status/keys`, one `<project label> <key>` line per project; `--problems`, `--json`; exit 0 healthy, 1 a check is down or in grace, 2 a project could not be read) ·
 `machine-snapshot` (what is loading the machine, by session and command, readable inside a sandbox that hides other sessions' processes: `now`, `since MINUTES`, `between START END`; Linux, and macOS from a LaunchAgent) ·
 `claude-mask-sweep` (stale Claude Code sandbox placeholder files, the ones `claude update` warns
 about; `--remove` deletes those no running session has mounted; a terminal tool, refuses in a sandbox) ·
