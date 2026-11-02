@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""ntfy-inbox -- a local, readable copy of the messages published to ntfy topics.
+
+WHY IT EXISTS. ntfy (https://ntfy.sh) delivers alerts to phones, but a Claude Code session or a
+script cannot read a phone. This tool subscribes to the topics and appends every message to a file
+that anything can read, so "what has been alerting?" is a file read.
+
+    ntfy-inbox run                       subscribe and keep the file current (run as a service)
+    ntfy-inbox show [--since DURATION] [--topic T] [--json]
+    ntfy-inbox status                    is the file being written; is the user service active
+
+CONFIG, under ${XDG_CONFIG_HOME:-$HOME/.config}/ntfy-inbox/:
+    topics   one topic per line; `#` comments and blank lines ignored; an optional line
+             `server https://host` replaces the default https://ntfy.sh
+    token    an ntfy access token, written by the owner. Optional (public topics need none), but if
+             present it must not be readable by group or others, or the tool refuses to run. It is
+             sent only as `Authorization: Bearer <token>` and is never logged.
+STATE, under ${XDG_STATE_HOME:-$HOME/.local/state}/ntfy-inbox/:
+    messages.jsonl   one `message` event per line, in arrival order, each message id once
+    state.json       last_id, last_connect, last_event, last_message_time (epoch seconds), which the
+                     daemon rewrites so `status` can tell a live daemon from a stale file
+
+HOW `run` WORKS. It opens GET <server>/<topic1,topic2>/json (ntfy's JSON stream: one JSON object per
+line; events `open`, `keepalive`, `message`, ...). Only `message` events are stored. The first start
+asks for `since=12h` so recent history is caught; later starts ask for `since=<last message id>`, so
+a restart or a dropped connection resumes where it stopped. ntfy might replay messages around that
+id, and the server resolves an id per topic, so every message is checked against the ids already in
+the file and a repeat is dropped. A connection that ends, errors, or goes silent for longer than the
+stall limit (ntfy sends a keepalive about every 45 seconds, so the limit is 3 minutes) is reopened
+after a backoff that doubles from 1 second to 60 and resets once a connection opens. Each connect and
+disconnect is logged to stderr in one line.
+
+ENVIRONMENT (tests and tuning). NTFY_INBOX_FIRST_SINCE (default 12h), NTFY_INBOX_STALL (seconds),
+NTFY_INBOX_BACKOFF_MIN / NTFY_INBOX_BACKOFF_MAX (seconds), NTFY_INBOX_MAX_CONNECTS (stop after this
+many connection attempts; unset means run until stopped).
+
+Standard library only: it runs unchanged on Linux and macOS (`status` consults systemctl where it exists).
+"""
+import argparse
+import json
+import os
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+UNIT = "ntfy-inbox.service"
+DEFAULT_SERVER = "https://ntfy.sh"
+LIVE_WITHIN = 300  # seconds: a daemon that has seen no event (not even a keepalive) this long is not live
+
+
+class ConfigError(Exception):
+    pass
+
+
+def xdg(var, fallback):
+    return os.environ.get(var) or os.path.join(os.path.expanduser("~"), fallback)
+
+
+def config_dir():
+    return os.path.join(xdg("XDG_CONFIG_HOME", ".config"), "ntfy-inbox")
+
+
+def state_dir():
+    return os.path.join(xdg("XDG_STATE_HOME", ".local/state"), "ntfy-inbox")
+
+
+def log(msg):
+    print("ntfy-inbox: " + msg, file=sys.stderr, flush=True)
+
+
+def load_config():
+    """Return (server, topics, token-or-None); raise ConfigError saying how to fix a problem."""
+    cdir = config_dir()
+    topics_path = os.path.join(cdir, "topics")
+    server, topics = DEFAULT_SERVER, []
+    try:
+        fh = open(topics_path)
+    except OSError:
+        raise ConfigError("no topics file at %s. Create it with one topic per line." % topics_path)
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("server "):
+                server = line.split(None, 1)[1].strip().rstrip("/")
+            else:
+                topics.append(line)
+    if not topics:
+        raise ConfigError("%s lists no topics" % topics_path)
+    token = None
+    token_path = os.path.join(cdir, "token")
+    if os.path.exists(token_path):
+        mode = os.stat(token_path).st_mode
+        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise ConfigError("%s is readable by group or others (mode %s). Run: chmod 600 %s"
+                              % (token_path, oct(stat.S_IMODE(mode)), token_path))
+        with open(token_path) as fh:
+            token = fh.read().strip() or None
+    return server, topics, token
+
+
+def read_state():
+    try:
+        with open(os.path.join(state_dir(), "state.json")) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(state):
+    d = state_dir()
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, "state.json.tmp")
+    with open(tmp, "w") as fh:
+        json.dump(state, fh)
+    os.replace(tmp, os.path.join(d, "state.json"))
+
+
+def known_ids(path):
+    ids = set()
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try:
+                    ids.add(json.loads(line)["id"])
+                except (ValueError, KeyError, TypeError):
+                    pass
+    except OSError:
+        pass
+    return ids
+
+
+def cmd_run():
+    try:
+        server, topics, token = load_config()
+    except ConfigError as e:
+        log(str(e))
+        return 2
+    stall = float(os.environ.get("NTFY_INBOX_STALL", "180"))
+    bmin = float(os.environ.get("NTFY_INBOX_BACKOFF_MIN", "1"))
+    bmax = float(os.environ.get("NTFY_INBOX_BACKOFF_MAX", "60"))
+    first_since = os.environ.get("NTFY_INBOX_FIRST_SINCE", "12h")
+    max_connects = os.environ.get("NTFY_INBOX_MAX_CONNECTS")
+    max_connects = int(max_connects) if max_connects else None
+
+    os.makedirs(state_dir(), exist_ok=True)
+    msg_path = os.path.join(state_dir(), "messages.jsonl")
+    seen = known_ids(msg_path)
+    state = read_state()
+    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+
+    def scrub(text):
+        return text.replace(token, "<token>") if token else text
+
+    url_base = "%s/%s/json" % (server, ",".join(topics))
+    backoff, connects = bmin, 0
+    while max_connects is None or connects < max_connects:
+        connects += 1
+        since = state.get("last_id") or first_since
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        req = urllib.request.Request("%s?since=%s" % (url_base, since), headers=headers)
+        opened = False
+        try:
+            with urllib.request.urlopen(req, timeout=stall) as resp:
+                log("connected to %s (since=%s)" % (url_base, since))
+                state["last_connect"] = time.time()
+                state["last_event"] = state["last_connect"]
+                write_state(state)
+                for raw in resp:
+                    state["last_event"] = time.time()
+                    try:
+                        ev = json.loads(raw.decode("utf-8"))
+                    except ValueError:
+                        continue
+                    kind = ev.get("event") if isinstance(ev, dict) else None
+                    if kind == "open":
+                        opened = True
+                    elif kind == "message" and ev.get("id") and ev["id"] not in seen:
+                        with open(msg_path, "a") as out:
+                            out.write(json.dumps(ev, sort_keys=True) + "\n")
+                        seen.add(ev["id"])
+                        state["last_id"] = ev["id"]
+                        state["last_message_time"] = ev.get("time")
+                    # keepalives and every other event type only refresh last_event
+                    write_state(state)
+                log("disconnected: server closed the stream")
+        except urllib.error.HTTPError as e:
+            log("disconnected: HTTP %d" % e.code)
+        except Exception as e:  # timeout (stall), reset, DNS, TLS: all mean "reconnect"
+            log(scrub("disconnected: %s: %s" % (type(e).__name__, e)))
+        if opened:
+            backoff = bmin
+        if max_connects is not None and connects >= max_connects:
+            break
+        time.sleep(backoff)
+        backoff = min(backoff * 2, bmax)
+    return 0
+
+
+def parse_duration(text):
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    try:
+        if text[-1] in units:
+            return float(text[:-1]) * units[text[-1]]
+        return float(text)
+    except (ValueError, IndexError):
+        raise SystemExit("ntfy-inbox: bad duration '%s' (use 30m, 12h, 2d)" % text)
+
+
+def clean(text):
+    """One line of printable text: a message body is untrusted and must not drive the terminal."""
+    text = str(text).replace("\r", "").replace("\n", " | ")
+    return "".join(ch if ch.isprintable() else "?" for ch in text)
+
+
+def cmd_show(args):
+    path = os.path.join(state_dir(), "messages.jsonl")
+    msgs = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                    int(ev["time"])
+                    msgs.append(ev)
+                except (ValueError, KeyError, TypeError):
+                    continue
+    except OSError:
+        print("ntfy-inbox: no messages file at %s (has `ntfy-inbox run` started?)" % path,
+              file=sys.stderr)
+        return 1
+    if args.since:
+        cutoff = float(os.environ.get("NTFY_INBOX_NOW") or time.time()) - parse_duration(args.since)
+        msgs = [m for m in msgs if m["time"] >= cutoff]
+    if args.topic:
+        msgs = [m for m in msgs if m.get("topic") == args.topic]
+    msgs.sort(key=lambda m: m["time"])
+    if args.json:
+        print(json.dumps(msgs, indent=2, sort_keys=True))
+        return 0
+    for m in msgs:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(m["time"]))
+        print("%s  %s  p%s  %s  %s" % (when, clean(m.get("topic", "?")), m.get("priority", 3),
+                                       clean(m.get("title") or "-"), clean(m.get("message", ""))))
+    return 0
+
+
+def cmd_status():
+    sdir = state_dir()
+    state = read_state()
+    path = os.path.join(sdir, "messages.jsonl")
+    now = float(os.environ.get("NTFY_INBOX_NOW") or time.time())
+
+    def when(epoch):
+        if not epoch:
+            return "never"
+        return "%s (%ds ago)" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(epoch)), now - epoch)
+
+    print("messages file:     %s%s" % (path, "" if os.path.exists(path) else " (absent)"))
+    print("last message:      %s" % when(state.get("last_message_time")))
+    print("last connect:      %s" % when(state.get("last_connect")))
+    print("last stream event: %s" % when(state.get("last_event")))
+    live = bool(state.get("last_event")) and now - state["last_event"] < LIVE_WITHIN
+    print("writing now:       %s" % ("yes" if live else "no"))
+    healthy = live
+    if shutil.which("systemctl"):
+        try:
+            r = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True,
+                               text=True, timeout=10)
+            active = r.stdout.strip() or "unknown"
+        except Exception:
+            active = "unknown"
+        print("user service:      %s is %s" % (UNIT, active))
+    else:
+        print("user service:      no systemctl here")
+    return 0 if healthy else 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="ntfy-inbox", description="Local copy of ntfy messages.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("run", help="subscribe and keep the messages file current")
+    sp = sub.add_parser("show", help="list stored messages, newest last")
+    sp.add_argument("--since", help="only messages newer than this long ago, e.g. 30m, 12h, 2d")
+    sp.add_argument("--topic", help="only this topic")
+    sp.add_argument("--json", action="store_true", help="print a JSON array")
+    sub.add_parser("status", help="is the file being written; is the service active")
+    args = ap.parse_args(argv)
+    if args.cmd == "run":
+        return cmd_run()
+    if args.cmd == "show":
+        return cmd_show(args)
+    return cmd_status()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,19 @@
+# Keeps a local copy of the messages published to the configured ntfy topics. See `ntfy-inbox --help`.
+# Linux only: the base's .chezmoiignore skips .config/systemd on macOS.
+#
+# Not enabled by the base. Once the topics file (and optionally the token file) exist, enable it once:
+#   systemctl --user enable --now ntfy-inbox.service
+[Unit]
+Description=Local copy of ntfy messages (ntfy-inbox)
+# Without a topics file the daemon has nothing to subscribe to; stay inactive rather than crash-loop.
+ConditionPathExists=%h/.config/ntfy-inbox/topics
+
+[Service]
+ExecStart=%h/.local/bin/ntfy-inbox run
+# The daemon reconnects on its own; this restarts it if the process itself dies. RestartSec keeps a
+# fast failure (a refused token file, say) from spinning.
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
