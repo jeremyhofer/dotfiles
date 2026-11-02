@@ -97,6 +97,14 @@ unrecognized model**, so exit status is not a usable check. The rejection appear
 - **`.claude/settings.json`** — committed. Deliberate, project-wide, structural: hooks the project
   needs, a `worktree` policy, permissions that are a property of the project rather than of your
   machine. Being committed and reviewable is the point.
+  **A hook that runs your own tools is not a project's hook,** even when it is meant only for one
+  project's sessions. Committed, it would make every clone call a program its other users do not
+  have, and on a machine whose settings are managed it is not where hooks are declared. Declare it
+  in the user layer (§3: the domain's fragment) and scope it in the command itself: Claude Code sets
+  `CLAUDE_PROJECT_DIR` for every hook command, so the tool can exit at once anywhere else. **A
+  `UserPromptSubmit` hook that exits 2 blocks the prompt**, and a user-layer one does so in every
+  session; end its command with `|| true` unless blocking is its purpose, so a deployed copy older
+  than the arguments it is given cannot stop work everywhere.
 - **`.claude/settings.local.json`** — gitignored, per-machine. This is where per-session permission
   grants accumulate, and it gets large. **Do not promote that accretion into the committed file.**
 
