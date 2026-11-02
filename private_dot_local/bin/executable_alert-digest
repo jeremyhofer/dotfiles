@@ -7,7 +7,7 @@ something else does not ask. This tool is meant to run from a hook at every turn
 it must say NOTHING when nothing changed: its output goes into the session's context, and a line
 repeated every turn is a cost paid every turn.
 
-    alert-digest --reader NAME --triage TEXT [--session-start]
+    alert-digest --reader NAME --triage TEXT [--session-start] [--project DIR]
 
 It prints, only when there is something to say:
   * the ntfy messages NAME has not been shown (`ntfy-inbox show --new NAME`), at most 10 lines;
@@ -22,6 +22,11 @@ state now, even if they were reported before: a new session has seen none of it.
 names the reader and the TEXT given by --triage, which says where the reader is to look for what to
 do (a skill, a runbook). Exit 0 always, except for a bad argument (2): a hook must never block the
 session it reports to, so a failure of the readers is reported as a line, not as a status.
+
+With --project DIR it does nothing at all (no output, neither reader asked, no state touched) unless
+CLAUDE_PROJECT_DIR, which Claude Code sets for a hook's command, is DIR. That is what lets one
+session's digest be declared as a user-level hook, which every session runs: in every other
+project it exits at once.
 
 STATE, ${XDG_STATE_HOME:-$HOME/.local/state}/alert-digest/<NAME>.json: when hc-status was last
 asked, the problems last reported, and whether ntfy-inbox was last seen writing.
@@ -136,11 +141,17 @@ def main(argv=None):
     ap.add_argument("--reader", required=True, help="whose cursor and state: lower-case letters, digits, -_.")
     ap.add_argument("--triage", required=True, help="where the reader looks for what to do, e.g. a skill")
     ap.add_argument("--session-start", action="store_true", help="show standing problems too")
+    ap.add_argument("--project", metavar="DIR",
+                    help="do nothing unless CLAUDE_PROJECT_DIR is this directory")
     args = ap.parse_args(argv)
     if args.reader[0] == "." or not set(args.reader) <= READER_CHARS:
         print("alert-digest: a reader name is lower-case letters, digits, '-', '_' and '.', not "
               "starting with '.': %r" % args.reader, file=sys.stderr)
         return 2
+    if args.project:
+        here = os.environ.get("CLAUDE_PROJECT_DIR")
+        if not here or os.path.realpath(here) != os.path.realpath(args.project):
+            return 0
     now = float(os.environ.get("ALERT_DIGEST_NOW") or time.time())
     path = state_path(args.reader)
     try:

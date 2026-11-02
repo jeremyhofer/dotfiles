@@ -135,6 +135,18 @@ PATH="$w/nothing:/usr/bin:/bin" ALERT_DIGEST_NOW=8000 run --reader r1 --triage "
 has "a missing reader tool is said" "$out" "ntfy-inbox is not installed"
 eq "  exit 0" "$rc" 0
 
+echo "== --project: only in the one project"
+mkdir -p "$w/proj/notes" "$w/proj/other"
+printf 'scoped one\n' > "$SAY/new"; : > "$SAY/log"; hc '[]'
+CLAUDE_PROJECT_DIR="$w/proj/other" ALERT_DIGEST_NOW=9000 run --reader r3 --triage "skill t" --project "$w/proj/notes"
+eq "in another project: nothing printed" "$out" ""
+eq "  and neither reader is asked" "$(cat "$SAY/log")" ""
+eq "  exit 0" "$rc" 0
+ALERT_DIGEST_NOW=9010 run --reader r3 --triage "skill t" --project "$w/proj/notes"
+eq "with no CLAUDE_PROJECT_DIR: nothing printed" "$out" ""
+CLAUDE_PROJECT_DIR="$w/proj/notes/" ALERT_DIGEST_NOW=9020 run --reader r3 --triage "skill t" --project "$w/proj/notes"
+has "in the project (a trailing slash allowed): it runs" "$out" "scoped one"
+
 echo "== arguments"
 run --triage "skill t"
 eq "no reader is exit 2" "$rc" 2
