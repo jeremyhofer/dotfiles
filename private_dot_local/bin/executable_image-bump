@@ -80,7 +80,9 @@ digest with trivy (the vulnerability database is fetched once, then both scans r
 
   fixable-count-floor  no fixable HIGH/CRITICAL finding: pass; fewer than the current pin
                        carries: exception (3); otherwise refused (4). Unfixed findings are
-                       recorded, not counted.
+                       recorded, not counted. A first pin (no architecture's pins line has
+                       a URL and hash yet) with fixable findings: exception (3), its findings in
+                       the scan record.
   no-new-findings      pass when every (vulnerability id, package) of the new image is already
                        in the current pin's findings, fixed or not; otherwise refused (4).
 
@@ -164,7 +166,8 @@ Scanning. Each architecture's artifact is laid out as a root filesystem (a file 
 path; a .deb unpacked, by this tool, regular files only) and scanned with `trivy rootfs`; the
 findings of both architectures are merged, and the current pin's artifacts (downloaded from the
 pinned URLs and refused if they no longer match their pinned hash) are scanned the same way for
-the gate to compare. A pin that is still PLACEHOLDER has no findings to compare. When trivy
+the gate to compare. A pin that is still PLACEHOLDER has no findings to compare, so a first pin
+with fixable findings is an exception (3) under fixable-count-floor, not a refusal. When trivy
 detects NO PACKAGE in an architecture's artifact (a binary with no readable dependency list), the
 scan says nothing about it: that is printed as NO COVERAGE, recorded as `coverage: none`, and the
 verdict becomes an exception (3) however clean the findings look, never a pass. A refusal by the
@@ -565,12 +568,16 @@ def fixable(findings):
     return [f for f in findings if f["fixed"]]
 
 
-def apply_gate(kind, new, cur):
-    """Return (verdict, message): verdict is 'pass', 'exception' or 'refused'."""
+def apply_gate(kind, new, cur, first=False):
+    """Return (verdict, message): verdict is 'pass', 'exception' or 'refused'. `first` is a
+    first pin: no current pin exists, so there is nothing to compare against."""
     if kind == "fixable-count-floor":
         n, c = len(fixable(new)), len(fixable(cur))
         if n == 0:
             return "pass", "no fixable finding (current pin: %d)" % c
+        if first:
+            return "exception", ("%d fixable findings in a first pin, which has no current pin "
+                                 "to compare" % n)
         if n < c:
             return "exception", ("%d fixable findings, fewer than the current pin's %d" % (n, c))
         return "refused", ("%d fixable findings, not fewer than the current pin's %d" % (n, c))
@@ -1401,7 +1408,7 @@ def check_artifact(args, desc, directory):
         new, new_counts = scan_artifacts(desc, dict((k, resolved[k]["file"]) for k in keys),
                                          work, "new")
         cur, _counts = scan_artifacts(desc, current, work, "cur") if current else ([], {})
-        verdict, why = apply_gate(desc.gate["kind"], new, cur)
+        verdict, why = apply_gate(desc.gate["kind"], new, cur, first=not current)
         uncovered = sorted(k for k in keys if new_counts[k] == 0)
         print("gate %s: %s: %s" % (desc.gate["kind"], verdict, why))
         if verdict == "refused":
@@ -1462,9 +1469,14 @@ def check_artifact(args, desc, directory):
     for line in desc.checklist:
         print("checklist: %s" % line)
     if verdict == "exception":
-        reason = ("trivy detected no package in the %s artifact, so there is no coverage"
-                  % ", ".join(uncovered)) if uncovered else (
-                      "%d fixable HIGH/CRITICAL findings (%d in all) against the current pin's "
+        if uncovered:
+            reason = ("trivy detected no package in the %s artifact, so there is no coverage"
+                      % ", ".join(uncovered))
+        elif not current:
+            reason = ("%d fixable HIGH/CRITICAL findings (%d in all) in a first pin, which has no "
+                      "current pin to compare" % (len(fixable(new)), len(new)))
+        else:
+            reason = ("%d fixable HIGH/CRITICAL findings (%d in all) against the current pin's "
                       "%d (%d in all)" % (len(fixable(new)), len(new), len(fixable(cur)), len(cur)))
         print("APPROVAL: %s %s %s: %s. This needs the operator's explicit approval."
               % (name, args.version, art["kind"], reason))

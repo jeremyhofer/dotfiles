@@ -410,6 +410,21 @@ rec=$(ls "$R/image/scans/widget-3.1.0-"*.txt | head -1)
 has "  record: replaces none" "replaces: none" "$rec"
 has "  arm line written" "widget-v3.1.0.linux.arm64 sha256:$WARM" "$R/image/pins-arm.txt"
 
+# --- a first pin with fixable findings: the operator's approval (3), never a refusal (4) or a pass (0)
+world PINNED=no
+tfix "$WARM" 7 CVE-9:libnew:2 CVE-8:libold:
+go check widget 3.1.0
+expect "a first pin with a fixable finding is exit 3" 3 "gate fixable-count-floor: exception: 1 fixable findings in a first pin"
+has "  the approval line says why" "in a first pin, which has no current pin to compare" "$w/out"
+rec=$(ls "$R/image/scans/widget-3.1.0-"*.txt 2>/dev/null | head -1)
+if [ -n "$rec" ]; then
+  has "  the record's verdict is exception" "verdict: exception" "$rec"
+  has "  the record replaces none" "replaces: none" "$rec"
+  has "  the record lists the fixable finding" "CVE-9" "$rec"
+  has "  and the unfixed one" "CVE-8" "$rec"
+else no "  no record"; fi
+has "  the arm line is written" "widget-v3.1.0.linux.arm64 sha256:$WARM" "$R/image/pins-arm.txt"
+
 # --- the pins files
 world
 { printf 'file /usr/local/bin/widget http://x sha256:PLACEHOLDER\n'; cat "$R/image/pins-arm.txt"; } > "$w/x"; cp "$w/x" "$R/image/pins-arm.txt"
