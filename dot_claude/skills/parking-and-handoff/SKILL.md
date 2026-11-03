@@ -110,29 +110,43 @@ shed depth before a long gap, not a reason to write a handoff.
 
 Handoffs are committed to a handoffs directory in one repository, so they are versioned and read
 cold. The directory is the `handoffs` key of `fleet-canonicals`' configuration file
-(`fleet-canonicals --help`, "configuration"); with none set, `place` refuses.
+(`fleet-canonicals --help`, "configuration"). `docs/reference/fleet-sessions.md` in the base's
+checkout (`chezmoi source-path`) is the full lifecycle, where every file lives, the sandbox entries
+each role needs, and setting up a machine; this section is the part a parking session acts on.
 
-- **If your shell can write that repository**, write the handoff there, commit it, and record it:
+First read the handoff you started from: `fleet-canonicals handoff <name>`. The new handoff names
+its basename on a line in its first 15 lines, ``Supersedes `<basename>`.``, which keeps the chain
+intact.
+
+- **If you are the hub** (your shell can write the handoffs repository), write
+  `<handoffs>/YYYY-MM-DD-HHMM-<name>-park.md` there, commit it, and record it:
   `fleet-canonicals handoff <name> --set <path>`.
-- **If it cannot** (typically the Bash sandbox, whose write list holds only your own checkout),
-  **stage it**: write a draft anywhere you can (`$TMPDIR`), then
-  `fleet-canonicals stage <name> <draft> [--kind checkpoint]`. The tool copies it into
-  `$FLEET_STATE/handoff-staging/` as `YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) and
-  records the pointer, so you never choose a path. It refuses a draft that does not name, on a
-  `Supersedes` line near the top, the handoff your pointer names now, and prints the line to add;
-  that keeps the chain intact. It never overwrites a staged file.
-- **Placing** moves staged handoffs into the handoffs directory, and commits them there when the
-  configuration's `place-commit` is on (it never pushes):
-  `fleet-canonicals place --dry-run`, then `place`, run by a session that can write that repository,
-  usually the hub. It places a handoff only when its predecessor resolves there or is placed in the
-  same run, leaves drafts that are not a canonical's dated handoff for a judgment call, never
-  deletes the staging copy, and repoints each pointer that named the staged copy.
+- **Otherwise, stage it.** Write a draft wherever you can (`$TMPDIR` is fine: the tool copies it),
+  then `fleet-canonicals stage <name> <draft> [--kind checkpoint]`. It copies the draft to
+  `$FLEET_STATE/handoff-staging/YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) and records the
+  pointer, so you never choose a path. It refuses a draft whose `Supersedes` line does not name the
+  current handoff, printing the line to add, and never overwrites a staged file. Staging needs your
+  Bash sandbox to write `$FLEET_STATE` (default `~/.local/state/fleet-canonicals`), not the
+  handoffs repository.
+- **Placing** copies staged handoffs into the handoffs directory, and commits them there when
+  `place-commit` is on (it never pushes): `fleet-canonicals place --dry-run`, then `place`, run by
+  the hub, or on a machine where no hub runs, by whoever can write the repository there. It reads
+  only this machine's staging. It places a handoff only when its predecessor is in the
+  `handoffs-search` tree or placed in the same run (otherwise `BROKEN-CHAIN`), leaves files that are
+  not a canonical's dated handoff for a judgment call (`NEEDS-JUDGMENT`), never deletes the staging
+  copy, and repoints each pointer that named the staged copy.
 
 **Placement is durability, not continuity, so the hub is not a prerequisite for parking.** `--set`
 only checks that the target exists. A canonical parking while the hub is down or busy leaves its
 pointer on the staging copy and parks normally; the successor resolves it and reads it. What lags is
 only the committed copy, and `$FLEET_STATE` is machine-local and backed up nowhere, so **say in the
-handoff that it is still staged**.
+handoff that it is still staged**. `fleet-canonicals status` lists each one as `handoff UNPLACED`
+until it is placed.
+
+**A stub breaks the chain.** After `down` or `refresh` with `--stub`, the pointer names a generated
+stub under `$FLEET_STATE/stub-handoffs/`, which is never placed. The next handoff must name the stub
+as its predecessor, and `place` reports it `BROKEN-CHAIN`; the hub places it with
+`place --accept-broken-chain` once the dry run shows the stub is the only gap.
 
 **Do not use `Write` or `Edit` to reach a repository your Bash sandbox cannot write.** Those tools
 can reach arbitrary absolute paths, because the sandbox covers only Bash and its children; that is
@@ -146,21 +160,24 @@ every other handoff in the same `place` run.
 
 ### Recording the pointer
 
-The pointer lives under `$FLEET_STATE` (default `~/.local/state/fleet-canonicals/<name>.handoff`),
-**outside every git repository**, so a session whose guard refuses writes to its own checkout can
-still record it. A missing, empty or dangling pointer is a hard error that launches nothing; a
-baked-in path that was never refreshed would instead launch quietly into the previous handoff.
+The pointer is `$FLEET_STATE/<name>.handoff`: the handoff's absolute path, then a `# set-at <epoch>`
+line. It lives **outside every git repository**, so a session whose guard refuses writes to its own
+checkout can still record it. With no pointer, a launch starts nothing (`up` prints `FAILED <name>
+launch exited 1`, and `up --dry-run` does not check); a pointer whose file is gone is caught by
+`fleet-canonicals handoff <name>` but not by the launch, which would name the missing file in its
+prompt. So read it back.
 
 - **Type the path. Never resolve it with a glob.** `--set` checks only existence, so a glob matching
   several handoffs records the wrong one and nothing complains. Then read it back with
   `fleet-canonicals handoff <name>` and confirm it is the file you meant.
-- **After placement, the pointer must name the committed path with its original `# set-at` stamp.**
+- **After placement, the pointer must name the placed path with its original `# set-at` stamp.**
   `place` does this. Do not repoint by hand with `--set`, which restamps it: `down` and `refresh`
   compare the stamp to the holder session's start time, so a fresh stamp tells them a successor
   parked when it has not, and the next refresh recycles it with no handoff describing its work.
 - **Re-set after editing your own handoff's content.** That is a new recording, so the fresh stamp
-  is correct; skipping it leaves the stamp older than the edit, and the freshness check refuses the
-  next relaunch.
+  is correct. The gate compares the stamp, not the file, with the session's start, so a handoff
+  edited by a session that started after it was recorded still reads as older than that session,
+  and the next relaunch is refused.
 
 ## What a handoff contains
 

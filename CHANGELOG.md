@@ -34,6 +34,29 @@ Entries are newest first.
 
 ## 2026-11-03
 
+### Setting up a fleet: one reference; a work machine retires the base's hooks (ACTION where hooks are barred)
+
+- **New reference `docs/reference/fleet-sessions.md`**, the one place for running the
+  long-running named sessions on a machine: the roles (a canonical per project, the hub that writes
+  the handoffs repository, the human), the handoff lifecycle step by step with its commands and
+  paths, which files are machine-local until placed, **which directories each role's Bash sandbox
+  must be able to write** (every canonical: `~/.local/state/fleet-canonicals`; the hub: the
+  handoffs repository; the session verbs `up`, `refresh`, `down`, `dedupe`, `resume`, `resume-at`
+  and `clean` run outside the sandbox), and a setup checklist for a new machine, each step with the
+  output that proves it worked. **ACTION** for a machine bringing up a fleet: follow its checklist.
+- Skills `parking-and-handoff` and `canonical-takeover` corrected against the tool: a launch does
+  not check that the handoff its pointer names exists (seed a pointer before the first `up`);
+  `place` copies, it does not move, and nothing empties `handoff-staging/`; a stub handoff breaks
+  the chain until `place --accept-broken-chain`. `fleet-canonicals place --help` now says "copy".
+- **A machine that may not run Claude Code hooks retires the base's.** The base's settings merge
+  declares three hook entries, all `claude-worktree-hook`; `retiredHooks` is applied after the
+  base's block, so it removes them. **ACTION** on a managed machine that bars hooks: add
+  `"claude-worktree-hook"` to `retiredHooks` in the private layer's settings fragment and
+  re-apply `~/.claude/settings.json` (`docs/reference/private-layer.md`, "Settings").
+- **The machine-snapshot sampler's Linux timer is opt-in on the work domain too**, as its macOS
+  agent already was: with `domain = "work"` and no `machineSnapshot = true`, neither
+  `machine-snapshot.service`, `.timer` nor the link enabling it is deployed.
+
 ### Publishing is checked: `setup/publish-check`
 
 - **Before the base is pushed to the remote other machines pull from**, `sh setup/publish-check`

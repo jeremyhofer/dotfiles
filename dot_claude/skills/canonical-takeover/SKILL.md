@@ -57,9 +57,11 @@ claude --bg -n <name> --model <canonicalLaunchModel> \
 argument: keep it to this one line.
 
 **No handoff path is stored in the record, and that is the point.** What changes between parks is
-the handoff, and it is resolved through the pointer at launch. A missing, empty or dangling pointer
-is a hard error that names itself and launches nothing, so a launch never quietly aims at the
-previous handoff.
+the handoff, and it is resolved through the pointer at launch, so a launch never quietly aims at a
+path written down for an earlier sitting. A missing or empty pointer launches nothing (`up` prints
+`FAILED <name> launch exited 1`; `up --dry-run` does not check). A pointer whose file is gone is
+refused by `fleet-canonicals handoff <name>`, as in the by-hand launch above, but not by the tool's
+own launch, which names the missing file in its prompt: read the pointer back after recording it.
 
 **The model is declared, never inherited.** A launch with no `--model` inherits the account's saved
 default, and running `/model` in any session and confirming the pick writes the `model` key into
@@ -74,10 +76,12 @@ one. Prefer an alias (`opus`, `sonnet`, a context-qualified form such as `opus[1
 1. **The outgoing session parks**, ending its handoff with a kickoff block (skill
    `parking-and-handoff`). Step 2 is what that block's user-steps half asks the human to run.
 2. **The human runs `fleet-canonicals refresh <name>`**, from a plain terminal, another session or
-   the agents view. It pre-flights the declared launch before stopping anything (a name it cannot
-   start is a name it will not stop), stops the outgoing session, verifies between the halves that
-   its row really went away, then launches. That check is what prevents the stale duplicate row a
-   bare launch leaves behind. A name that is not running is simply launched.
+   the agents view. A session runs it only outside its Bash sandbox: a launch creates a job
+   directory under `~/.claude` that sandboxed Bash cannot write (`docs/reference/fleet-sessions.md`
+   in the base's checkout, `chezmoi source-path`, section "Sandbox and permissions"). It pre-flights
+   the declared launch before stopping anything (a name it cannot start is a name it will not stop),
+   stops the outgoing session, verifies between the halves that its row really went away, then
+   launches. That check is what prevents the stale duplicate row a bare launch leaves behind. A name that is not running is simply launched.
 
    **It refuses inside the target session.** Run there, it would die at the stop, the relaunch
    would never run, and the harness would respawn the killed worker with `--resume`: the same

@@ -185,7 +185,8 @@ usage: fleet-canonicals <command>
                     WHAT and FOR WHOM; the tool picks WHERE. Refuses content that does
                     not supersede the canonical's current handoff, and never overwrites.
   place [--dry-run] [--accept-broken-chain]
-                    move staged handoffs into the configured handoffs directory, commit
+                    copy staged handoffs into the configured handoffs directory (the
+                    staging copy stays; nothing empties handoff-staging/), commit
                     them there when place-commit is on (never push), then repoint any
                     canonical whose pointer names a staged copy, keeping its set-at stamp.
                     Run by the hub, or whichever session can write that directory.

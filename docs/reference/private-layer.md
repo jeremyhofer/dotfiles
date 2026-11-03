@@ -170,7 +170,10 @@ Rules the merge imposes:
   hand or by other tooling, is removed on the next apply, so a layer must declare in its fragment
   every hook it relies on for those events. An event neither declares is left as the live file has it.
 - **`retiredHooks`** lists hook script names to remove from every event: the merge can only add, so
-  a hook dropped from `declared` would otherwise keep firing.
+  a hook dropped from `declared` would otherwise keep firing. It is applied after the base's block,
+  so it also removes the base's own hooks: **a machine that may not run Claude Code hooks** (a
+  managed work machine) lists `claude-worktree-hook`, the base's only hook script, and its
+  `settings.json` then declares none of the base's hooks.
 - Managed settings (`/etc/claude-code/managed-settings.json`, or the macOS equivalent) outrank this
   file; a key they enforce cannot be changed from here.
 - A fragment that fails or prints anything but a JSON object is skipped with a warning; the base's

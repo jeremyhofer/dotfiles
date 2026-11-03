@@ -8,6 +8,9 @@
   what reads it, what is required, and how to validate it.
   [`private-layer.md`](reference/private-layer.md) is the how-to for every seam a private layer
   configures: the file, its format, an example, what happens without it, and how to check it.
+  [`fleet-sessions.md`](reference/fleet-sessions.md): the long-lived session fleet's roles, the
+  handoff lifecycle step by step, where every file lives, what each session's Bash sandbox must
+  write, and setting up a new machine.
   [`knowledge-base.md`](reference/knowledge-base.md): standing up and configuring a `kb` knowledge base
   and loading its rules into every session. [`repository-layouts.md`](reference/repository-layouts.md):
   standard clone (the fleet layout) or bare container, declaring each, the files a new worktree is
