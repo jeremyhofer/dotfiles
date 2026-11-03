@@ -1,0 +1,2095 @@
+#!/usr/bin/env bash
+# fleet-canonicals — status, bring-up, and deduplication for the long-lived named session fleet.
+#
+# WHY. Named sessions are addressed by NAME, and a name resolves newest-wins. Taking one over
+# therefore leaves the outgoing session alive and idle, holding nothing but a row in the sessions
+# view — and nothing in that view distinguishes the stale row from the live one except a relative
+# timestamp. After a few handovers the view stops answering the only question it is consulted for:
+# is each expected session present exactly once? This tool answers that, launches the ones that are
+# missing, and closes the duplicates a handover leaves behind.
+#
+# There is deliberately NO scheduler for resume-after-limit-reset: no timer, unit or cron entry a
+# session arms on someone's behalf. One was built here and removed on measurement: a session resumed
+# after an idle gap must rebuild its prompt cache at 2x input price, proportional to how deep the
+# context is, so an installed "wait for the limit, then resume in place" systematizes the single most
+# expensive thing a long session can do. What exists instead is deliberately lightweight: the verbs
+# `wait-for-reset` and `resume-at` are plain foreground waits that install nothing (kill one and no
+# trace survives). They wait for `--at <time>`, or for a 5-hour usage reset when this machine records
+# one (see usage_reset_epoch); a weekly reset can be days away and is refused. `resume <name>` is a
+# different thing: it wakes one named session, with no link to the limit. Bringing a canonical back
+# after a stop is `up`, from a shallow start.
+#
+# THE MODEL IS THE FLEET RECORD. A canonical exists because a project in the per-repo record
+# (~/Devel/mani.yaml, read only through `fleet-decl`) declares `canonical: <name>` with its
+# companions -- canonicalIdentity, canonicalLaunchDir, canonicalLaunchModel, canonicalMachines -- and
+# this machine runs it because its `hostname` is in canonicalMachines. Every launch is composed from
+# those declarations; nothing per repository stores a launch. $CANONICAL_ROSTER, a file of one name
+# per line, replaces the list of EXPECTED names (status, up, dedupe, down --all) and nothing else:
+# a name on it that the record does not declare is refused at launch, not guessed.
+#
+# THE DOMAIN'S OWN VALUES -- where placed handoffs go, which session places them, whether placing
+# commits -- come from a config file the domain's private layer writes (see the CONFIGURATION block
+# of the help), each overridable by an environment variable. With no file every value is unset and
+# the verbs that need one say so; none of them falls back to a path on some particular machine.
+#
+# FAIL LOUD, NOT SILENT. If the sessions list cannot be obtained or does not parse, this exits 2
+# rather than reporting a healthy fleet. A check that reports "all fine" because it could not look
+# is worse than one that errors: it is trusted and wrong, in the direction that hides the problem.
+set -uo pipefail
+
+AGENTS_CMD=${FLEET_AGENTS_JSON_CMD:-"claude agents --json"}
+# The `claude` binary, for every call this tool makes to it: launch, row deletion (`rm`), wake
+# (`attach`) and fork (`--resume`). Overridable for the same reason the agents listing is: a launch
+# is the one action here that cannot be exercised for real in a test, and the composed command line
+# is worth asserting rather than trusting -- a stub captures the model tier and prompt. ONE variable
+# for one binary: when launches and row deletion had separate overrides, a test could stub the
+# launch while `rm` still reached the real CLI.
+claude_bin() { printf '%s\n' "${FLEET_CLAUDE_CMD:-claude}"; }
+# The all-inclusive listing is a SEPARATE command string, not `$AGENTS_CMD --all`. The base command
+# is overridable for testing and the override is a fixture reader (`cat some.json`), where appending
+# a flag produces `cat some.json --all` and fails. So: when the base has been overridden, the same
+# fixture answers both views; otherwise append the real flag.
+if [ -n "${FLEET_AGENTS_JSON_ALL_CMD:-}" ]; then
+  AGENTS_ALL_CMD=$FLEET_AGENTS_JSON_ALL_CMD
+elif [ -n "${FLEET_AGENTS_JSON_CMD:-}" ]; then
+  AGENTS_ALL_CMD=$AGENTS_CMD
+else
+  AGENTS_ALL_CMD="$AGENTS_CMD --all"
+fi
+FLEET_ROOT=${FLEET_ROOT:-"$HOME/Devel"}
+# Handoff pointers live OUTSIDE every git repo, deliberately. A canonical's kickoff script used to
+# bake its handoff path in, which meant park had to rewrite a file inside the canonical's own
+# checkout -- a write a background session's isolation guard can refuse, and which then fails in
+# the quietest possible way: the step is skipped, the script still launches, and it points at
+# yesterday's handoff. A pointer under $XDG_STATE_HOME is subject to no guard and circumvents none.
+FLEET_STATE=${FLEET_STATE:-"${XDG_STATE_HOME:-$HOME/.local/state}/fleet-canonicals"}
+# Prefix under which every launched session's own temp root is created (see new_tmproot / rm_tmproot
+# below). Overridable for the same reason the claude binary and AGENTS_CMD are: rm_tmproot's guard does a
+# REAL filesystem check (exists, is a directory, is not a symlink) before deleting anything, and a
+# test that wants to prove that guard actually protects a sibling directory needs to create and
+# inspect real paths under this prefix without touching the real /tmp a production launch uses.
+FLEET_TMPROOT_PREFIX=${FLEET_TMPROOT_PREFIX:-/tmp}
+
+# Session transcripts. Read-only, and used for exactly one thing: recovering a session's TRUE start
+# time, which the agents listing does not preserve across a resume. See session_true_start.
+FLEET_TRANSCRIPT_DIR=${FLEET_TRANSCRIPT_DIR:-"$HOME/.claude/projects"}
+
+die() { printf 'fleet-canonicals: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+# ---- configuration -------------------------------------------------------------
+# The domain's own values, from one file in the XDG config directory, the same place the other
+# per-machine tools of this kind read theirs. A domain's private layer writes it; nothing here
+# writes it. One `key = value` per line; `#` starts a comment line; a leading `~/` is the home
+# directory; when a key repeats, the last one wins. Each key has an environment variable that
+# overrides it, so a test or a one-off run never has to edit the file.
+#
+#   handoffs         FLEET_HANDOFFS_DIR      directory `place` moves staged handoffs into
+#   handoffs-search  FLEET_HANDOFFS_SEARCH   tree searched for a staged handoff's placed copy
+#                                            (default: the handoffs directory)
+#   hub              FLEET_HUB               the session that runs `place`, named in messages
+#   place-commit     FLEET_PLACE_COMMIT      true: `place` commits the placed files in the git
+#                                            repository holding the handoffs directory (default false)
+#
+# NO DEFAULT NAMES A REAL PATH. A default pointing into one machine's notes would make every other
+# machine's `status` search a tree that is not there, and `place` write into one.
+FLEET_CONFIG=${FLEET_CANONICALS_CONFIG:-"${XDG_CONFIG_HOME:-$HOME/.config}/fleet-canonicals/config"}
+
+# config_value ENVVAR KEY -- the variable when it is set and non-empty, else KEY from the file.
+config_value() {
+  local v="${!1:-}"
+  if [ -z "$v" ] && [ -r "$FLEET_CONFIG" ]; then
+    v=$(sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$FLEET_CONFIG" | tail -n 1 \
+          | sed 's/[[:space:]]*$//')
+  fi
+  case "$v" in
+    '~')   v=$HOME ;;
+    '~/'*) v="$HOME/${v#\~/}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+HANDOFFS_DIR=$(config_value FLEET_HANDOFFS_DIR handoffs)
+HANDOFFS_SEARCH=$(config_value FLEET_HANDOFFS_SEARCH handoffs-search)
+HANDOFFS_SEARCH=${HANDOFFS_SEARCH:-$HANDOFFS_DIR}
+FLEET_HUB=$(config_value FLEET_HUB hub)
+PLACE_COMMIT=$(config_value FLEET_PLACE_COMMIT place-commit)
+
+# run_bounded SECONDS CMD... -- run CMD, killed after SECONDS. GNU `timeout` is absent from a stock
+# macOS (and `gtimeout` exists there only where coreutils was installed), and a bare `timeout` fails
+# with "command not found" before the command it guards even starts. perl's alarm survives the exec
+# and every macOS ships perl, so the bound stays real on both rather than being skipped.
+run_bounded() {
+  local secs=$1; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
+  else perl -e 'alarm shift @ARGV; exec @ARGV or exit 127' "$secs" "$@"
+  fi
+}
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+usage() {
+  cat <<'USAGE'
+usage: fleet-canonicals <command>
+
+  resume <name> [--dry-run] [--fork] [--prompt TEXT]
+      bring a canonical back FROM ITS OWN TRANSCRIPT, then close the row it forked from.
+      Use when the session was never parked (its handoff predates the work). When it DID
+      park, use `refresh` instead -- that relaunches from the fleet record and reads the
+      handoff. A stopped session is woken in place (`claude attach`); --fork copies its
+      transcript into a new session instead, and then closing the old row is part of this verb.
+
+  list              every canonical the fleet record declares, with what it owns and where it
+                    runs; fleet-wide, so it answers "which peer handles X" from any machine
+  status            one line per expected session; exit 0 only if every one is OK
+  up | start [--dry-run] [name...]
+                    launch MISSING sessions as the fleet record declares them. With no names,
+                    every missing canonical; with names, only those. An unknown name is
+                    refused rather than treated as "no filter".
+  down | stop [--dry-run] [--stub [reason] | --force [reason]] <name>... | --all
+                    stop the named canonical(s) and delete their rows (transcripts kept,
+                    so they stay resumable). Names are required; --all must be explicit.
+                    Ending the session that HOLDS a name requires a handoff recorded after
+                    that session started (see the gate below).
+  refresh [--dry-run] [--stub [reason] | --force [reason]] <name>
+                    stop that canonical and start it again as the fleet record declares it,
+                    verifying BETWEEN the halves that its row really went away. Pre-flights
+                    the declared launch before stopping anything, so a name it cannot start
+                    is a name it will not stop. Refuses when the target is the session you
+                    are running it from. A name that is NOT running is launched rather than
+                    refused -- the handoff gate still applies, so this is `up` plus the gate,
+                    never a way around it.
+
+  THE TWO ESCAPE HATCHES ARE OPPOSITES. Give at most one, and pick by asking which is wrong:
+    --stub [reason]   the HANDOFF is wrong -- nothing was written for this sitting. REPLACES
+                      the recorded pointer with a generated note telling the successor there
+                      is no orientation to inherit. Destructive if a good handoff exists.
+    --force [reason]  the COMPARISON is wrong -- the recorded handoff does describe this
+                      sitting. KEEPS the pointer untouched and skips the freshness check,
+                      printing both timestamps and your reason. The usual cause is a session
+                      that was RESUMED after it was parked (opening it from the agents view
+                      does this), which rewrites its start time. That specific case is now
+                      detected automatically from the transcript, so --force should be rare.
+  handoff <name> [--set <path>]
+                    resolve (or record) the handoff a canonical should read next.
+                    Prints the path; FAILS LOUDLY when the pointer or the file it names
+                    is absent, rather than guessing a handoff. A launch reads it through
+                    this pointer rather than a baked-in path, so it never goes stale.
+                    --set also stamps WHEN it was recorded, which is what `refresh` and
+                    `down <name>` compare against the target session's start time: a
+                    handoff older than the session it replaces describes a different
+                    sitting, and a successor would read it as current.
+  stage <name> <content-file> [--kind park|checkpoint]
+                    write a canonical's handoff into staging under the standard dated
+                    name and point the canonical at it. The parking session supplies
+                    WHAT and FOR WHOM; the tool picks WHERE. Refuses content that does
+                    not supersede the canonical's current handoff, and never overwrites.
+  place [--dry-run] [--accept-broken-chain]
+                    move staged handoffs into the configured handoffs directory, commit
+                    them there when place-commit is on (never push), then repoint any
+                    canonical whose pointer names a staged copy, keeping its set-at stamp.
+                    Run by the hub, or whichever session can write that directory.
+                    Refuses a handoff whose predecessor resolves nowhere (BROKEN-CHAIN)
+                    and leaves non-handoff drafts for a judgment call (NEEDS-JUDGMENT);
+                    either makes the exit status 1. Never deletes the staging copy.
+  dedupe [--dry-run] [<name>]
+                    enforce one session per canonical name, keeping the newest: stop the
+                    older process(es), then delete their rows (transcripts are kept).
+                    With <name>, act on that canonical ONLY -- the rest of the fleet is
+                    left alone. An unknown name is refused rather than reported as
+                    "0 target(s)", which would read as clean.
+  clean [--dry-run]
+                    remove the scratch roots this tool made for launches whose session is
+                    gone ($FLEET_TMPROOT_PREFIX/c-<short name>-XXXXXX), for machines with no
+                    session-end hook to remove them. Keeps every root a running session may
+                    own, every root younger than 10 minutes, and every path of another shape.
+                    Exit 2, removing nothing, when the sessions list cannot be read.
+  wait-for-reset [--at <time>] [--dry-run]
+                    block until <time>, or without --at until the 5-hour usage window
+                    resets, read from the usage cache (below) when this machine records
+                    one; with no cache it says so and asks for --at. On a plan whose only
+                    window is 7-day it refuses, naming the weekly reset. Launches nothing.
+                    THIS IS THE ONE AN AGENT USES: run it via the Bash tool with
+                    run_in_background, and the harness re-invokes the session when it
+                    exits, so the session resumes itself. Prints its own PID so "verify
+                    it is armed" is one check.
+  resume-at [--at <time>] [--dry-run]
+                    same wait, then run `up`. For when no session will be alive to wake.
+                    Run it backgrounded (`fleet-canonicals resume-at &`).
+
+  The usage cache is ${XDG_RUNTIME_DIR:-/tmp}/claude-usage/<session>.json, one per session, with
+  five_hour_resets_at and seven_day_resets_at (epoch seconds), written from the status line by a
+  recorder the domain installs, if it has one. Nothing here writes it.
+
+configuration (file, then the variable that overrides each key):
+  $FLEET_CANONICALS_CONFIG, default ${XDG_CONFIG_HOME:-~/.config}/fleet-canonicals/config,
+  written by the domain's private layer. One `key = value` per line, # comment lines,
+  a leading ~/ is the home directory. With no file every key is unset.
+  handoffs = <dir>           FLEET_HANDOFFS_DIR     where `place` puts staged handoffs; unset:
+                                                    `place` refuses and `status` skips its check
+  handoffs-search = <dir>    FLEET_HANDOFFS_SEARCH  tree searched for a staged handoff's placed
+                                                    copy (default: the handoffs directory)
+  hub = <name>               FLEET_HUB              the session that runs `place`, named by `stage`
+  place-commit = true|false  FLEET_PLACE_COMMIT     commit placed files in the repository holding
+                                                    the handoffs directory (default false)
+
+environment:
+  CANONICAL_ROSTER        file of expected names, one per line (# comments ok); replaces the
+                          record's list of names, not its declarations
+  FLEET_RECORD            the fleet record, read by fleet-decl (default ~/Devel/mani.yaml)
+  FLEET_DEVEL_ROOT        root the record's scopes are relative to, for fleet-decl (default ~/Devel)
+  FLEET_ROOT              root that each canonicalLaunchDir is relative to (default ~/Devel)
+  FLEET_STATE             handoff pointers, staging (handoff-staging/), stub handoffs and
+                          per-session temp-root records (<name>.tmproot)
+                          (default $XDG_STATE_HOME/fleet-canonicals, else ~/.local/state/...)
+  FLEET_TMPROOT_PREFIX    directory each launch's scratch root is made in (default /tmp)
+  FLEET_TRANSCRIPT_DIR    session transcripts, read-only (default ~/.claude/projects)
+  FLEET_STAGE_STAMP       the date-time part of a staged handoff's name (default: now)
+  FLEET_AGENTS_JSON_CMD   command producing the sessions JSON (default: claude agents --json)
+  FLEET_AGENTS_JSON_ALL_CMD  the same including exited sessions (default: the above --all, or
+                          the above unchanged when it was overridden)
+  FLEET_CLAUDE_CMD        the claude binary, for launch, rm, attach and fork (default: claude)
+  USAGE_WINDOW            5h: a 5-hour window is expected, so an empty cache is "not cached yet"
+USAGE
+}
+
+# ---- inputs -----------------------------------------------------------------
+
+agents_json() {
+  local out
+  out=$($AGENTS_CMD 2>/dev/null) || die "could not run: $AGENTS_CMD"
+  [ -n "$out" ] || die "empty output from: $AGENTS_CMD"
+  printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1 \
+    || die "output of '$AGENTS_CMD' is not a JSON array"
+  printf '%s' "$out"
+}
+
+# agents_json_all -- the listing INCLUDING exited sessions.
+#
+# Deliberately separate from agents_json rather than replacing it. `status` and `up` decide whether a
+# canonical is MISSING by counting its rows, so feeding them exited rows would make `up` conclude a
+# dead canonical is present and never launch it. But an exited session still holds a row in the
+# agents view, and clicking that row RESUMES it -- which is the clutter closing exists to remove. So
+# the two views are both needed and are not interchangeable: liveness for "is it running", all for
+# "what is still listed".
+agents_json_all() {
+  local out
+  out=$($AGENTS_ALL_CMD 2>/dev/null) || die "could not run: $AGENTS_ALL_CMD"
+  [ -n "$out" ] || die "empty output from: $AGENTS_ALL_CMD"
+  printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1 \
+    || die "output of '$AGENTS_ALL_CMD' is not a JSON array"
+  printf '%s' "$out"
+}
+
+# THE RECORD IS THE MANIFEST. Canonicals were previously discovered by globbing for a
+# `.claude/canonical-kickoff.sh` under $FLEET_ROOT, and this file's own header used to say so:
+# "kickoff scripts IS the manifest of what this machine can bring up". That is an EMERGENT
+# manifest -- existence inferred from a file somebody remembered to create -- and it had already
+# drifted: a declared model tier and a running one diverged with nothing surfacing the difference,
+# and a retired directory could leave a second script claiming the same name.
+#
+# Now a canonical exists because the fleet record says so, and this machine runs it because the
+# record says THAT too. Per-launch overrides become flags over a declared default rather than an
+# edit to an unmanaged script.
+canonical_declared() { fleet-decl --canonical "$1" canonicalLaunchDir >/dev/null 2>&1; }
+
+# A human-readable description of where a launch would land, for dry runs and progress lines.
+# This replaces printing a script path: the path was the only concrete thing the old code could
+# show, and it was never what mattered.
+launch_desc() {
+  local d m
+  d=$(fleet-decl --canonical "$1" canonicalLaunchDir 2>/dev/null) || return 1
+  m=$(fleet-decl --canonical "$1" canonicalLaunchModel 2>/dev/null) || return 1
+  printf '%s (%s)' "$d" "$m"
+}
+
+# ---- per-launch temp root ----------------------------------------------------
+# Every session this tool starts gets its OWN scratch root, passed via `--settings`'s env block
+# rather than exported into the launching shell: a `claude --bg` session does NOT inherit the
+# shell that started it (the background daemon is what actually execs it), so `TMPDIR=...` in this
+# process's environment never reaches the session. `--settings '{"env":{"CLAUDE_CODE_TMPDIR":...}}'`
+# does reach it -- measured: the session then sees TMPDIR=$root/claude-<uid>. Recorded under
+# FLEET_STATE, one file per name, same convention as the handoff pointer below -- and for the same
+# reason: a SINGLE, EXPLICIT record beats trying to re-derive "the current root" from the
+# filesystem later, which is exactly the drift the handoff pointer comment already warns about.
+#
+# ONE record per name, not one per launch. A stop/refresh/dedupe that closes a session removes
+# THIS record only when nothing is left running under that name -- see cleanup_tmproot_if_gone --
+# so the slot always ends up describing whichever launch is the survivor, the same "newest wins"
+# rule the rest of this file already applies to session rows.
+tmproot_path() { printf '%s/%s.tmproot' "$FLEET_STATE" "$1"; }
+
+# new_tmproot NAME -- create a fresh root for a launch of NAME and print it: /tmp/c-<short>-XXXXXX.
+# It must stay SHORT. When CLAUDE_CODE_TMPDIR is long, Claude Code silently gives sandboxed Bash
+# the shared default TMPDIR instead (documented only as "a long path"). Measured 2026-09-28: 19 and
+# 28 characters kept the root, and 38 and 49 fell back. The first launch with the full name
+# (/tmp/c-<name>-canonical-<timestamp>, 38) fell back, so agent scratch never reached the root.
+# The short name drops "-canonical" and keeps 8 characters, so a root is at most 22. mktemp makes
+# each root unique and creates it atomically. A timestamp did neither: a refresh within the same
+# second reused the old path, so deleting "the old root" deleted the new one. The launch time is
+# kept in the state record's mtime and the directory's own timestamps.
+tmproot_short() { local s=${1%-canonical}; printf '%s' "${s:0:8}"; }
+new_tmproot() { mktemp -d "$FLEET_TMPROOT_PREFIX/c-$(tmproot_short "$1")-XXXXXX"; }
+
+# record_tmproot NAME ROOT -- the one writer of the per-name record.
+record_tmproot() {
+  local name=$1 root=$2
+  mkdir -p "$FLEET_STATE" || return 1
+  printf '%s\n' "$root" > "$(tmproot_path "$name")"
+}
+
+# rm_tmproot NAME -- delete the recorded temp root for NAME, GUARDED: only if the recorded value
+# still matches the exact shape new_tmproot produces for THIS name (/tmp/c-<short>-XXXXXX,
+# nothing else -- not a prefix match, not a glob over /tmp/c-<name>-*), and only if that path
+# exists, is a directory, and is NOT a symlink. Anything else is left alone -- including the
+# record itself, so a mismatch stays visible for debugging rather than being silently cleared.
+# Callers decide WHEN it is safe to call this; this function only decides WHETHER the delete
+# itself is safe once called.
+rm_tmproot() {
+  local name=$1 rp root
+  rp=$(tmproot_path "$name")
+  [ -r "$rp" ] || return 0
+  root=$(head -n1 "$rp" 2>/dev/null)
+  case "$root" in
+    "$FLEET_TMPROOT_PREFIX/c-$(tmproot_short "$name")-"[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9])
+      ;;
+    *)
+      printf 'note     %-24s recorded temp root does not match the expected shape; leaving it alone: %s\n' \
+        "$name" "${root:-<empty>}" >&2
+      return 0
+      ;;
+  esac
+  if [ -e "$root" ] && [ ! -L "$root" ] && [ -d "$root" ]; then
+    rm -rf -- "$root"
+    rm -f -- "$rp"
+  else
+    printf 'note     %-24s recorded temp root is missing, not a directory, or a symlink; leaving it alone: %s\n' \
+      "$name" "$root" >&2
+  fi
+}
+
+# cleanup_tmproot_if_gone NAME -- remove NAME's recorded root iff NO row for NAME is live right
+# now. This is what makes it safe to call this after EVERY closing loop, dedupe's included: dedupe
+# always leaves exactly one survivor (the newest, by construction -- see cmd_dedupe), so the
+# zero-rows check never fires there in the ordinary case, and the record -- which belongs to
+# whichever session launched most recently, almost always the survivor -- is left untouched. It
+# only actually deletes for `stop` (which can legitimately empty a name) and for refresh's stop
+# half, which calls rm_tmproot directly once its own wait loop has already confirmed zero rows.
+cleanup_tmproot_if_gone() {
+  local name=$1 live
+  live=$(agents_json 2>/dev/null | jq --arg n "$name" '[.[]|select(.name==$n)]|length' 2>/dev/null)
+  [ "$live" = "0" ] || return 0
+  rm_tmproot "$name"
+}
+
+# Compose and run the launch from the declaration.
+#
+# The prompt is composed HERE, from one template, rather than stored per repo. The scripts each
+# carried their own copy of the sentence, so the template had five homes and could drift in any of
+# them; the record stores the DESCRIPTIVE PHRASE that follows the name, which is the one part that
+# genuinely differs.
+#
+# STORING A PHRASE RATHER THAN A ONE-WORD ROLE, corrected 2026-09-22. A first pass stored a role
+# and composed "You are <name>, the <role> canonical", which reads as self-referential noise --
+# "you are docs-canonical, the docs domain canonical". The sentence should state the name AND the
+# high-level thing that canonical oversees. Four of the five original scripts had the same
+# circular shape; only one said what it was for, and that was the one worth generalizing from.
+#
+# </dev/null is LOAD-BEARING and is kept from the scripts this replaces. The caller's loop reads
+# from a names stream, so an inherited stdin is the REMAINING names -- Claude Code appends piped
+# stdin to its prompt argument, so a launched canonical would start with leftover roster names
+# glued onto its first message, and the read would drain the stream so every canonical after it is
+# silently never started. Observed 2026-08-29.
+launch_canonical() {
+  local name=$1 dir model identity handoff root settings
+  dir=$(fleet-decl --canonical "$name" canonicalLaunchDir 2>/dev/null)     || return 1
+  model=$(fleet-decl --canonical "$name" canonicalLaunchModel 2>/dev/null) || return 1
+  identity=$(fleet-decl --canonical "$name" canonicalIdentity 2>/dev/null) || return 1
+  handoff=$(read_pointer "$name") || return 1
+  root=$(new_tmproot "$name")
+  mkdir -p "$root" 2>/dev/null
+  settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
+  record_tmproot "$name" "$root" || return 1
+  ( cd "$FLEET_ROOT/$dir" \
+    && exec "$(claude_bin)" --bg -n "$name" --model "$model" --settings "$settings" \
+       "You are $name, $identity. Read $handoff first and follow it. Confirm takeover in one line before starting work." \
+  ) </dev/null
+}
+
+expected_names() {
+  if [ -n "${CANONICAL_ROSTER:-}" ] && [ -r "$CANONICAL_ROSTER" ]; then
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' "$CANONICAL_ROSTER" | grep -v '^$'
+    return
+  fi
+  # FILTERED BY MACHINE, and this filter is why the roster is per-host rather than fleet-wide.
+  # Without it every machine expects every canonical, so a host that legitimately runs none would
+  # report five MISSING -- actionable in the damaging direction, because `up` launches whatever is
+  # missing. The reader deliberately does not apply this filter itself; which canonicals belong
+  # here is policy, and it lives with the launcher that enforces it.
+  local n host
+  host=$(hostname 2>/dev/null || echo unknown)
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if fleet-decl --canonical-list "$n" canonicalMachines 2>/dev/null | grep -qxF "$host"; then
+      printf '%s\n' "$n"
+    fi
+  done < <(fleet-decl --canonicals 2>/dev/null) | sort -u
+}
+
+# ---- rendering --------------------------------------------------------------
+
+# GNU and BSD userland disagree on both of these, and this tool is deployed to macOS machines as
+# well as Linux ones -- so the disagreement is live, not theoretical. Neither spelling
+# DEGRADES on the other platform: `stat -c` and `date -d` are hard errors on darwin, so a GNU-only
+# spelling does not print something slightly wrong, it prints nothing and the caller silently loses
+# a value. That is how the handoff gate's mtime fallback came to refuse every unstamped pointer on
+# darwin while passing every test on Linux.
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+fmt_epoch()  { date -d "@$1" "+$2" 2>/dev/null || date -r "$1" "+$2" 2>/dev/null; }
+
+# Parsing a human-written time is the one case where the two implementations do not merely differ in
+# spelling: GNU `date -d` accepts free-form input, while BSD `date -j -f <informat>` demands the
+# format up front and has no free-form mode at all. So the BSD branch cannot be a translation of the
+# GNU one -- it has to ENUMERATE the shapes accepted, which is a deliberate narrowing of the input
+# language on that platform rather than a like-for-like port.
+#
+# Most specific first, and that ordering is load-bearing: BSD date parses greedily and will accept a
+# prefix, so a loose format tried early can match part of a fuller string and silently return the
+# wrong instant. A bad time still fails every branch and is refused, which is the property the
+# callers depend on.
+parse_time() {
+  local at="$1" f
+  date -d "$at" +%s 2>/dev/null && return 0
+  for f in '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S' '%Y-%m-%d %H:%M' '%Y-%m-%d' '%H:%M:%S' '%H:%M'; do
+    date -j -f "$f" "$at" +%s 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# startedAt is epoch MILLISECONDS on the real command. Divide when the value is large enough to be
+# milliseconds; print anything implausibly small verbatim rather than formatting it. Feeding a small
+# fixture integer to `date` yields a 1969/1970 timestamp, which is not obviously a rendering artifact
+# when read in a status column -- it looks like a session that has been running since the epoch.
+fmt_started() {
+  local v="$1" secs
+  case "$v" in ''|*[!0-9]*) printf 'unknown'; return ;; esac
+  if [ "$v" -gt 100000000000 ]; then
+    secs=$(( v / 1000 ))
+  elif [ "$v" -gt 1000000000 ]; then
+    secs="$v"
+  else
+    printf 'raw:%s' "$v"; return
+  fi
+  fmt_epoch "$secs" '%Y-%m-%d %H:%M' || printf '%s' "$v"
+}
+
+# Name first, then the verdict word: these lines get scanned down a column and grepped by status.
+report_line() {
+  local name="$1" json="$2" count ids
+  count=$(printf '%s' "$json" | jq --arg n "$name" '[.[] | select(.name == $n)] | length')
+  case "$count" in
+    0) printf '%-28s MISSING\n' "$name" ;;
+    1) printf '%-28s OK        (%s, started %s)\n' "$name" \
+         "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.id')" \
+         "$(fmt_started "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.startedAt')")" ;;
+    *) ids=$(printf '%s' "$json" | jq -r --arg n "$name" \
+              '[.[]|select(.name==$n)]|sort_by(.startedAt)|reverse|.[]|"\(.id)@\(.startedAt)"' | paste -sd' ' -)
+       printf '%-28s DUPLICATE: %s sessions — %s\n' "$name" "$count" "$ids" ;;
+  esac
+}
+
+# ---- commands ---------------------------------------------------------------
+
+# Staged handoffs that were never placed into the handoffs directory.
+#
+# WHY THIS IS A STATUS CHECK RATHER THAN SOMEONE'S JOB. A canonical whose sandbox does not grant the
+# repository holding the handoffs directory cannot write its handoff there, so it writes it to the
+# staging dir and points at it. CONTINUITY is fine at that moment: `handoff --set` only requires the file to exist,
+# so the successor resolves the pointer and reads it with nobody else involved. What lags is
+# DURABILITY: staging is machine-local and backed up nowhere, so the file survives a recycle and not
+# a lost disk.
+#
+# Placing it is a manual step, and until this check existed NOTHING reported that it had not
+# happened. The only reason the backlog surfaced on 2026-09-21 was that one canonical wrote a warning
+# into its own handoff header -- prose, noticed by a human, not a check.
+#
+# CORRECTED 2026-09-21: this comment used to add "a draft standard requested on 2026-09-06 had sat
+# unplaced for fifteen days". That was FALSE. The document in question was placed the same day it
+# was written, under a different name in a different directory, and this check reported it as an
+# orphan for exactly that reason -- so the motivating example was itself a false positive produced
+# by the defect fixed below. The check is still worth having; its justification is the unreported
+# manual step, not that one anecdote.
+#
+# SEARCH A TREE, NOT ONLY THE HANDOFFS DIRECTORY, where one is configured (handoffs-search). One
+# staged file was legitimately placed under a research directory beside handoffs/, so a
+# handoffs-only comparison reported a false orphan -- and a check that cries wolf is one people
+# learn to ignore, which is worse than no check.
+#
+# A NAME MATCH IS NOT THE ONLY EVIDENCE OF PLACEMENT, and assuming it was is what made this check
+# cry wolf for fifteen days. Placement is a judgment: the hub may rename a staged draft, or fold it
+# into a differently-named standing document, and the placed copy is then unreachable by filename
+# no matter how wide the search. Nothing about that is irregular -- it is the normal outcome for
+# anything that is not a dated park handoff.
+#
+# So a staged file may ALSO declare its own disposition, and the declaration is authoritative: a
+# blockquote in the first 20 lines whose first bold run is PLACED or SUPERSEDED. That is the same
+# header a placing session already writes into the staging copy by convention, so this reads a
+# marker that exists rather than inventing a sidecar nobody will maintain. It is deliberately a
+# HUMAN-OR-AGENT ASSERTION and not an inference: the check cannot tell a renamed-and-placed file
+# from a lost one, and guessing in either direction is worse than reading a statement by whoever
+# actually did the placing.
+# Does the file declare that it has already been placed or superseded? See the comment above for
+# why a declaration counts. Bounded to the header: a mention of the word further down is prose
+# about some other document, not a statement about this one.
+declares_placed() {
+  head -n 20 "$1" 2>/dev/null | grep -qE '^>[[:space:]]*\*\*(PLACED|SUPERSEDED)'
+}
+
+unplaced_handoffs() {
+  local staging="$FLEET_STATE/handoff-staging" f base
+  [ -d "$staging" ] || return 0
+  # Unconfigured, or configured to a tree this machine does not have: nothing to compare against,
+  # so nothing is reported. A missing tree is not evidence that every staged file is unplaced.
+  [ -n "$HANDOFFS_SEARCH" ] && [ -d "$HANDOFFS_SEARCH" ] || return 0
+  for f in "$staging"/*.md; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    # -quit is not GNU-only: measured on macOS 26 (BSD find), it stops at the first match there too.
+    find "$HANDOFFS_SEARCH" -name "$base" -not -path '*/.git/*' -print -quit 2>/dev/null | grep -q . && continue
+    declares_placed "$f" && continue
+    printf '%s\n' "$base"
+  done
+}
+
+cmd_list() {
+  # The fleet's canonicals as the record declares them: who exists and what each owns. A session
+  # resolves the roster with this when it needs it, rather than carrying a copy in always-on context;
+  # a hand-kept copy drifted once and went unnoticed for three weeks. FLEET-WIDE, unlike `status`:
+  # addressing a peer does not depend on which machine runs it, so no machine filter applies here.
+  [ $# -eq 0 ] || { printf 'usage: fleet-canonicals list\n' >&2; return 2; }
+  local names rc n id m
+  names=$(fleet-decl --canonicals 2>/dev/null); rc=$?
+  if [ "$rc" -eq 2 ]; then
+    printf 'fleet-canonicals: the fleet record is unreadable (fleet-decl exit 2), so no list\n' >&2
+    return 2
+  fi
+  [ -n "$names" ] || { printf 'fleet-canonicals: the fleet record declares no canonicals\n' >&2; return 1; }
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    id=$(fleet-decl --canonical "$n" canonicalIdentity 2>/dev/null) || id='(no canonicalIdentity declared)'
+    m=$(fleet-decl --canonical-list "$n" canonicalMachines 2>/dev/null | paste -sd, -)
+    printf '%-28s %s  [runs on: %s]\n' "$n" "$id" "${m:-no machine declared}"
+  done <<< "$names"
+}
+
+cmd_status() {
+  local json name unhealthy=0 orphan orphans=0
+  json=$(agents_json)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    line=$(report_line "$name" "$json")
+    printf '%s\n' "$line"
+    case "$line" in *MISSING*|*DUPLICATE*) unhealthy=1 ;; esac
+  done < <(expected_names)
+  while IFS= read -r orphan; do
+    [ -n "$orphan" ] || continue
+    orphans=$((orphans + 1))
+    printf 'handoff UNPLACED  %s\n' "$orphan"
+  done < <(unplaced_handoffs)
+  if [ "$orphans" -gt 0 ]; then
+    printf 'handoff UNPLACED  %d staged handoff(s) are machine-local only -- place them in %s\n' \
+      "$orphans" "$HANDOFFS_DIR"
+    unhealthy=1
+  fi
+  return "$unhealthy"
+}
+
+cmd_up() {
+  local json name count script started=0 refused=0 dry=0 failed=0 rc=0
+  # `up` starts real, long-lived sessions, so it needs a way to be exercised that does not. Without
+  # this the only way to test bring-up is to perform it.
+  #
+  # Parse properly and REFUSE anything unrecognized. The earlier `[ "$1" = --dry-run ]` form meant a
+  # stray argument silently disabled the dry run and launched for real -- `up foo --dry-run` started
+  # a live canonical. For a verb whose entire job is starting long-lived sessions, a typo must not be
+  # the difference between a rehearsal and a launch.
+  local wanted=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      -*) die "up: unknown option '$1' (usage: up [--dry-run] [name...])" ;;
+      *)
+        # A NAME, not a filter that silently matches nothing. Resolve it now and refuse a typo:
+        # treating an unrecognized word as "no filter" is how `up foo --dry-run` once launched the
+        # whole fleet for real, and a name argument re-opens exactly that surface.
+        canonical_declared "$1" \
+          || die "up: '$1' is not a canonical declared for this machine (known: $(expected_names | tr '\n' ' '))"
+        wanted="$wanted $1"
+        shift ;;
+    esac
+  done
+  json=$(agents_json)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    # With names given, consider only those; bare `up` keeps its all-missing behavior.
+    if [ -n "$wanted" ]; then
+      case " $wanted " in *" $name "*) ;; *) continue ;; esac
+    fi
+    count=$(printf '%s' "$json" | jq --arg n "$name" '[.[]|select(.name==$n)]|length')
+    [ "$count" = "0" ] || continue
+    if ! script=$(launch_desc "$name"); then
+      # Deliberately refuse rather than synthesize a launch. The declaration carries the working
+      # directory, the model tier and the role; a guessed launch would start a session that looks
+      # right and knows nothing.
+      printf 'REFUSED %-24s not fully declared in the fleet record\n' "$name" >&2
+      refused=1
+      continue
+    fi
+    if [ "$dry" = "1" ]; then
+      printf 'would start %-20s %s\n' "$name" "$script"
+      started=$((started + 1))
+      continue
+    fi
+    printf 'starting %-23s %s\n' "$name" "$script"
+    # </dev/null is LOAD-BEARING. This loop reads from `< <(expected_names)`, so the body's stdin is
+    # the REMAINING names stream, and the launched `claude` inherits it.
+    # Claude Code appends piped stdin to its prompt argument, so without this redirect the launched
+    # canonical starts with the leftover roster names glued onto its launch prompt, and the read
+    # DRAINS the stream so every canonical after it is never started while `up` still reports
+    # success. Observed 2026-08-29: three consecutive sessions of one canonical came up with the
+    # stray name of the one canonical sorting after it appended to their first message.
+    # The launch's EXIT STATUS is the only evidence the session actually started.
+    # This used to increment unconditionally, so a failed launch still printed
+    # "started 1" and `up` still returned 0 -- the false-green shape the fleet has a
+    # standing rule about, produced by our own runner. Measured 2026-09-01: a launch died
+    # with `EROFS: read-only file system, mkdir '~/.claude/jobs/<id>'` (a sandboxed
+    # session cannot create the job directory) and `up` reported success anyway.
+    launch_canonical "$name"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'FAILED  %-24s launch exited %s\n' "$name" "$rc" >&2
+      failed=1
+      continue
+    fi
+    started=$((started + 1))
+  done < <(expected_names)
+  printf 'started %s\n' "$started"
+  return $(( refused | failed ))
+}
+
+# self_pid_from_json JSON -- the pid of the session this command is running inside, if it is listed.
+# Never signal it: its own row is a legitimate target the moment a name matches, and killing it
+# mid-run would look exactly like a crash.
+self_pid_from_json() {
+  local _json=$1 _p _listed
+
+  # Preferred: the harness tells us which session we are.
+  if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    _p=$(printf '%s' "$_json" | jq -r --arg s "$CLAUDE_SESSION_ID" \
+           '.[]|select(.sessionId == $s)|.pid // empty' | head -n1)
+    [ -z "$_p" ] || { printf '%s\n' "$_p"; return 0; }
+  fi
+
+  # Fallback, and in practice the path that actually runs: CLAUDE_SESSION_ID is NOT exported into
+  # the environment a session's own shell commands see, so the guard above silently resolved to
+  # nothing every time it was invoked the way it is really invoked -- a guard that had never fired.
+  # The session process is an ANCESTOR of whatever shell is running this, so walk up and match
+  # against the listed pids. Verified: a session listed at pid N is reachable from $$ via ppid.
+  _listed=$(printf '%s' "$_json" | jq -r '.[]|.pid // empty')
+  [ -n "$_listed" ] || return 0
+  _p=$$
+  while [ -n "$_p" ] && [ "$_p" -gt 1 ] 2>/dev/null; do
+    case "
+$_listed
+" in *"
+$_p
+"*) printf '%s\n' "$_p"; return 0 ;; esac
+    _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+  done
+  return 0
+}
+
+# close_one NAME PID ID DRY VERB -- stop a session's process, then delete its row.
+#
+# BOTH halves are required, and that was measured rather than assumed: a TERMed session leaves the
+# default `claude agents --json` listing but REMAINS in `--all` as a `done` row, so the agents view
+# still has something to click -- the exact clutter closing is meant to remove. `claude rm <id>`
+# deletes the row and keeps the transcript, so the session stays deliberately resumable: deleting is
+# not destroying. It is also the safer of the two deletion paths, preserving a Claude-created
+# worktree that holds uncommitted changes where agent-view deletion discards one.
+#
+# Shared by `dedupe` and `stop` so there is exactly one implementation of "close a session".
+close_one() {
+  local name=$1 pid=$2 id=$3 dry=$4 verb=${5:-close} ving=${6:-closing}
+  if [ "$dry" = "1" ]; then
+    printf 'would %s %-21s pid %s (id %s)\n' "$verb" "$name" "$pid" "$id"
+    return 0
+  fi
+  printf '%-8s %-24s pid %s (id %s)\n' "$ving" "$name" "${pid:-none}" "$id"
+  # An EXITED session has a row but no live process. Signaling is a no-op there; the row deletion
+  # below is the whole point, so an absent pid must not skip it.
+  [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    printf '  did not exit on TERM after 5s; sending KILL\n'
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  if [ -n "$id" ]; then
+    # </dev/null for the same reason as the launch in cmd_up: close_one runs inside loops fed by
+    # `<<< "$rows"` and `< <(expected_names)`, so anything here that reads stdin eats the rows that
+    # have not been closed yet.
+    "$(claude_bin)" rm "$id" </dev/null >/dev/null 2>&1 \
+      || printf '  could not delete row %s; it will still be listed under --all\n' "$id"
+  fi
+}
+
+cmd_dedupe() {
+  local dry=0 json name pids self_pid targets=0 only=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      -*) die "dedupe: unknown option '$1' (usage: dedupe [--dry-run] [<name>])" ;;
+      *)
+        [ -n "$only" ] && die "dedupe: one canonical name at a time (got '$only' and '$1')"
+        only="$1"; shift ;;
+    esac
+  done
+
+  # A name that is not on the roster is REFUSED, not silently skipped. Without this a typo walks
+  # the same path as a clean fleet -- zero eligible names, "0 target(s)", exit 0 -- and the caller
+  # reads a no-op as a completed dedupe. Same failure shape the `read` placeholder guard below
+  # exists to prevent, one layer up.
+  if [ -n "$only" ]; then
+    expected_names | grep -qxF -- "$only" || die \
+      "dedupe: '$only' is not a canonical name; expected one of: $(expected_names | paste -sd' ' -)"
+  fi
+
+  json=$(agents_json_all)
+  self_pid=$(self_pid_from_json "$json")
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    # Only names that are BOTH expected and duplicated are eligible; sort newest-first and drop the
+    # head, so the survivor is the one whose name would resolve anyway.
+    pids=$(printf '%s' "$json" | jq -r --arg n "$name" \
+            '[.[]|select(.name==$n)] | select(length > 1) | sort_by(.startedAt) | reverse
+             | .[1:] | .[] | "\(.pid // "-") \(.id)"')
+    [ -n "$pids" ] || continue
+    while IFS=' ' read -r pid id; do
+      # id, not pid, is the guard: an exited row has no pid and is precisely what needs deleting.
+      # The pid arrives as a literal "-" placeholder rather than an empty field, because `read`
+      # collapses a leading empty field and would otherwise put the ID into $pid and leave $id empty
+      # -- silently skipping exactly the rows this is here to close.
+      [ -n "$id" ] || continue
+      [ "$pid" = "-" ] && pid=""
+      if [ -n "$self_pid" ] && [ "$pid" = "$self_pid" ]; then
+        printf 'skip     %-24s pid %s is this session\n' "$name" "$pid"
+        continue
+      fi
+      targets=$((targets + 1))
+      close_one "$name" "$pid" "$id" "$dry" close closing
+    done <<< "$pids"
+    # See cleanup_tmproot_if_gone: this only ever deletes when the row(s) just closed were the
+    # LAST ones for $name, which dedupe -- by construction -- never leaves. Included anyway so the
+    # rare case (a survivor that was never launched through this tool, so its root is untracked
+    # and the stale record belongs to an already-gone duplicate) still gets cleaned up.
+    [ "$dry" = "1" ] || cleanup_tmproot_if_gone "$name"
+  done < <(if [ -n "$only" ]; then printf '%s\n' "$only"; else expected_names; fi)
+  printf '%s target(s)\n' "$targets"
+}
+
+
+# ---- clean: scratch roots whose session is gone ------------------------------
+# Every launch gets a root under $FLEET_TMPROOT_PREFIX (see new_tmproot), and `down`, `refresh` and
+# `dedupe` remove the RECORDED one when a name is left with no session. Three kinds escape that and
+# stay forever on a machine with no session-end hook to delete them: the root of a session that
+# ended without either verb (a crash, a restart of the daemon), the root a fork's predecessor used
+# once the fork overwrote the name's record, and a recorded root that `rm_tmproot` declined. This
+# removes those.
+#
+# WHAT A RUNNING SESSION OWNS cannot be read from it: the root reaches the session through
+# `--settings`, so it is in no process environment, and a sandboxed caller cannot see other
+# sessions' processes anyway. So ownership is decided from the two records this tool keeps -- the
+# sessions listing and the per-name root record -- and every case those cannot settle KEEPS:
+#   - no running session under the name(s) a root's shape belongs to: the root is removable;
+#   - exactly one, whose recorded root was written no later than it started: that root is its, and
+#     only that one is kept (a record written after the session started may be another launch's);
+#   - one with no usable record, or more than one (duplicates, each with a root): keep them all.
+# A root younger than CLEAN_MIN_AGE is kept whatever the listing says, because a launch records its
+# root and creates it BEFORE its session appears in the listing. And only an exact
+# c-<short name>-XXXXXX directory for a declared canonical is ever a candidate: not a symlink, not a
+# file, not a near-miss of the shape, and not anything a canonical this record does not declare made.
+CLEAN_MIN_AGE=600
+
+# clean_keep_for SHORT JSON NAMES -- which roots of this short name a running session may own:
+# prints `none`, `all`, or the one root path to keep.
+clean_keep_for() {
+  local short=$1 json=$2 names=$3 n live="" count rp root started rec_m
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ "$(tmproot_short "$n")" = "$short" ] || continue
+    count=$(printf '%s' "$json" | jq --arg n "$n" '[.[]|select(.name==$n)]|length')
+    [ "$count" = "0" ] && continue
+    live="$live$n:$count"$'\n'
+  done <<< "$names"
+  live=$(grep -v '^$' <<< "$live")
+  [ -n "$live" ] || { printf 'none\n'; return; }
+  # More than one name sharing the short, or more than one session under one name: each may own a
+  # root of this shape, and nothing records which is whose.
+  [ "$(printf '%s\n' "$live" | wc -l | tr -d '[:space:]')" = 1 ] || { printf 'all\n'; return; }
+  n=${live%%:*}; count=${live##*:}
+  [ "$count" = 1 ] || { printf 'all\n'; return; }
+  rp=$(tmproot_path "$n")
+  [ -r "$rp" ] || { printf 'all\n'; return; }
+  root=$(head -n 1 "$rp" 2>/dev/null)
+  [ -n "$root" ] && [ -d "$root" ] || { printf 'all\n'; return; }
+  started=$(to_secs "$(holder_field "$json" "$n" startedAt)") || { printf 'all\n'; return; }
+  rec_m=$(file_mtime "$rp") || { printf 'all\n'; return; }
+  # A launch writes the record moments before it starts the session; a record written well AFTER
+  # the session started belongs to some later launch, and this session's own root is unknown.
+  [ "$rec_m" -le $(( started + 120 )) ] || { printf 'all\n'; return; }
+  printf '%s\n' "$root"
+}
+
+cmd_clean() {
+  local dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      *) die "clean: unknown argument '$1' (usage: clean [--dry-run])" ;;
+    esac
+  done
+  local json names shorts now d base s owner keep mt n rp removed=0 failed=0
+  # Fail closed: agents_json exits 2 when the listing cannot be read, before anything is removed.
+  # An unreadable listing is not an empty fleet, and reading it as one would remove every root.
+  json=$(agents_json) || exit 2
+  names=$(all_canonical_names) || die "clean: the canonical names could not be read (fleet-decl exit $?)"
+  [ -n "$names" ] || die "clean: no canonical names declared -- cannot tell this tool's roots from anything else"
+  shorts=$(while IFS= read -r n; do [ -n "$n" ] && printf '%s\n' "$(tmproot_short "$n")"; done <<< "$names" | sort -u)
+  now=$(date +%s)
+  for d in "$FLEET_TMPROOT_PREFIX"/c-*; do
+    [ -e "$d" ] || [ -L "$d" ] || continue
+    base=${d##*/}
+    owner=""
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      case "$base" in
+        "c-$s-"[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) owner=$s; break ;;
+      esac
+    done <<< "$shorts"
+    if [ -z "$owner" ]; then
+      printf 'keep     %s  (not the shape of a root made for a declared canonical)\n' "$d"; continue
+    fi
+    if [ -L "$d" ] || [ ! -d "$d" ]; then
+      printf 'keep     %s  (not a real directory)\n' "$d"; continue
+    fi
+    # The caller's own root, whatever the records say.
+    if [ "${CLAUDE_CODE_TMPDIR:-}" = "$d" ] || case "${TMPDIR:-}/" in "$d"/*) true ;; *) false ;; esac; then
+      printf 'keep     %s  (this session'"'"'s own root)\n' "$d"; continue
+    fi
+    keep=$(clean_keep_for "$owner" "$json" "$names")
+    case "$keep" in
+      all)  printf 'keep     %s  (a running session under that name may own it)\n' "$d"; continue ;;
+      none) ;;
+      *)    if [ "$keep" = "$d" ]; then
+              printf 'keep     %s  (the running session'"'"'s recorded root)\n' "$d"; continue
+            fi ;;
+    esac
+    mt=$(file_mtime "$d") || mt=""
+    if [ -z "$mt" ] || [ $(( now - mt )) -lt "$CLEAN_MIN_AGE" ]; then
+      printf 'keep     %s  (younger than %ss, or its age is unknown; a launch may be starting)\n' "$d" "$CLEAN_MIN_AGE"
+      continue
+    fi
+    if [ "$dry" = "1" ]; then
+      printf 'would remove %s\n' "$d"; removed=$((removed + 1)); continue
+    fi
+    if rm -rf -- "$d" 2>/dev/null && [ ! -e "$d" ]; then
+      printf 'removed  %s\n' "$d"; removed=$((removed + 1))
+      # A record that named this root now names nothing; clear it so `down` does not report it.
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        rp=$(tmproot_path "$n")
+        [ -r "$rp" ] && [ "$(head -n 1 "$rp" 2>/dev/null)" = "$d" ] && rm -f -- "$rp"
+      done <<< "$names"
+    else
+      printf 'FAILED   %s  (could not remove it)\n' "$d" >&2; failed=1
+    fi
+  done
+  if [ "$dry" = "1" ]; then printf '%s root(s) would be removed\n' "$removed"
+  else printf '%s root(s) removed\n' "$removed"; fi
+  return "$failed"
+}
+
+# Newest reset stamp, for one window, across this machine's cached status-line payloads.
+# usage_reset_epoch <key>: five_hour_resets_at (the default) or seven_day_resets_at.
+#
+# WHY THIS SOURCE. The status line is the only surface Claude Code hands rate-limit data to; no hook
+# receives any of it. A status-line recorder, where a domain installs one, persists that slice per
+# session, so this reads a real reported value rather than guessing a wall-clock time or assuming
+# five hours from some event. Newest wins, because a fresher payload reflects the current window.
+# The source is OPTIONAL: a machine without a recorder has no cache, and the waiting verbs then run
+# from --at alone (see no_reset_die).
+usage_cache_dir() { printf '%s/claude-usage' "${XDG_RUNTIME_DIR:-/tmp}"; }
+
+# Is there any reset source at all? Distinguishes "this machine records no usage" (ask for --at)
+# from "it records usage but has no 5-hour value" (a 7-day-only plan, or not cached yet).
+usage_cache_present() {
+  local f
+  for f in "$(usage_cache_dir)"/*.json; do [ -f "$f" ] && return 0; done
+  return 1
+}
+
+usage_reset_epoch() {
+  local key="${1:-five_hour_resets_at}"
+  local dir; dir=$(usage_cache_dir)
+  [ -d "$dir" ] || return 1
+  find "$dir" -maxdepth 1 -name '*.json' -type f -print0 2>/dev/null \
+    | xargs -0 -r jq -r --arg k "$key" '.[$k] // empty' 2>/dev/null \
+    | sort -n | tail -1
+}
+
+# Resolve the epoch to wait for. Shared by both waiting verbs so they cannot drift apart in how
+# they read the clock. Prints the epoch, or nothing and returns 1 -- the CALLER dies, because `die`
+# inside a command substitution exits only the subshell and would otherwise be silently swallowed.
+reset_target() {
+  local at="${1:-}"
+  if [ -n "$at" ]; then
+    parse_time "$at" || return 1
+  else
+    usage_reset_epoch
+  fi
+}
+
+# Called when no 5-hour reset is cached and no --at was given. With no cache at all the machine
+# simply records no usage, and --at is the whole interface. On a plan whose only rolling limit
+# is the 7-day window the payload's five_hour is null, so "nothing cached" is not a gap to fill by
+# waiting: a resume-after-reset means waiting until the weekly boundary, which can be days off, and
+# that is not what these verbs are for. Say so, with the weekly reset time, rather than reporting
+# "no reset time cached" as if a later retry would help. USAGE_WINDOW=5h declares that a 5-hour
+# window is expected, so the plain "not cached yet" message applies there.
+no_reset_die() {
+  local verb="$1" weekly
+  usage_cache_present \
+    || die "$verb: no usage reset time is recorded on this machine (nothing in $(usage_cache_dir)/*.json, which a status-line recorder writes where one is installed). Pass --at '<time>' to wait until a time of your choosing"
+  if [ "${USAGE_WINDOW:-auto}" != 5h ]; then
+    weekly=$(usage_reset_epoch seven_day_resets_at)
+    if [ -n "$weekly" ]; then
+      die "$verb: this plan has no 5-hour window (the weekly one resets $(fmt_epoch "$weekly" '%a %Y-%m-%d %H:%M %Z')); a resume-after-reset is not meaningful on a 7-day-only plan. Pass --at '<time>' to wait for a time of your choosing, or set USAGE_WINDOW=5h if a 5-hour window is expected"
+    fi
+  fi
+  die "$verb: no reset time cached yet -- pass --at '<time>' instead"
+}
+
+# Seconds to wait, from a target epoch. Wakes slightly AFTER the reported reset rather than exactly
+# on it: the stamp is the boundary itself, and a boundary is the one moment a launch can still be
+# refused. Never negative -- a target already in the past means "go now", not "sleep forever".
+reset_delay() {
+  local target="$1" grace="$2" now delay
+  now=$(date +%s)
+  delay=$(( target - now + grace ))
+  [ "$delay" -gt 0 ] || delay=0
+  printf '%s\n' "$delay"
+}
+
+# wait-for-reset -- block until the usage window resets, then exit. It launches nothing.
+#
+# THIS IS THE IN-SESSION FORM, and the one an agent should reach for. A live session runs it with
+# the Bash tool's run_in_background, and the harness re-invokes that session when it exits. The
+# session therefore resumes ITSELF: no scheduler, no second session, no handoff, nothing to clean
+# up afterwards.
+#
+# It exists as a verb rather than as a one-liner in a written rule for one reason: the one-liner is
+# where the variation was. Every session that improvised it recomputed the delay by hand from a
+# time it had to work out first, which is both the fiddly part and the part with no feedback if it
+# is wrong. One command, no arguments, nothing to compute.
+#
+# It prints its own PID on the first line so that "verify it is actually armed before saying it is"
+# is a single check rather than a hunt through the process table.
+cmd_wait_for_reset() {
+  local dry=0 at='' grace=60
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1 ;;
+      --at)      shift; at="${1:-}" ;;
+      *)         die "wait-for-reset: unknown argument '$1'" ;;
+    esac
+    shift
+  done
+
+  local target delay
+  # No --at and no cache directory at all fails inside reset_target too; that is "nothing cached",
+  # not an unparseable time, so it takes the same path as an empty result.
+  target=$(reset_target "$at") \
+    || { [ -z "$at" ] && no_reset_die wait-for-reset; die "wait-for-reset: could not parse time '$at'"; }
+  [ -n "$target" ] || no_reset_die wait-for-reset
+  delay=$(reset_delay "$target" "$grace")
+
+  printf 'wait-for-reset: ARMED pid %s -- window resets %s, waking %ss later, in %dm\n' \
+    "$$" "$(fmt_epoch "$target" '%H:%M %Z')" "$grace" "$(( delay / 60 ))"
+
+  if [ "$dry" = "1" ]; then
+    printf 'wait-for-reset: dry run -- not sleeping\n'
+    return 0
+  fi
+
+  sleep "$delay"
+  printf 'wait-for-reset: reset passed at %s -- resume work\n' "$(date '+%H:%M %Z')"
+}
+
+# resume-at -- wait until the usage window resets, then launch whatever is missing.
+#
+# THE OUT-OF-SESSION FORM: use it when nothing will be alive to wake up. Same wait as
+# wait-for-reset, followed by `up`. It installs nothing and schedules nothing; kill it and no trace
+# survives, which is what distinguishes it from the timer-based approach that was rejected.
+cmd_resume_at() {
+  local dry=0 at='' grace=60
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1 ;;
+      --at)      shift; at="${1:-}" ;;
+      *)         die "resume-at: unknown argument '$1'" ;;
+    esac
+    shift
+  done
+
+  local target delay
+  # No --at and no cache directory at all fails inside reset_target too; that is "nothing cached",
+  # not an unparseable time, so it takes the same path as an empty result.
+  target=$(reset_target "$at") \
+    || { [ -z "$at" ] && no_reset_die resume-at; die "resume-at: could not parse time '$at'"; }
+  [ -n "$target" ] || no_reset_die resume-at
+  delay=$(reset_delay "$target" "$grace")
+
+  printf 'resume-at: window resets %s; waking %ss after that, in %dm\n' \
+    "$(fmt_epoch "$target" '%H:%M %Z')" "$grace" "$(( delay / 60 ))"
+
+  if [ "$dry" = "1" ]; then
+    printf 'resume-at: dry run -- not sleeping, not launching\n'
+    return 0
+  fi
+
+  sleep "$delay"
+  printf 'resume-at: reset passed at %s; launching\n' "$(date '+%H:%M %Z')"
+  cmd_up
+}
+
+
+# ---- handoff pointer ---------------------------------------------------------
+# Deliberately explicit rather than derived. Resolving "the newest handoff for this canonical"
+# from the filesystem was measured and killed: two handoffs for one canonical shared a date and
+# lexical sort picked the wrong one; mtime picked the right one only on this machine and would be
+# wrong on a fresh clone; and most handoff filenames carry no canonical name at all.
+
+pointer_path() { printf '%s/%s.handoff' "$FLEET_STATE" "$1"; }
+
+# ONE reader for the recorded pointer, used by the `handoff` verb and by the launcher.
+#
+# The launcher used to get this by re-invoking `"$0" handoff "$name"`, which was wrong in a way
+# that only showed up outside production: `$0` here is the chezmoi SOURCE file, which is not
+# executable, so every launch failed with "Permission denied" the moment the tool was exercised
+# from the source tree rather than the deployed copy. It worked deployed, which is the worst
+# version of a bug -- correct everywhere except where it is tested.
+#
+# Extracted rather than copied: two readers of the same pointer format is the drift this file
+# already avoids for the agents listing and the record.
+read_pointer() {
+  local ptr target
+  ptr=$(pointer_path "$1")
+  [ -r "$ptr" ] || return 1
+  target=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$ptr" | grep -v '^$' | head -n1)
+  [ -n "$target" ] || return 1
+  printf '%s' "$target"
+}
+
+cmd_handoff() {
+  local name="" set_to=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --set) set_to=${2:-}; [ -n "$set_to" ] || die "handoff --set needs a path"; shift 2 ;;
+      -*)    die "handoff: unknown option $1" ;;
+      *)     [ -z "$name" ] || die "handoff: unexpected argument $1"; name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "handoff: need a canonical name"
+
+  local ptr; ptr=$(pointer_path "$name")
+
+  if [ -n "$set_to" ]; then
+    # Refuse to record a pointer to something that is not there. A pointer written at park time
+    # and never resolvable is the same silent-staleness failure in a new place.
+    [ -e "$set_to" ] || die "handoff --set: no such file: $set_to"
+    local abs; abs=$(cd "$(dirname "$set_to")" 2>/dev/null && printf '%s/%s' "$PWD" "$(basename "$set_to")") \
+      || die "handoff --set: cannot resolve $set_to"
+    mkdir -p "$FLEET_STATE" || die "handoff --set: cannot create $FLEET_STATE"
+    # The set-at stamp is what the freshness gate compares against a session's startedAt. Written
+    # as a #-comment because the pointer reader already strips those, so an older pointer without
+    # one stays readable and a newer one gains the stamp without a format migration.
+    { printf '%s\n' "$abs"; printf '# set-at %s\n' "$(date +%s)"; } > "$ptr" \
+      || die "handoff --set: cannot write $ptr"
+    printf '%s\n' "$abs"
+    return 0
+  fi
+
+  [ -r "$ptr" ] || die "no handoff recorded for '$name' (expected $ptr).
+  Record one with: fleet-canonicals handoff $name --set <path>"
+  local target; target=$(read_pointer "$name")
+  [ -n "$target" ] || die "handoff pointer for '$name' is empty: $ptr"
+  [ -e "$target" ] || die "handoff for '$name' points at a missing file: $target
+  (recorded in $ptr)"
+  printf '%s\n' "$target"
+}
+
+# ---- placing staged handoffs --------------------------------------------------
+#
+# A canonical that cannot write the handoffs directory parks into the staging dir, and the hub --
+# the session that can write it, named by the `hub` config key -- places the file later. Done by hand, placement was a COPY, and a copy is the wrong model: handoffs
+# form a supersession chain (each names the one it replaces), so placing one moves a node in a linked
+# list. Measured 2026-09-19: one hand placement repaired one backward hop and left two dangling, one
+# of them on a canonical's live pointer target, and three of that canonical's six handoffs had never
+# existed in the handoffs repository at all. So this verb:
+#   - places only a declared canonical's dated handoff; anything else is a judgment call, reported;
+#   - refuses a handoff whose predecessor resolves nowhere, since a copy that "succeeded" with a
+#     dangling backward hop is the failure being prevented (--accept-broken-chain places it anyway,
+#     still naming the gap, for a chain known to be broken in history);
+#   - NEVER deletes the staging copy: for some handoffs it has been the only copy that ever existed;
+#   - when place-commit is on, commits only the placed files, so unrelated work in the index does
+#     not ride along; off, it copies and leaves committing to whoever owns that directory;
+#   - repoints any canonical whose pointer names the staged copy, KEEPING the pointer's set-at. A
+#     fresh stamp would date the pointer after the successor session started, and the freshness gate
+#     would then accept it at the next refresh as if it described that session's work.
+
+# Every declared canonical, not only this machine's: a handoff is recognized by whose it is, and a
+# canonical that runs elsewhere still parks handoffs someone places here.
+all_canonical_names() {
+  if [ -n "${CANONICAL_ROSTER:-}" ] && [ -r "$CANONICAL_ROSTER" ]; then
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' "$CANONICAL_ROSTER" | grep -v '^$'
+    return 0
+  fi
+  fleet-decl --canonicals
+}
+
+is_canonical_handoff() { # <basename> <newline-separated canonical names>
+  local n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    case "$1" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9]-"$n"-*.md) return 0 ;; esac
+  done <<< "$2"
+  return 1
+}
+
+# The handoffs a file says it supersedes: backticked *.md names on a "Supersedes" line in its header.
+# That is the convention every park handoff follows; a handoff naming none starts its own chain.
+predecessors() {
+  head -n 15 "$1" 2>/dev/null | grep -i 'supersedes' | grep -oE '`[^`]+\.md`' | tr -d '`' | sed 's|.*/||' | sort -u
+}
+
+in_list() { grep -qxF -- "$1" <<< "$2"; }
+
+cmd_place() {
+  local dry=0 accept=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1 ;;
+      --accept-broken-chain) accept=1 ;;
+      *) die "place: unknown argument $1" ;;
+    esac
+    shift
+  done
+
+  local staging="$FLEET_STATE/handoff-staging" prog dest repo="" names commit
+  [ -n "$HANDOFFS_DIR" ] || die "place: no handoffs directory is configured.
+  Set \`handoffs = <dir>\` in $FLEET_CONFIG, or FLEET_HANDOFFS_DIR for one run."
+  dest=$HANDOFFS_DIR
+  prog=$HANDOFFS_SEARCH
+  [ -d "$dest" ] || die "place: no handoffs directory at $dest"
+  dest=$(cd "$dest" && pwd) || die "place: cannot resolve $dest"
+  [ -d "$prog" ] || die "place: the handoffs-search tree $prog does not exist"
+  case "$PLACE_COMMIT" in
+    true|yes|on|1) commit=1 ;;
+    false|no|off|0|'') commit=0 ;;
+    *) die "place: place-commit must be true or false, not '$PLACE_COMMIT'" ;;
+  esac
+  # The repository is the one that holds the handoffs directory: a placed file can only be
+  # committed where it lives, so there is nothing separate to configure.
+  if [ "$commit" -eq 1 ]; then
+    repo=$(git -C "$dest" rev-parse --show-toplevel 2>/dev/null) \
+      || die "place: place-commit is on, but $dest is not inside a git repository"
+  fi
+  names=$(all_canonical_names) || die "place: the canonical names could not be read (fleet-decl exit $?)"
+  [ -n "$names" ] || die "place: no canonical names declared -- cannot tell a handoff from a draft"
+
+  local base cands="" judgment="" left=0
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    if is_canonical_handoff "$base" "$names"; then cands="$cands$base"$'\n'; else judgment="$judgment$base"$'\n'; fi
+  done < <(unplaced_handoffs)
+  if [ -z "$cands" ] && [ -z "$judgment" ]; then
+    printf 'nothing to place: every staged handoff is already in %s\n' "$prog"
+    return 0
+  fi
+
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    printf 'NEEDS-JUDGMENT  %s  (not a declared canonical'"'"'s dated handoff; place it by hand)\n' "$base"
+    left=1
+  done <<< "$judgment"
+
+  # Resolve the chain to a fixpoint. A predecessor counts as resolved if it is anywhere in the
+  # handoffs-search tree, or is being placed in this same run -- so removing one broken handoff can break a
+  # successor that leaned on it, which is why this loops until nothing changes.
+  local set="$cands" changed=1 p hit missing reported=""
+  while [ "$changed" -eq 1 ]; do
+    changed=0
+    while IFS= read -r base; do
+      [ -n "$base" ] || continue
+      missing=""
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        in_list "$p" "$set" && continue
+        hit=$(find "$prog" -name "$p" -not -path '*/.git/*' -print -quit 2>/dev/null)
+        [ -n "$hit" ] || missing="$missing $p"
+      done < <(predecessors "$staging/$base")
+      [ -n "$missing" ] || continue
+      if ! in_list "$base" "$reported"; then
+        printf 'BROKEN-CHAIN    %s  supersedes%s, which resolves nowhere in %s\n' "$base" "$missing" "$prog"
+        reported="$reported$base"$'\n'
+      fi
+      if [ "$accept" -eq 0 ]; then
+        set=$(grep -vxF -- "$base" <<< "$set")$'\n'
+        left=1; changed=1
+      fi
+    done <<< "$set"
+  done
+
+  local placing; placing=$(grep -v '^$' <<< "$set")
+  if [ -z "$placing" ]; then
+    printf 'placed nothing\n'
+    return "$left"
+  fi
+
+  local staging_abs ptr pname target stamp
+  staging_abs=$(cd "$staging" && pwd -P)
+  if [ "$dry" -eq 1 ]; then
+    while IFS= read -r base; do printf 'would place     %s -> %s/\n' "$base" "$dest"; done <<< "$placing"
+    return "$left"
+  fi
+
+  local paths=()
+  while IFS= read -r base; do
+    cp "$staging/$base" "$dest/$base" || die "place: could not copy $base into $dest"
+    paths+=("$dest/$base")
+    printf 'placed          %s\n' "$base"
+  done <<< "$placing"
+  # Never empty here (placing is non-empty), but bash 3.2 aborts on an empty "${arr[@]}" under set -u.
+  [ "${#paths[@]}" -gt 0 ] || die "place: nothing was copied"
+  if [ "$commit" -eq 1 ]; then
+    git -C "$repo" add -- "${paths[@]}" || die "place: git add failed; the files are copied but not committed"
+    # Paths on the commit line: only these files are committed, whatever else is in the index.
+    git -C "$repo" commit -q -m "handoffs: place $(tr '\n' ' ' <<< "$placing" | sed 's/ $//') from staging" -- "${paths[@]}" \
+      || die "place: commit failed; the files are copied and staged but NOT committed, and no pointer was moved"
+    printf 'committed       %s in %s (not pushed)\n' "$(git -C "$repo" rev-parse --short HEAD)" "$repo"
+  else
+    printf 'not committed   place-commit is off; committing %s is up to whoever owns it\n' "$dest"
+  fi
+
+  for ptr in "$FLEET_STATE"/*.handoff; do
+    [ -f "$ptr" ] || continue
+    pname=$(basename "$ptr" .handoff)
+    target=$(read_pointer "$pname") || continue
+    base=$(basename "$target")
+    in_list "$base" "$placing" || continue
+    [ "$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)" = "$staging_abs" ] || continue
+    stamp=$(handoff_set_at "$pname") || stamp=""
+    { printf '%s\n' "$dest/$base"; [ -n "$stamp" ] && printf '# set-at %s\n' "$stamp"; } > "$ptr" \
+      || die "place: could not rewrite the pointer $ptr"
+    printf 'repointed       %s -> %s (set-at kept)\n' "$pname" "$dest/$base"
+  done
+  return "$left"
+}
+
+# ---- staging a handoff -------------------------------------------------------
+#
+# The parking half of placement. A canonical supplies its handoff's content and its own name; the
+# tool picks the file name and location and records the pointer, so no parking session ever decides
+# WHERE a handoff lives. That decision used to be each canonical's judgment, made at the end of a
+# sitting, and it went wrong in both directions: one canonical wrote its handoffs into its own repo
+# for three successions, and 17 staged files sat unplaced for three weeks.
+#
+# It also checks the chain at the source: the new handoff must name, on a Supersedes line, the file
+# the canonical's pointer names now -- the handoff its session started from. A handoff that does not
+# is refused before it exists, which is cheaper than `place` refusing it later.
+cmd_stage() {
+  local kind=park name="" src=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind) kind=${2:-}; [ -n "$kind" ] || die "stage: --kind needs a value"; shift 2 ;;
+      -*)     die "stage: unknown option $1" ;;
+      *)      if [ -z "$name" ]; then name=$1; elif [ -z "$src" ]; then src=$1; else die "stage: unexpected argument $1"; fi; shift ;;
+    esac
+  done
+  [ -n "$name" ] && [ -n "$src" ] || die "stage: usage: fleet-canonicals stage <canonical> <content-file> [--kind park|checkpoint]"
+  case "$kind" in park|checkpoint) ;; *) die "stage: --kind must be park or checkpoint, not $kind" ;; esac
+  local names; names=$(all_canonical_names) || die "stage: the canonical names could not be read"
+  in_list "$name" "$names" || die "stage: $name is not a declared canonical"
+  [ -f "$src" ] || die "stage: no such file: $src"
+
+  local prev; prev=$(read_pointer "$name") || prev=""
+  if [ -n "$prev" ]; then
+    in_list "$(basename "$prev")" "$(predecessors "$src")" || die "stage: $src does not supersede $name's current handoff.
+  Add this line near the top of it:  Supersedes \`$(basename "$prev")\`."
+  fi
+
+  local staging="$FLEET_STATE/handoff-staging" stamp dest
+  mkdir -p "$staging" || die "stage: cannot create $staging"
+  stamp=${FLEET_STAGE_STAMP:-$(date +%Y-%m-%d-%H%M)}
+  dest="$staging/$stamp-$name-$kind.md"
+  [ -e "$dest" ] && die "stage: $dest already exists; refusing to overwrite a staged handoff"
+  cp "$src" "$dest" || die "stage: could not write $dest"
+  cmd_handoff "$name" --set "$dest" >/dev/null
+  printf 'staged          %s\npointer         %s -> it\nplace it with   fleet-canonicals place%s\n' \
+    "$dest" "$name" "${FLEET_HUB:+ (run by $FLEET_HUB)}"
+}
+
+# ---- handoff freshness gate --------------------------------------------------
+#
+# WHY A GATE AT ALL. The pointer mechanism guarantees a canonical resolves SOME handoff, and fails
+# loudly when it resolves none. What it cannot notice is the case that actually happens: a pointer
+# that resolves perfectly, to a handoff describing a DIFFERENT sitting. The successor then starts
+# confident and oriented to work that is a day old, and nothing in the launch path looks wrong --
+# the same silent-staleness failure the pointer was built to kill, moved one level up.
+#
+# THE TEST IS A COMPARISON, NOT AN AGE. "Is the handoff recent enough?" has no correct threshold and
+# would need tuning forever. "Was this handoff recorded AFTER the session it is meant to describe
+# started?" has exactly one answer per case, needs no tuning, and is precisely the property wanted:
+# a pointer older than the session it replaces cannot possibly describe that session's work.
+#
+# WHERE set-at COMES FROM. `handoff --set` records it as a comment line in the pointer file. The
+# pointer reader already strips #-comments, so this is backward compatible by construction rather
+# than by care. For a pointer written before this existed, fall back to the file's mtime -- correct
+# for every pointer this fleet currently holds, none of which has been copied or restored.
+
+handoff_set_at() {
+  local ptr stamp
+  ptr=$(pointer_path "$1")
+  [ -r "$ptr" ] || return 1
+  stamp=$(sed -n 's/^#[[:space:]]*set-at[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$ptr" | head -n1)
+  if [ -n "$stamp" ]; then printf '%s\n' "$stamp"; return 0; fi
+  file_mtime "$ptr" || return 1
+}
+
+# The session that HOLDS a name is the newest one carrying it -- names resolve newest-wins, so that
+# is the one an address actually reaches, and the only one whose orientation matters. An older row
+# with the same name was already superseded; demanding a handoff from it would be ceremony.
+holder_field() {
+  printf '%s' "$1" | jq -r --arg n "$2" --arg f "$3" \
+    '[.[]|select(.name==$n)]|sort_by(.startedAt)|reverse|.[0][$f] // empty'
+}
+
+# startedAt is epoch MILLISECONDS (see fmt_started); set-at is epoch SECONDS. Comparing the two
+# unconverted makes every handoff look ~1000x older than its session, so the gate would refuse
+# everything -- and a guard that refuses unconditionally is as useless as one that never fires,
+# while being far more annoying to work around.
+to_secs() {
+  local v="${1:-}"
+  case "$v" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$v" -gt 100000000000 ]; then printf '%s\n' "$(( v / 1000 ))"; else printf '%s\n' "$v"; fi
+}
+
+# ISO-8601 (as written into a transcript: 2026-09-06T23:05:42.123Z) -> epoch seconds. Both
+# spellings, for the same reason file_mtime carries both: `date -d` is a hard ERROR on darwin and
+# `date -j` is a hard error on GNU, so a one-spelling helper does not degrade, it returns nothing
+# and its caller silently loses the value. Fractional seconds are stripped first -- BSD date will
+# not parse them and GNU does not need them.
+iso_to_epoch() {
+  local iso="${1:-}" trimmed
+  [ -n "$iso" ] || return 1
+  trimmed=${iso%%.*}; trimmed=${trimmed%Z}
+  date -u -d "$iso" +%s 2>/dev/null && return 0
+  date -j -u -f '%Y-%m-%dT%H:%M:%S' "$trimmed" +%s 2>/dev/null && return 0
+  return 1
+}
+
+# The session's TRUE start, read from its transcript rather than from the agents listing.
+#
+# WHY NOT startedAt. A RESUMED session keeps its id, its transcript and its whole prior context,
+# but its `startedAt` is rewritten to the resume time. This tool already documents that as measured
+# (see the self-refresh block: 09:52 before, 12:17 after, one row). The freshness gate compares the
+# handoff against startedAt, so a resume makes a PERFECTLY GOOD handoff look like it predates the
+# session -- and the gate refuses a park that was done correctly. Measured 2026-09-07: the operator
+# clicked into a parked canonical from the agents view, which resumed it, and `refresh`
+# then refused a handoff recorded the previous evening at 19:05.
+#
+# The transcript does not move. Resuming APPENDS to the same <sessionId>.jsonl, so its first
+# timestamped entry is the moment the session really began, whatever the listing now says.
+# Verified on the same incident: the resumed session's transcript gained no entry at all from the
+# click, while its startedAt moved by ~11 hours.
+#
+# Fails quietly (returns 1) rather than dying: an unreadable transcript must fall back to startedAt,
+# never break the gate. A gate that cannot run is worse than one calibrated slightly wrong.
+session_true_start() {
+  local sid="${1:-}" f first
+  [ -n "$sid" ] || return 1
+  [ -d "$FLEET_TRANSCRIPT_DIR" ] || return 1
+  f=$(find "$FLEET_TRANSCRIPT_DIR" -maxdepth 2 -type f -name "$sid.jsonl" 2>/dev/null | head -n1)
+  [ -n "$f" ] && [ -r "$f" ] || return 1
+  first=$(jq -r 'select(.timestamp)|.timestamp' "$f" 2>/dev/null | head -n1)
+  [ -n "$first" ] || return 1
+  iso_to_epoch "$first"
+}
+
+stub_dir() { printf '%s/stub-handoffs\n' "$FLEET_STATE"; }
+
+# A stub is a REAL handoff, not a bypass. The escape hatch still produces a dated file the successor
+# reads, so there is never a canonical whose pointer predates its own sitting: the hole the gate
+# exists to close stays closed even when there is genuinely nothing to say. It also states outright
+# that there is no orientation to inherit, which is the thing a successor most needs to be told and
+# is exactly what a stale handoff fails to say.
+write_stub_handoff() {
+  local name="$1" reason="$2" dir file
+  dir=$(stub_dir)
+  mkdir -p "$dir" || { printf 'cannot create %s\n' "$dir" >&2; return 1; }
+  file="$dir/$(date +%Y-%m-%d-%H%M%S)-$name-stub.md"
+  {
+    printf '# Handoff -- %s, STUB (%s)\n\n' "$name" "$(date '+%Y-%m-%d %H:%M %Z')"
+    printf 'Generated by `fleet-canonicals --stub`. **No substantive handoff was written for the\n'
+    printf 'sitting that ended here**, deliberately: the operator chose a stub rather than leave the\n'
+    printf 'previous handoff to be re-read as though it described this sitting.\n\n'
+    printf '**Reason given:** %s\n\n' "${reason:-none given}"
+    printf '## What a successor should do\n\n'
+    printf 'There is no orientation to inherit from the previous session. Do not go looking for one,\n'
+    printf 'and do not treat an older handoff elsewhere as describing recent work -- it does not.\n'
+    printf 'Read the project'"'"'s tracked state (its register, issues or board) for where things\n'
+    printf 'stand, then pick up where the operator directs.\n'
+  } > "$file" || { printf 'cannot write %s\n' "$file" >&2; return 1; }
+  printf '%s\n' "$file"
+}
+
+# handoff_gate NAME JSON STUB_SET STUB_TEXT VERB FORCE_SET FORCE_TEXT
+#   -- returns 0 to proceed, dies when it refuses.
+#
+# Scope is deliberate and narrow (the operator's call, 2026-08-28): it fires when ending a session
+# that HOLDS its canonical name, and not for `dedupe`, not for `down --all`, and not for a
+# superseded row. Those three are takeover and ramp-down paths where the replacement already exists
+# or no successor is coming, so a refusal there would wedge the very procedures the gate serves.
+handoff_gate() {
+  local name="$1" json="$2" stub_set="$3" stub_text="$4" verb="$5"
+  local force_set="${6:-0}" force_text="${7:-}"
+  local started started_s set_at set_at_s ptr_target stub_file now sid true_s
+
+  started=$(holder_field "$json" "$name" startedAt)
+  started_s=$(to_secs "$started") || started_s=""
+
+  # PREFER THE TRANSCRIPT'S START over the listing's. They agree for every session that has not
+  # been resumed; when they disagree the listing is the one that moved, and using it makes the gate
+  # refuse a correctly-parked canonical. Say so when it happens rather than silently substituting:
+  # "you resumed this session" is the single most useful thing to tell an operator here, and a
+  # substitution nobody sees is how a gate quietly stops measuring what its comment claims.
+  sid=$(holder_field "$json" "$name" sessionId)
+  if true_s=$(session_true_start "$sid"); then
+    if [ -n "$started_s" ] && [ "$true_s" -lt "$started_s" ]; then
+      printf 'note     %-24s resumed: listing says %s, transcript says %s -- using the transcript\n' \
+        "$name" "$(fmt_epoch "$started_s" '%Y-%m-%d %H:%M')" "$(fmt_epoch "$true_s" '%Y-%m-%d %H:%M')"
+    fi
+    started_s=$true_s
+  fi
+
+  # --force is the OPERATOR'S JUDGMENT, and it is deliberately not the same escape hatch as
+  # --stub. --stub REPLACES the recorded handoff with a generated one that says there is nothing to
+  # inherit; that is right when no handoff was written, and destructive when a good one exists,
+  # because the successor then reads "no orientation to inherit" instead of the real park document.
+  # --force leaves the pointer exactly as it is and says out loud what it skipped. Use it when the
+  # gate is wrong about the session, not when the handoff is wrong about the work.
+  if [ "$force_set" = "1" ]; then
+    set_at=$(handoff_set_at "$name") || set_at=""
+    set_at_s=$(to_secs "${set_at:-}") || set_at_s=""
+    printf 'FORCED   %-24s freshness gate skipped by the operator\n' "$name"
+    if [ -n "$set_at_s" ]; then
+      printf '         handoff recorded   %s\n' "$(fmt_epoch "$set_at_s" '%Y-%m-%d %H:%M')"
+    else
+      printf '         handoff recorded   NONE -- the successor will start with no orientation\n'
+    fi
+    [ -n "$started_s" ] && printf '         session started    %s\n' "$(fmt_epoch "$started_s" '%Y-%m-%d %H:%M')"
+    printf '         reason given       %s\n' "${force_text:-none given}"
+    ptr_target=$(cmd_handoff "$name" 2>/dev/null) \
+      && [ -n "$ptr_target" ] && printf '         pointer LEFT AS-IS %s\n' "$ptr_target"
+    return 0
+  fi
+
+  if [ "$stub_set" = "1" ]; then
+    stub_file=$(write_stub_handoff "$name" "$stub_text") \
+      || die "$verb: could not write the stub handoff"
+    cmd_handoff "$name" --set "$stub_file" >/dev/null \
+      || die "$verb: wrote the stub handoff but could not record the pointer to it"
+    printf 'handoff  %-24s stub written and recorded\n' "$name"
+    printf '         %s\n' "$stub_file"
+    return 0
+  fi
+
+  set_at=$(handoff_set_at "$name") || set_at=""
+  set_at_s=$(to_secs "${set_at:-}") || set_at_s=""
+
+  if [ -z "$set_at_s" ]; then
+    die "$verb: no handoff is recorded for '$name', so its successor would start with no orientation.
+  Park properly, then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or state outright that there is nothing to hand over:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'
+  --force is NOT the hatch for this one. It keeps the recorded handoff and skips the freshness
+  comparison -- but there is no recorded handoff here, so it would launch the successor blind.
+  --force is for when a GOOD handoff exists and only the comparison is wrong."
+  fi
+
+  if [ -n "$started_s" ] && [ "$set_at_s" -lt "$started_s" ]; then
+    die "$verb: the handoff recorded for '$name' PREDATES the session it would replace.
+      handoff recorded   $(fmt_epoch "$set_at_s" '%Y-%m-%d %H:%M')
+      session started    $(fmt_epoch "$started_s" '%Y-%m-%d %H:%M')
+  So it describes an earlier sitting, and the successor would read it as current -- confidently
+  oriented to work that is not this session's.
+  Park properly, then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD and it is this comparison that is wrong -- the usual cause is
+  a session that was resumed after it was parked, which rewrites its start time -- keep the pointer
+  and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+  fi
+
+  now=$(date +%s)
+  printf 'handoff  %-24s recorded %s (%dm ago)\n' \
+    "$name" "$(fmt_epoch "$set_at_s" '%Y-%m-%d %H:%M')" "$(( (now - set_at_s) / 60 ))"
+  ptr_target=$(cmd_handoff "$name" 2>/dev/null) \
+    && [ -n "$ptr_target" ] && printf '         %s\n' "$ptr_target"
+  return 0
+}
+
+# A session sitting in a LINKED WORKTREE cannot always be stopped, and the failure is silent until
+# it is not. MEASURED on one canonical 2026-09-07: the session had entered a worktree and never
+# left it, `refresh` started a successor but the stop half did not take, and closing the old row
+# from the agent view then failed outright -- the exit path tries to remove the worktree the
+# session occupies, that worktree is locked while a session holds it, and the removal it cannot do
+# is treated as a failure of the whole stop. The fleet was left with two live rows under one name.
+#
+# This warns rather than refuses, deliberately. Being in a worktree is legitimate; being in one AT
+# PARK TIME is the mistake, and by the time this runs the park has already happened. A refusal here
+# would block the operator from clearing exactly the state they are trying to clear. Skill
+# `parking-and-handoff` carries the rule that prevents it (leave the worktree in park step 1).
+warn_if_worktree() {
+  local name="$1" json="$2" cwd gd cd_common
+  cwd=$(holder_field "$json" "$name" cwd)
+  [ -n "$cwd" ] && [ -d "$cwd" ] || return 0
+  gd=$(git -C "$cwd" rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  cd_common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+  [ "$gd" = "$cd_common" ] && return 0
+  printf 'WARNING  %-24s is sitting in a linked worktree, not its primary checkout\n' "$name"
+  printf '         %s\n' "$cwd"
+  printf '         Stopping it may FAIL on worktree removal and leave the row live (measured\n'
+  printf '         2026-09-07). If it does: resolve the worktree first -- commit or merge what is\n'
+  printf '         in it and ExitWorktree from that session -- then stop the row. Never force-remove\n'
+  printf '         the worktree to make the stop succeed.\n'
+}
+
+# ---- refresh -----------------------------------------------------------------
+# stop + up as ONE verb, because the hand-run pair has a silent failure the combined form can rule
+# out: `up` launches only a name with zero live rows, so when the stop half does not take, `up`
+# declines and the pair reports "0 target(s)" then "started 0" -- exit 0, nothing done, and
+# indistinguishable from success unless both bodies are read. That is the reported-status trap in
+# a status that belongs to the wrong command, reachable here by composition rather than by piping.
+#
+# THREE THINGS IT DOES THAT THE PAIR CANNOT:
+#   1. Pre-flights the declared launch BEFORE stopping anything -- never stop what cannot be started.
+#   2. Waits for the row to actually disappear between the halves, rather than assuming it did.
+#   3. Refuses when the target is the session it runs inside, instead of silently skipping it.
+#
+# NO SELF-REFRESH. This refusal was originally reasoned rather than measured; it has since been
+# MEASURED, and the reasoning turned out to be right for a milder reason than the real one.
+#
+# THE EXPERIMENT (2026-08-29). A temporary `--force-self` flag was added, used once from inside the
+# hub canonical, and removed again. The log ends mid-verb:
+#
+#     stopping <hub>-canonical          pid 1147222 (id e7c0548f)
+#     <nothing further>
+#
+# TERM reached the session, the session is an ANCESTOR of this command, and the command died with
+# it -- before `claude rm`, before the wait loop, before the relaunch. So the successor never ran,
+# exactly as predicted.
+#
+# WHAT WAS NOT PREDICTED, and is the actual reason this stays refused: the harness treats the
+# killed worker as a CRASH and respawns it with `--resume`. The fleet is therefore never left
+# empty -- it is left with something worse. The SAME session comes back, same id, full prior
+# context, having never run its kickoff script and never read its handoff, and its `startedAt` is
+# rewritten to the respawn time. Measured: 09:52 before, 12:17 after, one row, `status` reporting
+# OK throughout.
+#
+# So the honest failure description is not "a fleet with no canonical and no visible error". It is
+# "a canonical that LOOKS freshly refreshed, reports OK, and is the unrefreshed session it was
+# before". That is the same false-healthy state a resumed session produces, and it is harder to
+# notice than an empty fleet, because nothing is missing.
+#
+# Consequence for anyone tempted to build the self case: a detached supervisor (setsid, outside the
+# dying process group) is necessary but NOT sufficient -- it also has to prevent the harness's own
+# crash-respawn from racing the intended relaunch. Until that is designed, this stays refused, and
+# `--force-self` is deliberately gone rather than left as an escape hatch.
+cmd_refresh() {
+  local dry=0 stub_set=0 stub_text="" name="" json script self_pid rows pid id waited live
+  local force_set=0 force_text=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      --stub)    stub_set=1
+                 case "${2:-}" in ''|-*) stub_text="" ;; *) stub_text=$2; shift ;; esac
+                 shift ;;
+      --force)   force_set=1
+                 case "${2:-}" in ''|-*) force_text="" ;; *) force_text=$2; shift ;; esac
+                 shift ;;
+      -*)        die "refresh: unknown option '$1' (usage: refresh [--dry-run] [--stub [reason] | --force [reason]] <name>)" ;;
+      *)         [ -z "$name" ] || die "refresh: one name at a time (got '$name' and '$1')"
+                 name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] \
+    || die "refresh: need a canonical name (usage: refresh [--dry-run] [--stub [reason] | --force [reason]] <name>)"
+  [ "$stub_set" = "1" ] && [ "$force_set" = "1" ] \
+    && die "refresh: --stub and --force are opposites, not a pair.
+  --stub REPLACES the recorded handoff with a generated 'nothing to inherit' note.
+  --force KEEPS the recorded handoff and skips the freshness comparison.
+  Pick the one that matches which of the two is actually wrong."
+
+  # (1) Pre-flight, and it is what makes the verb safe to reach for: if the name cannot be
+  # launched, nothing is stopped and the fleet is exactly as it was.
+  script=$(launch_desc "$name") \
+    || die "refresh: '$name' is not a canonical declared for this machine (known: $(expected_names | tr '\n' ' '))
+  Refusing to stop a session this machine has no way to start again."
+
+  json=$(agents_json)
+  rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
+
+  # (2) NOT RUNNING IS NOT AN ERROR. It is the ordinary state of a canonical the morning after it
+  # parked, and the old refusal ("use `up` instead") made the operator retype the whole command to
+  # reach a launch this verb was already going to perform two steps later. Fall through to it.
+  #
+  # WHAT MUST NOT FALL THROUGH WITH IT IS THE GATE, and that is the whole reason this branch is
+  # written out rather than delegating to `up`. `refresh`'s contract is that the successor reads a
+  # handoff; that is exactly as binding when the predecessor already exited as when this verb stops
+  # it -- arguably more, because nobody watched it go. `up` has NO gate at all, so the path an
+  # operator actually took when bounced ran WEAKER than this one. The old refusal did not protect
+  # the gate; it routed around it.
+  #
+  # The gate is fed `agents_json_all` here, NOT `json`. Stopped rows survive in the full listing and
+  # `holder_field` already takes the most recent by startedAt, so the freshness COMPARISON still
+  # runs against the session that actually parked instead of being silently skipped for want of a
+  # live row. A canonical that died unparked, leaving a handoff older than its last session, is
+  # still refused here exactly as it would be if it were running.
+  if [ -z "$rows" ]; then
+    printf 'note     %-24s not running -- nothing to stop; launching it as declared\n' "$name"
+    handoff_gate "$name" "$(agents_json_all)" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
+    if [ "$dry" = "1" ]; then
+      printf 'would start %-20s %s\n' "$name" "$script"
+      printf 'refresh: dry run -- nothing to stop, nothing started\n'
+      return 0
+    fi
+    cmd_up "$name"
+    return
+  fi
+
+  # (3) Self-refusal runs BEFORE the gate: no point demanding a handoff for an operation that is
+  # about to be refused anyway.
+  self_pid=$(self_pid_from_json "$json")
+  if [ -n "$self_pid" ]; then
+    while IFS=' ' read -r pid id; do
+      [ "$pid" = "$self_pid" ] || continue
+      die "refresh: '$name' is the session this is running inside (pid $self_pid).
+  Refusing: stopping it would kill the process that has to launch its successor -- MEASURED
+  2026-08-29: the verb dies at the stop, the relaunch never runs, and the harness respawns the
+  killed worker with --resume, so the SAME session returns with its startedAt rewritten and
+  reports OK. Nothing looks wrong, and nothing was refreshed.
+  Run it from another session, from the agents view, or from a plain terminal."
+    done <<< "$rows"
+  fi
+
+  handoff_gate "$name" "$json" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
+  warn_if_worktree "$name" "$json"
+
+  while IFS=' ' read -r pid id; do
+    [ -n "$pid" ] || continue
+    close_one "$name" "$pid" "$id" "$dry" refresh stopping
+  done <<< "$rows"
+
+  if [ "$dry" = "1" ]; then
+    printf 'would start %-20s %s\n' "$name" "$script"
+    printf 'refresh: dry run -- nothing stopped, nothing started\n'
+    return 0
+  fi
+
+  # (2) Do not assume the stop took. `claude rm` can lag the process exit, and `up` treats ANY live
+  # row as "already running" and declines -- which is exactly how the hand-run pair fails silently.
+  # Wait for the row to go, and refuse loudly rather than launching a duplicate if it does not.
+  waited=0
+  live=1
+  while [ "$waited" -lt 15 ]; do
+    json=$(agents_json)
+    live=$(printf '%s' "$json" | jq --arg n "$name" '[.[]|select(.name==$n)]|length')
+    [ "$live" = "0" ] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  [ "$live" = "0" ] \
+    || die "refresh: '$name' still has a live row after ${waited}s; NOT launching a second one.
+  Check 'fleet-canonicals status' and clear it before retrying."
+
+  # The OLD session's root, and ONLY the old one: this runs after the wait loop above has already
+  # confirmed zero live rows for $name, and strictly BEFORE cmd_up below writes a fresh record for
+  # the session it is about to start. Calling rm_tmproot directly here (rather than going through
+  # cleanup_tmproot_if_gone) reuses that already-confirmed zero-rows result instead of re-querying.
+  rm_tmproot "$name"
+
+  cmd_up "$name"
+}
+
+# ---- down --------------------------------------------------------------------
+# Names are REQUIRED. There is deliberately no bare `down` that closes everything: `up` with no
+# arguments is safe because the worst case is a session too many, while `down` with no arguments
+# would end every canonical on the machine, and that asymmetry should show up in the interface
+# rather than in a warning nobody reads. `--all` says it out loud when it is genuinely wanted.
+cmd_down() {
+  local dry=0 all=0 wanted="" json self_pid targets=0 rows name pid id
+  local stub_set=0 stub_text="" holder_pid
+  local force_set=0 force_text=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      --all)     all=1; shift ;;
+      --stub)    stub_set=1
+                 case "${2:-}" in ''|-*) stub_text="" ;; *) stub_text=$2; shift ;; esac
+                 shift ;;
+      --force)   force_set=1
+                 case "${2:-}" in ''|-*) force_text="" ;; *) force_text=$2; shift ;; esac
+                 shift ;;
+      -*)        die "down: unknown option '$1' (usage: down [--dry-run] [--stub [reason] | --force [reason]] <name>... | down [--dry-run] --all)" ;;
+      *)         wanted="$wanted $1"; shift ;;
+    esac
+  done
+  [ -n "$wanted" ] || [ "$all" = "1" ] \
+    || die "down: need a canonical name, or --all to stop every one (usage: down [--dry-run] <name>... | down [--dry-run] --all)"
+  [ -z "$wanted" ] || [ "$all" = "0" ] \
+    || die "down: give names or --all, not both"
+
+  json=$(agents_json)
+  self_pid=$(self_pid_from_json "$json")
+
+  # Resolve against LIVE sessions rather than the expected roster: a name may be running without a
+  # declaration (a renamed session), and stopping it is still legitimate. The cost is that a typo
+  # cannot be distinguished from an already-stopped canonical, so BOTH are reported rather than
+  # passing silently -- a stop that says nothing is indistinguishable from one that did nothing.
+  if [ "$all" = "1" ]; then
+    wanted=$(expected_names | tr '\n' ' ')
+  fi
+
+  # Handoff gate, as a PRE-PASS over every named target before anything is closed. Gating inside
+  # the close loop would let the first name be stopped and a later one refused, leaving the fleet
+  # half-changed by a command that reported failure -- the worst of both outcomes.
+  #
+  # THREE EXEMPTIONS, each deliberate. `--all` is the ramp-down path: no successor is coming, so
+  # there is nothing to hand over to. A row that is not its name's HOLDER is a superseded duplicate
+  # that was already replaced. And this session's own row is skipped below regardless, so gating it
+  # would only produce a refusal for an operation that never happens.
+  if [ "$all" = "0" ]; then
+    for name in $wanted; do
+      holder_pid=$(holder_field "$json" "$name" pid)
+      [ -n "$holder_pid" ] || continue
+      if [ -n "$self_pid" ] && [ "$holder_pid" = "$self_pid" ]; then continue; fi
+      handoff_gate "$name" "$json" "$stub_set" "$stub_text" down "$force_set" "$force_text"
+      warn_if_worktree "$name" "$json"
+    done
+  fi
+
+  for name in $wanted; do
+    rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
+    # Report rather than pass silently. With --all a not-running canonical is unremarkable, but a
+    # NAMED one that is not running is either a typo or a wrong assumption, and a stop that prints
+    # nothing is indistinguishable from one that did nothing.
+    if [ -z "$rows" ]; then
+      [ "$all" = "1" ] || printf 'not running %-20s nothing to stop\n' "$name"
+      continue
+    fi
+    while IFS=' ' read -r pid id; do
+      [ -n "$pid" ] || continue
+      if [ -n "$self_pid" ] && [ "$pid" = "$self_pid" ]; then
+        printf 'skip     %-24s pid %s is this session\n' "$name" "$pid"
+        continue
+      fi
+      targets=$((targets + 1))
+      close_one "$name" "$pid" "$id" "$dry" stop stopping
+    done <<< "$rows"
+    # `down` is the verb that can legitimately empty a name entirely, so this is where
+    # cleanup_tmproot_if_gone's zero-rows check actually fires in the ordinary case. Self-skipped
+    # rows are covered by the same check: if this session skipped its own row, that row is still
+    # live and the guard correctly leaves the record alone.
+    [ "$dry" = "1" ] || cleanup_tmproot_if_gone "$name"
+  done
+  printf '%s target(s)\n' "$targets"
+}
+
+# transcript_uuid_for PREFIX -- expand a listed 8-char session id into the full UUID `--resume` needs.
+#
+# `claude agents --json` reports `.id` as an 8-char PREFIX, while `--resume` requires the whole UUID.
+# Passing the prefix does not error usefully: it starts a session that takes the name and then dies
+# without writing a transcript, which looks like a launch that worked until you go looking for it.
+# The full UUID is the transcript filename, so resolve it from disk rather than from the listing.
+transcript_uuid_for() {
+  local prefix=$1 f
+  [ -n "$prefix" ] || return 1
+  f=$(find "$FLEET_TRANSCRIPT_DIR" -maxdepth 2 -name "${prefix}*.jsonl" 2>/dev/null | head -n1)
+  [ -n "$f" ] || return 1
+  basename "$f" .jsonl
+}
+
+# cmd_resume NAME [--dry-run] [--prompt TEXT] -- bring a canonical back FROM ITS OWN TRANSCRIPT,
+# then close the row it forked from.
+#
+# WHY THIS EXISTS ALONGSIDE `refresh`, because the two are not interchangeable:
+#   refresh  relaunches as declared, so the successor reads the HANDOFF. Correct when
+#            the outgoing session PARKED -- the handoff is then current and is the orientation.
+#   resume   forks from the transcript, so the successor carries the session's ACTUAL context.
+#            Correct when the session was never parked and its handoff predates the work, where
+#            relaunching would orient the successor to a stale file and silently discard the day.
+#
+# The header of this script says there is deliberately no resume verb, on the measurement that
+# resuming after an idle gap rebuilds the prompt cache at 2x input price. That reasoning stands and
+# is why this is not the default -- but it assumed the alternative was equivalent. For an UNPARKED
+# session it is not: relaunching loses context that no handoff contains, which costs more than the
+# cache does.
+#
+# RESUME FORKS; IT DOES NOT RESTART. Measured 2026-08-29: resuming produced a new session id and a
+# new transcript beside the old one, and the original row stayed listed. So every resume leaves a
+# duplicate unless something closes it -- which is why closing is part of this verb rather than a
+# separate step someone remembers. Order matters and is the opposite of `refresh`: launch and VERIFY
+# first, close second, because the old transcript is this verb's input.
+# WAKING BEATS FORKING, and that is the whole point of this command's shape.
+#
+# `claude attach <id>` resumes a background session IN PLACE -- same session id, same transcript,
+# appended to. It works on a STOPPED session too: it prints "Waking session <id>..." and the
+# session comes back with a new pid and its history intact. Measured 2026-08-30.
+#
+# `claude --bg -n <name> --resume <uuid>` always FORKS -- new session id, history copied into a
+# new transcript, and the old row left behind. Measured the same day, for a source session both
+# running and stopped; `--bg` is what causes it, not `--resume`. Plain `-p --resume` on a stopped
+# session appends in place. The fleet's transcript store carries 4 fork groups and ~1.9 MB of
+# duplicated history from this.
+#
+# Worth knowing because the CLI is asymmetric here: `-p --resume` against a RUNNING session
+# refuses, and names `claude attach` as the fix. Under `--bg` the identical precondition silently
+# forks instead. One path explains, the other quietly branches.
+#
+# So: wake first, fork only when there is nothing to wake, and never fork silently.
+cmd_resume() {
+  local name="" dry=0 prompt="" json old_id old_pid uuid new_id waited
+  local force_fork=0 all_json row_id row_pid row_state
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      --fork)    force_fork=1; shift ;;
+      --prompt)  prompt=${2:-}; shift 2 ;;
+      -*) die "resume: unknown option '$1' (usage: resume <name> [--dry-run] [--fork] [--prompt TEXT])" ;;
+      *)  [ -z "$name" ] || die "resume: one name at a time (got '$name' and '$1')"
+          name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "resume: a canonical name is required (usage: resume <name> [--dry-run])"
+
+  # --- Prefer waking the existing session over forking a copy of it. ------------------------
+  # `--all` so a STOPPED session is visible: those are exactly the ones worth waking, and the
+  # default listing drops them (pid null, absent entirely from the live view).
+  {
+    all_json=$(agents_json_all)
+    row_id=$(printf '%s' "$all_json" | jq -r --arg n "$name" \
+              '[.[]|select(.name==$n)] | sort_by(.startedAt) | reverse | .[0].id // empty')
+    if [ -n "$row_id" ]; then
+      row_pid=$(printf '%s' "$all_json" | jq -r --arg i "$row_id" '.[]|select(.id==$i)|.pid // empty' | head -n1)
+      if [ -n "$row_pid" ] && kill -0 "$row_pid" 2>/dev/null; then
+        # REFUSED UNCONDITIONALLY, including under --fork. A fork of a LIVE session is seeded from
+        # a transcript that is still being written, so the copy is of an arbitrary mid-write moment
+        # and the two diverge from a point neither of them records. The original code already
+        # refused this for the session it was running INSIDE, for exactly that reason; the reason
+        # does not depend on which live session it is.
+        #
+        # Made a refusal outright on 2026-08-30, at the operator's request: there is no scenario
+        # that wants a current session branched. There is a real escape hatch below -- stop it
+        # first, then fork -- so nothing is actually prevented, only made deliberate.
+        local self_now; self_now=$(self_pid_from_json "$all_json")
+        if [ -n "$self_now" ] && [ "$row_pid" = "$self_now" ]; then
+          printf 'refuse   %-24s that is THIS session (pid %s)\n' "$name" "$row_pid"
+        else
+          printf 'live     %-24s id %s is already running (pid %s)\n' "$name" "$row_id" "$row_pid"
+        fi
+        printf '  Nothing to resume. Attach instead -- in place, no copy, nothing lost:\n'
+        printf '    claude attach %s\n' "$row_id"
+        if [ "$force_fork" = "1" ]; then
+          printf '  --fork is REFUSED on a live session: the copy would be seeded from a transcript\n'
+          printf '  still being written. To branch deliberately: `fleet-canonicals down %s` first,\n' "$name"
+          printf '  then `resume %s --fork`.\n' "$name"
+          return 1
+        fi
+        return 0
+      fi
+      # Present but stopped: wake it in place. No new session id, no duplicated transcript.
+      if [ "$force_fork" = "1" ]; then
+        : # stopped + --fork: a deliberate branch from a settled transcript. Fall through.
+      else
+      if [ "$dry" = "1" ]; then
+        printf 'would wake %-22s id %s in place (no fork, no row to close)\n' "$name" "$row_id"
+        return 0
+      fi
+      printf 'waking   %-24s id %s (in place -- same session, same transcript)\n' "$name" "$row_id"
+      # attach opens a TUI. Detaching from it leaves the session running -- that is documented and
+      # measured. A bounded run is enough to trigger the wake; the terminal side is discarded.
+      run_bounded 20 "$(claude_bin)" attach "$row_id" </dev/null >/dev/null 2>&1 || true
+      waited=0
+      while [ "$waited" -lt 30 ]; do
+        sleep 2; waited=$((waited + 2))
+        row_pid=$(agents_json | jq -r --arg i "$row_id" '.[]|select(.id==$i)|.pid // empty' | head -n1)
+        [ -n "$row_pid" ] && break
+      done
+      if [ -n "$row_pid" ]; then
+        printf 'up       %-24s id %s pid %s (woken, NOT forked)\n' "$name" "$row_id" "$row_pid"
+        return 0
+      fi
+      printf 'note     %-24s wake did not bring it back within %ss -- falling back to a fork\n' "$name" "$waited"
+      fi
+    fi
+  }
+  # --- Fall through: fork. Announced, never silent. -----------------------------------------
+
+  # `--all`, not the live listing. A STOPPED session is exactly what someone reaches for `--fork`
+  # to branch from, and the live view drops those entirely -- the same blind spot `dedupe` had,
+  # where the command could not see the rows it existed to act on. `--all` is a superset, so the
+  # self-pid check below is unaffected.
+  json=$(agents_json_all)
+  # Newest row for this name is what we fork from; older ones are what we close afterwards.
+  old_id=$(printf '%s' "$json" | jq -r --arg n "$name" \
+            '[.[]|select(.name==$n)] | sort_by(.startedAt) | reverse | .[0].id // empty')
+  [ -n "$old_id" ] || die "resume: no session listed for '$name' -- nothing to resume. Use \`up\` to launch it as the fleet record declares it."
+
+  old_pid=$(printf '%s' "$json" | jq -r --arg i "$old_id" '.[]|select(.id==$i)|.pid // empty' | head -n1)
+  # Never resume the session this is running inside: the fork would be seeded from a transcript that
+  # is still being written, and closing the original would kill the caller mid-run.
+  local self_pid; self_pid=$(self_pid_from_json "$json")
+  if [ -n "$self_pid" ] && [ "$old_pid" = "$self_pid" ]; then
+    die "resume: refusing to resume the session this is running inside. Run it from another session or a plain terminal."
+  fi
+
+  uuid=$(transcript_uuid_for "$old_id") \
+    || die "resume: no transcript found for '$name' (id $old_id) -- cannot resume without one."
+
+  # If a handoff is NEWER than the transcript, the session parked and `refresh` is the right verb.
+  # Advisory, not a block: the caller may know the handoff is stale anyway.
+  # read_pointer, never the raw file: a pointer recorded by `handoff --set` carries a second
+  # `# set-at N` line, and the whole file read as a path names no file, so this note never fired.
+  local target t_m h_m
+  if target=$(read_pointer "$name"); then
+    t_m=$(file_mtime "$(find "$FLEET_TRANSCRIPT_DIR" -maxdepth 2 -name "${uuid}.jsonl" 2>/dev/null | head -n1)")
+    [ -n "$target" ] && [ -f "$target" ] && h_m=$(file_mtime "$target")
+    if [ -n "${h_m:-}" ] && [ -n "${t_m:-}" ] && [ "$h_m" -gt "$t_m" ] 2>/dev/null; then
+      printf 'note     %-24s handoff is NEWER than the transcript -- this session looks parked; `refresh` reads the handoff, `resume` ignores it\n' "$name"
+    fi
+  fi
+
+  [ -n "$prompt" ] || prompt="Resumed by fleet-canonicals. Your handoff may be stale -- rely on your own context. Confirm in one line what you were working on before this resume."
+
+  if [ "$dry" = "1" ]; then
+    printf 'would resume %-20s from %s\n' "$name" "$uuid"
+    # Enumerate EVERY row that would be closed, not just the one being forked from. A canonical that
+    # has already been resumed by hand carries more than one stale row, and a dry run that names one
+    # of them understates what the real run does -- which is the one thing a dry run must not do.
+    agents_json_all | jq -r --arg n "$name" \
+      '[.[]|select(.name==$n)] | sort_by(.startedAt) | reverse | .[] | "  would close id \(.id) pid \(.pid // "none")"'
+    printf '  (the resumed session becomes newest; every row above is then closed)\n'
+    return 0
+  fi
+
+  printf 'forking  %-24s from %s -- this creates a NEW session id and copies the transcript;\n' "$name" "$uuid"
+  printf '         the old row is closed below. `claude attach <id>` would have been in-place.\n'
+
+  # This is a real launch too, so it gets its own temp root exactly like launch_canonical's -- see
+  # that comment for why the flag is --settings rather than exported TMPDIR. This OVERWRITES the
+  # .tmproot record for $name. The row being forked FROM is closed below, but its own root (if any)
+  # is not cleaned up here: resume forks rather than replaces, so whatever eventually closes that
+  # old row for good (a later stop/refresh/dedupe) is what would find and remove it -- and since
+  # this overwrite already moved the one record slot for $name onto the NEW root, that old root has
+  # no record left pointing at it. Same single-slot limitation the handoff pointer already has.
+  local root settings
+  root=$(new_tmproot "$name")
+  mkdir -p "$root" 2>/dev/null
+  settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
+  record_tmproot "$name" "$root" || die "resume: could not record temp root for '$name'"
+
+  # </dev/null for the same reason as the launch in cmd_up: Claude Code appends piped stdin to the
+  # prompt, and this may be called from a loop whose stdin is a name stream.
+  # LAUNCH FROM THE ORIGINAL SESSION'S CWD, not the caller's. A forked session inherits the cwd of
+  # whatever invoked it, and cwd is what selects the project: its CLAUDE.md, its memory store, its
+  # repo. Forking a canonical from the wrong directory brings it up reading another project's
+  # context and writing another project's memory, while still holding the right NAME -- which is
+  # about the most confusing failure available here.
+  #
+  # Measured 2026-08-30: a fork run from ~/Devel put its transcript in the ~/Devel project dir
+  # rather than the source session's, silently.
+  local src_cwd
+  src_cwd=$(printf '%s' "$json" | jq -r --arg i "$old_id" '.[]|select(.id==$i)|.cwd // empty' | head -n1)
+  if [ -n "$src_cwd" ] && [ -d "$src_cwd" ]; then
+    ( cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 ) \
+      || die "resume: launch failed for '$name' (from $src_cwd)"
+  else
+    printf 'note     %-24s source cwd unknown or gone (%s) -- launching from %s\n' \
+      "$name" "${src_cwd:-none}" "$(pwd)"
+    "$(claude_bin)" --bg -n "$name" --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 \
+      || die "resume: launch failed for '$name'"
+  fi
+
+  # VERIFY BEFORE CLOSING ANYTHING. A launch that reported success but produced no new session would
+  # otherwise be followed by closing the only session there was.
+  waited=0
+  while [ "$waited" -lt 40 ]; do
+    sleep 2; waited=$((waited + 2))
+    new_id=$(agents_json | jq -r --arg n "$name" --arg o "$old_id" \
+              '[.[]|select(.name==$n)|select(.id != $o)] | sort_by(.startedAt) | reverse | .[0].id // empty')
+    [ -n "$new_id" ] && break
+  done
+  [ -n "$new_id" ] || die "resume: launched '$name' but no new session appeared within ${waited}s -- NOT closing the old row."
+  printf 'up       %-24s id %s (was %s)\n' "$name" "$new_id" "$old_id"
+
+  # Close every row for this name except the newest -- the same newest-wins rule dedupe applies.
+  local rows
+  rows=$(agents_json_all | jq -r --arg n "$name" \
+          '[.[]|select(.name==$n)] | sort_by(.startedAt) | reverse | .[1:] | .[] | "\(.pid // "-") \(.id)"')
+  while IFS=' ' read -r pid id; do
+    [ -n "$id" ] || continue
+    [ "$pid" = "-" ] && pid=""
+    if [ -n "$self_pid" ] && [ "$pid" = "$self_pid" ]; then
+      printf 'skip     %-24s pid %s is this session\n' "$name" "$pid"; continue
+    fi
+    close_one "$name" "$pid" "$id" 0 close closing
+  done <<< "$rows"
+}
+
+case "${1:-}" in
+  list)      shift; cmd_list "$@" ;;
+  status)    shift; cmd_status "$@" ;;
+  down|stop) shift; cmd_down "$@" ;;   # both spellings, deliberately: up/down and start/stop
+  refresh)   shift; cmd_refresh "$@" ;;
+  resume)    shift; cmd_resume "$@" ;;
+  up|start)  shift; cmd_up "$@" ;;
+  handoff)   shift; cmd_handoff "$@" ;;
+  place)           shift; cmd_place "$@" ;;
+  stage)           shift; cmd_stage "$@" ;;
+  dedupe)          shift; cmd_dedupe "$@" ;;
+  clean)           shift; cmd_clean "$@" ;;
+  wait-for-reset)  shift; cmd_wait_for_reset "$@" ;;
+  resume-at)       shift; cmd_resume_at "$@" ;;
+  -h|--help|help|'') usage ;;
+  *) usage >&2; exit 2 ;;
+esac

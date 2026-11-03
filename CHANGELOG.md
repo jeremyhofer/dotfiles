@@ -32,6 +32,37 @@ Entries are newest first.
 
 ---
 
+## 2026-11-03
+
+### `fleet-canonicals` ships from the base; its domain values come from a config file (ACTION for a private layer that shipped it)
+
+- **The tool that launches, checks and closes the long-running named sessions a per-repo record
+  declares (`canonical*` keys) is now in the base**, with its two suites, so a machine with only the
+  base and a record can run the same fleet. **ACTION:** a private layer that shipped its own
+  `~/.local/bin/fleet-canonicals` deletes it in the same change, and the machine then applies BOTH
+  instances: with both managing the file, `overlay-doctor` reports a collision.
+- **Its domain values moved from built-in defaults to `~/.config/fleet-canonicals/config`**, one
+  `key = value` per line, written by the private layer: `handoffs` (where `place` puts staged
+  handoffs), `handoffs-search` (the tree searched for a placed copy, default the handoffs
+  directory), `hub` (the session that places, named by `stage`) and `place-commit` (default
+  `false`). No default names a path any more: with no file, `place` refuses and `status` skips its
+  unplaced-handoff check. **ACTION:** a domain that stages and places handoffs writes this file;
+  `fleet-canonicals --help` has the keys. Each key has an override variable (`FLEET_HANDOFFS_DIR`,
+  `FLEET_HANDOFFS_SEARCH`, `FLEET_HUB`, `FLEET_PLACE_COMMIT`); `FLEET_PROGRAM_DIR` is gone.
+- **`FLEET_CLAUDE_CMD` is the one override for the `claude` binary**, for launch, `rm`, `attach` and
+  fork alike; `FLEET_CLAUDE_BIN` is gone. The help's environment list is now complete.
+- **New verb `clean [--dry-run]`** removes the scratch roots (`/tmp/c-<short name>-XXXXXX`) of
+  sessions that are gone, for a machine where no session-end hook can remove them. It keeps every
+  root a running session may own, any root younger than 10 minutes and any path of another shape,
+  and removes nothing when the sessions list cannot be read.
+- **`wait-for-reset` and `resume-at` run from `--at` alone** on a machine that records no usage
+  reset times; without `--at` they now say so rather than "not cached yet". A recorded 5-hour reset
+  is still read when present.
+- Fixed: the "handoff is NEWER than the transcript" note in `resume` never fired (it read the
+  pointer file whole, set-at line included); `resume`'s wake ran GNU `timeout`, absent on a stock
+  Mac; `resume` read transcripts from a fixed path instead of `FLEET_TRANSCRIPT_DIR`.
+- `status`'s unplaced-handoff summary names the configured handoffs directory.
+
 ## 2026-10-29
 
 ### Python tools run on Python 3.9 again; `gitleaks` and `codespell` are REQUIRED (ACTION on a Mac: `brew bundle`)
