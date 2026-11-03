@@ -26,6 +26,7 @@ overwrites it).
 | `setup/adopt-audit` | **Pre-apply safety check**: for every path an apply would write, flags any *differing* file already deployed there that isn't yet captured in source (base or overlay). Non-zero exit = capture those first. |
 | `setup/chezmoi-safe-apply` | **Guarded apply**: runs `adopt-audit` as a gate, backs up every would-change file, shows the diff, asks to confirm, then applies base then overlay. |
 | `setup/brew-inventory` | Snapshot installed Homebrew formulae/casks (to seed a Brewfile). |
+| `setup/publish-check` | **Pre-publish gate**: before pushing to the publish remote (`--remote`, or `git config dotfiles.publishRemote`), checks a clean `main` already on `origin`, a fast-forward, a `CHANGELOG.md` entry for every commit that adds, deletes or renames a deployed path, the tool inventory, the skill fragment list, `context-lint` and the tests (`--skip-tests`). Read-only; prints the push command when all pass. Exit 0 ready, 1 a check failed, 2 could not check. |
 
 `bootstrap-mac.sh` calls `chezmoi-safe-apply` for you; you can also run the `setup/` scripts directly from this
 checkout **before** anything is applied (they're plain scripts here on purpose).

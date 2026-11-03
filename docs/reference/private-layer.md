@@ -182,9 +182,10 @@ target: `chezmoi apply ~/.claude/settings.json`.
 ### Skills: `~/.dotlocal/skills/<skill>.md`
 
 Some base skills end by pointing at a fragment with this domain's specifics (its hosts, layout,
-incidents). Currently: `brew-and-brewfiles`, `claude-config-layers`, `cross-platform-tooling`,
-`dotfiles-layout-and-bootstrap`, `dotfiles-update`, `fault-isolation`, `naming-build-tasks`,
-`overlay-doctor`, `register-standard`, `vetting-tooling`, `working-in-worktrees`. A missing
+incidents). Currently: `brew-and-brewfiles`, `canonical-takeover`, `claude-config-layers`,
+`cross-platform-tooling`, `dotfiles-layout-and-bootstrap`, `dotfiles-update`, `fault-isolation`,
+`fleet-messaging`, `kb-tier0-writes`, `naming-build-tasks`, `overlay-doctor`, `parking-and-handoff`,
+`register-standard`, `spellcheck-standard`, `vetting-tooling`, `working-in-worktrees`. A missing
 fragment means the generic skill stands alone. Write it as plain
 markdown that completes the skill; do not restate it. Leave a skill out on one machine with
 `skipSkills`.
@@ -232,6 +233,25 @@ One failed entry never stops the others or fails the apply. It runs after every 
 the private layer applies after the base, the overlay also re-runs it when its list changes
 (`run_onchange_after_sync-skill-externals.sh` in the skeleton). Run it by hand with
 `skill-externals-sync`, and `skill-externals-sync --status` lists what it installed.
+
+## Tool configuration: `~/.config/<tool>/`
+
+Some base tools read a per-machine file that only the domain can write, because it names the
+domain's paths, sessions or credentials. Each tool works, or says plainly what it lacks, when its
+file is absent. The private layer deploys the files that hold no secret; a file holding a key is
+written by the owner (`chmod 600`) and never committed.
+
+| File | Read by | Holds | Without it |
+| --- | --- | --- | --- |
+| `~/.config/fleet-canonicals/config` | `fleet-canonicals` | `key = value` lines: `handoffs` (where `place` puts staged handoffs), `handoffs-search` (the tree searched for a placed copy), `hub` (the session that places) and `place-commit` (`true` commits placed handoffs in the repository holding the directory) | sessions launch and close as usual; `place` refuses and `status` skips its unplaced-handoff check |
+| `~/.config/hc-status/keys` | `hc-status`, `alert-digest` | one `<project label> <read-only API key>` line per Healthchecks project; a secret, owner-written | `hc-status` names the path and format and lists nothing |
+| `~/.config/ntfy-inbox/topics`, `~/.config/ntfy-inbox/token` | `ntfy-inbox`, `alert-digest` | the topics to keep, one per line (an optional `server https://host` line replaces `ntfy.sh`); an optional access token, a secret, refused unless `chmod 600` | `ntfy-inbox` refuses to run, naming the path to create |
+
+`fleet-canonicals` also reads the repository manifest's `canonical*` keys (see "The repository
+manifest" below), which say which sessions exist and which machines run them. Each key of its config
+has an environment variable that overrides it for one run (`fleet-canonicals --help`). `alert-digest`
+is meant for a Claude Code hook the private layer declares in its settings fragment; where hooks are
+not permitted it can be run by hand.
 
 ## Worktrees
 

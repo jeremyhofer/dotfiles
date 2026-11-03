@@ -1,0 +1,257 @@
+#!/bin/sh
+# publish-check -- is this checkout ready to publish to the second remote? READ-ONLY: it fetches,
+# reads and runs the test suite, and never pushes, commits or edits anything in the repository.
+#
+# WHY. The base reaches the machines that pull from the publish remote only when someone publishes
+# it, and those machines catch up by reading the CHANGELOG entries dated after their last apply.
+# Publishing has gone out with the changelog, the tool inventory or the docs behind. This makes
+# publishing a gate instead of a memory.
+#
+# Usage: sh setup/publish-check [--remote <name>] [--skip-tests]
+#   The publish remote is --remote, else `git config dotfiles.publishRemote`, else a refusal.
+#
+# Exit: 0 every check passed (or nothing to publish); 1 a check failed; 2 a check could not be made,
+# in which case no line printed before it should be believed.
+#
+# WHAT "DEPLOYED" MEANS (check 4). Each path a commit adds, deletes or renames (the new name, for a
+# rename) that deploys to a machine must be NAMED in a line this range adds to CHANGELOG.md: the tool
+# name for a bin tool, the skill name for a skill directory, else the basename without chezmoi
+# prefixes and .tmpl (the name without its extension also counts). A path is NOT deployed when any of these holds:
+#   - it is under tests/, docs/ or setup/;
+#   - its first component starts with a dot (chezmoi never deploys a source path that is not
+#     `dot_`-prefixed, so .githooks and .gitignore stay in the repository);
+#   - it matches a pattern in the UNCONDITIONAL head of .chezmoiignore, the lines before the first
+#     template directive. Lines after that sit inside OS or domain conditions, and a path ignored
+#     on one machine still deploys on another, so they do not exempt it.
+# The patterns are read from the file rather than listed here, so the two cannot drift apart.
+#
+# POSIX sh and BSD userland only.
+set -u
+
+# Each failing check goes through bad() with its tag as the first argument; the test suite disables
+# one check at a time by rewriting that tag's calls, to show its case is red because of that check.
+fail=0
+ok()   { printf '  ok    %s\n' "$1"; }
+note() { printf '        %s\n' "$*"; }
+bad()  { printf '  FAIL  %s: %s\n' "$1" "$2"; fail=1; }
+cannot() { printf '  could not check: %s\n' "$*" >&2; printf 'publish-check: nothing above can be believed\n' >&2; exit 2; }
+
+remote=""; skip_tests=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --remote) [ $# -ge 2 ] || cannot "--remote needs a name"; remote=$2; shift 2 ;;
+    --skip-tests) skip_tests=1; shift ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    *) printf 'publish-check: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd) || cannot "cannot locate the checkout"
+cd "$root" || cannot "cannot enter $root"
+git rev-parse --git-dir >/dev/null 2>&1 || cannot "$root is not a git repository"
+
+if [ -z "$remote" ]; then
+  remote=$(git config dotfiles.publishRemote 2>/dev/null || true)
+fi
+if [ -z "$remote" ]; then
+  printf 'publish-check: no publish remote. Pass --remote <name>, or set it once with:\n' >&2
+  printf '  git config dotfiles.publishRemote <name>\n' >&2
+  exit 2
+fi
+git remote | grep -qx "$remote" || cannot "no remote named '$remote' in this repository"
+
+t=${TMPDIR:-/tmp}; t=${t%/}
+work=$(mktemp -d "$t/publish-check.XXXXXX") || cannot "cannot make a scratch directory"
+trap 'rm -rf "$work"' EXIT
+
+echo "publish-check: $root -> $remote"
+
+# 1. Clean tree on main.
+branch=$(git symbolic-ref --short -q HEAD || true)
+dirty=$(git status --porcelain --untracked-files=no 2>/dev/null)
+if [ "$branch" != main ]; then
+  bad tree "checked out: ${branch:-a detached HEAD}, not main. Run: git switch main"
+elif [ -n "$dirty" ]; then
+  bad tree "tracked files have uncommitted changes. Commit or discard them:"
+  printf '%s\n' "$dirty" | sed 's/^/        /'
+else
+  ok "working tree clean, main checked out"
+fi
+
+# 2. HEAD is already on the primary remote.
+git fetch -q origin 2>"$work/err" || { cat "$work/err" >&2; cannot "git fetch origin failed"; }
+if git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+  ok "HEAD is contained in origin/main"
+else
+  bad origin "HEAD is not in origin/main. Push to origin first: git push origin HEAD:main"
+fi
+
+# 3. The range to publish.
+git fetch -q "$remote" 2>"$work/err" || { cat "$work/err" >&2; cannot "git fetch $remote failed"; }
+git rev-parse -q --verify "refs/remotes/$remote/main" >/dev/null || cannot "$remote has no main branch"
+range="$remote/main..HEAD"
+if git merge-base --is-ancestor "$remote/main" HEAD 2>/dev/null; then
+  ok "$remote/main is an ancestor of HEAD (fast-forward)"
+else
+  bad fastforward "$remote/main is not an ancestor of HEAD, so a push would not fast-forward. Reconcile first."
+fi
+git rev-list --reverse --no-merges "$range" > "$work/commits" 2>/dev/null || cannot "cannot list $range"
+if [ ! -s "$work/commits" ] && ! git rev-list -n1 "$range" 2>/dev/null | grep -q .; then
+  if [ "$fail" -eq 0 ]; then
+    echo "nothing to publish: $remote/main already has HEAD"
+    exit 0
+  fi
+  echo "nothing to publish, but the checks above failed"
+  exit 1
+fi
+note "$(git rev-list --count "$range") commit(s) to publish"
+
+# 4. Changelog coverage: every added, deleted or renamed deployed path is NAMED in the lines the
+# range adds to CHANGELOG.md. A date rule would let one recent heading "cover" older work.
+git show HEAD:.chezmoiignore > "$work/ignore.raw" 2>/dev/null || cannot ".chezmoiignore is not in HEAD"
+awk '/^[[:space:]]*\{\{/ {exit} /^[[:space:]]*(#|$)/ {next} {print}' "$work/ignore.raw" > "$work/ignore"
+
+deployed() {
+  p=$1
+  case $p in tests/*|docs/*|setup/*|.*) return 1 ;; esac
+  while IFS= read -r pat; do
+    case $pat in
+      */) case $p in "$pat"*) return 1 ;; esac ;;
+      *) case $p in $pat) return 1 ;; esac
+         case $p in "$pat"/*) return 1 ;; esac ;;
+    esac
+  done < "$work/ignore"
+  return 0
+}
+
+# The token a changelog line must mention for a path: the tool name for a bin tool, the skill name
+# for anything in a skill directory, else the basename without chezmoi source prefixes and .tmpl.
+# The token without its extension is accepted too (second output line).
+token_of() {
+  case $1 in
+    private_dot_local/bin/executable_*|dot_local/bin/executable_*) tok=${1##*/executable_} ;;
+    dot_claude/skills/*) tok=${1#dot_claude/skills/}; tok=${tok%%/*} ;;
+    *)
+      tok=${1##*/}
+      again=1
+      while [ "$again" -eq 1 ]; do
+        again=0
+        for pre in dot_ private_ executable_ readonly_ empty_ symlink_ modify_ run_once_ run_onchange_ before_ after_; do
+          case $tok in "$pre"?*) tok=${tok#"$pre"}; again=1 ;; esac
+        done
+      done
+      tok=${tok%.tmpl} ;;
+  esac
+  printf '%s\n' "$tok"
+  case $tok in ?*.?*) printf '%s\n' "${tok%.*}" ;; esac
+}
+
+: > "$work/need"
+while IFS= read -r c; do
+  git diff-tree --no-commit-id --name-status -r -M --diff-filter=ADR "$c" > "$work/changes"
+  while IFS= read -r line; do
+    st=${line%%	*}; paths=${line#*	}
+    case $st in R*) old=${paths%%	*}; new=${paths#*	}; deployed "$old" || deployed "$new" || continue; p=$new ;;
+      *) p=$paths; deployed "$p" || continue ;; esac
+    printf '%s\t%s\n' "$c" "$p" >> "$work/need"
+  done < "$work/changes"
+done < "$work/commits"
+
+if [ ! -s "$work/need" ]; then
+  ok "changelog: no commit in the range adds, deletes or renames a deployed path"
+else
+  git diff "$remote/main" HEAD -- CHANGELOG.md | sed -n 's/^+\([^+].*\)$/\1/p;s/^+$//p' > "$work/added"
+  : > "$work/seen"; uncovered=0
+  while IFS="	" read -r c p; do
+    token_of "$p" > "$work/toks"
+    first=$(sed -n 1p "$work/toks")
+    grep -qxF "$first" "$work/seen" && continue
+    covered=0
+    while IFS= read -r tk; do
+      [ -n "$tk" ] && grep -qF -- "$tk" "$work/added" && covered=1
+    done < "$work/toks"
+    if [ "$covered" -eq 1 ]; then printf '%s\n' "$first" >> "$work/seen"; continue; fi
+    [ "$uncovered" -eq 0 ] && bad changelog "no line added to CHANGELOG.md in the range names:"
+    uncovered=1
+    printf '%s\n' "$first" >> "$work/seen"
+    note "$p  (token '$first', commit $(git log -1 --format='%h %s' "$c"))"
+  done < "$work/need"
+  if [ "$uncovered" -eq 0 ]; then
+    ok "changelog: every added, deleted or renamed deployed path is named in the entries added in the range"
+  else
+    note "add an entry naming each path's token above under a dated heading"
+  fi
+fi
+
+# 5. Tool inventory: every installed bin tool is named in backticks in tooling.md.
+git show HEAD:dot_claude/tooling.md > "$work/tooling" 2>/dev/null || cannot "dot_claude/tooling.md is not in HEAD"
+git ls-tree -r --name-only HEAD | sed -n \
+  -e 's|^private_dot_local/bin/executable_||p' \
+  -e 's|^dot_local/bin/executable_||p' | sort -u > "$work/tools"
+missing=0
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  if ! grep -qF "\`$name\`" "$work/tooling"; then
+    [ "$missing" -eq 0 ] && bad inventory "installed to ~/.local/bin but not named in backticks in dot_claude/tooling.md:"
+    missing=1; note "$name"
+  fi
+done < "$work/tools"
+[ "$missing" -eq 0 ] && ok "tool inventory names every ~/.local/bin tool ($(wc -l < "$work/tools" | tr -d ' '))"
+
+# 6. Skill fragment list, in both directions.
+git show HEAD:docs/reference/private-layer.md > "$work/layer" 2>/dev/null || cannot "docs/reference/private-layer.md is not in HEAD"
+awk '/^###+ Skills: `~\/\.dotlocal\/skills\//{s=1; next} s && /^###/{exit} s' "$work/layer" \
+  | awk '/Currently:/{c=1} c && /^[[:space:]]*$/ {exit} c' | tr '\n' ' ' \
+  | sed -e 's/^.*Currently://' -e 's/\.[[:space:]].*$//' \
+  | grep -o '`[^`]*`' | tr -d '`' | sort -u > "$work/listed"
+[ -s "$work/listed" ] || cannot "no 'Currently:' skill list under the Skills fragment heading of docs/reference/private-layer.md"
+git ls-tree -r --name-only HEAD | sed -n 's|^dot_claude/skills/\([^/]*\)/SKILL\.md$|\1|p' | sort > "$work/skills"
+: > "$work/readers"
+while IFS= read -r s; do
+  git show "HEAD:dot_claude/skills/$s/SKILL.md" | grep -qF "~/.dotlocal/skills/$s.md" && printf '%s\n' "$s" >> "$work/readers"
+done < "$work/skills"
+bad_frag=0
+while IFS= read -r s; do
+  grep -qx "$s" "$work/listed" && continue
+  [ "$bad_frag" -eq 0 ] && bad fragments "skill list in docs/reference/private-layer.md is out of step:"
+  bad_frag=1; note "skill '$s' reads ~/.dotlocal/skills/$s.md but is not in the 'Currently:' list"
+done < "$work/readers"
+while IFS= read -r s; do
+  grep -qx "$s" "$work/skills" && continue
+  [ "$bad_frag" -eq 0 ] && bad fragments "skill list in docs/reference/private-layer.md is out of step:"
+  bad_frag=1; note "'$s' is in the 'Currently:' list but dot_claude/skills/$s/SKILL.md does not exist"
+done < "$work/listed"
+[ "$bad_frag" -eq 0 ] && ok "skill fragment list matches the skills that read a fragment"
+
+# 7. context-lint.
+if command -v context-lint >/dev/null 2>&1; then
+  if context-lint > "$work/cl" 2>&1; then
+    ok "context-lint passes"
+  else
+    bad contextlint "context-lint reported findings:"
+    sed 's/^/        /' "$work/cl"
+  fi
+else
+  note "context-lint not on PATH: skipped"
+fi
+
+# 8. The test suite.
+if [ "$skip_tests" -eq 1 ]; then
+  note "tests skipped (--skip-tests)"
+elif [ ! -f tests/run-all.sh ]; then
+  cannot "tests/run-all.sh is missing"
+elif sh tests/run-all.sh > "$work/tests" 2>&1; then
+  ok "tests/run-all.sh passes"
+else
+  bad tests "tests/run-all.sh failed. Last lines:"
+  tail -15 "$work/tests" | sed 's/^/        /'
+fi
+
+echo
+if [ "$fail" -ne 0 ]; then
+  echo "publish-check: NOT ready; fix the FAIL lines above"
+  exit 1
+fi
+echo "publish-check: ready. To publish, run:"
+echo "  git push $remote main"
+exit 0

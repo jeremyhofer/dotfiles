@@ -52,6 +52,12 @@ sh ~/.local/share/chezmoi/setup/overlay-doctor
 Step 7 is the one people skip, and it is the one that catches the asymmetry above. `overlay-doctor`
 is read-only, so running it is always safe.
 
+The changelog is a promise the publisher checks before every publish (`setup/publish-check`): every
+commit that adds, deletes or renames a deployed file has an entry. So when step 4's diff shows a new
+or removed file, a new tool or a new skill that no entry since your last apply explains, that is a
+defect in the base, not something to work out alone: report it to whoever maintains the base, with
+the file and the commit (`git log --oneline -- <path>`).
+
 Step 5 has its own backstop now: a `run_before_` script checks, on macOS only, that every Brewfile
 formula marked `REQUIRED` (its header explains the marker) is on PATH, and refuses the apply by name
 if one is not — so a skipped `brew bundle` fails at step 6 with one clear message instead of

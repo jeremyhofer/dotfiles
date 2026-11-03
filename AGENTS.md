@@ -59,7 +59,16 @@ No task runner; the commands are plain.
   `sh setup/overlay-doctor` after adding a target; it reports a collision with the layer it can see.
 - **Edit the source, never the deployed copy**; the next apply overwrites it.
 - **A change an adopted machine must act on gets a `CHANGELOG.md` entry**, marked ACTION when a
-  private layer has to change. No check yet.
+  private layer has to change, in the same commit. A change that adds a seam (a config file a tool
+  reads, a skill that reads a domain fragment) also updates `docs/reference/private-layer.md`, and a
+  new tool its line in `dot_claude/tooling.md`. Other machines catch up only from what these say.
+- **Publish when a change lands, through the check.** Push to `origin` first; then, in the same
+  sitting, `sh setup/publish-check` (the publish remote is `git config dotfiles.publishRemote`) and
+  the push it prints. The check fails until the changelog covers every commit since the last publish
+  that adds, deletes or renames a deployed file, every tool is in `tooling.md`, every
+  fragment-reading skill is listed in `private-layer.md`, and the suites pass. A machine that pulls
+  from the publish remote reads the entries since its last apply (skill `dotfiles-update`), so a
+  change published without its entry reaches that machine unexplained.
 - **Vary by file, not by inline conditional.** Per-domain or per-OS content goes in `.chezmoiignore`
   or a `<topic>.<scope>` fragment, so a diff shows the scope in the file name.
 

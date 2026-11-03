@@ -34,6 +34,19 @@ Entries are newest first.
 
 ## 2026-11-03
 
+### Publishing is checked: `setup/publish-check`
+
+- **Before the base is pushed to the remote other machines pull from**, `sh setup/publish-check`
+  (the remote is `git config dotfiles.publishRemote`) must pass: a clean tree on `main` already on
+  `origin`, a fast-forward, every deployed path added, deleted or renamed since the last publish
+  named in the changelog lines added since then, every tool in `dot_claude/tooling.md`, every skill
+  that reads a domain fragment listed in `docs/reference/private-layer.md`, `context-lint` and the
+  suites. Read-only; it prints the push command. `AGENTS.md` makes it the step after every push to
+  `origin`. A consuming machine needs nothing: the entries since its last apply now cover each
+  shape change.
+- `docs/reference/private-layer.md` gains a "Tool configuration" section: the files
+  `fleet-canonicals`, `hc-status` and `ntfy-inbox` read, what each holds and what happens without it.
+
 ### `fleet-canonicals` ships from the base; its domain values come from a config file (ACTION for a private layer that shipped it)
 
 - **The tool that launches, checks and closes the long-running named sessions a per-repo record
@@ -62,6 +75,80 @@ Entries are newest first.
   pointer file whole, set-at line included); `resume`'s wake ran GNU `timeout`, absent on a stock
   Mac; `resume` read transcripts from a fixed path instead of `FLEET_TRANSCRIPT_DIR`.
 - `status`'s unplaced-handoff summary names the configured handoffs directory.
+
+### The four fleet skills ship from the base, each completed by an optional domain half
+
+- **`canonical-takeover`, `parking-and-handoff`, `fleet-messaging` and `kb-tier0-writes` are now base
+  skills**: the procedures for launching and taking over a named long-running session, parking it
+  and handing over, deciding whether and how one session messages another, and proposing a change to
+  an always-on knowledge base. Each ends by pointing at `~/.dotlocal/skills/<name>.md`, where a domain
+  names its hub, its handoffs repository and its own incidents; without one the skill stands alone.
+  **ACTION:** a private layer that shipped these skills under `~/.claude/skills/` deletes its copies
+  in the same change (`overlay-doctor` reports the collision otherwise) and moves its domain
+  specifics into the fragments.
+- **`fleet-messaging` has a no-messaging mode**: where a session has no `ListAgents` or `SendMessage`
+  tool, coordination goes through committed handoff files and the human, and the skill says what
+  replaces each kind of message.
+- The launch text describes the record model (`canonical*` keys in the manifest), not the retired
+  per-repository kickoff scripts.
+
+## 2026-11-02
+
+### `alert-digest`: what is new in the alerts since a reader last looked
+
+- **New tool `alert-digest --reader <name> --triage <where to look>`**, meant for a hook at every
+  turn of one session: it prints the `ntfy-inbox` messages that reader has not been shown, the
+  Healthchecks checks (from `hc-status`) that went into or out of `down` or `grace` since its last
+  report, and a reader failing; and nothing at all when nothing changed. It always exits 0, so a hook
+  never blocks a turn. A `grace` is reported only when it lasts past one read, so a job that is a few
+  seconds late on most cycles stays quiet. `--session-start` repeats standing problems for a new
+  session, and `--project DIR` makes it do nothing unless `CLAUDE_PROJECT_DIR` is `DIR`, so one
+  user-level hook serves one project's sessions.
+- Where Claude Code hooks are not permitted, it still runs by hand: `alert-digest --reader <name>
+  --triage <where>` prints the same digest once.
+- `ntfy-inbox` gains `show --new <reader>`: the messages that reader has not been shown, from a
+  cursor per reader (the last 24 hours on a first look).
+- Skill `claude-config-layers`: a hook that runs your own tools for one project's sessions belongs in
+  the user layer, scoped with `CLAUDE_PROJECT_DIR`, and a `UserPromptSubmit` hook ends with
+  `|| true`, since its exit 2 blocks the prompt in every session.
+
+### `image-bump` moves the pins of an image build's pinned-inputs file
+
+- **A descriptor with an `artifact` field** (`release-file` or `release-deb`) moves one `file` or
+  `deb` line of a pins file per architecture, after a signature check: a `cosign` bundle over the
+  release's checksums file, or the apt suite's signed `Release`. `check` resolves and scans every
+  architecture before it writes any, so the files never disagree on a version. A first pin with
+  fixable findings is an exception for approval (exit 3), not a refusal.
+
+## 2026-11-01
+
+### `hc-status` and `ntfy-inbox`: reading the alerts from a session (opt-in, each needs a config file)
+
+- **New tool `hc-status`** lists every Healthchecks.io check across the projects named in
+  `~/.config/hc-status/keys`, one `<project label> <read-only API key>` line per project
+  (`--problems`, `--json`; exit 0 healthy, 1 a check down or in grace, 2 a project unreadable). It
+  never prints a key. Without the file it names the path and the line format to create it with.
+- **New tool `ntfy-inbox`** keeps a local file copy of the messages published to the ntfy topics in
+  `~/.config/ntfy-inbox/topics` (an optional access token in `~/.config/ntfy-inbox/token`), so a
+  session can read alerts: `run` is the daemon, `show [--since D] [--topic T] [--json]` lists them,
+  `status` says whether it is writing. **ACTION on Linux, once, to use it:** `systemctl --user enable
+  --now ntfy-inbox.service`; the unit is shipped but not enabled. On macOS nothing starts it yet.
+- `hook-doctor`'s probe now switches off every configured hook on the probed event except the guard
+  itself, so another hook (Git LFS's `pre-push`, for one) can no longer make a guarded repository
+  read as BLOCKED.
+
+## 2026-10-31
+
+### The status line shows the 7-day window when the plan has no 5-hour one; plugins from a directory marketplace
+
+- **The usage segment renders whichever rolling windows the payload carries.** On a plan whose only
+  limit is the 7-day window it showed nothing; it now shows the 7-day window, with its reset as a
+  weekday and time. The reload band shows the cached context depth in tokens (for example `260k`)
+  when there is no 5-hour window to express it as a share of.
+- **`install-claude-plugins` adds a directory-source marketplace**: a layer that pins a plugin whose
+  own repository has no catalog may deploy a catalog of its own (a directory holding
+  `.claude-plugin/marketplace.json`) and declare it by path. A path with no catalog fails without
+  adding anything.
 
 ## 2026-10-29
 
