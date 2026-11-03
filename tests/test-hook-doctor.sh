@@ -88,13 +88,18 @@ printf 'hook-doctor acceptance criteria\n'
 
 # --- P1: every event guarded -> GUARDED, exit 0 -------------------------------------------------
 k=$(newrepo work/k); manifest work/k
-before=$(cd "$k" && git_q count-objects -v | tr '\n' ' '; git_q status --porcelain; git_q for-each-ref; ls -l .git/index)
+# The snapshot must not write the repository itself: `git status` refreshes the index's stat data
+# and rewrites .git/index when it can, and `ls -l` shows the new minute whenever a run crosses one,
+# so P2 failed about one run in three with the tool writing nothing. GIT_OPTIONAL_LOCKS=0 stops
+# that write, and the index is compared by content, which any real write by the tool changes.
+snapshot() { (cd "$1" && git_q count-objects -v | tr '\n' ' '; GIT_OPTIONAL_LOCKS=0 git_q status --porcelain; git_q for-each-ref; cksum < .git/index); }
+before=$(snapshot "$k")
 p1=$(run "$tmp/gcfg" check)
 want "P1 all three events guarded" "GUARDED 1 " "$p1"
 want "P1 exit 0" " rc=0" "$p1"
 
 # --- P2: probing writes nothing to the repository ------------------------------------------------
-after=$(cd "$k" && git_q count-objects -v | tr '\n' ' '; git_q status --porcelain; git_q for-each-ref; ls -l .git/index)
+after=$(snapshot "$k")
 [ "$before" = "$after" ] && ok "P2 repository untouched (objects, index, refs, status)" || bad "P2 repository untouched" "before: $before / after: $after"
 
 # --- P3: ONE event disabled locally -> DARK naming only that event, exit 1 ------------------------
