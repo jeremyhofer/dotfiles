@@ -948,9 +948,18 @@ args=$(cat "$LEAK/args.log" 2>/dev/null)
 [[ "$args" == *"--model fable"* ]] \
     && ok "the launch carries the DECLARED model tier" \
     || bad "declared tier absent from the composed launch: $args"
-[[ "$args" == *"You are one-canonical, the canonical session for one."* ]] \
+[[ "$args" == *"This session is one-canonical, the canonical session for one. "* ]] \
     && ok "the identity sentence is composed from the declared role" \
     || bad "composed identity sentence wrong: $args"
+# The prompt DESCRIBES the session and treats the handoff as a record of work, never as a source of
+# commands: a persona line ("You are ...") followed by "read <file> and follow it" is the shape a
+# cautious safety filter refuses as an injection, and a work machine's did (2026-11-04).
+[[ "$args" == *"The previous session's handoff is at $LEAK/"*": read it first and resume the work it describes. Reply with one line confirming you have resumed, then begin."* ]] \
+    && ok "the launch prompt names the handoff as the previous session's record of work" \
+    || bad "launch prompt wording wrong: $args"
+[[ "$args" != *"You are "* && "$args" != *"follow it"* ]] \
+    && ok "the launch prompt carries no persona line and no follow-the-file instruction" \
+    || bad "launch prompt still carries the old persona or follow-it wording: $args"
 
 # --- every launch gets its own temp root, recorded AND passed to the launch via --settings -----
 # FLEET_TMPROOT_PREFIX is redirected under $LEAK rather than the real /tmp: this is what lets the

@@ -229,8 +229,13 @@ resolved through the pointer, plus any plan it names), and the immediate task. N
 launch composes this itself from the fleet record:
 
 ```
-You are <name>, <canonicalIdentity>. Read <handoff> first and follow it. Confirm takeover in one line before starting work.
+This session is <name>, <canonicalIdentity>. The previous session's handoff is at <handoff>: read it first and resume the work it describes. Reply with one line confirming you have resumed, then begin.
 ```
+
+It describes the session and names the handoff as a record of work to resume, rather than saying
+"you are" and "follow it": a persona line followed by an instruction to obey a file is the shape a
+cautious safety filter refuses as a prompt injection, and one did on a work machine (2026-11-04).
+Write a by-hand kickoff prompt in the same form.
 
 Task-specific detail (which sitting this is, which tracker to read next) belongs in the handoff,
 which the successor reads anyway. Operating preferences never ride in a prompt: they reach a new

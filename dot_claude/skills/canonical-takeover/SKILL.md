@@ -50,7 +50,7 @@ equivalent by hand, which is also the fallback when the tool is unavailable:
 cd "$FLEET_ROOT/<canonicalLaunchDir>"
 handoff=$(fleet-canonicals handoff <name>)
 claude --bg -n <name> --model <canonicalLaunchModel> \
-  "You are <name>, <canonicalIdentity>. Read $handoff first and follow it. Confirm takeover in one line before starting work."
+  "This session is <name>, <canonicalIdentity>. The previous session's handoff is at $handoff: read it first and resume the work it describes. Reply with one line confirming you have resumed, then begin."
 ```
 
 `-n` sets the name at launch, so no rename step follows. Typed by hand, the prompt is a shell

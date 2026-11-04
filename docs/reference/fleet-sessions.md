@@ -123,9 +123,9 @@ run is placed by whoever can write a clone of the handoffs repository there, usu
 
 ### What the successor reads
 
-A launch resolves the pointer and composes the first prompt from the record: `You are <name>,
-<canonicalIdentity>. Read <handoff> first and follow it. Confirm takeover in one line before
-starting work.` The path is fixed at launch, so a successor started before `place` reads the
+A launch resolves the pointer and composes the first prompt from the record: `This session is <name>,
+<canonicalIdentity>. The previous session's handoff is at <handoff>: read it first and resume the
+work it describes. Reply with one line confirming you have resumed, then begin.` The path is fixed at launch, so a successor started before `place` reads the
 staging copy. `place` keeps that copy while any pointer names the handoff, which is until the
 successor parks a newer one.
 

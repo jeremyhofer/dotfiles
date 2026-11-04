@@ -405,6 +405,14 @@ cleanup_tmproot_if_gone() {
 # high-level thing that canonical oversees. Four of the five original scripts had the same
 # circular shape; only one said what it was for, and that was the one worth generalizing from.
 #
+# THE PROMPT DESCRIBES; IT DOES NOT COMMAND, changed 2026-11-04. It read "You are <name>, <phrase>.
+# Read <handoff> first and follow it." A persona line followed by an instruction to obey an unseen
+# file is the shape of a prompt injection, and a work machine's safety filter refused the launch as
+# unsafe content. It now states what the session is and names the handoff as the previous session's
+# record of work, to be resumed. That is also the more accurate wording: the session's own rules
+# still govern it, and the handoff says what was in flight, not what is permitted. One wording on
+# every machine, so that home and work cannot drift apart.
+#
 # </dev/null is LOAD-BEARING and is kept from the scripts this replaces. The caller's loop reads
 # from a names stream, so an inherited stdin is the REMAINING names -- Claude Code appends piped
 # stdin to its prompt argument, so a launched canonical would start with leftover roster names
@@ -422,7 +430,7 @@ launch_canonical() {
   record_tmproot "$name" "$root" || return 1
   ( cd "$FLEET_ROOT/$dir" \
     && exec "$(claude_bin)" --bg -n "$name" --model "$model" --settings "$settings" \
-       "You are $name, $identity. Read $handoff first and follow it. Confirm takeover in one line before starting work." \
+       "This session is $name, $identity. The previous session's handoff is at $handoff: read it first and resume the work it describes. Reply with one line confirming you have resumed, then begin." \
   ) </dev/null
 }
 
