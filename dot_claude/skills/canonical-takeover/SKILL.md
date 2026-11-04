@@ -90,7 +90,10 @@ one. Prefer an alias (`opus`, `sonnet`, a context-qualified form such as `opus[1
 3. **Names resolve newest-wins**, so the new session takes over the address and inherits anything
    queued to it.
 4. **The new session verifies it holds the name before acting under it**: `ListAgents` where
-   cross-session tools exist, otherwise `fleet-canonicals status` or `claude agents --json`.
+   cross-session tools exist, otherwise `fleet-canonicals status` or `claude agents --json`. Inside
+   a sandbox that cannot reach Claude Code's session service, both of those can show the session
+   missing while it runs; where they do, ask the human to confirm from a terminal rather than
+   concluding the launch failed.
 5. **The outgoing session is closed once the successor is confirmed**, not before; `refresh` does
    this itself, and `dedupe <name>` clears a leftover (skill `parking-and-handoff`, "Closing the
    outgoing session").
@@ -112,6 +115,12 @@ are opposites; give at most one:
   detected from the transcript, so this should be rare.
 
 ## Other lifecycle verbs
+
+**These are the human's, run from a terminal; a session names the command and does not run it.**
+Each acts on the list of live sessions, and inside a session's sandbox that list can be wrong: on a
+machine whose sandbox could not reach the session service, every other session read as stopped, so
+`up` would duplicate them and `clean` would remove their scratch roots (the base's
+`docs/reference/fleet-sessions.md`, "Sandbox and permissions").
 
 - `up [--dry-run] [name...]`: launch missing canonicals as declared. An unknown name is refused, not
   treated as "no filter".

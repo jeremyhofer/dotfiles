@@ -255,9 +255,11 @@ Closing the outgoing session is part of the handover, not tidying afterwards.
   step), not before; closing first risks having no live canonical if the launch fails. A session
   cannot close itself as its own final act, so a park with no successor (a usage ramp-down) has
   nothing to close.
-- **How:** `fleet-canonicals dedupe [--dry-run] [<name>]` closes every session for a name except
+- **How, and who:** the human runs it, from a terminal; a session names the command and does not
+  run it. `fleet-canonicals dedupe [--dry-run] [<name>]` closes every session for a name except
   the newest and never signals the session it runs inside. `fleet-canonicals down <name>` closes a
-  canonical outright. Both stop the process and then delete the row with `claude rm <id>`.
+  canonical outright. Both act on the list of live sessions, which inside a session's sandbox can
+  be wrong (the base's `docs/reference/fleet-sessions.md`, "Sandbox and permissions"). Both stop the process and then delete the row with `claude rm <id>`.
 - **Why delete, not just stop:** a stopped session leaves `claude agents --json` but stays in
   `--all` as a `done` row, and opening that row resumes it. A resumed session re-registers under the
   canonical name with its start time rewritten, so it looks like a fresh launch while carrying days

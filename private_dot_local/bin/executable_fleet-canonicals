@@ -135,6 +135,15 @@ usage() {
   cat <<'USAGE'
 usage: fleet-canonicals <command>
 
+WHERE TO RUN IT. up, down, refresh, dedupe, resume, resume-at and clean are the human's: run them
+from a plain terminal. They create sessions under ~/.claude and signal other sessions' processes,
+and they act on the list of live sessions `claude agents --json` returns. Inside a session's
+sandbox that list can be wrong: on a machine whose sandbox could not reach Claude Code's session
+service, every other session read as stopped, so up would launch a duplicate of each and clean
+would remove live sessions' scratch roots. status, list and handoff are safe to run anywhere, but
+a status taken inside a session is only as good as that list; where it disagrees with a terminal,
+the terminal is right.
+
   resume <name> [--dry-run] [--fork] [--prompt TEXT]
       bring a canonical back FROM ITS OWN TRANSCRIPT, then close the row it forked from.
       Use when the session was never parked (its handoff predates the work). When it DID

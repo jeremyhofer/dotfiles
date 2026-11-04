@@ -180,6 +180,27 @@ session's process, which a sandboxed shell may not be able to see. So `up`, `ref
 command outside its sandbox; do not grant `~/.claude` to make them fit. `status`, `list`, `handoff`,
 `stage` and `place` run inside it.
 
+**Inside a sandbox, the list of live sessions can be wrong, and every session verb trusts it.** The
+tool reads `claude agents --json` (active sessions) and, for some checks, `--all` (stopped ones
+too). Measured on a macOS work machine, 2026-11-04, whose sandbox `allowUnixSockets` names only
+specific sockets: in the human's terminal the list was complete and current, while inside a
+session the active list was empty, or held only one session started by hand, and `--all` listed
+the others with stale states (`failed` where the terminal said `done`). The likely cause, not
+confirmed, is that the sandbox cannot reach the session service's socket, under
+`/private/tmp/cc-daemon-*` there, and the CLI falls back to judging liveness itself. A home machine
+whose sandbox allows every socket shows the true list inside its sessions. What a wrong list does,
+read from the tool's logic (none of these was run on that machine):
+
+| Verb, run inside such a sandbox | What it does |
+| --- | --- |
+| `status` | reports every other canonical missing or failed |
+| `up` | launches a duplicate of every canonical that is in fact running |
+| `clean` | removes the scratch roots of live sessions |
+| `dedupe`, `down` | find nothing to close and do nothing |
+
+So the verbs in the paragraph above stay the human's, run from a terminal, and a session's own
+`status` is a hint, never a finding: where it disagrees with the terminal, the terminal is right.
+
 **Where the entries go.** In a settings file, as `~/...` paths:
 
 ```json
