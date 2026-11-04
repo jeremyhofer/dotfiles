@@ -62,6 +62,10 @@ ok()  { print "ok:   $1" }
 bad() { print "FAIL: $1"; fail=1 }
 
 TMPROOT=$(mktemp -d); trap 'rm -rf "$TMPROOT" "$_srcbin"' EXIT
+# A launch refuses a handoff outside the staging directory and the configured handoffs trees. The
+# fixtures keep their handoffs under TMPROOT, so it is every case's handoffs tree unless a case
+# sets its own.
+export FLEET_HANDOFFS_SEARCH="$TMPROOT"
 
 # A hang-guard that exists on BOTH platforms. `timeout` is coreutils and is absent on macOS, where
 # it ships as `gtimeout` only if coreutils was installed -- which this fleet's Mac bootstrap does
@@ -960,6 +964,85 @@ args=$(cat "$LEAK/args.log" 2>/dev/null)
 [[ "$args" != *"You are "* && "$args" != *"follow it"* ]] \
     && ok "the launch prompt carries no persona line and no follow-the-file instruction" \
     || bad "launch prompt still carries the old persona or follow-it wording: $args"
+
+# ---- the handoff a launch may name: inside the handoffs trees, and committed where it is in git ---
+# A launch hands its successor one file as the work to resume, so that file must be a handoff the
+# fleet's own tooling put there: in the staging directory or a configured handoffs tree, reached
+# without a symlink or a `..` out of it, and, where it sits in a git repository, committed with no
+# change since, so what is read is what passed that repository's commit gates. A staged copy, which
+# nothing has committed yet, gets the location check alone: requiring a commit would stall every
+# relaunch on the hub placing it first.
+HP="$LEAK/prov"; mkdir -p "$HP/st/handoff-staging" "$HP/one" "$HP/tree/handoffs" "$HP/elsewhere" "$HP/tmproots"
+cat > "$HP/rec.yaml" <<YAML
+projects:
+  one:
+    scope: one
+    canonical: one-canonical
+    canonicalIdentity: "the canonical session for one"
+    canonicalLaunchDir: one
+    canonicalLaunchModel: fable
+    canonicalMachines: [$(hostname)]
+YAML
+# The fixture repository must not run this machine's hooks or sign with its key.
+pgit() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$HP/tree" -c user.name=t \
+           -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@" >/dev/null 2>&1 }
+# plaunch FILE [noconf] -- record FILE as one-canonical's handoff, run `up`, print "launched" or what
+# it said instead. With noconf, no handoffs directory is configured, as on a machine without one.
+plaunch() {
+  local dir="$HP/tree/handoffs" search="$HP/tree"
+  [[ "${2:-}" == noconf ]] && { dir=""; search=""; }
+  FLEET_STATE="$HP/st" bash "$TOOL" handoff one-canonical --set "$1" >/dev/null 2>&1
+  : > "$HP/args.log"
+  pout=$(FLEET_ROOT="$HP" FLEET_RECORD="$HP/rec.yaml" FLEET_STATE="$HP/st" \
+    FLEET_HANDOFFS_DIR="$dir" FLEET_HANDOFFS_SEARCH="$search" FLEET_TMPROOT_PREFIX="$HP/tmproots" \
+    FLEET_CLAUDE_CMD="$LEAK/argstub" LEAKDIR="$HP" \
+    FLEET_AGENTS_JSON_CMD="cat $LEAK/agents.json" bash "$TOOL" up 2>&1)
+  [[ -s "$HP/args.log" ]] && print launched || print -r -- "$pout"
+}
+print staged > "$HP/st/handoff-staging/one-staged.md"
+print stray > "$HP/elsewhere/notes.md"
+ln -s "$HP/elsewhere/notes.md" "$HP/st/handoff-staging/one-link.md"
+
+r=$(plaunch "$HP/st/handoff-staging/one-staged.md")
+[[ "$r" == launched ]] && ok "a staged handoff launches (location check only)" || bad "staged handoff refused: $r"
+mkdir -p "$HP/st/stub-handoffs"; print stub > "$HP/st/stub-handoffs/one-stub.md"
+r=$(plaunch "$HP/st/stub-handoffs/one-stub.md")
+[[ "$r" == launched ]] && ok "a stub handoff written by --stub launches" || bad "stub handoff refused: $r"
+r=$(plaunch "$HP/st/handoff-staging/one-staged.md" noconf)
+[[ "$r" == launched ]] && ok "a staged handoff launches where no handoffs directory is configured" \
+    || bad "staged handoff refused with no handoffs directory configured: $r"
+r=$(plaunch "$HP/elsewhere/notes.md")
+[[ "$r" != launched && "$r" == *"outside the handoff directories"* ]] \
+    && ok "a handoff outside the staging and handoffs trees is refused" || bad "outside handoff: $r"
+r=$(plaunch "$HP/st/handoff-staging/../../elsewhere/notes.md")
+[[ "$r" != launched && "$r" == *"outside the handoff directories"* ]] \
+    && ok "a path that climbs out of staging with .. is refused" || bad ".. escape: $r"
+r=$(plaunch "$HP/st/handoff-staging/one-link.md")
+[[ "$r" != launched && "$r" == *"symbolic link"* ]] \
+    && ok "a symlink in staging is refused, wherever it points" || bad "symlinked handoff: $r"
+print placed > "$HP/tree/handoffs/one-placed.md"
+r=$(plaunch "$HP/tree/handoffs/one-placed.md" noconf)
+[[ "$r" != launched && "$r" == *"outside the handoff directories"* ]] \
+    && ok "with no handoffs directory configured, a file in an unconfigured tree is refused" \
+    || bad "unconfigured tree accepted: $r"
+r=$(plaunch "$HP/tree/handoffs/one-placed.md")
+[[ "$r" == launched ]] && ok "a placed handoff outside any git repository launches" || bad "placed, no git: $r"
+
+pgit init -q
+r=$(plaunch "$HP/tree/handoffs/one-placed.md")
+[[ "$r" != launched && "$r" == *"not committed"* ]] \
+    && ok "a placed handoff in a git repository but never committed is refused" || bad "untracked handoff: $r"
+pgit add handoffs/one-placed.md
+r=$(plaunch "$HP/tree/handoffs/one-placed.md")
+[[ "$r" != launched && "$r" == *"not committed"* ]] \
+    && ok "a placed handoff staged in git but not committed is refused" || bad "added, uncommitted handoff: $r"
+pgit commit -q -m placed
+r=$(plaunch "$HP/tree/handoffs/one-placed.md")
+[[ "$r" == launched ]] && ok "a committed handoff launches" || bad "committed handoff refused: $r"
+print "edited after the commit" >> "$HP/tree/handoffs/one-placed.md"
+r=$(plaunch "$HP/tree/handoffs/one-placed.md")
+[[ "$r" != launched && "$r" == *"changed since its last commit"* ]] \
+    && ok "a committed handoff edited since its commit is refused" || bad "edited handoff: $r"
 
 # --- every launch gets its own temp root, recorded AND passed to the launch via --settings -----
 # FLEET_TMPROOT_PREFIX is redirected under $LEAK rather than the real /tmp: this is what lets the

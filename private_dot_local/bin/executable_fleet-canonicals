@@ -1146,7 +1146,52 @@ resolve_handoff() {
     printf 'handoff for %s points at a missing file: %s\n' "$1" "$target" >&2
     return 1
   fi
+  local why
+  if why=$(handoff_problem "$target"); then
+    printf 'handoff for %s %s\n' "$1" "$why" >&2
+    return 1
+  fi
   printf '%s' "$target"
+}
+
+# handoff_problem FILE -- print why a launch must not name FILE, and succeed; fail when it may.
+#
+# A launch tells its successor to read one file and resume the work it describes, so that file must
+# be a handoff the fleet's own tooling put in place, not whatever a pointer happens to name: a
+# wrong pointer, a half-written draft, a document edited after it was written. Two checks:
+#   - LOCATION: the file is inside the staging directory, the directory `--stub` writes to, or a
+#     configured handoffs tree (`handoffs`, `handoffs-search`), compared after resolving its
+#     directory physically, so a `..` or a
+#     symlinked directory cannot climb out, and the file is not itself a symbolic link.
+#   - PROVENANCE, where the file sits in a git repository: committed, and unchanged since its last
+#     commit, so what the successor reads is what passed that repository's commit gates.
+# A staged copy is not in git and gets the location check alone. Requiring a commit for it would
+# make every relaunch wait on the hub's `place`, so one stalled hub would stall the fleet.
+handoff_problem() {
+  local f=$1 d base phys root r inside="" roots=""
+  if [ -L "$f" ]; then printf 'is a symbolic link: %s' "$f"; return 0; fi
+  d=$(cd "$(dirname "$f")" 2>/dev/null && pwd -P) \
+    || { printf 'is in a directory that cannot be read: %s' "$f"; return 0; }
+  base=$(basename "$f"); phys="$d/$base"
+  for root in "$FLEET_STATE/handoff-staging" "$(stub_dir)" "$HANDOFFS_DIR" "$HANDOFFS_SEARCH"; do
+    [ -n "$root" ] && [ -d "$root" ] || continue
+    r=$(cd "$root" 2>/dev/null && pwd -P) || continue
+    roots="$roots $r"
+    case "$phys" in "$r"/*) inside=1 ;; esac
+  done
+  if [ -z "$inside" ]; then
+    printf 'is outside the handoff directories: %s (allowed:%s). Record a handoff with `stage`, or name its tree with `handoffs` in %s' \
+      "$phys" "${roots:- none exist}" "$FLEET_CONFIG"
+    return 0
+  fi
+  git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  if [ -z "$(git -C "$d" log -1 --format=%H -- "$base" 2>/dev/null)" ]; then
+    printf 'is in a git repository but not committed: %s' "$phys"; return 0
+  fi
+  if ! git -C "$d" diff --quiet HEAD -- "$base" 2>/dev/null; then
+    printf 'has changed since its last commit: %s' "$phys"; return 0
+  fi
+  return 1
 }
 
 cmd_handoff() {

@@ -32,6 +32,25 @@ Entries are newest first.
 
 ---
 
+## 2026-11-04
+
+### `fleet-canonicals`: the launch prompt is reworded, and a launch checks where its handoff came from (ACTION where pointers name other places)
+
+- **The launch prompt describes the session** instead of assigning a persona: "This session is
+  `<name>`, `<identity>`. The previous session's handoff is at `<handoff>`: read it first and resume
+  the work it describes." The old "You are … Read … and follow it" was refused by a cautious
+  safety filter as a prompt injection.
+- **A launch refuses a handoff outside the places the tool writes or reads handoffs**: the staging
+  directory, the `--stub` directory, and the `handoffs` and `handoffs-search` trees of
+  `~/.config/fleet-canonicals/config`. A symbolic link, or a path that climbs out with `..`, is
+  refused too. Where the handoff sits in a git repository it must be committed and unchanged since
+  its last commit. `up` prints `REFUSED <name>` with the reason, on `--dry-run` too, and `refresh`
+  and `down` refuse before stopping anything.
+- **ACTION** on a machine whose pointers name a handoff anywhere else (a pointer set by hand with
+  `handoff --set`, outside staging and the configured trees): set `handoffs = <dir>` in the config,
+  or `handoffs-search` to a tree that holds them, before the next launch. Check with
+  `fleet-canonicals up --dry-run`, which refuses exactly what a launch would.
+
 ## 2026-11-03
 
 ### `fleet-canonicals`: a missing handoff refuses the launch; `stage-check`; `place` empties staging (ACTION to adopt the check)

@@ -134,6 +134,13 @@ A launch refuses a pointer whose file is gone, and a missing pointer, before any
 recorded`), on a dry run too, and `refresh` and `down` refuse in their handoff check, before
 stopping the session, even with `--force`. `--stub` writes a new handoff and is not refused.
 
+A launch also refuses a handoff from anywhere but the staging directory, the `--stub` directory or
+the configured `handoffs` and `handoffs-search` trees, a symbolic link, and a path that climbs out
+of those with `..`. Where the handoff sits in a git repository it must be committed and unchanged
+since its last commit, so a successor reads what passed that repository's gates. A staged copy is
+in no repository and gets the location check alone: requiring a commit would make every relaunch
+wait on the hub's `place`.
+
 ### What is machine-local until placed
 
 Everything in `$FLEET_STATE`: pointers, staged handoffs and stubs, on one disk and in no backup.
