@@ -630,6 +630,36 @@ out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
     && ok "refresh of a not-running name stops nothing (there is nothing to stop)" \
     || bad "refresh claimed to stop a session that was not running: $out"
 
+# --- a pointer whose handoff file is GONE is refused before anything is stopped or started ---
+# The pointer read used to return its target unchecked, so a launch composed "Read <missing file>
+# first" and the successor started with no orientation and no error. Refused at the gate, which
+# runs before refresh's stop half, and in `up`, which has no gate, on a dry run as well.
+print "$TMPROOT/theta-gone.md" >  "$GSTATE/theta-canonical.handoff"
+print "# set-at $NOW"          >> "$GSTATE/theta-canonical.handoff"
+out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" refresh theta-canonical --dry-run 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"missing file"*"theta-gone.md"* && "$out" != *"would start"* ]] \
+    && ok "refresh refuses a pointer whose handoff file is missing" \
+    || bad "refresh accepted a missing handoff (rc=$rc): $out"
+out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" refresh theta-canonical --force why --dry-run 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"missing file"* && "$out" != *"would start"* ]] \
+    && ok "--force does not carry a missing handoff through" \
+    || bad "--force launched with a missing handoff (rc=$rc): $out"
+out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" up theta-canonical --dry-run 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"REFUSED"*"theta-canonical"*"missing file"* && "$out" != *"would start"* ]] \
+    && ok "up --dry-run refuses a missing handoff rather than rehearsing a blind launch" \
+    || bad "up rehearsed a launch with a missing handoff (rc=$rc): $out"
+rm -f "$GSTATE/theta-canonical.handoff"
+out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" up theta-canonical --dry-run 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"REFUSED"*"theta-canonical"*"no handoff recorded"* ]] \
+    && ok "up --dry-run refuses a name with no pointer at all" \
+    || bad "up rehearsed a launch with no pointer (rc=$rc): $out"
+print "$TMPROOT/zeta-handoff.md"  >  "$GSTATE/theta-canonical.handoff"
+print "# set-at $NOW"             >> "$GSTATE/theta-canonical.handoff"
+
 out=$(zfc refresh); rc=$?
 [[ $rc -ne 0 && "$out" == *"need a canonical name"* ]] \
     && ok "refresh refuses with no name" || bad "bare refresh (rc=$rc): $out"

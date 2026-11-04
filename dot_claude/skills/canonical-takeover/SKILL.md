@@ -58,10 +58,10 @@ argument: keep it to this one line.
 
 **No handoff path is stored in the record, and that is the point.** What changes between parks is
 the handoff, and it is resolved through the pointer at launch, so a launch never quietly aims at a
-path written down for an earlier sitting. A missing or empty pointer launches nothing (`up` prints
-`FAILED <name> launch exited 1`; `up --dry-run` does not check). A pointer whose file is gone is
-refused by `fleet-canonicals handoff <name>`, as in the by-hand launch above, but not by the tool's
-own launch, which names the missing file in its prompt: read the pointer back after recording it.
+path written down for an earlier sitting. A missing pointer, or one whose file is gone, launches
+nothing: `up` prints `REFUSED <name>` with the reason (on `--dry-run` too), and `refresh` and `down`
+refuse before stopping the session, `--force` included. Only `--stub`, which writes a new handoff,
+gets past it. Read the pointer back after recording it all the same.
 
 **The model is declared, never inherited.** A launch with no `--model` inherits the account's saved
 default, and running `/model` in any session and confirming the pick writes the `model` key into

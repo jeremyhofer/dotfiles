@@ -125,7 +125,9 @@ intact.
   then `fleet-canonicals stage <name> <draft> [--kind checkpoint]`. It copies the draft to
   `$FLEET_STATE/handoff-staging/YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) and records the
   pointer, so you never choose a path. It refuses a draft whose `Supersedes` line does not name the
-  current handoff, printing the line to add, and never overwrites a staged file. Staging needs your
+  current handoff, printing the line to add, and never overwrites a staged file. Where the domain
+  configures `stage-check`, it also runs the handoffs repository's commit gates on the draft and
+  refuses with their findings: fix the draft and stage again, since nothing was staged. Staging needs your
   Bash sandbox to write `$FLEET_STATE` (default `~/.local/state/fleet-canonicals`), not the
   handoffs repository.
 - **Placing** copies staged handoffs into the handoffs directory, and commits them there when
@@ -133,8 +135,11 @@ intact.
   the hub, or on a machine where no hub runs, by whoever can write the repository there. It reads
   only this machine's staging. It places a handoff only when its predecessor is in the
   `handoffs-search` tree or placed in the same run (otherwise `BROKEN-CHAIN`), leaves files that are
-  not a canonical's dated handoff for a judgment call (`NEEDS-JUDGMENT`), never deletes the staging
-  copy, and repoints each pointer that named the staged copy.
+  not a canonical's dated handoff for a judgment call (`NEEDS-JUDGMENT`), and repoints each pointer
+  that named the staged copy. Then it removes each staging copy whose content is in a commit of its
+  placed copy and that no pointer names; it keeps, and counts, any whose content is in no commit.
+  **So do not edit your staged handoff after it is placed:** the edit reaches no commit, and the
+  copy then sits in staging for the hub to judge.
 
 **Placement is durability, not continuity, so the hub is not a prerequisite for parking.** `--set`
 only checks that the target exists. A canonical parking while the hub is down or busy leaves its
@@ -156,16 +161,15 @@ the block the human intended".
 **Cite every decision record with its log's prefix** (`ACME-ADR-0015`, not `ADR-0015`) when the
 handoffs repository cites several decision logs. A bare number is ambiguous there; `doc-lint`'s
 `bare-adr` check refuses it where the repository's `.doc-lint` declares `adr-owners:`, and with it
-every other handoff in the same `place` run.
+every other handoff in the same `place` run. A configured `stage-check` catches it at `stage`.
 
 ### Recording the pointer
 
 The pointer is `$FLEET_STATE/<name>.handoff`: the handoff's absolute path, then a `# set-at <epoch>`
 line. It lives **outside every git repository**, so a session whose guard refuses writes to its own
-checkout can still record it. With no pointer, a launch starts nothing (`up` prints `FAILED <name>
-launch exited 1`, and `up --dry-run` does not check); a pointer whose file is gone is caught by
-`fleet-canonicals handoff <name>` but not by the launch, which would name the missing file in its
-prompt. So read it back.
+checkout can still record it. With no pointer, or one whose file is gone, a launch starts nothing:
+`up` prints `REFUSED <name>` with the reason, on `--dry-run` too, and `refresh` refuses before
+stopping anything. Read it back all the same.
 
 - **Type the path. Never resolve it with a glob.** `--set` checks only existence, so a glob matching
   several handoffs records the wrong one and nothing complains. Then read it back with

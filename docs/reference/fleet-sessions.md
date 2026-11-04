@@ -45,9 +45,9 @@ live pointer. `place` refuses a handoff whose predecessor cannot be found.
 
 | Path | Written by | Holds | Backed up |
 | --- | --- | --- | --- |
-| `~/.config/fleet-canonicals/config` | the private layer | the four settings below | with the private layer |
+| `~/.config/fleet-canonicals/config` | the private layer | the five settings below | with the private layer |
 | `$FLEET_STATE/<name>.handoff` | `handoff --set`, `stage`, `place`, `--stub` | the pointer: the handoff's absolute path, then `# set-at <epoch seconds>` | no |
-| `$FLEET_STATE/handoff-staging/YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) | `stage` | staged handoffs; the tool never deletes one, even after placing | no |
+| `$FLEET_STATE/handoff-staging/YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) | `stage` | staged handoffs; `place` removes one only when its content is in a commit of the placed copy and no pointer names it | no |
 | `$FLEET_STATE/stub-handoffs/YYYY-MM-DD-HHMMSS-<name>-stub.md` | `down`/`refresh --stub` | a generated "nothing to inherit" handoff; never placed | no |
 | `$FLEET_STATE/<name>.tmproot` | each launch | the path of that launch's scratch root | no |
 | `/tmp/c-<short>-XXXXXX` (`$FLEET_TMPROOT_PREFIX`) | each launch | the session's scratch root, passed as `CLAUDE_CODE_TMPDIR`; the session's `$TMPDIR` is `<root>/claude-<uid>`. `<short>` is the name without `-canonical`, cut to 8 characters, because a longer root is silently replaced by the shared default | no |
@@ -64,6 +64,7 @@ The settings in the config file, each overridable by an environment variable for
 | `handoffs-search` | `FLEET_HANDOFFS_SEARCH` | the tree searched for a placed copy (and for a predecessor) | the `handoffs` directory |
 | `hub` | `FLEET_HUB` | the session that places; `stage` names it in its output | not named |
 | `place-commit` | `FLEET_PLACE_COMMIT` | `true`: `place` commits the files it placed, and only those, in the repository holding `handoffs`; it never pushes | `false`: copies only |
+| `stage-check` | `FLEET_STAGE_CHECK` | an executable `stage` runs as `<check> <draft>` before staging; non-zero refuses the draft and prints the check's output. Point it at a script that runs the handoffs repository's blocking commit gates on the draft, so a draft that `place`'s commit would refuse is refused while its author can fix it. One that is not an executable file refuses every `stage` | no check |
 
 ## The handoff lifecycle
 
@@ -97,7 +98,10 @@ recorded handoff is older than the session, since that handoff cannot describe i
    checkpoint). The tool copies it to `$FLEET_STATE/handoff-staging/<stamp>-<name>-park.md`, points
    `<name>` at that copy with a fresh `set-at`, and prints `staged`, `pointer` and `place it with`
    lines. It refuses a draft with no `Supersedes` line naming the current handoff, printing the
-   line to add, and never overwrites a staged file. The draft can then be discarded.
+   line to add, and never overwrites a staged file. When `stage-check` is configured it runs that
+   check on the draft first and refuses on a non-zero exit, printing the check's findings: fix the
+   draft and stage again. Nothing is staged and no pointer moves on a refusal. The draft can then
+   be discarded.
 4. The human runs `fleet-canonicals refresh <name>`. The successor reads the staged copy: placing
    is not a prerequisite for continuity.
 5. Later, on **the same machine**, the hub runs `fleet-canonicals place --dry-run`, then `place`.
@@ -107,6 +111,12 @@ recorded handoff is older than the session, since that handoff cannot describe i
    describe the successor's work). It reports `BROKEN-CHAIN` for a handoff whose predecessor is
    neither in `handoffs-search` nor placed in the same run, and `NEEDS-JUDGMENT` for a staged file
    that is not a canonical's dated handoff; either leaves exit status 1, and the file in staging.
+   Last, on every run, it removes each staging copy that nothing can need: one whose exact content
+   is in a commit of its same-named placed copy (any commit, so a placed copy amended later still
+   counts) and that no pointer names. It prints `removed` per file (`would remove` on a dry run)
+   and one `kept <n>` line for copies whose content is in no commit, which a dry run lists one by
+   one. Those hold text the handoffs repository never received, usually edits a canonical made to
+   its staged handoff after it was placed; the hub judges them.
 
 `place` reads only this machine's `$FLEET_STATE`. A canonical on a machine where the hub does not
 run is placed by whoever can write a clone of the handoffs repository there, usually the human.
@@ -116,7 +126,13 @@ run is placed by whoever can write a clone of the handoffs repository there, usu
 A launch resolves the pointer and composes the first prompt from the record: `You are <name>,
 <canonicalIdentity>. Read <handoff> first and follow it. Confirm takeover in one line before
 starting work.` The path is fixed at launch, so a successor started before `place` reads the
-staging copy, which `place` leaves where it was.
+staging copy. `place` keeps that copy while any pointer names the handoff, which is until the
+successor parks a newer one.
+
+A launch refuses a pointer whose file is gone, and a missing pointer, before anything starts:
+`up` prints `REFUSED <name> handoff for <name> points at a missing file: <path>` (or `no handoff
+recorded`), on a dry run too, and `refresh` and `down` refuse in their handoff check, before
+stopping the session, even with `--force`. `--stub` writes a new handoff and is not refused.
 
 ### What is machine-local until placed
 
@@ -198,12 +214,16 @@ earlier one.
    handoffs-search = ~/Devel/coordination
    hub = coordination-canonical
    place-commit = true
+   # optional: the handoffs repository's gates, run on each draft at `stage`
+   stage-check = ~/Devel/coordination/tools/check-handoff-draft
    ```
 
    `place-commit = true` requires `handoffs` to be inside a git repository. Check:
    `fleet-canonicals place --dry-run` prints `nothing to place` or `would place` lines. `no
    handoffs directory is configured`, `no handoffs directory at` or `is not inside a git repository`
-   names the key that is wrong.
+   names the key that is wrong. With `stage-check` set, run the check by hand on a copy of a
+   handoff with one defect planted that the handoffs repository's commit gates refuse: it must exit
+   non-zero naming the defect, and exit 0 on the unaltered handoff.
 4. **Add the sandbox entries** from the table above. Check, in a session started after the change:
    `touch ~/.local/state/fleet-canonicals/.probe && rm ~/.local/state/fleet-canonicals/.probe`
    succeeds. Run it once before the change too, after `mkdir -p ~/.local/state/fleet-canonicals`
@@ -217,17 +237,18 @@ earlier one.
 6. **Accept workspace trust** in each `canonicalLaunchDir` by starting `claude` there once
    interactively; Claude Code refuses a background launch in an untrusted directory. Check:
    `claude-trust-check` exits 0 (1 lists what is still untrusted; 3 means the state is unknown).
-7. **Seed each canonical's first handoff.** A launch needs a pointer, and `up --dry-run` does not
-   check for one. Write a short starting handoff (what the project is, where its tracked state
+7. **Seed each canonical's first handoff.** A launch needs a pointer to a file that exists. Write a short starting handoff (what the project is, where its tracked state
    lives) where it persists, then `fleet-canonicals handoff <name> --set <path>`. Check:
-   `fleet-canonicals handoff <name>` prints that path.
+   `fleet-canonicals handoff <name>` prints that path, and `fleet-canonicals up --dry-run <name>`
+   prints `would start`, not `REFUSED`.
 8. **First `status`.** Check: one `<name> MISSING` line per canonical declared for this machine, exit
    1. A canonical with no line has a `canonicalMachines` that does not match `hostname`; exit 2
    (`could not run: claude agents --json`) is step 1.
 9. **First `up`,** from a terminal. `fleet-canonicals up --dry-run` prints `would start <name>
-   <dir> (<model>)` for each; a `REFUSED` line is an incomplete declaration. Then
-   `fleet-canonicals up` prints `starting` lines and `started <n>` and exits 0; a `FAILED <name>
-   launch exited <n>` line is usually a missing pointer (step 7). Check: `fleet-canonicals status`
+   <dir> (<model>)` for each; a `REFUSED` line is an incomplete declaration or a missing handoff
+   (step 7), and says which. Then `fleet-canonicals up` prints `starting` lines and `started <n>`
+   and exits 0; a `FAILED <name> launch exited <n>` line is the launch itself failing, often a
+   sandboxed `up` (see "Sandbox and permissions"). Check: `fleet-canonicals status`
    shows `OK (<id>, started <time>)` for each, and each session's first reply confirms takeover.
 
 ### Where hooks or messaging are absent

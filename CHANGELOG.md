@@ -34,6 +34,25 @@ Entries are newest first.
 
 ## 2026-11-03
 
+### `fleet-canonicals`: a missing handoff refuses the launch; `stage-check`; `place` empties staging (ACTION to adopt the check)
+
+- **A launch refuses a pointer whose handoff file is gone**, and a missing pointer. `up` prints
+  `REFUSED <name>` with the reason, on `--dry-run` too (it rehearsed such a launch before);
+  `refresh` and `down` refuse in their handoff check, before stopping the session, `--force`
+  included. Before, the launch composed "Read <missing file> first" and exited 0.
+- **New config key `stage-check`** (`FLEET_STAGE_CHECK`): an executable that `stage` runs as
+  `<check> <draft>`; non-zero refuses the draft, prints the check's findings, and stages nothing.
+  A configured check that is not an executable file refuses every `stage`. **ACTION** for a
+  domain whose handoffs repository has commit gates: point `stage-check` at a script that runs those
+  gates on a draft outside the repository, so a draft is refused where its author can fix it rather
+  than at the hub's `place` commit. Unset, `stage` behaves as before.
+- **`place` now removes a staging copy once nothing can need it**: its exact content is in some
+  commit of its same-named placed copy, and no pointer names it. It prints `removed` lines (`would
+  remove` on `--dry-run`) and a `kept <n>` count for copies whose content is in no commit, listed
+  on a dry run. The first run on a machine with a long-standing `handoff-staging/` removes most of
+  it; read `place --dry-run` first. `docs/reference/fleet-sessions.md` and skills
+  `parking-and-handoff` and `canonical-takeover` are corrected to match.
+
 ### Setting up a fleet: one reference; a work machine retires the base's hooks (ACTION where hooks are barred)
 
 - **New reference `docs/reference/fleet-sessions.md`**, the one place for running the

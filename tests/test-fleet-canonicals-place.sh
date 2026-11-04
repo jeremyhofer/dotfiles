@@ -42,7 +42,7 @@ setup() {
   export FLEET_HANDOFFS_DIR="$HO" FLEET_HANDOFFS_SEARCH="$PROG" FLEET_PLACE_COMMIT=true
   # The machine's own config file must not leak in; the cases that test the file write their own.
   export FLEET_CANONICALS_CONFIG="$TMP/case/no-config"
-  unset FLEET_HUB
+  unset FLEET_HUB FLEET_STAGE_CHECK
 }
 handoff() { # <file> <supersedes or ''>
   { printf '# Park\n\n'; [ -n "$2" ] && printf '**Parked.** Supersedes `%s`.\n' "$2"; printf '\nbody\n'; } > "$1"
@@ -245,6 +245,88 @@ rm -f "$STATE/beta-canonical.handoff"
 out=$(bash "$TOOL" stage beta-canonical "$SRC" 2>&1); rc=$?
 [ "$rc" -eq 0 ] && ! has "$out" 'systems canonical' \
   && ok "stage with no hub configured names no hub" || bad "stage named a hub nobody configured" "rc=$rc: $out"
+
+# `stage` runs the handoffs repository's own check on the draft, so a peer fixes its draft while it
+# is still its own. Without it the hub met the gates' refusals at `place`, and the backlog grew
+# silently for nine days (33 handoffs, 2026-10-25 to 2026-11-03).
+printf '\n== stage runs the configured check on the draft ==\n'
+setup
+CHK="$TMP/case/check"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" > "%s"\ngrep -q BADWORD "$1" && { echo "draft.md:3: BADWORD ==> fixed"; exit 1; }\nexit 0\n' "$TMP/case/checked" > "$CHK"
+chmod +x "$CHK"
+export FLEET_STAGE_CHECK="$CHK"
+SRC="$TMP/case/draft.md"; handoff "$SRC" ''; printf 'a BADWORD in it\n' >> "$SRC"
+rm -f "$STATE/beta-canonical.handoff"
+out=$(bash "$TOOL" stage beta-canonical "$SRC" 2>&1); rc=$?
+staged=$(find "$STG" -name '*-beta-canonical-*.md')
+[ "$rc" -ne 0 ] && [ -z "$staged" ] && [ ! -e "$STATE/beta-canonical.handoff" ] \
+  && ok "refuses a draft the check fails, staging nothing and recording no pointer" \
+  || bad "staged a draft its check refused" "rc=$rc: $out"
+has "$out" 'BADWORD ==> fixed' && has "$out" "$CHK" \
+  && ok "prints the check's own findings and names the check" || bad "the refusal hides what failed" "$out"
+[ "$(cat "$TMP/case/checked" 2>/dev/null)" = "$SRC" ] \
+  && ok "hands the check the draft's path" || bad "the check was not given the draft" "$(cat "$TMP/case/checked" 2>/dev/null)"
+handoff "$SRC" ''
+out=$(bash "$TOOL" stage beta-canonical "$SRC" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ -n "$(find "$STG" -name '*-beta-canonical-*.md')" ] \
+  && ok "stages a draft the check passes" || bad "refused a clean draft" "rc=$rc: $out"
+setup
+export FLEET_STAGE_CHECK="$TMP/case/no-such-check"
+SRC="$TMP/case/draft.md"; handoff "$SRC" ''
+out=$(bash "$TOOL" stage beta-canonical "$SRC" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [ -z "$(find "$STG" -name '*.md')" ] && has "$out" 'no-such-check' \
+  && ok "a configured check that cannot run refuses, rather than staging unchecked" \
+  || bad "skipped a configured check it could not run" "rc=$rc: $out"
+setup
+printf '#!/bin/sh\nexit 1\n' > "$TMP/case/check"; chmod +x "$TMP/case/check"
+printf 'stage-check = %s\n' "$TMP/case/check" > "$TMP/case/config"
+export FLEET_CANONICALS_CONFIG="$TMP/case/config"
+SRC="$TMP/case/draft.md"; handoff "$SRC" ''
+out=$(bash "$TOOL" stage beta-canonical "$SRC" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [ -z "$(find "$STG" -name '*.md')" ] \
+  && ok "reads stage-check from the config file" || bad "the config file's stage-check was not run" "rc=$rc: $out"
+
+# `place` removes a staging copy once nothing can need it, and only then. 199 had accumulated in
+# staging on 2026-11-03, 64 of them differing from their placed copy because the placed copy was
+# edited later; one held content no commit had ever recorded.
+printf '\n== place removes staging copies that are committed and no pointer names ==\n'
+setup
+OLD=2026-09-20-1200-alpha-canonical-park.md; NEW=2026-09-27-1200-alpha-canonical-park.md
+handoff "$STG/$OLD" 2026-09-01-0900-alpha-canonical-park.md
+cp "$STG/$OLD" "$HO/$OLD"; git -C "$R" add -A; git -C "$R" commit -q -m "place old"
+handoff "$STG/$NEW" "$OLD"
+cp "$STG/$NEW" "$HO/$NEW"; git -C "$R" add -A; git -C "$R" commit -q -m "place new"
+printf '%s\n# set-at 1111111111\n' "$HO/$NEW" > "$STATE/alpha-canonical.handoff"
+out=$(bash "$TOOL" place --dry-run 2>&1); rc=$?
+[ -f "$STG/$OLD" ] && has "$out" "would remove    $OLD" \
+  && ok "--dry-run lists a removable staging copy and removes nothing" || bad "dry run wrong" "rc=$rc: $out"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$STG/$OLD" ] && has "$out" "removed         $OLD" \
+  && ok "removes a committed, superseded staging copy, even when there is nothing to place" \
+  || bad "kept a copy nothing needs" "rc=$rc: $out"
+[ -f "$STG/$NEW" ] \
+  && ok "keeps the copy a pointer still names (a running successor may read it there)" \
+  || bad "removed the staging copy of the current handoff" "$out"
+setup
+handoff "$STG/$OLD" 2026-09-01-0900-alpha-canonical-park.md
+cp "$STG/$OLD" "$HO/$OLD"; git -C "$R" add -A; git -C "$R" commit -q -m "place old"
+printf '\n> amended after placing\n' >> "$HO/$OLD"; git -C "$R" commit -q -am "amend old"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ ! -e "$STG/$OLD" ] \
+  && ok "removes a copy that matches an EARLIER commit of the placed file" || bad "kept a copy git history holds" "$out"
+setup
+handoff "$STG/$OLD" 2026-09-01-0900-alpha-canonical-park.md
+cp "$STG/$OLD" "$HO/$OLD"; git -C "$R" add -A; git -C "$R" commit -q -m "place old"
+printf 'edited in staging after placing\n' >> "$STG/$OLD"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ -f "$STG/$OLD" ] && has "$out" 'kept 1 ' \
+  && ok "keeps a copy whose content no commit holds, and counts it" || bad "removed the only copy of some content" "rc=$rc: $out"
+setup
+handoff "$STG/$OLD" 2026-09-01-0900-alpha-canonical-park.md
+cp "$STG/$OLD" "$HO/$OLD"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ -f "$STG/$OLD" ] \
+  && ok "keeps a copy whose placed file was never committed" || bad "removed a copy git does not hold" "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
