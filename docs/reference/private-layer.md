@@ -246,7 +246,7 @@ written by the owner (`chmod 600`) and never committed.
 
 | File | Read by | Holds | Without it |
 | --- | --- | --- | --- |
-| `~/.config/fleet-canonicals/config` | `fleet-canonicals` | `key = value` lines: `handoffs` (where `place` puts staged handoffs), `handoffs-search` (the tree searched for a placed copy), `hub` (the session that places) and `place-commit` (`true` commits placed handoffs in the repository holding the directory) | sessions launch and close as usual; `place` refuses and `status` skips its unplaced-handoff check |
+| `~/.config/fleet-canonicals/config` | `fleet-canonicals` | `key = value` lines: `handoffs` (where `place` puts staged handoffs), `handoffs-search` (the tree searched for a placed copy), `hub` (the session that places), `place-commit` (`true` commits placed handoffs in the repository holding the directory) and `stage-check` (an executable `stage` runs on each draft; non-zero refuses it) | sessions launch and close as usual; `place` refuses and `status` skips its unplaced-handoff check |
 | `~/.config/hc-status/keys` | `hc-status`, `alert-digest` | one `<project label> <read-only API key>` line per Healthchecks project; a secret, owner-written | `hc-status` names the path and format and lists nothing |
 | `~/.config/ntfy-inbox/topics`, `~/.config/ntfy-inbox/token` | `ntfy-inbox`, `alert-digest` | the topics to keep, one per line (an optional `server https://host` line replaces `ntfy.sh`); an optional access token, a secret, refused unless `chmod 600` | `ntfy-inbox` refuses to run, naming the path to create |
 
