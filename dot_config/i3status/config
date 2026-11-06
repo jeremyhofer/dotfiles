@@ -43,6 +43,9 @@ ethernet _first_ {
 
 battery all {
         format = "%status %percentage %remaining"
+        # Percent of what the battery holds now, as the kernel's `capacity` and btop show it;
+        # without this, i3status divides by the design capacity and reads low as the cell wears.
+        last_full_capacity = true
 }
 
 disk "/" {
