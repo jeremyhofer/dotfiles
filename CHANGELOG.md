@@ -34,6 +34,19 @@ Entries are newest first.
 
 ## 2026-11-06
 
+### `~/.claude/CLAUDE.md` imports the standards in depth from `~/.claude/standards/` — ACTION
+
+- Six new files, each the only copy of its rules, imported by the global `CLAUDE.md`:
+  `verification.md`, `corrections.md`, `autonomy.md`, `delegation.md`, `working-style.md` and
+  `sessions.md`. They hold the always-on rules that are true on any machine: verification
+  discipline, propagating a correction, when to decide and when to escalate, choosing a delegate's
+  model, everyday working habits, and the always-on parts of parking, knowledge-base writes and a
+  session fleet.
+- **ACTION:** a private layer that carried any of these rules in its own always-on context (its
+  `~/.dotlocal/claude/CLAUDE.md`, or a projection it imports) removes its copy, keeping only what is
+  true of that domain alone, so no session loads a rule twice. The global file grows by about
+  50 KB; `context-footprint` shows the new total.
+
 ### `image-bump`: a container image installed by hand has an `install` kind of `manual`
 
 - A container descriptor with `install = {"kind": "manual", "steps": [...]}` is for an image put in

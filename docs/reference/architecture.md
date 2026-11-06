@@ -146,8 +146,10 @@ after it.
 
 ### Claude Code
 
-- **`~/.claude/CLAUDE.md`** holds the operating standards true on any machine, then imports
-  `~/.claude/tooling.md` and the domain's fragment. Claude Code resolves imports at session start,
+- **`~/.claude/CLAUDE.md`** holds the operating standards true on any machine, then imports the
+  rules behind them from `~/.claude/standards/` (one file per subject: verification, corrections,
+  autonomy, delegation, working style, sessions), `~/.claude/tooling.md` and the domain's fragment.
+  A domain's fragment adds rules of its own and does not restate these. Claude Code resolves imports at session start,
   so the parts never drift from an assembled copy.
 - **`~/.claude/settings.json`** is written by Claude Code itself at runtime (`/model`, `/config`,
   permission grants), so a managed copy would fight it. The `modify_` script receives the live file
