@@ -119,6 +119,28 @@ validate wrongimg;     expect "pin names another image" 4 "pins image"
 
 validate absent;       expect "no descriptor" 4 "no descriptor at"
 
+# ---------- a container image installed by hand: install kind "manual" ----------
+MANUAL='/^volume = /d;/^vm_unit = /d;/^container = /d;/^service = /d;/^checks = /d'
+mk manual "$MANUAL;"'s|^install = .*|install = {"kind": "manual", "steps": ["load the tar as root", "check the unit is up"]}|'
+validate manual;       expect "manual install without the deploy-only fields validates" 0
+mk nosteps "$MANUAL;"'s|^install = .*|install = {"kind": "manual"}|'
+validate nosteps;      expect "manual without steps" 4 "install: kind manual needs a non-empty list of non-empty strings in 'steps'"
+mk emptysteps "$MANUAL;"'s|^install = .*|install = {"kind": "manual", "steps": []}|'
+validate emptysteps;   expect "manual with empty steps" 4 "install: kind manual needs a non-empty list"
+mk blanksteps "$MANUAL;"'s|^install = .*|install = {"kind": "manual", "steps": ["ok", ""]}|'
+validate blanksteps;   expect "manual with an empty step" 4 "install: kind manual needs a non-empty list"
+mk numsteps "$MANUAL;"'s|^install = .*|install = {"kind": "manual", "steps": [7]}|'
+validate numsteps;     expect "manual with a non-string step" 4 "install: kind manual needs a non-empty list"
+for f in volume vm_unit container service checks; do
+  mk "manual-$f" "$MANUAL;"'s|^install = .*|install = {"kind": "manual", "steps": ["x"]}|'";\$ a\\
+$f = \"x\""
+  validate "manual-$f"; expect "manual with $f present" 4 "$f: not valid with an install kind of manual"
+done
+mk manualnomig "$MANUAL;"'/^migrations = /d;s|^install = .*|install = {"kind": "manual", "steps": ["x"]}|'
+validate manualnomig;  expect "manual still needs migrations (check reads it)" 4 "migrations: missing"
+mk vmnosteps 's|^install = .*|install = {"kind": "vm-copy", "applied_unit": "/tmp/u", "steps": 3}|'
+validate vmnosteps;    expect "near miss: a vm-copy install ignores a stray steps key" 0
+
 # ---------- a descriptor that raises is status 2, never 1 ----------
 mkdir -p "$w/root/boom"; printf 'raise RuntimeError("boom")\n' > "$w/root/boom/image_bump.py"
 validate boom;         expect "descriptor raising at import" 2 "RuntimeError: boom"

@@ -276,6 +276,29 @@ go --wait 3
 expect "near miss: a check that passes on its second try" 0 "deployed"
 [ "$(count '^check flaky$')" = 2 ] && ok "tried twice" || no "tried $(count '^check flaky$') times"
 
+# ---------- a manual install is refused before anything is touched ----------
+scenario
+cat > "$w/root/svc/image_bump.py" <<PYEOF
+image = "$IMG"
+release_line = "patch-of-pinned-major"
+release_api = {"host": "github", "repo": "acme/widget"}
+git_tag = "v{version}"
+platform = "linux/arm64"
+pin_file = "IMAGE"
+scan_dir = "scans"
+gate = {"kind": "fixable-count-floor"}
+migrations = {"kind": "always"}
+install = {"kind": "manual", "steps": ["load the tar as root", "check the unit is up"]}
+checklist = ["read the release notes"]
+tag_suffix = "-rootless"
+PYEOF
+go --wait 0
+expect "deploy on a manual descriptor is refused" 4 "deploy: svc is installed by hand on its host; steps:"
+grep -qxF "  load the tar as root" "$w/out" "$w/err" 2>/dev/null && ok "step one printed, indented" || no "step one missing: $(cat "$w/out" "$w/err")"
+cat "$w/out" "$w/err" | grep -qxF "  check the unit is up" && ok "step two printed, indented" || no "step two missing"
+[ ! -s "$w/log" ] && ok "no podman call" || no "podman called: $(cat "$w/log")"
+[ ! -e "$RB" ] && ok "no state written" || no "state written"
+
 # ---------- environment ----------
 scenario; mv "$S/podman" "$S/podman.off"
 PATH_SAVE=$PATH; mkdir -p "$w/emptybin"; PATH="$w/emptybin"

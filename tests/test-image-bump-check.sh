@@ -358,5 +358,15 @@ go 1.3.0
 expect "an invalid descriptor is refused before any command runs" 4 "not of the form os/arch"
 [ ! -s "$w/log" ] && ok "no stub was called" || no "stubs called: $(cat "$w/log")"
 
+# ---------- a manual install: check reads none of the deploy-only fields ----------
+scenario
+sed -e '/^volume = /d;/^vm_unit = /d;/^container = /d;/^service = /d;/^checks = /d' \
+    -e 's|^install = .*|install = {"kind": "manual", "steps": ["load the tar as root"]}|' \
+    "$w/root/svc/image_bump.py" > "$w/x" && mv "$w/x" "$w/root/svc/image_bump.py"
+go 1.3.0
+expect "check passes on a manual descriptor without the deploy-only fields" 0 "gate fixable-count-floor: pass"
+[ "$(pin)" = "$IMG:v1.3.0-rootless@$DA" ] && ok "manual: pin file rewritten" || no "manual: pin file: $(pin)"
+[ -n "$(record)" ] && ok "manual: record written" || no "manual: no record"
+
 if [ "$fail" -eq 0 ]; then echo PASS; exit 0; fi
 echo "FAIL: $fail case(s)"; exit 1

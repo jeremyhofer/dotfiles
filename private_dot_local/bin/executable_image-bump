@@ -211,13 +211,21 @@ TOML reader is assumed), loaded by path. Every field below is required unless ma
   container     str   the container's name, whose running image `deploy` reads
   service       str   the systemd user unit inside the VM that runs it, e.g. "widget.service"
   vm_unit       str   the unit's path inside the VM
-  install       dict  {"kind": "vm-copy", "applied_unit": "<path>"} or
-                      {"kind": "script", "path": "<path>"}
+  install       dict  {"kind": "vm-copy", "applied_unit": "<path>"},
+                      {"kind": "script", "path": "<path>"} or
+                      {"kind": "manual", "steps": ["<one line a person runs or checks>", ...]}
   checks        list  of {"name": str, "command": [str, ...], "pass": str}, where "pass"
                       says what a pass is (an exit status, or text to find in the output)
   checklist     list  of str: lines printed for the person or agent to work through
   tag_suffix    str   optional; a suffix of the tag that is not part of the version, such as
                       "-rootless"
+
+A manual install is for an image put in place by hand on a host this tool cannot drive (a host
+whose container runtime is root-only, say). `check`, `latest` and `validate` work as for any container
+descriptor, and `deploy` refuses with status 4, printing the steps. `deploy` is the only verb that
+reads `volume`, `vm_unit`, `container`, `service` and `checks`, so a manual descriptor must not
+have them (`validate` refuses one that does); `migrations` stays required, since `check` reads it
+to write the scan record.
 
 The version of the pinned image is its tag with `tag_suffix` and a leading "v" removed; its git
 tag is `git_tag` with {version} replaced. `validate` also reads the pin file, which must parse
@@ -231,7 +239,8 @@ EXIT STATUSES
   3  exception the gate allows   7  a newer release exists (`latest`)
      only with the operator's
      approval
-  4  refused (validate: a malformed descriptor; deploy: an artifact descriptor)
+  4  refused (validate: a malformed descriptor; deploy: an artifact descriptor, or
+                    a container installed by hand, whose steps it prints)
 Status 1 is never used on purpose: an uncaught Python exception exits 1, so main() turns one
 into a one-line message and status 2.
 
@@ -264,7 +273,9 @@ RELEASE_LINES = ("patch-of-pinned-major", "github-latest-stable")
 RELEASE_HOSTS = ("codeberg", "github")
 GATE_KINDS = ("fixable-count-floor", "no-new-findings")
 MIGRATION_KINDS = ("added-files", "always")
-INSTALL_KINDS = ("vm-copy", "script")
+INSTALL_KINDS = ("vm-copy", "script", "manual")
+# Fields only `deploy` reads; a container descriptor whose install kind is "manual" has none.
+DEPLOY_ONLY = ("volume", "vm_unit", "container", "service", "checks")
 
 # (field, what it is) for the plain string fields, validated by one loop.
 STR_FIELDS = ("image", "git_tag", "platform", "pin_file", "scan_dir", "volume", "vm_unit",
@@ -404,11 +415,17 @@ def descriptor_problems(module, directory):
     for name in ARTIFACT_FIELDS[1:]:
         if hasattr(module, name):
             problems.append("%s: only valid with an 'artifact'" % name)
+    install = get("install")
+    manual = isinstance(install, dict) and install.get("kind") == "manual"
     for name in REQUIRED:
-        if not hasattr(module, name):
+        if not hasattr(module, name) and not (manual and name in DEPLOY_ONLY):
             problems.append("%s: missing" % name)
+    if manual:
+        for name in DEPLOY_ONLY:
+            if hasattr(module, name):
+                problems.append("%s: not valid with an install kind of manual" % name)
     for name in STR_FIELDS:
-        if hasattr(module, name) and not _is_str(get(name)):
+        if hasattr(module, name) and not manual and not _is_str(get(name)):
             problems.append("%s: expected a non-empty str, got %r" % (name, get(name)))
 
     problems += _release_problems(module)
@@ -424,8 +441,13 @@ def descriptor_problems(module, directory):
     if hasattr(module, "install"):
         problems += _kind_problems("install", get("install"), INSTALL_KINDS,
                                    {"vm-copy": "applied_unit", "script": "path"})
+        if manual:
+            steps = install.get("steps")
+            if not (isinstance(steps, list) and steps and all(_is_str(x) for x in steps)):
+                problems.append("install: kind manual needs a non-empty list of non-empty "
+                                "strings in 'steps'")
 
-    if hasattr(module, "checks"):
+    if hasattr(module, "checks") and not manual:
         checks = get("checks")
         if not isinstance(checks, list) or not checks:
             problems.append("checks: expected a non-empty list")
@@ -1578,6 +1600,11 @@ def deploy_service(args, desc, directory):
         raise Refusal("%s is an artifact descriptor: an image build's pinned inputs are moved by "
                       "`check` and installed by the next build, so there is nothing to deploy"
                       % args.service)
+    if desc.install["kind"] == "manual":  # guard: manual-install
+        print("deploy: %s is installed by hand on its host; steps:" % args.service)
+        for step in desc.install["steps"]:
+            print("  %s" % step)
+        return REFUSED
     image, tag, applied = read_pin(resolve_path(desc.pin_file, directory))
     version = version_from_tag(tag, getattr(desc, "tag_suffix", ""))
     record = find_record(resolve_path(desc.scan_dir, directory), applied)

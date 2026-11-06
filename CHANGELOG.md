@@ -32,6 +32,15 @@ Entries are newest first.
 
 ---
 
+## 2026-11-06
+
+### `image-bump`: a container image installed by hand has an `install` kind of `manual`
+
+- A container descriptor with `install = {"kind": "manual", "steps": [...]}` is for an image put in
+  place by hand on a host the tool cannot drive. `check`, `latest` and `validate` work as before;
+  `deploy` prints the steps and exits 4. The deploy-only fields (`volume`, `vm_unit`, `container`,
+  `service`, `checks`) are not required, and `validate` refuses one that is present.
+
 ## 2026-11-04
 
 ### `fleet-canonicals`: the launch prompt is reworded, and a launch checks where its handoff came from (ACTION where pointers name other places)
