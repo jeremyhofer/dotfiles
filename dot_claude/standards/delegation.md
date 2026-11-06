@@ -78,3 +78,22 @@ the trade-offs. State the bar in the dispatch, or it does not exist for that age
 
 Measured: research subagents returned a fact-verified deliverable that never defined its central
 term, because nothing in their prompts asked them to teach.
+
+### A delegate's work ends with its report, background jobs included
+
+A delegate that has reported but left a command or agent running in the background has not handed
+back: it sits on that job, often for hours, holding a seat and usage nobody is reading. Measured:
+this recurs regularly, a finished delegate waiting on a command that never returns.
+
+- **The delegate**, before its final report, stops every background command and agent it started,
+  or waits for each and reads its result. If one must outlive the report, the report names it (its
+  ID, what it is doing, why it must continue), and the coordinator decides.
+- **The coordinator**, once a delegate's report is in hand, stops the delegate if it is still
+  running (TaskStop with its agent ID or name), unless the report named work it left running for a
+  reason. Unsure whether the report is final: ask the delegate, rather than wait.
+- **The dispatch restates the rule** for any delegate that will run long or background commands,
+  as it does the environment-fault rule (`~/.claude/standards/autonomy.md`).
+
+This does not contradict the pause rule in `~/.claude/standards/sessions.md`, which forbids killing
+work in flight. That rule protects a result that has not yet returned; once the report is in, what
+is still running has no consumer, so stopping it discards nothing.

@@ -12,7 +12,8 @@ matters: it is cheap, and it is what makes any stop safe.
 
 **"Start nothing new" does not mean "kill what is already running."** A pause stops the session
 DISPATCHING work; it does not authorize terminating subagents or background jobs already in flight.
-The asymmetry is the reason: letting one finish costs only tokens already committed, while killing
+(A delegate that has already reported is not in flight: `~/.claude/standards/delegation.md`.) The
+asymmetry is the reason: letting one finish costs only tokens already committed, while killing
 it is irreversible and discards everything it has accumulated. When one option is reversible and
 the other is not, a debatable reading is grounds to ask, not to act. If running work looks
 genuinely expensive against a nearly exhausted usage window, **name what is running and what
