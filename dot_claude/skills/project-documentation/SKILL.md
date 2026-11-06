@@ -169,7 +169,7 @@ At `dropped`, skip step 2: archive the folder as it is.
 | What is in flight, and where is each one's folder? | `register list --open` |
 | Everything about one initiative | `register show <ID>`: the entry, its folder's files by type, and the decision records its README names |
 | Which subjects exist? | the `docs/<subject>/` lines of `## Layout` |
-| What has gone quiet, or is filed in the wrong place? | `register health`: an active initiative whose folder has had no commit in 30 days, a standing entry past its cadence, a document in the repository-wide folders named by nothing (no entry, decision record or README) or by one initiative only (a candidate to move into its folder). Advisory |
+| What has gone quiet, or is filed in the wrong place? | `register health`: an active initiative whose folder has had no commit in 30 days, a standing entry past its cadence, a document in the repository-wide folders named by nothing (no entry, decision record or README; a file in an asset directory a README names as `<dir>/` counts as named) or by one initiative only (a candidate to move into its folder). Advisory |
 | Where does a new document go? | "Where a new document goes", above |
 
 Render a list with status in it on demand; never commit one, because a derived list nobody

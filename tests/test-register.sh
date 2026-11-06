@@ -154,6 +154,18 @@ echo "Research: index-only.md" >> "$g/docs/README.md"
 fdoc docs/reference/cited-and-indexed.md
 echo "Uses cited-and-indexed.md" >> "$gr/ABC-0001-slug.md"
 mkdir -p "$g/docs/reference"; echo "Pages: cited-and-indexed.md" >> "$g/docs/reference/README.md"
+# A research note's asset directory, named in a README as `<dir>/`, names every file under it, at
+# any depth. Near misses: a directory whose name only ENDS in a named one, and a directory named
+# without its slash (the note `same-name.md` beside `same-name/`) claim nothing.
+mkdir -p "$g/docs/research"
+echo "Notes: asset-note.md. Assets: \`asset-note/\` holds the probes." >> "$g/docs/research/README.md"
+fdoc docs/research/asset-note.md
+fdoc docs/research/asset-note/probe.mjs
+fdoc docs/research/asset-note/real/case.ts
+fdoc docs/research/old-asset-note/stray.mjs
+echo "Notes: same-name.md" >> "$g/docs/research/README.md"
+fdoc docs/research/same-name.md
+fdoc docs/research/same-name/unlisted.mjs
 gt add -A >/dev/null
 GIT_COMMITTER_DATE="2026-01-01T00:00:00" GIT_AUTHOR_DATE="2026-01-01T00:00:00" gt commit -q -m old
 # ABC-0001 is touched now, so only ABC-0002's folder is stale.
@@ -189,6 +201,10 @@ assert_has "health names a document nothing names" "docs/runbooks/orphan-runbook
 assert_lacks "a document only an ADR names is neither list" "adr-only.md" "$out"
 assert_lacks "a document only docs/README.md names is named" "index-only.md" "$out"
 assert_lacks "one initiative plus a README naming a page is not a move candidate" "cited-and-indexed.md" "$out"
+assert_lacks "a file in an asset directory a README names is named" "asset-note/probe.mjs" "$out"
+assert_lacks "a nested file in a named asset directory is named" "asset-note/real/case.ts" "$out"
+assert_has "a directory whose name only ends in a named one is not named" "docs/research/old-asset-note/stray.mjs" "$(echo "$out" | grep -i 'named by nothing')"
+assert_has "a directory named without its slash is not named" "docs/research/same-name/unlisted.mjs" "$(echo "$out" | grep -i 'named by nothing')"
 python3 "$reg" health --root "$gr" >/dev/null 2>&1 && ok "health exits 0 with findings" || bad "health exits 0 with findings"
 # Near miss: a folder committed today is not stale, at the edge of the window.
 echo x >> "$g/docs/initiatives/ABC-0002-beta/plans/2026-01-01-b.md"; gt add -A >/dev/null; gt commit -q -m touch

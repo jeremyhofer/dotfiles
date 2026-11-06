@@ -469,6 +469,12 @@ def named_in(name, text):
     return re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", text) is not None
 
 
+def dir_named_in(name, text):
+    """Does directory `name` appear in `text` as `name/`, not the tail of a longer name? The slash is
+    required: a note `x.md` beside its asset directory `x/` names the note, not the directory."""
+    return re.search(r"(?<![\w.-])" + re.escape(name) + "/", text) is not None
+
+
 def cmd_health(entries, args):
     """Advisory report of what has gone quiet or unowned. Always exits 0."""
     base = repo_root(pathlib.Path(args.root))
@@ -563,7 +569,8 @@ def relation_findings(entries, args):
 def unclaimed_documents(base, entries):
     """Documents in the repository-wide type folders that no initiative names (or only one does).
 
-    NAMED means the file name appears in a register entry, a decision record or a folder README.
+    NAMED means the file name appears in a register entry, a decision record or a folder README, or
+    one of the directories holding it does, written `<dir>/` (a research note's asset directory).
     Whether it is claimed by an INITIATIVE is narrower: an entry, or that entry's folder README --
     counted once per initiative id, so an entry and its own README naming a document do not make
     two. A decision record or a subject README makes a document named without making it claimed.
@@ -592,7 +599,11 @@ def unclaimed_documents(base, entries):
             if f.name == "README.md":
                 continue
             rel = f.relative_to(base).as_posix()
-            hits = [(i, text) for i, text in claimants if named_in(f.name, text)]
+            # The directories between the type folder and the file: an asset directory beside a
+            # research note, named once as `<dir>/`, names every file under it.
+            dirs = f.relative_to(docs / t).parts[:-1]
+            hits = [(i, text) for i, text in claimants
+                    if named_in(f.name, text) or any(dir_named_in(d, text) for d in dirs)]
             initiatives = sorted({i for i, _ in hits if i})
             if not hits:
                 out.append("%s: named by nothing -- no entry, decision record or README" % rel)
