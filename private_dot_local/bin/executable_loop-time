@@ -450,8 +450,25 @@ def parse_nx_output(text):
 
 # ---- running one command -----------------------------------------------------------------
 
+def caller_env():
+    """The environment loop-time was started with, minus what its own interpreter added.
+
+    `uv run --script` runs this tool in a virtual environment and puts that environment's `bin`
+    first on PATH, so a measured command would otherwise run the project's `python3` as this tool's
+    private interpreter. Only that directory is removed, and only when the tool runs in a virtual
+    environment: a system interpreter's directory, such as /usr/bin, is never touched."""
+    env = dict(os.environ)
+    if sys.prefix != sys.base_prefix:
+        own_bin = os.path.join(sys.prefix, "bin")
+        env["PATH"] = os.pathsep.join(e for e in env.get("PATH", "").split(os.pathsep) if e and e != own_bin)
+        if env.get("VIRTUAL_ENV") == sys.prefix:
+            del env["VIRTUAL_ENV"]
+    return env
+
+
 def measure(argv, cwd, out_path, env=None):
     """Run argv with output captured to out_path. Returns (exit code, wall s, children CPU s)."""
+    env = env if env is not None else caller_env()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.monotonic()
@@ -472,6 +489,7 @@ def measure(argv, cwd, out_path, env=None):
 
 def run_quiet(command, cwd, env=None):
     """Run a prep or version command; (exit code, first output line)."""
+    env = env if env is not None else caller_env()
     try:
         p = subprocess.run(command_argv(command), cwd=cwd, capture_output=True, text=True, timeout=300,
                            stdin=subprocess.DEVNULL, env=env)
@@ -662,7 +680,7 @@ class Session:
         merged = {**self.decl.env, **loop.env}
         if not merged:
             return None, []
-        out = dict(os.environ)
+        out = caller_env()
         for k, v in merged.items():
             if "{scratch}" in v:
                 ensure_scratch(self.scratch)

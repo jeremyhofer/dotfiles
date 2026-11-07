@@ -935,5 +935,37 @@ def test_help_explains_modes_and_why_scenarios_plant_a_defect():
         assert word in r.stdout
 
 
+@pytest.mark.parametrize("with_env", [False, True])
+def test_measured_commands_see_the_callers_path_not_the_tools_interpreter(tmp_path, project, with_env):
+    # `uv run --script` puts the tool's own environment first on PATH. A measured command must not
+    # inherit that: it would run the project's `python3` as the tool's private interpreter.
+    seen = tmp_path / "path"
+    body = f'[[loop]]\nid = "p"\ncommand = "printf %s \\"$PATH\\" > {seen}"\n'
+    if with_env:
+        body += '[loop.env]\nX = "1"\n'
+    p = write_decl(tmp_path, project, body)
+    own_bin = str(Path(sys.prefix) / "bin")
+    caller_path = os.pathsep.join(e for e in os.environ["PATH"].split(os.pathsep) if e != own_bin)
+    r = subprocess.run(["uv", "run", "--script", "--quiet", str(TOOL), "run", str(p), "p", "--samples", "1",
+                        "--max-load", "9999", "--results", str(tmp_path / "r.jsonl")],
+                       env={**os.environ, "PATH": caller_path}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert seen.read_text() == caller_path
+
+
+def test_caller_env_drops_only_the_tools_own_bin_directory(monkeypatch):
+    monkeypatch.setattr(lt.sys, "prefix", "/venv/tool")
+    monkeypatch.setattr(lt.sys, "base_prefix", "/usr")
+    monkeypatch.setenv("PATH", "/venv/tool/bin:/usr/bin:/bin:/venv/tool/bin")
+    monkeypatch.setenv("VIRTUAL_ENV", "/venv/tool")
+    env = lt.caller_env()
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert "VIRTUAL_ENV" not in env
+    # Not in a virtual environment: nothing is removed, /usr/bin least of all.
+    monkeypatch.setattr(lt.sys, "prefix", "/usr")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert lt.caller_env()["PATH"] == "/usr/bin:/bin"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
