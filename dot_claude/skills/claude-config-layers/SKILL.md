@@ -126,9 +126,11 @@ inheritance first and keep each repo self-contained as the fallback.
 
 Work down this list before concluding anything is broken:
 
-1. **Is it read at session start?** Several keys, `worktree.bgIsolation` among them, are read when
-   the session starts. The session that writes the file does not benefit from it — restart first,
-   and do not conclude the file is wrong.
+1. **Is it one of the few keys read at session start?** Most settings edits apply to running
+   sessions live (permissions, hooks, the sandbox's filesystem lists; `~/.claude/standards/working-style.md`,
+   "A settings change reaches a running session"). The exceptions are `model`, `effortLevel`,
+   `modelSettings` and keys decided at launch such as `worktree.bgIsolation`; for those only, the
+   session that wrote the file does not benefit, so restart before concluding the file is wrong.
 2. **Is a higher layer overriding it?** Check managed first, then a CLI flag, then project-local.
    A `deny` at any layer cannot be loosened lower down.
 3. **Did an apply revert it?** Only for keys named in the `declared` block — that is the script

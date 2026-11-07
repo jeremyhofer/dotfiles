@@ -46,6 +46,26 @@ it gates `Edit`/`Write` only, and `Bash` is ungated until a session isolates. A 
 configure it off (`worktree.bgIsolation` set to `"none"`), in which case every session works in
 place. Never treat "I am isolated" as containment, and never cite the guard as containment.
 
+### A settings change reaches a running session: never prescribe a restart by reflex
+
+Claude Code watches its settings files and applies most edits to sessions already running:
+`permissions` allow and deny rules, `hooks`, and the sandbox's filesystem lists (the next sandboxed
+command runs under the new paths). Skills and subagent definitions on disk are picked up live too.
+So after a grant or a hook lands, the affected session can act at once. **Do not tell a peer or the
+user that it "takes effect at the next start"**; the claim is usually false, and it costs a restart,
+a delay, or a session waiting on a condition already met. The cheap check is to try the action.
+
+What does wait for a new session is short, and worth knowing exactly:
+
+- settings keys read once at start: `model`, `effortLevel`, `modelSettings` (switch with `/model` or
+  `/effort` instead), and anything decided at launch, such as `worktree.bgIsolation`;
+- context loaded at start: `CLAUDE.md` with its imports (these standards among them) and the
+  memory index, so a change to always-on rules reaches each session at its next start.
+
+Source: Claude Code's docs, `settings` "When edits take effect" and `sandboxing`, both read
+2026-11-07. Measured the same day: a sandbox write grant applied at 16:10 was used by an
+unrestarted session at 16:12, after it had been told a restart was needed.
+
 ### Load per-repo context first
 
 Before working in any repository, read that repository's own `CLAUDE.md`/`AGENTS.md` and `README`
