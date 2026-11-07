@@ -34,6 +34,21 @@ Entries are newest first.
 
 ## 2026-11-07
 
+### `loop-time` gains setup/teardown, env with a private scratch directory, and find/replace edits
+
+- A loop may declare `setup` and `teardown` (lists of commands) that run in the checkout root around
+  every sample in every mode; teardown also runs when the sample fails or is interrupted, and neither
+  is counted in the sample's time. A failing setup aborts the sample with no record.
+- A declaration or a loop may declare `env` (string values; the loop wins), applied to setup,
+  `cold_prep`, the command and teardown. `{scratch}` expands to a private per-project directory under
+  `~/.cache/loop-time` (or `LOOP_TIME_SCRATCH`), `{root}` to the checkout. `cold = "fresh-scratch"`
+  empties `{scratch}` before each cold sample and refuses to remove anything outside that root, so a
+  cache shared across checkouts can be pointed at it instead of being reset. Records list the env key
+  names set, never values.
+- A scenario's `edit` may be `{ find, replace }` (first occurrence; refused when `find` is absent) as
+  `plant` already could, so a harmless edit to a JSON file is possible.
+- No action needed; existing declarations run unchanged.
+
 ### New tool `loop-time`, and the first Python tool run by `uv run --script`
 
 - `loop-time` times a project's iteration loops (a commit gate, one test, the full local gate) from a

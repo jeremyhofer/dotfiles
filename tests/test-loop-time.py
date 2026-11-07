@@ -44,6 +44,7 @@ def isolated_git(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.invalid")
     monkeypatch.delenv("LOOP_TIME_RESULTS", raising=False)
+    monkeypatch.setenv("LOOP_TIME_SCRATCH", str(tmp_path_factory.mktemp("scratchbase")))
 
 
 def git(root, *args):
@@ -554,6 +555,331 @@ def test_sequence_edits_accumulate_without_reverting_between_steps(tmp_path, pro
     last = records(res)[-1]
     assert "e1" in Path(last["output"]).read_text() and "e2" in Path(last["output"]).read_text()
     assert (project / "lib" / "a.txt").read_text() == "OK\n"
+
+
+# ---- setup, teardown, env, fresh-scratch cold, find/replace edits ------------------------
+
+def run_ok(*argv):
+    return run_main(*argv, "--max-load", "9999")
+
+
+def hook_decl(tmp_path, project, extra="", scenario=False):
+    log = tmp_path / "hooks.log"
+    body = f"""
+        [[loop]]
+        id = "h"
+        command = "echo c >> {log}; ! grep -q BUG lib/a.txt"
+        setup = ["echo s >> {log}"]
+        teardown = ["echo t >> {log}"]
+        cold_prep = ["echo p >> {log}"]
+        {extra}
+    """
+    if scenario:
+        body += """
+        [[scenario]]
+        name = "leaf"
+        file = "lib/a.txt"
+        edit = { append = "x" }
+        plant = { find = "OK", replace = "BUG" }
+        loops = ["h"]
+        """
+    return write_decl(tmp_path, project, body), log
+
+
+def test_setup_and_teardown_wrap_every_sample(tmp_path, project):
+    p, log = hook_decl(tmp_path, project)
+    assert run_ok("run", p, "h", "--samples", "2", "--results", tmp_path / "r.jsonl") == 0
+    assert log.read_text().split() == ["s", "c", "t", "s", "c", "t"]
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("warm", "s c t"),
+    ("cold", "p s c t"),
+    ("scenario:leaf", "s c t s c t"),
+    ("sequence", "p s c t s c t"),
+])
+def test_setup_and_teardown_run_in_every_mode(tmp_path, project, mode, expected):
+    p, log = hook_decl(tmp_path, project, scenario=True)
+    assert run_ok("run", p, "h", "--mode", mode, "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
+    assert " ".join(log.read_text().split()) == expected
+
+
+def test_setup_and_teardown_run_in_root_not_the_loop_cwd(tmp_path, project):
+    p = write_decl(tmp_path, project, '[[loop]]\nid="h"\ncwd="lib"\ncommand="true"\n'
+                   'setup=["pwd > where.txt"]\n')
+    assert run_ok("run", p, "h", "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
+    assert (project / "where.txt").exists()
+    assert not (project / "lib" / "where.txt").exists()
+
+
+def test_teardown_runs_when_the_sample_fails(tmp_path, project):
+    p = write_decl(tmp_path, project, f'[[loop]]\nid="h"\ncommand="exit 3"\nteardown=["echo t >> {tmp_path}/t.log"]\n')
+    assert run_ok("run", p, "h", "--samples", "1", "--results", tmp_path / "r.jsonl") == 1
+    assert (tmp_path / "t.log").read_text().split() == ["t"]
+
+
+def test_teardown_runs_after_an_interrupt(tmp_path, project, monkeypatch):
+    p, log = hook_decl(tmp_path, project)
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(lt, "measure", interrupted)
+    assert run_ok("run", p, "h", "--samples", "1", "--results", tmp_path / "r.jsonl") == 130
+    assert log.read_text().split() == ["s", "t"]
+
+
+def test_sigterm_runs_teardown(tmp_path, project):
+    p = write_decl(tmp_path, project, f'[[loop]]\nid="slow"\ncommand="sleep 30"\n'
+                   f'setup=["touch {tmp_path}/up"]\nteardown=["touch {tmp_path}/down"]\n')
+    proc = subprocess.Popen([str(TOOL), "run", str(p), "slow", "--samples", "1",
+                             "--results", str(tmp_path / "r.jsonl"), "--max-load", "9999"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(300):
+        if (tmp_path / "up").exists():
+            time.sleep(0.5)
+            break
+        time.sleep(0.1)
+    assert (tmp_path / "up").exists()
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=20)
+    assert (tmp_path / "down").exists()
+
+
+def test_failing_setup_aborts_the_sample_without_a_record(tmp_path, project, capsys):
+    log = tmp_path / "l.log"
+    p = write_decl(tmp_path, project, f'[[loop]]\nid="h"\ncommand="echo c >> {log}"\n'
+                   f'setup=["echo boom >&2; exit 7"]\n')
+    res = tmp_path / "r.jsonl"
+    assert run_ok("run", p, "h", "--samples", "1", "--results", res) == 1
+    err = capsys.readouterr().err
+    assert "setup failed" in err and "exit 7" in err and "'h'" in err
+    assert not res.exists() or records(res) == []
+    assert not log.exists()
+
+
+def test_setup_and_teardown_time_is_excluded_from_the_sample(tmp_path, project):
+    p = write_decl(tmp_path, project, '[[loop]]\nid="h"\ncommand="true"\nsetup=["sleep 1"]\nteardown=["sleep 1"]\n')
+    res = tmp_path / "r.jsonl"
+    assert run_ok("run", p, "h", "--samples", "1", "--results", res) == 0
+    assert records(res)[0]["wall_seconds"] < 0.5
+
+
+def test_plan_prints_setup_teardown_and_env(tmp_path, project, capsys):
+    p = write_decl(tmp_path, project, '[env]\nA = "1"\n[[loop]]\nid="h"\ncommand="true"\nsetup=["echo up"]\n'
+                   'teardown=["echo down"]\ncold="fresh-scratch"\n[loop.env]\nB = "{scratch}/b"\n')
+    assert run_main("plan", p) == 0
+    out = capsys.readouterr().out
+    assert "setup:" in out and "echo up" in out and "teardown:" in out and "echo down" in out
+    assert "env:" in out and "A=1" in out and "B={scratch}/b" in out and "fresh-scratch" in out
+
+
+@pytest.mark.parametrize("body,needle", [
+    ('[[loop]]\nid="a"\ncommand="true"\nsetup="echo"\n', "setup"),
+    ('[[loop]]\nid="a"\ncommand="true"\nteardown=[1]\n', "teardown"),
+    ('[[loop]]\nid="a"\ncommand="true"\ncold="sometimes"\n', "cold"),
+    ('[[loop]]\nid="a"\ncommand="true"\ncold="fresh-scratch"\n', "{scratch}"),
+    ('[[loop]]\nid="a"\ncommand="true"\n[loop.env]\nA = 1\n', "env"),
+    ('[[loop]]\nid="a"\ncommand="true"\n[loop.env]\n"A B" = "x"\n', "env"),
+    ('env = "x"\n[[loop]]\nid="a"\ncommand="true"\n', "env"),
+])
+def test_new_loop_fields_are_validated(tmp_path, project, body, needle):
+    with pytest.raises(lt.DeclError) as e:
+        lt.load_decl(write_decl(tmp_path, project, body))
+    assert needle in "\n".join(e.value.problems)
+
+
+ENV_DECL = """
+    [env]
+    V = "decl"
+    ONLY_DECL = "d"
+    [[loop]]
+    id = "e"
+    command = "echo $V,$ONLY_DECL,$R,$S >> {log}/cmd"
+    setup = ["echo $V >> {log}/setup"]
+    teardown = ["echo $V >> {log}/teardown"]
+    cold_prep = ["echo $V >> {log}/prep"]
+    [loop.env]
+    V = "loop-secret-value"
+    R = "{{root}}"
+    S = "{{scratch}}/x"
+"""
+
+
+def test_env_reaches_every_command_and_the_loop_overrides_the_declaration(tmp_path, project):
+    log = tmp_path / "log"
+    log.mkdir()
+    p = write_decl(tmp_path, project, ENV_DECL.format(log=log))
+    assert run_ok("run", p, "e", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
+    for stage in ("setup", "teardown", "prep"):
+        assert (log / stage).read_text().strip() == "loop-secret-value", stage
+    v, d, r, s = (log / "cmd").read_text().strip().split(",")
+    assert (v, d) == ("loop-secret-value", "d")
+    assert r == str(project)
+    scratch = Path(s[: -len("/x")])
+    assert scratch.is_dir()
+    assert scratch == Path(os.environ["LOOP_TIME_SCRATCH"]) / "demo"
+
+
+def test_sample_records_env_key_names_never_values(tmp_path, project):
+    log = tmp_path / "log"
+    log.mkdir()
+    p = write_decl(tmp_path, project, ENV_DECL.format(log=log))
+    res = tmp_path / "r.jsonl"
+    run_ok("run", p, "e", "--samples", "1", "--results", res)
+    assert records(res)[0]["env_keys"] == ["ONLY_DECL", "R", "S", "V"]
+    assert "loop-secret-value" not in res.read_text()
+
+
+def test_no_env_means_empty_env_keys_and_no_scratch_dir(tmp_path, project):
+    res = tmp_path / "r.jsonl"
+    p = write_decl(tmp_path, project, '[[loop]]\nid="a"\ncommand="true"\n')
+    run_ok("run", p, "a", "--samples", "1", "--results", res)
+    assert records(res)[0]["env_keys"] == []
+    assert list(Path(os.environ["LOOP_TIME_SCRATCH"]).iterdir()) == []
+
+
+FRESH = """
+    [[loop]]
+    id = "f"
+    command = "ls $SC | wc -l > {out}; echo new > $SC/marker"
+    cold = "fresh-scratch"
+    [loop.env]
+    SC = "{{scratch}}"
+"""
+
+
+def test_fresh_scratch_is_emptied_before_each_cold_sample_only(tmp_path, project):
+    out = tmp_path / "count"
+    p = write_decl(tmp_path, project, FRESH.format(out=out))
+    scratch = Path(os.environ["LOOP_TIME_SCRATCH"]) / "demo"
+    scratch.mkdir(parents=True)
+    (scratch / "stale").write_text("x")
+    (scratch / "sub").mkdir()
+    (scratch / "sub" / "deep").write_text("x")
+    assert run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
+    assert out.read_text().strip() == "0"
+    assert sorted(x.name for x in scratch.iterdir()) == ["marker"]
+    # warm leaves what the previous sample made
+    assert run_ok("run", p, "f", "--mode", "warm", "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
+    assert out.read_text().strip() == "1"
+
+
+def test_fresh_scratch_does_not_follow_symlinks_out(tmp_path, project):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("k")
+    p = write_decl(tmp_path, project, FRESH.format(out=tmp_path / "count"))
+    scratch = Path(os.environ["LOOP_TIME_SCRATCH"]) / "demo"
+    scratch.mkdir(parents=True)
+    (scratch / "link").symlink_to(outside)
+    run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl")
+    assert (outside / "keep").read_text() == "k"
+    assert not (scratch / "link").is_symlink()
+
+
+def test_empty_scratch_refuses_anything_outside_the_scratch_root(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "precious").write_text("p")
+    link = base / "proj"
+    link.symlink_to(victim)
+    for target in (victim, base, tmp_path, base / ".." / "victim", link):
+        with pytest.raises(lt.DeclError):
+            lt.empty_scratch(target, base)
+    assert (victim / "precious").read_text() == "p"
+    # a filesystem root or the home directory is never an acceptable scratch root
+    for bad in (Path("/"), Path.home()):
+        with pytest.raises(lt.DeclError):
+            lt.empty_scratch(bad / "anything", bad)
+
+
+def test_odd_project_names_cannot_name_a_directory_outside_the_scratch_root(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    monkeypatch.setenv("LOOP_TIME_SCRATCH", str(base))
+    for name in ("..", ".", "../x", "a/../..", "/etc"):
+        d = lt.scratch_dir(name)
+        assert d.resolve().parent == base.resolve(), (name, d)
+
+
+def test_cold_run_refuses_when_the_scratch_directory_escapes(tmp_path, project, monkeypatch):
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "precious").write_text("p")
+    base = tmp_path / "sb"
+    base.mkdir()
+    (base / "demo").symlink_to(victim)
+    monkeypatch.setenv("LOOP_TIME_SCRATCH", str(base))
+    p = write_decl(tmp_path, project, FRESH.format(out=tmp_path / "count"))
+    assert run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl") == 2
+    assert (victim / "precious").read_text() == "p"
+
+
+def test_edit_may_be_find_and_replace_and_is_restored(tmp_path, project):
+    seen = tmp_path / "seen"
+    p = write_decl(tmp_path, project, f"""
+        [[loop]]
+        id = "check"
+        command = "cat lib/a.txt >> {seen}; sh check.sh"
+        [[scenario]]
+        name = "leaf"
+        file = "lib/a.txt"
+        edit = {{ find = "OK", replace = "OK edited" }}
+        plant = {{ find = "OK", replace = "BUG" }}
+        loops = ["check"]
+    """)
+    res = tmp_path / "r.jsonl"
+    assert run_ok("run", p, "check", "--mode", "scenario:leaf", "--samples", "1", "--results", res) == 0
+    assert [r["step"] for r in records(res)] == ["edit", "plant"]
+    assert seen.read_text().splitlines()[0] == "OK edited"
+    assert (project / "lib" / "a.txt").read_text() == "OK\n"
+
+
+def test_edit_find_is_applied_once_to_the_first_occurrence(tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_text("a a a\n")
+    lt.apply_edit(f, {"find": "a", "replace": "b"})
+    assert f.read_text() == "b a a\n"
+
+
+def test_edit_whose_find_text_is_absent_is_refused(tmp_path, project):
+    body = """
+        [[loop]]
+        id = "check"
+        command = "true"
+        [[scenario]]
+        name = "leaf"
+        file = "lib/a.txt"
+        edit = { find = "ABSENT", replace = "x" }
+        plant = { append = "y" }
+        loops = ["check"]
+    """
+    with pytest.raises(lt.DeclError) as e:
+        lt.load_decl(write_decl(tmp_path, project, body))
+    assert "ABSENT" in "\n".join(e.value.problems)
+    f = tmp_path / "f.txt"
+    f.write_text("abc\n")
+    with pytest.raises(lt.DeclError):
+        lt.apply_edit(f, {"find": "ABSENT", "replace": "x"})
+    assert f.read_text() == "abc\n"
+
+
+@pytest.mark.parametrize("edit", ['{ find = "OK" }', '{ append = "x", find = "OK", replace = "y" }',
+                                  '{ replace = "y" }', '{ find = "OK", replace = "y", extra = 1 }'])
+def test_malformed_edits_are_rejected(tmp_path, project, edit):
+    body = ('[[loop]]\nid="a"\ncommand="true"\n[[scenario]]\nname="s"\nfile="lib/a.txt"\n'
+            f'edit={edit}\nplant={{append="y"}}\nloops=["a"]\n')
+    with pytest.raises(lt.DeclError):
+        lt.load_decl(write_decl(tmp_path, project, body))
+
+
+def test_plan_shows_a_find_replace_edit(tmp_path, project, capsys):
+    p = write_decl(tmp_path, project, '[[loop]]\nid="a"\ncommand="true"\n[[scenario]]\nname="s"\n'
+                   'file="lib/a.txt"\nedit={find="OK", replace="OK "}\nplant={append="y"}\nloops=["a"]\n')
+    assert run_main("plan", p) == 0
+    assert "edit: replace 'OK' with 'OK '" in capsys.readouterr().out
 
 
 # ---- report -----------------------------------------------------------------------------

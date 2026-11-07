@@ -18,6 +18,7 @@ import platform
 import re
 import resource
 import shlex
+import shutil
 import signal
 import statistics
 import subprocess
@@ -37,8 +38,9 @@ EXIT_RESTORE = 5
 EPILOG = """\
 modes (run --mode):
   warm            the loop as it stands, nothing reset: the floor the tooling itself costs.
-  cold            each sample first runs the loop's cold_prep commands (for example a cache
-                  reset): what a fresh checkout or a cache-busting change pays, the worst case.
+  cold            each sample first empties the loop's {scratch} directory (when the loop says
+                  cold = "fresh-scratch") and runs its cold_prep commands: what a fresh checkout
+                  or a cache-busting change pays, the worst case.
   scenario:NAME   one change scenario. A harmless edit is applied and the loop timed (it must
                   pass), the edit reverted; then a planted defect is applied and the loop run
                   again (it MUST fail), then reverted. Why plant a defect: a loop that is fast
@@ -53,10 +55,26 @@ modes (run --mode):
 declaration (TOML):
   project = "name"                 root = "path"  (relative to the declaration file)
   versions = ["node --version"]    commands whose first output line is recorded per sample
+  [env]         string values for every command of every loop (see env below)
   [[loop]]      id, command (a string runs under `sh -c`; a list is an argv), cwd (under root),
-                cold_prep (list of commands), runner = "generic" | "nx"
-  [[scenario]]  name, file (under root), edit = {append = "text"},
+                cold_prep (list of commands), runner = "generic" | "nx",
+                setup / teardown (lists of commands, same forms as command), env (table),
+                cold = "fresh-scratch"
+  [[scenario]]  name, file (under root),
+                edit = {append = "text"} or {find = "A", replace = "B"} (first occurrence),
                 plant = {find = "A", replace = "B"} or {append = "text"}, loops = ["id", ...]
+
+setup and teardown run in root around every sample of the loop in every mode (setup after any
+edit and cold_prep, teardown after the command, also when it failed or was interrupted). Their
+time is not part of the sample. A failing setup aborts the sample: no measurement is recorded,
+exit 1. Use them for state the loop needs, such as staging a change before a commit hook.
+
+env: a loop's table overrides the declaration's; applied to setup, cold_prep, command and
+teardown. A value may contain {scratch}, a private directory per project, created on demand,
+under $LOOP_TIME_SCRATCH or ~/.cache/loop-time (then /<project>), and {root}, the checkout.
+cold = "fresh-scratch" empties {scratch} before each cold sample, and refuses to remove
+anything outside that scratch root. Point a shared cache at {scratch} to start it empty without
+resetting the user's real one. Each record lists the env key names that were set, never values.
 
 exit status: 0 ok; 1 a loop exited non-zero; 2 invalid declaration or arguments; 3 a scenario was
 blind; 4 refused under load; 5 a file could not be restored.
@@ -87,6 +105,10 @@ class Loop:
     cwd: str = "."
     cold_prep: list = field(default_factory=list)
     runner: str = "generic"
+    setup: list = field(default_factory=list)
+    teardown: list = field(default_factory=list)
+    env: dict = field(default_factory=dict)
+    cold: str = ""
 
 
 @dataclass
@@ -105,6 +127,7 @@ class Decl:
     versions: list
     loops: list
     scenarios: list
+    env: dict = field(default_factory=dict)
 
     def loop(self, loop_id):
         return next((l for l in self.loops if l.id == loop_id), None)
@@ -116,12 +139,13 @@ class Decl:
         return [s for s in self.scenarios if loop_id in s.loops]
 
 
-TOP_KEYS = {"project", "root", "versions", "loop", "scenario"}
-LOOP_KEYS = {"id", "command", "cwd", "cold_prep", "runner"}
+TOP_KEYS = {"project", "root", "versions", "env", "loop", "scenario"}
+LOOP_KEYS = {"id", "command", "cwd", "cold_prep", "runner", "setup", "teardown", "env", "cold"}
 SCENARIO_KEYS = {"name", "file", "edit", "plant", "loops"}
-EDIT_KEYS = {"append"}
-PLANT_KEYS = {"append", "find", "replace"}
+EDIT_KEYS = {"append", "find", "replace"}
 RUNNERS = {"generic", "nx"}
+COLD_KINDS = {"", "fresh-scratch"}
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _unknown(table, allowed, where, problems):
@@ -132,6 +156,42 @@ def _unknown(table, allowed, where, problems):
 def _is_command(v):
     return (isinstance(v, str) and v.strip() != "") or (
         isinstance(v, list) and bool(v) and all(isinstance(x, str) for x in v))
+
+
+def _check_env(table, where, problems):
+    """A table of NAME = "string"; returns it when valid, else {} after recording the problems."""
+    if not isinstance(table, dict):
+        problems.append(f"{where}: 'env' must be a table of string values")
+        return {}
+    ok = True
+    for k, v in table.items():
+        if not ENV_NAME.match(k):
+            problems.append(f"{where}: env name '{k}' is not a valid variable name")
+            ok = False
+        if not isinstance(v, str):
+            problems.append(f"{where}: env '{k}' must be a string")
+            ok = False
+    return dict(table) if ok else {}
+
+
+def _check_commands(t, key, where, problems):
+    cmds = t.get(key, [])
+    if not (isinstance(cmds, list) and all(_is_command(c) for c in cmds)):
+        problems.append(f"{where}: '{key}' must be a list of commands")
+        return []
+    return cmds
+
+
+def _check_change(t, key, where, problems):
+    """An edit or plant: {find, replace} or {append}. Returns True when well formed."""
+    _unknown(t, EDIT_KEYS, f"{where} {key}", problems)
+    if "find" in t or "replace" in t:
+        ok = isinstance(t.get("find"), str) and isinstance(t.get("replace"), str) and "append" not in t
+    else:
+        ok = isinstance(t.get("append"), str)
+    if not ok:
+        problems.append(f"{where}: {key} is either {{ find, replace }} or {{ append }}")
+    return ok
 
 
 def command_argv(command):
@@ -177,6 +237,7 @@ def load_decl(path):
         problems.append("declaration: 'versions' must be a list of command strings")
         versions = []
 
+    denv = _check_env(data["env"], "declaration", problems) if "env" in data else {}
     loops, seen = [], set()
     raw_loops = data.get("loop", [])
     if not raw_loops:
@@ -196,16 +257,24 @@ def load_decl(path):
         runner = t.get("runner", "generic")
         if runner not in RUNNERS:
             problems.append(f"{where}: runner '{runner}' is not one of {sorted(RUNNERS)}")
-        prep = t.get("cold_prep", [])
-        if not (isinstance(prep, list) and all(_is_command(c) for c in prep)):
-            problems.append(f"{where}: 'cold_prep' must be a list of commands")
-            prep = []
+        prep = _check_commands(t, "cold_prep", where, problems)
+        setup = _check_commands(t, "setup", where, problems)
+        teardown = _check_commands(t, "teardown", where, problems)
+        lenv = _check_env(t["env"], where, problems) if "env" in t else {}
+        cold = t.get("cold", "")
+        if cold not in COLD_KINDS:
+            problems.append(f"{where}: cold '{cold}' is not one of {sorted(COLD_KINDS - {''})}")
+            cold = ""
+        elif cold == "fresh-scratch" and not any("{scratch}" in v for v in {**denv, **lenv}.values()):
+            problems.append(f"{where}: cold = \"fresh-scratch\" needs an env value using {{scratch}}, "
+                            "or there is nothing to empty")
         cwd = t.get("cwd", ".")
         if root is not None:
             d = _under(root, cwd) if isinstance(cwd, str) else None
             if d is None or not d.is_dir():
                 problems.append(f"{where}: cwd '{cwd}' is not a directory under root")
-        loops.append(Loop(lid, t.get("command"), cwd if isinstance(cwd, str) else ".", prep, runner))
+        loops.append(Loop(lid, t.get("command"), cwd if isinstance(cwd, str) else ".", prep, runner,
+                          setup, teardown, lenv, cold))
 
     scenarios = []
     for i, t in enumerate(data.get("scenario", [])):
@@ -220,21 +289,12 @@ def load_decl(path):
             problems.append(f"{where}: 'edit' is required, e.g. edit = {{ append = \"text\" }}")
             edit = {}
         else:
-            _unknown(edit, EDIT_KEYS, f"{where} edit", problems)
-            if not isinstance(edit.get("append"), str):
-                problems.append(f"{where}: edit needs 'append'")
+            _check_change(edit, "edit", where, problems)
         if not isinstance(plant, dict):
             problems.append(f"{where}: 'plant' is required, the defect the loop must catch")
             plant = {}
         else:
-            _unknown(plant, PLANT_KEYS, f"{where} plant", problems)
-            if "find" in plant:
-                ok = isinstance(plant["find"], str) and isinstance(plant.get("replace"), str) \
-                    and "append" not in plant
-            else:
-                ok = isinstance(plant.get("append"), str) and "replace" not in plant
-            if not ok:
-                problems.append(f"{where}: plant is either {{ find, replace }} or {{ append }}")
+            _check_change(plant, "plant", where, problems)
         applies = t.get("loops")
         if not (isinstance(applies, list) and applies and all(isinstance(x, str) for x in applies)):
             problems.append(f"{where}: 'loops' (the loop ids it applies to) is required")
@@ -251,8 +311,10 @@ def load_decl(path):
                 problems.append(f"{where}: file '{rel}' is outside root")
             elif not f.is_file():
                 problems.append(f"{where}: file '{rel}' does not exist under root")
-            elif isinstance(plant.get("find"), str) and plant["find"].encode() not in f.read_bytes():
-                problems.append(f"{where}: plant text '{plant['find']}' is not in {rel}")
+            else:
+                for what, change in (("edit", edit), ("plant", plant)):
+                    if isinstance(change.get("find"), str) and change["find"].encode() not in f.read_bytes():
+                        problems.append(f"{where}: {what} text '{change['find']}' is not in {rel}")
         scenarios.append(Scenario(name, rel if isinstance(rel, str) else "", edit, plant, applies))
     names = [s.name for s in scenarios]
     for n in sorted({n for n in names if names.count(n) > 1}):
@@ -260,7 +322,7 @@ def load_decl(path):
 
     if problems:
         raise DeclError(problems)
-    return Decl(project, root, versions, loops, scenarios)
+    return Decl(project, root, versions, loops, scenarios, denv)
 
 
 # ---- platform reads (each degrades to None with a reason) --------------------------------
@@ -388,13 +450,14 @@ def parse_nx_output(text):
 
 # ---- running one command -----------------------------------------------------------------
 
-def measure(argv, cwd, out_path):
+def measure(argv, cwd, out_path, env=None):
     """Run argv with output captured to out_path. Returns (exit code, wall s, children CPU s)."""
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.monotonic()
     with open(out_path, "wb") as out:
-        proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                env=env)
         try:
             rc = proc.wait()
         finally:
@@ -407,11 +470,11 @@ def measure(argv, cwd, out_path):
     return rc, wall, cpu
 
 
-def run_quiet(command, cwd):
+def run_quiet(command, cwd, env=None):
     """Run a prep or version command; (exit code, first output line)."""
     try:
         p = subprocess.run(command_argv(command), cwd=cwd, capture_output=True, text=True, timeout=300,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, env=env)
     except (OSError, subprocess.SubprocessError) as e:
         return 127, f"error: {type(e).__name__}"
     line = (p.stdout.strip() or p.stderr.strip()).splitlines()
@@ -440,15 +503,19 @@ def apply_append(path, text):
     Path(path).write_bytes(data + text.encode() + b"\n")
 
 
-def apply_plant(path, plant):
-    if "find" in plant:
+def apply_edit(path, change):
+    """An edit or a plant: replace the first occurrence of `find`, or append a line."""
+    if "find" in change:
         data = Path(path).read_bytes()
-        find = plant["find"].encode()
+        find = change["find"].encode()
         if find not in data:
-            raise RestoreError(f"plant text '{plant['find']}' is not in {path}")
-        Path(path).write_bytes(data.replace(find, plant["replace"].encode(), 1))
+            raise DeclError([f"text '{change['find']}' is not in {path}"])
+        Path(path).write_bytes(data.replace(find, change["replace"].encode(), 1))
     else:
-        apply_append(path, plant["append"])
+        apply_append(path, change["append"])
+
+
+apply_plant = apply_edit
 
 
 class FileGuard:
@@ -519,6 +586,43 @@ def _slug(s):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
 
 
+# ---- scratch directories -------------------------------------------------------------------
+
+def scratch_base():
+    env = os.environ.get("LOOP_TIME_SCRATCH")
+    return Path(os.path.expanduser(env)) if env else Path.home() / ".cache" / "loop-time"
+
+
+def scratch_dir(project):
+    """The private directory for one project: always a direct child of the scratch root, whatever
+    the project is called (a name of only dots or with separators cannot climb out)."""
+    name = _slug(project)
+    if set(name) <= {"."}:
+        name = "_" * max(len(name), 1)
+    return scratch_base() / name
+
+
+def empty_scratch(scratch, base):
+    """Remove the contents of `scratch` (not the directory). Refuses, removing nothing, unless
+    `scratch` resolves to a directory strictly inside `base`, and `base` is not a filesystem root
+    or the home directory. Symbolic links inside are unlinked, never followed."""
+    base_r = Path(base).resolve()
+    if base_r == Path(base_r.anchor) or base_r == Path.home().resolve():
+        raise DeclError([f"refusing to empty a scratch directory under '{base_r}': not a scratch root"])
+    sc = Path(scratch).resolve()
+    if sc == base_r or base_r not in sc.parents:
+        raise DeclError([f"refusing to empty '{scratch}': it is not inside the scratch root '{base_r}'"])
+    if not sc.exists():
+        return
+    if not sc.is_dir():
+        raise DeclError([f"refusing to empty '{sc}': not a directory"])
+    for child in sc.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
+
+
 class Session:
     def __init__(self, decl, results, max_load, force, wait=120):
         self.decl, self.results, self.max_load, self.force, self.wait = decl, Path(results), max_load, force, wait
@@ -528,23 +632,58 @@ class Session:
         self.counter = 0
         self.failed = False
         self.blind = []
+        self.scratch = scratch_dir(decl.project)
+
+    def env_for(self, loop):
+        """(the process environment for this loop's commands, the env key names set)."""
+        merged = {**self.decl.env, **loop.env}
+        if not merged:
+            return None, []
+        out = dict(os.environ)
+        for k, v in merged.items():
+            if "{scratch}" in v:
+                self.scratch.mkdir(parents=True, exist_ok=True)
+                self.scratch.chmod(0o700)
+            out[k] = v.replace("{scratch}", str(self.scratch)).replace("{root}", str(self.decl.root))
+        return out, sorted(merged)
+
+    def hooks(self, kind, loop, env, strict):
+        """Run the loop's setup or teardown commands in root. All run; the first failure raises
+        when strict, else only warns (a teardown after an error already in flight)."""
+        failure = None
+        for c in getattr(loop, kind):
+            rc, line = run_quiet(c, self.decl.root, env)
+            if rc != 0 and failure is None:
+                failure = f"{kind} failed (exit {rc}) for loop '{loop.id}': {_show(c)}" + (
+                    f": {line}" if line else "")
+        if failure:
+            if strict:
+                raise RuntimeError(failure)
+            print(f"loop-time: WARNING: {failure}", file=sys.stderr)
 
     def sample(self, loop, mode, sample, step=None, scenario=None, caught_if_failing=False):
         under = wait_for_load(self.max_load, self.force, wait=self.wait)
         self.counter += 1
         outp = self.results.parent / "output" / (
             f"{self.run_id}-{self.counter:03d}-{_slug(loop.id)}-{_slug(mode)}-{_slug(step or 'run')}.log")
-        start = machine_state()
         cwd = self.decl.root / loop.cwd
-        rc, wall, cpu = measure(command_argv(loop.command), cwd, outp)
-        end = machine_state()
+        env, env_keys = self.env_for(loop)
+        try:
+            self.hooks("setup", loop, env, strict=True)
+            start = machine_state()
+            rc, wall, cpu = measure(command_argv(loop.command), cwd, outp, env)
+            end = machine_state()
+        except BaseException:
+            self.hooks("teardown", loop, env, strict=False)
+            raise
+        self.hooks("teardown", loop, env, strict=True)
         rec = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "project": self.decl.project, "loop": loop.id, "mode": mode, "step": step,
                "scenario": scenario, "sample": sample, "exit_code": rc,
                "wall_seconds": round(wall, 4), "cpu_seconds": round(cpu, 4),
                "git_head": self.head, "tree_dirty": self.dirty, "start": start, "end": end,
                "under_load": under, "versions": self.versions, "runner": loop.runner,
-               "output": str(outp)}
+               "env_keys": env_keys, "output": str(outp)}
         if caught_if_failing:
             rec["caught"] = rc != 0
         if loop.runner == "nx":
@@ -558,8 +697,11 @@ class Session:
         return rec
 
     def cold_prep(self, loop):
+        env, _ = self.env_for(loop)
+        if loop.cold == "fresh-scratch":
+            empty_scratch(self.scratch, scratch_base())
         for c in loop.cold_prep:
-            rc, line = run_quiet(c, self.decl.root / loop.cwd)
+            rc, line = run_quiet(c, self.decl.root / loop.cwd, env)
             if rc != 0:
                 raise RuntimeError(f"cold_prep failed (exit {rc}) for loop '{loop.id}': {line}")
 
@@ -583,7 +725,7 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
         path = paths[sc.name]
         with FileGuard([path]) as guard:
             for i in range(samples):
-                apply_append(path, sc.edit["append"])
+                apply_edit(path, sc.edit)
                 rec = s.sample(loop, mode, i, "edit", sc.name)
                 guard.revert()
                 if rec["exit_code"] != 0:
@@ -606,7 +748,7 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
                 if s.sample(loop, mode, i, "cold")["exit_code"] != 0:
                     s.failed = True
                 for sc in scenarios:
-                    apply_append(paths[sc.name], sc.edit["append"])
+                    apply_edit(paths[sc.name], sc.edit)
                     if s.sample(loop, mode, i, f"edit:{sc.name}", sc.name)["exit_code"] != 0:
                         s.failed = True
                 guard.revert()
@@ -709,15 +851,26 @@ def cmd_plan(args):
         print(f"  version: {v}")
     for l in d.loops:
         print(f"\nloop {l.id}   runner {l.runner}   cwd {l.cwd}")
+        env = {**d.env, **l.env}
+        if env:
+            print("  env:   " + " ".join(f"{k}={v}" for k, v in env.items()))
+        if l.setup:
+            print("  setup:    " + "; ".join(_show(c) for c in l.setup) + "   (before every sample)")
+        if l.teardown:
+            print("  teardown: " + "; ".join(_show(c) for c in l.teardown) + "   (after every sample)")
         print(f"  warm:  {_show(l.command)}")
-        prep = "; ".join(_show(c) for c in l.cold_prep) or "(no cold_prep: same as warm)"
-        print(f"  cold:  {prep}  then  {_show(l.command)}")
+        prep = "; ".join(_show(c) for c in l.cold_prep)
+        if l.cold == "fresh-scratch":
+            prep = "empty {scratch} (cold = fresh-scratch)" + ("; " + prep if prep else "")
+        print(f"  cold:  {prep or '(no cold_prep: same as warm)'}  then  {_show(l.command)}")
         sc = d.scenarios_for(l.id)
         for s in sc:
             plant = (f"replace '{s.plant['find']}' with '{s.plant['replace']}'" if "find" in s.plant
                      else f"append '{s.plant['append']}'")
             print(f"  scenario:{s.name}  file {s.file}")
-            print(f"    edit: append '{s.edit['append']}' -> run (must pass) -> revert")
+            edit = (f"replace '{s.edit['find']}' with '{s.edit['replace']}'" if "find" in s.edit
+                    else f"append '{s.edit['append']}'")
+            print(f"    edit: {edit} -> run (must pass) -> revert")
             print(f"    plant: {plant} -> run (must FAIL) -> revert -> verify byte-identical")
         if sc:
             print(f"  sequence: cold, then edits in turn: {', '.join(s.name for s in sc)}; restore all")
