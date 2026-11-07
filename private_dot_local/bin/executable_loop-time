@@ -602,6 +602,25 @@ def scratch_dir(project):
     return scratch_base() / name
 
 
+# Written into a scratch directory when loop-time creates it (or finds it empty). Only a directory
+# carrying it is ever emptied or has its mode changed, so a scratch root pointed by mistake at a
+# parent of real directories cannot cost any of them their contents.
+SCRATCH_MARKER = ".loop-time-scratch"
+
+
+def ensure_scratch(scratch):
+    """Create `scratch` as loop-time's own (mode 0700, marked), or leave an existing directory that
+    is not loop-time's untouched, so `empty_scratch` refuses it."""
+    scratch = Path(scratch)
+    if not scratch.exists():
+        scratch.mkdir(parents=True)
+    if (scratch / SCRATCH_MARKER).is_file():
+        return
+    if scratch.is_dir() and not any(scratch.iterdir()):
+        (scratch / SCRATCH_MARKER).write_text("made by loop-time; its contents are emptied before a cold sample\n")
+        scratch.chmod(0o700)
+
+
 def empty_scratch(scratch, base):
     """Remove the contents of `scratch` (not the directory). Refuses, removing nothing, unless
     `scratch` resolves to a directory strictly inside `base`, and `base` is not a filesystem root
@@ -616,7 +635,11 @@ def empty_scratch(scratch, base):
         return
     if not sc.is_dir():
         raise DeclError([f"refusing to empty '{sc}': not a directory"])
+    if not (sc / SCRATCH_MARKER).is_file():
+        raise DeclError([f"refusing to empty '{sc}': it has no {SCRATCH_MARKER} marker, so loop-time did not make it"])
     for child in sc.iterdir():
+        if child.name == SCRATCH_MARKER:
+            continue
         if child.is_symlink() or not child.is_dir():
             child.unlink()
         else:
@@ -642,8 +665,7 @@ class Session:
         out = dict(os.environ)
         for k, v in merged.items():
             if "{scratch}" in v:
-                self.scratch.mkdir(parents=True, exist_ok=True)
-                self.scratch.chmod(0o700)
+                ensure_scratch(self.scratch)
             out[k] = v.replace("{scratch}", str(self.scratch)).replace("{root}", str(self.decl.root))
         return out, sorted(merged)
 

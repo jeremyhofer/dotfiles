@@ -754,12 +754,13 @@ def test_fresh_scratch_is_emptied_before_each_cold_sample_only(tmp_path, project
     p = write_decl(tmp_path, project, FRESH.format(out=out))
     scratch = Path(os.environ["LOOP_TIME_SCRATCH"]) / "demo"
     scratch.mkdir(parents=True)
+    (scratch / lt.SCRATCH_MARKER).write_text("")  # as an earlier run left it
     (scratch / "stale").write_text("x")
     (scratch / "sub").mkdir()
     (scratch / "sub" / "deep").write_text("x")
     assert run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
     assert out.read_text().strip() == "0"
-    assert sorted(x.name for x in scratch.iterdir()) == ["marker"]
+    assert sorted(x.name for x in scratch.iterdir()) == [lt.SCRATCH_MARKER, "marker"]
     # warm leaves what the previous sample made
     assert run_ok("run", p, "f", "--mode", "warm", "--samples", "1", "--results", tmp_path / "r.jsonl") == 0
     assert out.read_text().strip() == "1"
@@ -772,6 +773,7 @@ def test_fresh_scratch_does_not_follow_symlinks_out(tmp_path, project):
     p = write_decl(tmp_path, project, FRESH.format(out=tmp_path / "count"))
     scratch = Path(os.environ["LOOP_TIME_SCRATCH"]) / "demo"
     scratch.mkdir(parents=True)
+    (scratch / lt.SCRATCH_MARKER).write_text("")  # as an earlier run left it
     (scratch / "link").symlink_to(outside)
     run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl")
     assert (outside / "keep").read_text() == "k"
@@ -815,6 +817,18 @@ def test_cold_run_refuses_when_the_scratch_directory_escapes(tmp_path, project, 
     p = write_decl(tmp_path, project, FRESH.format(out=tmp_path / "count"))
     assert run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl") == 2
     assert (victim / "precious").read_text() == "p"
+
+
+def test_cold_run_never_empties_a_directory_loop_time_did_not_make(tmp_path, project, monkeypatch):
+    # LOOP_TIME_SCRATCH pointed at a parent of real checkouts: the project's "scratch directory"
+    # is then someone's repository, strictly inside the root, and must not be emptied.
+    repos = tmp_path / "repos"
+    (repos / "demo").mkdir(parents=True)
+    (repos / "demo" / "precious").write_text("p")
+    monkeypatch.setenv("LOOP_TIME_SCRATCH", str(repos))
+    p = write_decl(tmp_path, project, FRESH.format(out=tmp_path / "count"))
+    assert run_ok("run", p, "f", "--mode", "cold", "--samples", "1", "--results", tmp_path / "r.jsonl") == 2
+    assert (repos / "demo" / "precious").read_text() == "p"
 
 
 def test_edit_may_be_find_and_replace_and_is_restored(tmp_path, project):
