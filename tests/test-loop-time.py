@@ -260,6 +260,23 @@ def test_nx_parse_finds_tasks_and_cache_hits():
     assert r["cache_hits"] == ["core:build", "ui:build", "ui:test:ci"]
 
 
+def test_nx_parse_reads_colored_output_as_a_real_run_prints_it():
+    # Lines as Nx printed them in a real run with color on: each piece wrapped in escape codes,
+    # and a task name whose configuration is a third colon-separated part.
+    e = "\x1b"
+    text = (
+        f"{e}[2m> {e}[22m{e}[2mnx run{e}[22m app-web:lint  {e}[2m[existing outputs match the cache, left as is]{e}[22m\n"
+        f"{e}[2m> {e}[22m{e}[2mnx run{e}[22m app:lint-format\n"
+        f"{e}[2m> {e}[22m{e}[2mnx run{e}[22m app-web:build  {e}[2m[local cache]{e}[22m\n"
+        f"{e}[2m> {e}[22m{e}[2mnx run{e}[22m app:check-drift:node\n"
+        f"{e}[2mNx read the output from the cache instead of running the command for 1 out of 10 tasks.{e}[22m\n"
+    )
+    r = lt.parse_nx_output(text)
+    assert r["tasks"] == ["app-web:lint", "app:lint-format", "app-web:build", "app:check-drift:node"]
+    assert r["cache_hits"] == ["app-web:lint", "app-web:build"]
+    assert (r["summary_cached"], r["summary_total"]) == (1, 10)
+
+
 def test_nx_parse_uses_the_summary_when_task_lines_are_absent():
     r = lt.parse_nx_output("Nx read the output from the cache instead of running the command for 2 out of 5 tasks.\n")
     assert r["tasks"] == [] and r["summary_cached"] == 2 and r["summary_total"] == 5
