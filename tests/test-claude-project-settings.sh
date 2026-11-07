@@ -93,6 +93,35 @@ v "an excluded wrapper" '{"sandbox":{"excludedCommands":["env *"]}}' "shell, int
 v "a sandbox key beside excludedCommands" '{"sandbox":{"excludedCommands":["ssh *"],"network":{"allowAllUnixSockets":true}}}' "key sandbox.network may not be declared"
 v "a non-object file" '["~/x"]' "not a JSON object"
 v "unparseable JSON" '{ nope' "not valid JSON"
+
+echo "== validate: write roots outside the home directory, declared by the private layer"
+mkdir -p "$tmp/share/music"
+shareroot="$tmp/share/music"
+aw() { printf '{"sandbox":{"filesystem":{"allowWrite":["%s"]}}}' "$1"; }
+v "an absolute path with no roots file" "$(aw "$shareroot/sheets")" "must be written ~/"
+printf '# where a project may write outside the home directory\n\n%s/\n' "$shareroot" > "$sroot/claude/write-roots"
+v "a declared root itself" "$(aw "$shareroot")" ""
+v "a path under a declared root" "$(aw "$shareroot/sheets/2026")" ""
+v "a sibling sharing the root's prefix" "$(aw "${shareroot}x")" "must be written ~/"
+v "a parent of a declared root" "$(aw "$tmp/share")" "must be written ~/"
+v "a .. segment under a declared root" "$(aw "$shareroot/../secret")" ". or .. segment"
+v "a glob under a declared root" "$(aw "$shareroot/*")" "glob"
+v "home paths still valid beside a roots file" '{"sandbox":{"filesystem":{"allowWrite":["~/x"]}}}' ""
+badroot() {  # <name> <root line>: the roots file is refused, failing even a valid declaration
+  printf '%s\n' "$2" > "$sroot/claude/write-roots"
+  printf '{"sandbox":{"filesystem":{"allowWrite":["~/x"]}}}\n' > "$tmp/v.json"
+  out=$(sh "$tool" validate "$tmp/v.json" 2>&1); rc=$?
+  { [ $rc = 1 ] && printf '%s' "$out" | grep -q -- "write-roots"; } && ok "refused root: $1" || bad "refused root: $1" "rc=$rc $out"
+}
+badroot "the filesystem root" "/"
+badroot "the home directory" "$HOME"
+badroot "a parent of the home directory" "$(dirname "$HOME")"
+badroot "a relative path" "share/music"
+badroot "a protected directory" "$HOME/.ssh/keys"
+badroot "a .. segment" "$shareroot/../x"
+badroot "a glob" "$shareroot/*"
+rm -f "$sroot/claude/write-roots"
+
 out=$(sh "$tool" validate 2>&1); rc=$?
 { [ $rc = 1 ] && printf '%s' "$out" | grep -q 'greedy: key permissions'; } \
   && ok "validate with no file checks every declared project's file" || bad "validate all" "rc=$rc $out"

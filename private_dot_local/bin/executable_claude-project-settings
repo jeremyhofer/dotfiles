@@ -21,7 +21,16 @@
 #     claudeLocalSettings: claude/projects/notes.json
 #
 # A relative path is resolved against $CLAUDE_PROJECT_SETTINGS_ROOT, by default ~/.dotlocal, where a
-# private layer deploys. The files hold settings only; the layer documents each grant beside them.
+# private layer deploys.
+#
+# WRITE ROOTS OUTSIDE THE HOME DIRECTORY. An allowWrite entry is written ~/... unless the private
+# layer declares, in claude/write-roots under that same root ($CLAUDE_PROJECT_SETTINGS_WRITE_ROOTS
+# overrides the file), the absolute directories a project may also be granted, one per line, `#`
+# comments and blank lines ignored: a network share's mount, for example. An absolute entry is then
+# valid only at or under one of them. A root that is not absolute, carries a glob, a . or ..
+# segment or a doubled slash, is the filesystem root, is the home directory or contains it, or is at
+# or under a protected directory fails every run, before anything is written: a mistaken roots file
+# must not quietly widen what every project may be granted. The files hold settings only; the layer documents each grant beside them.
 #
 # WHAT MAY BE DECLARED, checked by `validate` and again before every write. The rules are closed:
 #   - only the keys listed in ALLOWED_KEYS below, today sandbox.filesystem.allowWrite and
@@ -77,9 +86,37 @@ command -v jq >/dev/null 2>&1 || die2 "jq is not installed"
 SROOT=${CLAUDE_PROJECT_SETTINGS_ROOT:-$HOME/.dotlocal}
 problems=0; drift=0
 
+# The declared write roots, as a JSON list; a bad line fails the run (see WRITE ROOTS above).
+WROOTS_FILE=${CLAUDE_PROJECT_SETTINGS_WRITE_ROOTS:-$SROOT/claude/write-roots}
+WROOTS='[]'
+if [ -f "$WROOTS_FILE" ]; then
+  _r=$(jq -R -s --arg home "$HOME" --argjson protected "$PROTECTED" '
+    [split("\n")[] | sub("#.*$"; "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") | select(length > 0)] as $lines
+    | ($protected | map(sub("^~"; $home))) as $prot
+    | {roots: [$lines[] | sub("/+$"; "")],
+       bad: [$lines[] as $l | ($l | sub("/+$"; "")) as $r
+         | if ($l | startswith("/") | not) then "\($l) is not an absolute path"
+           elif ($l | test("[*?\\[\\]{}]")) then "\($l) contains a glob character"
+           elif ($l | test("(^|/)\\.{1,2}(/|$)")) then "\($l) contains a . or .. segment"
+           elif ($l | test("//")) then "\($l) contains a doubled slash"
+           elif $r == "" then "\($l) is the filesystem root"
+           elif ($home == $r or ($home | startswith($r + "/"))) then "\($l) is the home directory or contains it"
+           elif any($prot[] as $p | ($r == $p or ($r | startswith($p + "/"))); .) then "\($l) is at or under a protected directory"
+           else empty end]}' "$WROOTS_FILE" 2>/dev/null) || die2 "$WROOTS_FILE cannot be read"
+  _bad=$(printf '%s' "$_r" | jq -r '.bad[]')
+  if [ -n "$_bad" ]; then
+    printf '%s\n' "$_bad" | while IFS= read -r _l; do
+      printf 'claude-project-settings: write-roots (%s): %s\n' "$WROOTS_FILE" "$_l" >&2
+    done
+    exit 1
+  fi
+  WROOTS=$(printf '%s' "$_r" | jq -c .roots)
+fi
+
 # Prints one line per rule the JSON file $1 breaks; prints nothing for a valid file.
 violations() {
-  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson protected "$PROTECTED" --argjson shellish "$SHELLISH" '
+  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson protected "$PROTECTED" --argjson shellish "$SHELLISH" \
+    --argjson roots "$WROOTS" --arg rootsfile "$WROOTS_FILE" '
     def under($dirs): sub("/+$"; "") as $n
       | any($dirs[] as $d | ($n == $d or ($n | startswith($d + "/"))); .);
     if type != "object" then "the file is not a JSON object" else
@@ -92,10 +129,11 @@ violations() {
           elif ($w | type) != "array" then "sandbox.filesystem.allowWrite must be a list"
           else $w[]
             | if type != "string" then "allowWrite entry \(tojson) is not a path"
-              elif (startswith("~/") | not) then "allowWrite entry \(.) must be written ~/..."
               elif test("[*?\\[\\]{}]") then "allowWrite entry \(.) contains a glob character"
               elif test("(^|/)\\.{1,2}(/|$)") then "allowWrite entry \(.) contains a . or .. segment"
               elif test("//") then "allowWrite entry \(.) contains a doubled slash"
+              elif startswith("/") and under($roots) then empty
+              elif (startswith("~/") | not) then "allowWrite entry \(.) must be written ~/..., or be at or under a write root declared in \($rootsfile)"
               elif sub("/+$"; "") == "~" then "allowWrite entry \(.) is the whole home directory"
               elif under($protected) then "allowWrite entry \(.) is at or under a protected directory"
               else empty end

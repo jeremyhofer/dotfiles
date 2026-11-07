@@ -323,7 +323,12 @@ one plain JSON file per project, in settings.json's own shape, which the project
 `claudeLocalSettings: claude/projects/<project>.json`, relative to `~/.dotlocal`. Document each grant
 beside the files (a README), not in them. `claude-project-settings validate` checks a file against
 closed rules: only two keys may be declared. `sandbox.filesystem.allowWrite` takes `~/...` paths with
-no globs, no `.` or `..` segments, and nothing under `~/.ssh`, `~/.gnupg` or `~/.claude`.
+no globs, no `.` or `..` segments, and nothing under `~/.ssh`, `~/.gnupg` or `~/.claude`. A path
+outside the home directory, such as a network share's mount, is accepted only at or under a root
+the layer declares in `claude/write-roots`, relative to `~/.dotlocal`: one absolute directory per
+line, `#` comments allowed. A root that is the filesystem root, the home directory or a parent of
+it, under a protected directory, or not a plain absolute path fails every run, so a mistaken file
+cannot widen what every project may be granted.
 `sandbox.excludedCommands`, the commands that run outside the sandbox in that project, takes entries of
 exactly the form `<command> *` (one plain command name, a space, a star), never a shell, interpreter
 or wrapper, since excluding one would take every command written through it out of the sandbox.

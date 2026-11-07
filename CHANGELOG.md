@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-07
 
+### `claude-project-settings` accepts write paths outside the home directory under declared roots
+
+- A private layer may list absolute directories, such as a network share's mount, in
+  `~/.dotlocal/claude/write-roots` (one per line); a project's `allowWrite` may then name a path at
+  or under one of them. Without the file nothing changes: every entry must still be `~/...`. A bad
+  root (the filesystem root, the home directory or a parent of it, a protected directory, a glob or
+  a relative path) fails the run before anything is written. See `docs/reference/private-layer.md`.
+
 ### `loop-time` gains setup/teardown, env with a private scratch directory, and find/replace edits
 
 - A loop may declare `setup` and `teardown` (lists of commands) that run in the checkout root around
