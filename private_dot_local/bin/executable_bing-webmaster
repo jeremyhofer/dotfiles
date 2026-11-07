@@ -1,0 +1,183 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""bing-webmaster -- read search statistics from the Bing Webmaster Tools API.
+
+WHY IT EXISTS. Bing's index serves Bing, Yahoo and DuckDuckGo, and feeds answer engines. Microsoft
+publishes no MCP server for it and the third-party ones are unvetted, so this is the fleet's owned
+client: read-only, standard library only, and built so the key cannot leak.
+
+    bing-webmaster sites
+    bing-webmaster queries      <site> [--since YYYY-MM-DD]
+    bing-webmaster pages        <site> [--since YYYY-MM-DD]
+    bing-webmaster page-queries <site> <page> [--since YYYY-MM-DD]
+    bing-webmaster traffic      <site> [--since YYYY-MM-DD]
+
+<site> is the site URL as verified in Bing Webmaster Tools (`sites` lists them, e.g.
+`https://example.com/`). Output is a JSON array on stdout, newest first.
+
+WHAT EACH VERB CALLS (https://learn.microsoft.com/en-us/dotnet/api/microsoft.bing.webmaster.api.interfaces.iwebmasterapi):
+  sites         GetUserSites            the sites verified to the key's account
+  queries       GetQueryStats           per search query: Clicks, Impressions, AvgClickPosition,
+                                        AvgImpressionPosition; updated weekly
+  pages         GetPageStats            the same fields per page (the page URL is in `Query`)
+  page-queries  GetPageQueryStats       the queries that reached one page
+  traffic       GetRankAndTrafficStats  Clicks and Impressions for the whole site; updated daily
+
+Each row is one bucket. `Date` is rewritten from Bing's `/Date(<ms>-0700)/` to ISO 8601 with the
+offset Bing gave (UTC when it gave none), so a bucket's calendar day reads as Bing meant it.
+`--since` keeps buckets whose day is on or after the given date. Bing's `__type` field is dropped;
+every other field is passed through unchanged.
+
+KEY FILE. ${XDG_CONFIG_HOME:-$HOME/.config}/bing-webmaster/api-key, one line, written by the owner
+(from a secrets store) and never by this tool. It is refused when readable by group or others, or
+empty. One key covers every site verified to the Microsoft account that made it.
+
+THE KEY NEVER PRINTS. Bing takes it as the `apikey` query parameter, so a request URL carries it.
+This tool never prints a URL, and any text that came back from the network is scrubbed of the key
+before it is shown.
+
+Exit status: 0 on success; 2 on a configuration, network or API error (or a usage error).
+
+ENVIRONMENT. BING_WEBMASTER_BASE_URL replaces https://ssl.bing.com/webmaster/api.svc/json (a test
+stub). BING_WEBMASTER_TIMEOUT is the request timeout in seconds (default 30).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import stat
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+BASE_URL = "https://ssl.bing.com/webmaster/api.svc/json"
+EXIT_ERROR = 2
+
+VERBS = {
+    "sites": ("GetUserSites", []),
+    "queries": ("GetQueryStats", ["site"]),
+    "pages": ("GetPageStats", ["site"]),
+    "page-queries": ("GetPageQueryStats", ["site", "page"]),
+    "traffic": ("GetRankAndTrafficStats", ["site"]),
+}
+
+_DATE = re.compile(r"^/Date\((-?\d+)([+-]\d{4})?\)/$")
+
+
+class Fail(Exception):
+    """An error to report in one line and exit 2."""
+
+
+def key_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "bing-webmaster" / "api-key"
+
+
+def read_key() -> str:
+    p = key_path()
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        raise Fail(f"no key file at {p} (store the API key there, mode 600)")
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise Fail(f"{p} is readable by group or others; chmod 600 it")
+    key = p.read_text().strip()
+    if not key:
+        raise Fail(f"{p} is empty")
+    return key
+
+
+def parse_date(value: str) -> datetime:
+    m = _DATE.match(value)
+    if not m:
+        raise Fail(f"unrecognized date from Bing: {value!r}")
+    ms, off = int(m.group(1)), m.group(2)
+    tz = timezone.utc
+    if off:
+        sign = -1 if off[0] == "-" else 1
+        tz = timezone(sign * timedelta(hours=int(off[1:3]), minutes=int(off[3:5])))
+    return datetime.fromtimestamp(ms / 1000, tz=tz)
+
+
+def normalize(rows: list, since: date | None) -> list:
+    out = []
+    for r in rows:
+        r = {k: v for k, v in r.items() if k != "__type"}
+        if "Date" in r:
+            d = parse_date(r["Date"])
+            if since and d.date() < since:
+                continue
+            r["Date"] = d.isoformat()
+        out.append(r)
+    if any("Date" in r for r in out):
+        out.sort(key=lambda r: r.get("Date", ""), reverse=True)
+    return out
+
+
+def scrub(text: str, key: str) -> str:
+    return text.replace(key, "<key>").replace(urllib.parse.quote(key, safe=""), "<key>")
+
+
+def call(method: str, params: dict, key: str) -> list:
+    base = os.environ.get("BING_WEBMASTER_BASE_URL") or BASE_URL
+    timeout = float(os.environ.get("BING_WEBMASTER_TIMEOUT") or 30)
+    url = f"{base.rstrip('/')}/{method}?" + urllib.parse.urlencode({**params, "apikey": key})
+    req = urllib.request.Request(url, headers={"Content-Type": "application/json; charset=utf-8",
+                                               "User-Agent": "bing-webmaster"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:500]
+        raise Fail(scrub(f"{method}: HTTP {e.code}: {detail}", key))
+    except (urllib.error.URLError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        raise Fail(scrub(f"{method}: cannot reach the API: {reason}", key))
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        raise Fail(scrub(f"{method}: response is not JSON: {body[:200]}", key))
+    rows = data.get("d") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise Fail(scrub(f"{method}: no `d` array in the response: {body[:200]}", key))
+    return rows
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="bing-webmaster", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="verb", required=True, metavar="verb")
+    for verb, (method, args) in VERBS.items():
+        sp = sub.add_parser(verb, help=method)
+        for a in args:
+            sp.add_argument(a)
+        if args:
+            sp.add_argument("--since", type=date.fromisoformat, metavar="YYYY-MM-DD")
+    ns = ap.parse_args(argv)
+    method, args = VERBS[ns.verb]
+    params = {}
+    if "site" in args:
+        params["siteUrl"] = ns.site
+    if "page" in args:
+        params["page"] = ns.page
+    try:
+        key = read_key()
+        rows = normalize(call(method, params, key), getattr(ns, "since", None))
+    except Fail as e:
+        print(f"bing-webmaster: {e}", file=sys.stderr)
+        return EXIT_ERROR
+    json.dump(rows, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

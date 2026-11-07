@@ -34,6 +34,15 @@ Entries are newest first.
 
 ## 2026-11-07
 
+### New tool `bing-webmaster`: Bing Webmaster Tools search statistics, read-only
+
+- `bing-webmaster sites|queries|pages|page-queries|traffic` prints a site's Bing statistics as
+  JSON, newest bucket first, dates as ISO 8601; `--since YYYY-MM-DD` trims. See `--help`.
+- It reads one API key from `~/.config/bing-webmaster/api-key` (mode 600, refused otherwise). A
+  machine without that file gets a one-line error and nothing else changes. The key covers every
+  site verified to the Microsoft account that made it, and the tool never prints it or a request URL.
+- Python run by `uv run --script`, standard library only, like `loop-time`.
+
 ### `claude-project-settings` accepts write paths outside the home directory under declared roots
 
 - A private layer may list absolute directories, such as a network share's mount, in
