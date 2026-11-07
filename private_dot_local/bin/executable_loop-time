@@ -1,0 +1,815 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""loop-time -- time a project's iteration loops reproducibly.
+
+A loop is one round of edit, then feedback: the time from saving a change to knowing whether it is
+right. A declaration file (TOML) names a project's loops; `run` times one loop for N samples and
+appends one JSON line per sample to a results file; `report` summarizes. Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import re
+import resource
+import shlex
+import signal
+import statistics
+import subprocess
+import sys
+import time
+import tomllib
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+EXIT_LOOP_FAILED = 1
+EXIT_INVALID = 2
+EXIT_BLIND = 3
+EXIT_LOAD = 4
+EXIT_RESTORE = 5
+
+EPILOG = """\
+modes (run --mode):
+  warm            the loop as it stands, nothing reset: the floor the tooling itself costs.
+  cold            each sample first runs the loop's cold_prep commands (for example a cache
+                  reset): what a fresh checkout or a cache-busting change pays, the worst case.
+  scenario:NAME   one change scenario. A harmless edit is applied and the loop timed (it must
+                  pass), the edit reverted; then a planted defect is applied and the loop run
+                  again (it MUST fail), then reverted. Why plant a defect: a loop that is fast
+                  because it skipped the check that would have caught the change is blind, not
+                  fast. The planted run is how "still catches the change" becomes a measured
+                  fact; a planted run that passes is reported as BLIND (exit 3). The file is
+                  verified byte-identical afterwards, also after Ctrl-C or an error.
+  sequence        cold first, then every applicable scenario's edit in turn WITHOUT reverting
+                  between them, one record per step: the cost of a working session, where a
+                  cache pays off on the later steps. Every file is restored at the end.
+
+declaration (TOML):
+  project = "name"                 root = "path"  (relative to the declaration file)
+  versions = ["node --version"]    commands whose first output line is recorded per sample
+  [[loop]]      id, command (a string runs under `sh -c`; a list is an argv), cwd (under root),
+                cold_prep (list of commands), runner = "generic" | "nx"
+  [[scenario]]  name, file (under root), edit = {append = "text"},
+                plant = {find = "A", replace = "B"} or {append = "text"}, loops = ["id", ...]
+
+exit status: 0 ok; 1 a loop exited non-zero; 2 invalid declaration or arguments; 3 a scenario was
+blind; 4 refused under load; 5 a file could not be restored.
+results: ~/.local/state/loop-time/results.jsonl, or $LOOP_TIME_RESULTS, or --results.
+"""
+
+
+# ---- declaration -------------------------------------------------------------------------
+
+class DeclError(Exception):
+    def __init__(self, problems):
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
+
+
+class LoadError(Exception):
+    pass
+
+
+class RestoreError(Exception):
+    pass
+
+
+@dataclass
+class Loop:
+    id: str
+    command: object
+    cwd: str = "."
+    cold_prep: list = field(default_factory=list)
+    runner: str = "generic"
+
+
+@dataclass
+class Scenario:
+    name: str
+    file: str
+    edit: dict
+    plant: dict
+    loops: list
+
+
+@dataclass
+class Decl:
+    project: str
+    root: Path
+    versions: list
+    loops: list
+    scenarios: list
+
+    def loop(self, loop_id):
+        return next((l for l in self.loops if l.id == loop_id), None)
+
+    def scenario(self, name):
+        return next((s for s in self.scenarios if s.name == name), None)
+
+    def scenarios_for(self, loop_id):
+        return [s for s in self.scenarios if loop_id in s.loops]
+
+
+TOP_KEYS = {"project", "root", "versions", "loop", "scenario"}
+LOOP_KEYS = {"id", "command", "cwd", "cold_prep", "runner"}
+SCENARIO_KEYS = {"name", "file", "edit", "plant", "loops"}
+EDIT_KEYS = {"append"}
+PLANT_KEYS = {"append", "find", "replace"}
+RUNNERS = {"generic", "nx"}
+
+
+def _unknown(table, allowed, where, problems):
+    for k in sorted(set(table) - allowed):
+        problems.append(f"{where}: unknown key '{k}'")
+
+
+def _is_command(v):
+    return (isinstance(v, str) and v.strip() != "") or (
+        isinstance(v, list) and bool(v) and all(isinstance(x, str) for x in v))
+
+
+def command_argv(command):
+    """A string runs under `sh -c`; a list is an argv as written."""
+    return ["sh", "-c", command] if isinstance(command, str) else list(command)
+
+
+def _under(root, rel):
+    p = (root / rel).resolve()
+    try:
+        p.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return p
+
+
+def load_decl(path):
+    path = Path(path)
+    problems = []
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise DeclError([f"cannot read {path}: {e.strerror}"])
+    except tomllib.TOMLDecodeError as e:
+        raise DeclError([f"{path}: not valid TOML: {e}"])
+    _unknown(data, TOP_KEYS, "declaration", problems)
+    project = data.get("project")
+    if not isinstance(project, str) or not project:
+        problems.append("declaration: 'project' (a name) is required")
+    root_raw = data.get("root")
+    root = None
+    if not isinstance(root_raw, str) or not root_raw:
+        problems.append("declaration: 'root' (the checkout to measure in) is required")
+    else:
+        root = Path(os.path.expanduser(root_raw))
+        if not root.is_absolute():
+            root = path.parent / root
+        if not root.is_dir():
+            problems.append(f"declaration: root '{root}' is not a directory")
+            root = None
+    versions = data.get("versions", [])
+    if not (isinstance(versions, list) and all(isinstance(v, str) for v in versions)):
+        problems.append("declaration: 'versions' must be a list of command strings")
+        versions = []
+
+    loops, seen = [], set()
+    raw_loops = data.get("loop", [])
+    if not raw_loops:
+        problems.append("declaration: at least one [[loop]] is required")
+    for i, t in enumerate(raw_loops):
+        lid = t.get("id")
+        where = f"loop '{lid}'" if isinstance(lid, str) else f"loop #{i + 1}"
+        _unknown(t, LOOP_KEYS, where, problems)
+        if not isinstance(lid, str) or not lid:
+            problems.append(f"{where}: 'id' is required")
+            continue
+        if lid in seen:
+            problems.append(f"{where}: duplicate id")
+        seen.add(lid)
+        if not _is_command(t.get("command")):
+            problems.append(f"{where}: 'command' (a string or a list of strings) is required")
+        runner = t.get("runner", "generic")
+        if runner not in RUNNERS:
+            problems.append(f"{where}: runner '{runner}' is not one of {sorted(RUNNERS)}")
+        prep = t.get("cold_prep", [])
+        if not (isinstance(prep, list) and all(_is_command(c) for c in prep)):
+            problems.append(f"{where}: 'cold_prep' must be a list of commands")
+            prep = []
+        cwd = t.get("cwd", ".")
+        if root is not None:
+            d = _under(root, cwd) if isinstance(cwd, str) else None
+            if d is None or not d.is_dir():
+                problems.append(f"{where}: cwd '{cwd}' is not a directory under root")
+        loops.append(Loop(lid, t.get("command"), cwd if isinstance(cwd, str) else ".", prep, runner))
+
+    scenarios = []
+    for i, t in enumerate(data.get("scenario", [])):
+        name = t.get("name")
+        where = f"scenario '{name}'" if isinstance(name, str) else f"scenario #{i + 1}"
+        _unknown(t, SCENARIO_KEYS, where, problems)
+        if not isinstance(name, str) or not name:
+            problems.append(f"{where}: 'name' is required")
+            continue
+        edit, plant = t.get("edit"), t.get("plant")
+        if not isinstance(edit, dict):
+            problems.append(f"{where}: 'edit' is required, e.g. edit = {{ append = \"text\" }}")
+            edit = {}
+        else:
+            _unknown(edit, EDIT_KEYS, f"{where} edit", problems)
+            if not isinstance(edit.get("append"), str):
+                problems.append(f"{where}: edit needs 'append'")
+        if not isinstance(plant, dict):
+            problems.append(f"{where}: 'plant' is required, the defect the loop must catch")
+            plant = {}
+        else:
+            _unknown(plant, PLANT_KEYS, f"{where} plant", problems)
+            if "find" in plant:
+                ok = isinstance(plant["find"], str) and isinstance(plant.get("replace"), str) \
+                    and "append" not in plant
+            else:
+                ok = isinstance(plant.get("append"), str) and "replace" not in plant
+            if not ok:
+                problems.append(f"{where}: plant is either {{ find, replace }} or {{ append }}")
+        applies = t.get("loops")
+        if not (isinstance(applies, list) and applies and all(isinstance(x, str) for x in applies)):
+            problems.append(f"{where}: 'loops' (the loop ids it applies to) is required")
+            applies = []
+        for lid in applies:
+            if lid not in seen:
+                problems.append(f"{where}: unknown loop '{lid}'")
+        rel = t.get("file")
+        if not isinstance(rel, str) or not rel:
+            problems.append(f"{where}: 'file' is required")
+        elif root is not None:
+            f = _under(root, rel)
+            if f is None:
+                problems.append(f"{where}: file '{rel}' is outside root")
+            elif not f.is_file():
+                problems.append(f"{where}: file '{rel}' does not exist under root")
+            elif isinstance(plant.get("find"), str) and plant["find"].encode() not in f.read_bytes():
+                problems.append(f"{where}: plant text '{plant['find']}' is not in {rel}")
+        scenarios.append(Scenario(name, rel if isinstance(rel, str) else "", edit, plant, applies))
+    names = [s.name for s in scenarios]
+    for n in sorted({n for n in names if names.count(n) > 1}):
+        problems.append(f"scenario '{n}': duplicate name")
+
+    if problems:
+        raise DeclError(problems)
+    return Decl(project, root, versions, loops, scenarios)
+
+
+# ---- platform reads (each degrades to None with a reason) --------------------------------
+
+def parse_meminfo(text):
+    m = re.search(r"^MemAvailable:\s+(\d+)\s*kB", text, re.M)
+    return int(m.group(1)) * 1024 if m else None
+
+
+def parse_vm_stat(text):
+    ps = re.search(r"page size of (\d+) bytes", text)
+    if not ps:
+        return None
+    pages = 0
+    found = False
+    for label in ("free", "inactive", "speculative"):
+        m = re.search(rf"^Pages {label}:\s+(\d+)", text, re.M)
+        if m:
+            pages += int(m.group(1))
+            found = True
+    return pages * int(ps.group(1)) if found else None
+
+
+def read_free_memory(system=None, meminfo_path="/proc/meminfo", vm_stat_cmd=("vm_stat",)):
+    """(free bytes or None, reason or None). Never raises."""
+    system = system or platform.system()
+    try:
+        if system == "Linux":
+            val = parse_meminfo(Path(meminfo_path).read_text())
+            return (val, None) if val is not None else (None, "no MemAvailable in meminfo")
+        if system == "Darwin":
+            out = subprocess.run(list(vm_stat_cmd), capture_output=True, text=True, timeout=10).stdout
+            val = parse_vm_stat(out)
+            return (val, None) if val is not None else (None, "vm_stat output not understood")
+        return None, f"no free-memory reader for {system}"
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return None, f"free memory unreadable: {type(e).__name__}"
+
+
+def tmp_usage(root=None, uid=None, budget=1.0):
+    """(bytes in files the user owns under root or None, reason or None), bounded by a time budget."""
+    root = root or os.environ.get("LOOP_TIME_TMP_ROOT", "/tmp")
+    uid = os.getuid() if uid is None else uid
+    deadline = time.monotonic() + budget
+    total = 0
+    root = str(root)
+    if not os.path.isdir(root):
+        return None, f"{root} is not readable"
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            if time.monotonic() > deadline:
+                return None, "scan exceeded its time budget"
+            for n in filenames:
+                try:
+                    st = os.lstat(os.path.join(dirpath, n))
+                except OSError:
+                    continue
+                if st.st_uid == uid:
+                    total += st.st_size
+    except OSError as e:
+        return None, f"unreadable: {type(e).__name__}"
+    return total, None
+
+
+def read_loadavg():
+    try:
+        return os.getloadavg()[0]
+    except OSError:
+        return None
+
+
+def machine_state():
+    mem, mem_reason = read_free_memory()
+    tmp, tmp_reason = tmp_usage()
+    return {"load1": read_loadavg(), "mem_free_bytes": mem, "mem_reason": mem_reason,
+            "tmp_bytes": tmp, "tmp_reason": tmp_reason}
+
+
+# ---- load guard --------------------------------------------------------------------------
+
+def wait_for_load(max_load, force, getload=read_loadavg, sleep=time.sleep, wait=120, interval=5):
+    """Return True when the sample must be marked under_load. Waits up to `wait` seconds for the
+    1-minute load to fall to max_load, then raises LoadError, unless force (no waiting, mark it)."""
+    waited = 0
+    while True:
+        load = getload()
+        if load is None or load <= max_load:
+            return False
+        if force:
+            return True
+        if waited >= wait:
+            raise LoadError(f"1-minute load {load:.2f} is above {max_load:.2f} after waiting {waited}s; "
+                            "pass --force to measure anyway (the sample is marked under_load)")
+        sleep(interval)
+        waited += interval
+
+
+# ---- nx output ---------------------------------------------------------------------------
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+NX_TASK = re.compile(r"^\s*>\s+nx run\s+(\S+:\S+)(.*)$")
+NX_SUMMARY = re.compile(r"read the output from the cache instead of running the command for (\d+) out of (\d+) tasks")
+NX_CACHE_MARKS = ("[local cache]", "[remote cache]", "existing outputs match the cache")
+
+
+def parse_nx_output(text):
+    """Tasks Nx ran and which were replayed from cache, parsed defensively from captured output."""
+    text = ANSI.sub("", text)
+    tasks, hits = [], []
+    for line in text.splitlines():
+        m = NX_TASK.match(line)
+        if not m:
+            continue
+        task = m.group(1)
+        if task not in tasks:
+            tasks.append(task)
+        if any(mark in m.group(2) for mark in NX_CACHE_MARKS) and task not in hits:
+            hits.append(task)
+    result = {"tasks": tasks, "cache_hits": hits}
+    s = NX_SUMMARY.search(text)
+    if s:
+        result["summary_cached"], result["summary_total"] = int(s.group(1)), int(s.group(2))
+    return result
+
+
+# ---- running one command -----------------------------------------------------------------
+
+def measure(argv, cwd, out_path):
+    """Run argv with output captured to out_path. Returns (exit code, wall s, children CPU s)."""
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    t0 = time.monotonic()
+    with open(out_path, "wb") as out:
+        proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        try:
+            rc = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    wall = time.monotonic() - t0
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    return rc, wall, cpu
+
+
+def run_quiet(command, cwd):
+    """Run a prep or version command; (exit code, first output line)."""
+    try:
+        p = subprocess.run(command_argv(command), cwd=cwd, capture_output=True, text=True, timeout=300,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        return 127, f"error: {type(e).__name__}"
+    line = (p.stdout.strip() or p.stderr.strip()).splitlines()
+    return p.returncode, (line[0] if line else "")
+
+
+def git_state(root):
+    def g(*a):
+        return subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True)
+    head = g("rev-parse", "HEAD")
+    st = g("status", "--porcelain")
+    return (head.stdout.strip() if head.returncode == 0 else None,
+            (bool(st.stdout.strip()) if st.returncode == 0 else None))
+
+
+# ---- file edits and their guaranteed restoration -----------------------------------------
+
+def restore_file(path, data):
+    Path(path).write_bytes(data)
+
+
+def apply_append(path, text):
+    data = Path(path).read_bytes()
+    if data and not data.endswith(b"\n"):
+        data += b"\n"
+    Path(path).write_bytes(data + text.encode() + b"\n")
+
+
+def apply_plant(path, plant):
+    if "find" in plant:
+        data = Path(path).read_bytes()
+        find = plant["find"].encode()
+        if find not in data:
+            raise RestoreError(f"plant text '{plant['find']}' is not in {path}")
+        Path(path).write_bytes(data.replace(find, plant["replace"].encode(), 1))
+    else:
+        apply_append(path, plant["append"])
+
+
+class FileGuard:
+    """Snapshots files; restores them on exit however the block ends; verifies byte identity."""
+
+    def __init__(self, paths):
+        self.originals = {p: Path(p).read_bytes() for p in paths}
+
+    def revert(self, path=None):
+        for p in ([path] if path else list(self.originals)):
+            data = self.originals[p]
+            if Path(p).read_bytes() != data:
+                restore_file(p, data)
+            if Path(p).read_bytes() != data:
+                raise RestoreError(f"{p} is not byte-identical after reverting; refusing to continue")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.revert()
+        except RestoreError:
+            if exc[0] is None:
+                raise
+            print("loop-time: WARNING: a file could not be restored; check git status", file=sys.stderr)
+        return False
+
+
+class _Interrupted(KeyboardInterrupt):
+    pass
+
+
+def _install_signal_handlers():
+    def handler(signum, frame):
+        raise _Interrupted(signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
+
+def check_scenario_files_clean(decl, scenarios):
+    """Refuse to start when a scenario file already differs from HEAD."""
+    bad = []
+    for s in scenarios:
+        r = subprocess.run(["git", "-C", str(decl.root), "status", "--porcelain", "--", s.file],
+                           capture_output=True, text=True)
+        if r.returncode != 0 or r.stdout.strip():
+            bad.append(s.file)
+    if bad:
+        raise DeclError([f"{f} differs from HEAD (or is not tracked); commit or restore it first"
+                         for f in sorted(set(bad))])
+
+
+# ---- the run engine ----------------------------------------------------------------------
+
+def default_results():
+    env = os.environ.get("LOOP_TIME_RESULTS")
+    return Path(env) if env else Path.home() / ".local" / "state" / "loop-time" / "results.jsonl"
+
+
+def _slug(s):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+
+
+class Session:
+    def __init__(self, decl, results, max_load, force, wait=120):
+        self.decl, self.results, self.max_load, self.force, self.wait = decl, Path(results), max_load, force, wait
+        self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        self.head, self.dirty = git_state(decl.root)
+        self.versions = {c: run_quiet(c, decl.root)[1] for c in decl.versions}
+        self.counter = 0
+        self.failed = False
+        self.blind = []
+
+    def sample(self, loop, mode, sample, step=None, scenario=None, caught_if_failing=False):
+        under = wait_for_load(self.max_load, self.force, wait=self.wait)
+        self.counter += 1
+        outp = self.results.parent / "output" / (
+            f"{self.run_id}-{self.counter:03d}-{_slug(loop.id)}-{_slug(mode)}-{_slug(step or 'run')}.log")
+        start = machine_state()
+        cwd = self.decl.root / loop.cwd
+        rc, wall, cpu = measure(command_argv(loop.command), cwd, outp)
+        end = machine_state()
+        rec = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+               "project": self.decl.project, "loop": loop.id, "mode": mode, "step": step,
+               "scenario": scenario, "sample": sample, "exit_code": rc,
+               "wall_seconds": round(wall, 4), "cpu_seconds": round(cpu, 4),
+               "git_head": self.head, "tree_dirty": self.dirty, "start": start, "end": end,
+               "under_load": under, "versions": self.versions, "runner": loop.runner,
+               "output": str(outp)}
+        if caught_if_failing:
+            rec["caught"] = rc != 0
+        if loop.runner == "nx":
+            try:
+                rec["nx"] = parse_nx_output(outp.read_text(errors="replace"))
+            except OSError:
+                rec["nx"] = parse_nx_output("")
+        self.results.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.results, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        return rec
+
+    def cold_prep(self, loop):
+        for c in loop.cold_prep:
+            rc, line = run_quiet(c, self.decl.root / loop.cwd)
+            if rc != 0:
+                raise RuntimeError(f"cold_prep failed (exit {rc}) for loop '{loop.id}': {line}")
+
+
+def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
+    s = Session(decl, results, max_load, force, wait)
+    scenarios = decl.scenarios_for(loop.id)
+    if mode.startswith("scenario:"):
+        scenarios = [decl.scenario(mode.split(":", 1)[1])]
+    if mode.startswith("scenario:") or mode == "sequence":
+        check_scenario_files_clean(decl, scenarios)
+    paths = {sc.name: decl.root / sc.file for sc in scenarios}
+    if mode in ("warm", "cold"):
+        for i in range(samples):
+            if mode == "cold":
+                s.cold_prep(loop)
+            if s.sample(loop, mode, i)["exit_code"] != 0:
+                s.failed = True
+    elif mode.startswith("scenario:"):
+        sc = scenarios[0]
+        path = paths[sc.name]
+        with FileGuard([path]) as guard:
+            for i in range(samples):
+                apply_append(path, sc.edit["append"])
+                rec = s.sample(loop, mode, i, "edit", sc.name)
+                guard.revert()
+                if rec["exit_code"] != 0:
+                    s.failed = True
+                    print(f"loop-time: the edit run of '{loop.id}' failed (exit {rec['exit_code']}); "
+                          "skipping the planted run", file=sys.stderr)
+                    continue
+                apply_plant(path, sc.plant)
+                rec = s.sample(loop, mode, i, "plant", sc.name, caught_if_failing=True)
+                guard.revert()
+                if not rec["caught"]:
+                    s.blind.append(sc.name)
+                    print(f"loop-time: BLIND: scenario '{sc.name}': the planted defect did not fail loop "
+                          f"'{loop.id}'. Its time measures a check that does not catch this change.",
+                          file=sys.stderr)
+    elif mode == "sequence":
+        with FileGuard(list(paths.values())) as guard:
+            for i in range(samples):
+                s.cold_prep(loop)
+                if s.sample(loop, mode, i, "cold")["exit_code"] != 0:
+                    s.failed = True
+                for sc in scenarios:
+                    apply_append(paths[sc.name], sc.edit["append"])
+                    if s.sample(loop, mode, i, f"edit:{sc.name}", sc.name)["exit_code"] != 0:
+                        s.failed = True
+                guard.revert()
+    return s
+
+
+# ---- report ------------------------------------------------------------------------------
+
+def load_records(path):
+    recs, bad = [], 0
+    for line in Path(path).read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+            if isinstance(r, dict):
+                recs.append(r)
+                continue
+        except json.JSONDecodeError:
+            pass
+        bad += 1
+    return recs, bad
+
+
+def summarize(recs):
+    groups = {}
+    for r in recs:
+        key = (r.get("project"), r.get("loop"), r.get("mode"), r.get("step"))
+        groups.setdefault(key, []).append(r)
+    out = []
+    for (project, loop, mode, step), rs in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        walls = [r["wall_seconds"] for r in rs if isinstance(r.get("wall_seconds"), (int, float))]
+        cpus = [r["cpu_seconds"] for r in rs if isinstance(r.get("cpu_seconds"), (int, float))]
+        tasks = sum(len(r["nx"]["tasks"]) for r in rs if r.get("nx"))
+        hits = sum(len(r["nx"]["cache_hits"]) for r in rs if r.get("nx"))
+        plants = [r for r in rs if r.get("step") == "plant"]
+        out.append({"project": project, "loop": loop, "mode": mode, "step": step, "samples": len(rs),
+                    "wall_median": statistics.median(walls) if walls else None,
+                    "wall_min": min(walls) if walls else None, "wall_max": max(walls) if walls else None,
+                    "cpu_median": statistics.median(cpus) if cpus else None,
+                    "cache_hit_share": hits / tasks if tasks else None,
+                    "caught": all(r.get("caught") for r in plants) if plants else None,
+                    "under_load": sum(1 for r in rs if r.get("under_load"))})
+    return out
+
+
+def cmd_report(args):
+    path = Path(args.results) if args.results else default_results()
+    if not path.is_file():
+        print(f"loop-time: no results at {path}", file=sys.stderr)
+        return EXIT_INVALID
+    recs, bad = load_records(path)
+    groups = summarize(recs)
+    if bad:
+        print(f"loop-time: skipped {bad} unreadable line(s)", file=sys.stderr)
+    if args.json:
+        print(json.dumps(groups, indent=2))
+        return 0
+    rows = [("project", "loop", "mode", "n", "wall med", "wall min-max", "cpu med", "cache hit", "note")]
+
+    def f(v):
+        return "-" if v is None else f"{v:.2f}"
+
+    for g in groups:
+        label = g["mode"] + (f"/{g['step']}" if g["step"] else "")
+        note = []
+        if g["caught"] is False:
+            note.append("BLIND")
+        if g["under_load"]:
+            note.append(f"{g['under_load']} under load")
+        rows.append((str(g["project"]), str(g["loop"]), label, str(g["samples"]), f(g["wall_median"]),
+                     f"{f(g['wall_min'])}-{f(g['wall_max'])}", f(g["cpu_median"]),
+                     "-" if g["cache_hit_share"] is None else f"{g['cache_hit_share'] * 100:.0f}%",
+                     ",".join(note)))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    return 0
+
+
+# ---- plan --------------------------------------------------------------------------------
+
+def _show(command):
+    return command if isinstance(command, str) else shlex.join(command)
+
+
+def _print_problems(e):
+    for p in e.problems:
+        print(f"loop-time: {p}", file=sys.stderr)
+
+
+def cmd_plan(args):
+    try:
+        d = load_decl(args.declaration)
+    except DeclError as e:
+        _print_problems(e)
+        return EXIT_INVALID
+    print(f"project {d.project}   root {d.root}")
+    for v in d.versions:
+        print(f"  version: {v}")
+    for l in d.loops:
+        print(f"\nloop {l.id}   runner {l.runner}   cwd {l.cwd}")
+        print(f"  warm:  {_show(l.command)}")
+        prep = "; ".join(_show(c) for c in l.cold_prep) or "(no cold_prep: same as warm)"
+        print(f"  cold:  {prep}  then  {_show(l.command)}")
+        sc = d.scenarios_for(l.id)
+        for s in sc:
+            plant = (f"replace '{s.plant['find']}' with '{s.plant['replace']}'" if "find" in s.plant
+                     else f"append '{s.plant['append']}'")
+            print(f"  scenario:{s.name}  file {s.file}")
+            print(f"    edit: append '{s.edit['append']}' -> run (must pass) -> revert")
+            print(f"    plant: {plant} -> run (must FAIL) -> revert -> verify byte-identical")
+        if sc:
+            print(f"  sequence: cold, then edits in turn: {', '.join(s.name for s in sc)}; restore all")
+    return 0
+
+
+# ---- run command -------------------------------------------------------------------------
+
+def cmd_run(args):
+    try:
+        d = load_decl(args.declaration)
+    except DeclError as e:
+        _print_problems(e)
+        return EXIT_INVALID
+    loop = d.loop(args.loop)
+    problems = []
+    if loop is None:
+        problems.append(f"unknown loop '{args.loop}' (declared: {', '.join(l.id for l in d.loops)})")
+    mode = args.mode
+    if mode not in ("warm", "cold", "sequence") and not mode.startswith("scenario:"):
+        problems.append(f"unknown mode '{mode}'")
+    elif loop is not None and mode.startswith("scenario:"):
+        sc = d.scenario(mode.split(":", 1)[1])
+        if sc is None:
+            problems.append(f"unknown scenario '{mode.split(':', 1)[1]}'")
+        elif loop.id not in sc.loops:
+            problems.append(f"scenario '{sc.name}' does not apply to loop '{loop.id}'")
+    elif loop is not None and mode == "sequence" and not d.scenarios_for(loop.id):
+        problems.append(f"loop '{loop.id}' has no scenarios; a sequence needs at least one")
+    if args.samples < 1:
+        problems.append("--samples must be at least 1")
+    if problems:
+        _print_problems(DeclError(problems))
+        return EXIT_INVALID
+    max_load = args.max_load if args.max_load is not None else (os.cpu_count() or 2) / 2
+    results = Path(args.results) if args.results else default_results()
+    _install_signal_handlers()
+    try:
+        s = run_loop(d, loop, mode, args.samples, results, max_load, args.force, args.load_wait)
+    except DeclError as e:
+        _print_problems(e)
+        return EXIT_INVALID
+    except LoadError as e:
+        print(f"loop-time: refused: {e}", file=sys.stderr)
+        return EXIT_LOAD
+    except RestoreError as e:
+        print(f"loop-time: {e}", file=sys.stderr)
+        return EXIT_RESTORE
+    except RuntimeError as e:
+        print(f"loop-time: {e}", file=sys.stderr)
+        return EXIT_LOOP_FAILED
+    except KeyboardInterrupt:
+        print("loop-time: interrupted; files restored", file=sys.stderr)
+        return 130
+    print(f"loop-time: {s.counter} record(s) appended to {results}")
+    if s.blind:
+        return EXIT_BLIND
+    return EXIT_LOOP_FAILED if s.failed else 0
+
+
+# ---- cli ---------------------------------------------------------------------------------
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="loop-time", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
+        description="Time a project's iteration loops reproducibly: run a declared loop for N samples, "
+                    "append one JSON line per sample, and report medians.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    pl = sub.add_parser("plan", help="validate a declaration and print what every mode would run")
+    pl.add_argument("declaration")
+    r = sub.add_parser("run", help="time one loop", formatter_class=argparse.RawDescriptionHelpFormatter,
+                       epilog=EPILOG)
+    r.add_argument("declaration")
+    r.add_argument("loop")
+    r.add_argument("--mode", default="warm", help="warm (default), cold, scenario:NAME or sequence")
+    r.add_argument("--samples", type=int, default=3)
+    r.add_argument("--results", help="results file (default $LOOP_TIME_RESULTS or "
+                                     "~/.local/state/loop-time/results.jsonl)")
+    r.add_argument("--max-load", type=float, default=None,
+                   help="refuse a sample while the 1-minute load average exceeds this (default: half the CPUs)")
+    r.add_argument("--load-wait", type=int, default=120, help="seconds to wait for the load to fall (default 120)")
+    r.add_argument("--force", action="store_true", help="measure anyway above --max-load; marks under_load")
+    rp = sub.add_parser("report", help="summarize a results file")
+    rp.add_argument("--results")
+    rp.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    return {"plan": cmd_plan, "run": cmd_run, "report": cmd_report}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

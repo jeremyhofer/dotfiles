@@ -14,6 +14,9 @@
 # is replayed, whole, only when it fails; results print in suite-name order whatever the finish
 # order, so two runs of the same tree print the same lines.
 #
+# A suite is tests/test-*.sh (sh, bash or zsh) or tests/test-*.py whose shebang is
+# `#!/usr/bin/env -S uv run --script` (run as `uv run --script`, SKIPped when uv is missing).
+#
 # Usage:
 #   sh tests/run-all.sh            # every suite
 #   sh tests/run-all.sh kb         # only suites whose name contains "kb"
@@ -52,12 +55,15 @@ cat > "$work/worker.sh" <<'EOF'
 # args: <work dir> <suite path> <interpreter>
 work=$1; t=$2; interp=$3
 name=$(basename "$t")
-"$interp" "$t" > "$work/out/$name" 2>&1 < /dev/null
+case "$interp" in
+  uv) uv run --script "$t" > "$work/out/$name" 2>&1 < /dev/null ;;
+  *)  "$interp" "$t" > "$work/out/$name" 2>&1 < /dev/null ;;
+esac
 echo "$?" > "$work/rc/$name"
 EOF
 
 : > "$work/list"; : > "$work/names"
-for t in "$here"/test-*.sh; do
+for t in "$here"/test-*.sh "$here"/test-*.py; do
   [ -f "$t" ] || continue
   name=$(basename "$t")
   if [ -n "$filter" ]; then
@@ -66,9 +72,15 @@ for t in "$here"/test-*.sh; do
   # The interpreter comes from the shebang (`#!/usr/bin/env X` and `#!/bin/X` both reduce to X):
   # a zsh suite run through `sh` fails on zsh-only syntax, which reads like a broken test rather
   # than a broken runner.
-  interp=$(sed -n '1s|^#!.*[/ ]||p' "$t")
+  # A `#!/usr/bin/env -S uv run --script` shebang (a PEP 723 suite that declares its own
+  # dependencies) names the interpreter `uv`, run as `uv run --script`; a machine without `uv`
+  # gets the same visible SKIP as any other missing interpreter.
+  case $(sed -n '1p' "$t") in
+    *"uv run --script"*) interp=uv ;;
+    *) interp=$(sed -n '1s|^#!.*[/ ]||p' "$t") ;;
+  esac
   case "$interp" in
-    sh|bash|zsh) ;;
+    sh|bash|zsh|uv) ;;
     *) printf 'SKIP   %s (unrecognized interpreter: %s)\n' "$name" "${interp:-none}" >&2; continue ;;
   esac
   if ! command -v "$interp" >/dev/null 2>&1; then

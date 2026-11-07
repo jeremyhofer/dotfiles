@@ -32,6 +32,20 @@ Entries are newest first.
 
 ---
 
+## 2026-11-07
+
+### New tool `loop-time`, and the first Python tool run by `uv run --script`
+
+- `loop-time` times a project's iteration loops (a commit gate, one test, the full local gate) from a
+  TOML declaration, in cold, warm, per-change-scenario and sequence modes, and reports medians. A
+  scenario plants a defect and requires the loop to fail on it, so a loop that is fast because it
+  skipped a check is reported as blind. See `loop-time --help`.
+- It is written in Python with inline script metadata and needs `uv` on `PATH` (it starts in about
+  20 ms once `uv`'s cache is warm). `uv` is in the Brewfile; a machine without it cannot run the tool.
+- `tests/run-all.sh` now also runs `tests/test-*.py` suites whose shebang is
+  `#!/usr/bin/env -S uv run --script`. Such a suite fetches its pinned `pytest` on first run, so
+  that run needs the network; a machine without `uv` prints a `SKIP` line for it.
+
 ## 2026-11-06
 
 ### `~/.claude/CLAUDE.md` imports the standards in depth from `~/.claude/standards/` — ACTION
