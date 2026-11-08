@@ -1873,7 +1873,7 @@ warn_if_worktree() {
 # crash-respawn from racing the intended relaunch. Until that is designed, this stays refused, and
 # `--force-self` is deliberately gone rather than left as an escape hatch.
 cmd_refresh() {
-  local dry=0 stub_set=0 stub_text="" name="" json script self_pid rows pid id waited live
+  local dry=0 stub_set=0 stub_text="" name="" json script self_pid rows pid id waited live holder
   local force_set=0 force_text=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1966,18 +1966,26 @@ cmd_refresh() {
   # (2) Do not assume the stop took. `claude rm` can lag the process exit, and `up` treats ANY live
   # row as "already running" and declines -- which is exactly how the hand-run pair fails silently.
   # Wait for the row to go, and refuse loudly rather than launching a duplicate if it does not.
+  # The same for the process itself: the launch below refuses a name a live process still holds
+  # (live_holder), and a stopped session can outlive its row by a moment while it exits.
   waited=0
   live=1
+  holder=""
   while [ "$waited" -lt 15 ]; do
     json=$(agents_json)
     live=$(printf '%s' "$json" | jq --arg n "$name" '[.[]|select(.name==$n)]|length')
-    [ "$live" = "0" ] && break
+    holder=""
+    [ "$live" = "0" ] && holder=$(live_holder "$name")
+    [ "$live" = "0" ] && [ -z "$holder" ] && break
     sleep 1
     waited=$((waited + 1))
   done
   [ "$live" = "0" ] \
     || die "refresh: '$name' still has a live row after ${waited}s; NOT launching a second one.
   Check 'fleet-canonicals status' and clear it before retrying."
+  [ -z "$holder" ] \
+    || die "refresh: '$name' was stopped but a live process still holds the name after ${waited}s
+  ($holder); NOT launching a second one. Check 'fleet-canonicals status' before retrying."
 
   # The OLD session's root, and ONLY the old one: this runs after the wait loop above has already
   # confirmed zero live rows for $name, and strictly BEFORE cmd_up below writes a fresh record for

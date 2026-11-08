@@ -73,7 +73,7 @@ export FLEET_STATE="$T/state" FLEET_TMPROOT_PREFIX="$T/tmproots" FLEET_HANDOFFS_
 export FLEET_TRANSCRIPT_DIR="$T/transcripts" XDG_RUNTIME_DIR="$T/run"
 export FLEET_CANONICALS_CONFIG="$T/config" FLEET_RESPAWN_WAIT=4
 # Claude Code's per-process records and /proc are fixtures too, so the real ones are never read.
-export FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc"
+export FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc" FLEET_JOBS_DIR="$T/jobs"
 mkdir -p "$T/state" "$T/tmproots" "$T/transcripts/p" "$T/run/claude-usage" "$T/pids" "$T/proc"
 Q="$T/state/requests"
 # The suite itself may run inside a session; its id must not make the fixtures' requester.
@@ -89,7 +89,12 @@ printf '%s\n' "$*" >> "$CLAUDE_LOG"
 printf '%s\n' "$PATH" > "$CLAUDE_LOG.path"
 case "$1" in
   respawn) jq --arg i "$2" 'map(if .id == $i then .state = "working" | .live = true else . end)' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS" ;;
-  rm)      jq --arg i "$2" 'map(select(.id != $i))' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS" ;;
+  rm)      # The removed session's process exits too: drop its fixture pid records and /proc entries.
+           sid=$(jq -r --arg i "$2" '.[] | select(.id == $i) | .sessionId' "$AGENTS")
+           for r in "$FLEET_PID_RECORD_DIR"/*.json; do
+             [ -f "$r" ] && [ "$(jq -r .sessionId "$r")" = "$sid" ] && { p=$(jq -r .pid "$r"); rm -f "$r"; rm -f "$FLEET_PROC_ROOT/$p/stat"; }
+           done
+           jq --arg i "$2" 'map(select(.id != $i))' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS" ;;
 esac
 exit 0
 STUB
@@ -426,6 +431,42 @@ plant r-bl down alpha-canonical alpha-canonical
 serve >/dev/null; expect r-bl waiting working "a blocked session's stop waits"
 [[ "$(result r-bl detail)" == *"no waitingFor"* ]] && ok "the reason names a blocked state with no waitingFor" \
   || bad "blocked detail: $(result r-bl detail)"
+
+# parked signals: `blocked` with no waitingFor is idle only when the session's own pid record says
+# idle AND its handoff was recorded after it started (the setup above recorded each handoff now)
+pid_for() {  # pid_for PID NAME SESSION STATUS -- a live pid record for a session
+  jq -n --argjson p "$1" --arg n "$2" --arg sid "$3" --arg st "$4" \
+    '{pid:$p, sessionId:$sid, kind:"bg", name:$n, procStart:"555", status:$st}' > "$T/pids/$1.json"
+  mkdir -p "$T/proc/$1"; print "$1 (claude) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 555 1 1" > "$T/proc/$1/stat"
+}
+reset; live_row pk000001 alpha-canonical blocked s-pk; transcript s-pk ended; pid_for 5101 alpha-canonical s-pk idle
+plant r-pk1 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-pk1 done "" "blocked with no waitingFor, idle by its own record and parked since it started, is served"
+reset; live_row pk000002 alpha-canonical blocked s-pk; transcript s-pk ended; pid_for 5102 alpha-canonical s-pk busy
+mkdir -p "$T/jobs/pk000002"; jq -n '{state:"blocked", tempo:"blocked", needs:"Decide: footer basis"}' > "$T/jobs/pk000002/state.json"
+plant r-pk2 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-pk2 waiting working "the same, but its own record says busy, still waits"
+[[ "$(result r-pk2 detail)" == *"not idle"* ]] && ok "...and the reason says the session's record is not idle" || bad "pk2 detail: $(result r-pk2 detail)"
+[[ "$(result r-pk2 detail)" == *"asked: Decide: footer basis"* ]] && ok "...and quotes what its last turn asked" || bad "pk2 needs: $(result r-pk2 detail)"
+reset; live_row pk000003 alpha-canonical blocked s-un; pid_for 5103 alpha-canonical s-un idle
+print -l '{"type":"user","message":{"role":"user","content":"go"},"timestamp":"2099-01-01T00:00:00Z"}' \
+  '{"type":"system","subtype":"turn_duration","timestamp":"2099-01-01T00:00:06Z"}' > "$T/transcripts/p/s-un.jsonl"
+plant r-pk3 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-pk3 waiting working "idle but not parked since it started (its handoff is older) still waits"
+[[ "$(result r-pk3 detail)" == *"before the session started"* ]] && ok "...and the reason says the handoff predates the session" || bad "pk3 detail: $(result r-pk3 detail)"
+reset; live_row pk000004 alpha-canonical blocked s-pk; transcript s-pk ended; pid_for 5104 alpha-canonical s-pk idle
+jq 'map(if .id == "pk000004" then .waitingFor = "permission prompt" else . end)' "$T/agents.json" > "$T/agents.n" && mv "$T/agents.n" "$T/agents.json"
+plant r-pk4 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-pk4 waiting working "a blocked session with a real waitingFor still waits, parked or not"
+[[ "$(result r-pk4 detail)" == *"waiting for permission prompt"* ]] && ok "...and the reason quotes its waitingFor" || bad "pk4 detail: $(result r-pk4 detail)"
+
+# refresh: after the stop, a live process that still holds the name is waited for, then refused
+# loudly, rather than handed to a launch that would refuse halfway through
+reset; live_row rf000001 alpha-canonical idle s-rf; transcript s-rf ended; pid_for 5201 alpha-canonical s-other idle
+plant r-rf refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-rf failed "" "a refresh whose name another live process still holds after the stop fails"
+[[ "$(result r-rf output)" == *"was stopped but a live process still holds the name"* ]] \
+  && ok "...saying the stop took but another process still holds the name" || bad "rf output: $(result r-rf output)"
 
 # live-process: a live process holds the name while the sessions list has no live row for it
 reset

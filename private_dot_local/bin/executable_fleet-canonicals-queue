@@ -46,6 +46,7 @@ Only a positive reading of work waits; a listing or transcript that cannot be re
 """
 from __future__ import annotations
 
+import calendar
 import fcntl
 import json
 import os
@@ -676,6 +677,107 @@ def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
             "operator decides, from a terminal")
 
 
+def pid_record_statuses(name: str, session_id: str) -> list[str]:
+    """The `status` of each live pid record for this canonical's session (Claude Code's own
+    per-process files, read as live_pid_records reads them)."""
+    out = []
+    try:
+        files = sorted(PID_RECORDS.glob("*.json"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or d.get("name") != name or not isinstance(d.get("pid"), int):
+            continue
+        if session_id and d.get("sessionId") not in (None, session_id):
+            continue
+        if pid_alive(d["pid"], str(d.get("procStart") or "")):
+            out.append(str(d.get("status") or ""))
+    return out
+
+
+def transcript_start(session_id: str) -> int | None:
+    """The epoch of the first timestamped entry of the session's transcript: when its work began,
+    which a resume does not rewrite (the handoff gate in fleet-canonicals reads the same)."""
+    if not session_id:
+        return None
+    hits = list(TRANSCRIPTS.glob(f"*/{session_id}.jsonl")) + list(TRANSCRIPTS.glob(f"{session_id}.jsonl"))
+    if not hits:
+        return None
+    try:
+        with open(hits[0], encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    ts = json.loads(line).get("timestamp")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(ts, str) and ts:
+                    try:   # transcript timestamps are UTC, ISO 8601 with a trailing Z
+                        return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+                    except ValueError:
+                        return None
+    except OSError:
+        return None
+    return None
+
+
+def handoff_set_at(name: str) -> tuple[str, int] | None:
+    """The handoff pointer's path and its `# set-at <epoch>` stamp, when both are there."""
+    try:
+        lines = (STATE / f"{name}.handoff").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    target = next((ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")), "")
+    stamp = next((ln.split()[-1] for ln in lines if ln.startswith("# set-at ")), "")
+    if not target or not stamp.isdigit():
+        return None
+    return target, int(stamp)
+
+
+JOBS = Path(os.environ.get("FLEET_JOBS_DIR") or HOME / ".claude" / "jobs")
+
+
+def job_needs(job_id: str) -> str:
+    """What the agent view summarizes a session as needing, from ~/.claude/jobs/<id>/state.json (an
+    undocumented file; empty when absent). Measured 2026-11-08: a `blocked` row with no waitingFor
+    is a session whose last turn ended asking its human something, and `needs` carries the question,
+    as `tempo: blocked`; the documentation pairs `blocked` only with a waitingFor."""
+    try:
+        d = json.loads((JOBS / job_id / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    needs = d.get("needs") if isinstance(d, dict) else None
+    return " ".join(str(needs).split())[:160] if needs else ""
+
+
+def parked_signals(name: str, session_id: str) -> str | None:
+    """None when two independent signals say the session parked and is idle; else which one fails.
+    For a `blocked` row with no waitingFor (three parked, idle canonicals read so on 2026-11-08,
+    matching no documented blocked state): the session's own pid record must say `idle`, and its
+    handoff pointer must have been set after its work began. A session stuck on a real prompt fails
+    the first; a working session that never parked fails the second."""
+    statuses = pid_record_statuses(name, session_id)
+    if not statuses:
+        return "no live pid record says how the session itself reads its state"
+    if any(st != "idle" for st in statuses):
+        return f"the session's own pid record says '{', '.join(statuses)}', not idle"
+    pointer = handoff_set_at(name)
+    if pointer is None:
+        return "no handoff pointer with a set-at stamp is recorded"
+    target, set_at = pointer
+    if not Path(target).is_file():
+        return f"the handoff pointer names a missing file ({target})"
+    start = transcript_start(session_id)
+    if start is None:
+        return "the session's transcript gives no start time to compare the handoff against"
+    if set_at <= start:
+        return "its handoff was recorded before the session started, so it has not parked since"
+    return None
+
+
 def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
     if req["verb"] not in STOPPING + ("resume",):
         return None
@@ -694,10 +796,17 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
         # a parked, idle canonical). It still refuses, since an unknown state is not an idle one, but
         # the reason says so, for whoever reads the result.
         why = f" waiting for {row['waitingFor']}" if row.get("waitingFor") else ""
+        parked = None
         if state == "blocked" and not row.get("waitingFor"):
-            why = " with no waitingFor, which matches no documented blocked state"
-        return Wait(f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}'{why} "
-                    f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
+            # Undocumented; accepted as idle only on two independent parked signals (parked_signals),
+            # and the transcript's last turn must still have ended (below).
+            parked = parked_signals(req["name"], str(row.get("sessionId") or ""))
+            needs = job_needs(str(row.get("id") or ""))
+            asked = f" (its last turn asked: {needs})" if needs else ""
+            why = f" with no waitingFor, so its last turn ended asking its human something{asked}, and " + (parked or "")
+        if not (state == "blocked" and not row.get("waitingFor") and parked is None):
+            return Wait(f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}'{why} "
+                        f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
     ended = transcript_turn_ended(str(row.get("sessionId") or ""))
     if ended is None:
         return f"'{req['name']}''s transcript cannot be read, so work in flight cannot be ruled out"
