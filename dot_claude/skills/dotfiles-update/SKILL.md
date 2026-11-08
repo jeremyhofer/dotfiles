@@ -85,8 +85,8 @@ chezmoi-overlay diff && chezmoi-overlay apply         # if the machine has a pri
 sh ~/.local/share/chezmoi/setup/overlay-doctor        # overlay compliance, then the assessment again
 ```
 
-**When the changelog has a "Catching up from <date> in one pass" section** whose date is on or
-after the commit you noted, follow it rather than assembling the ACTION list yourself: it orders
+**When the changelog has a "Catching up from <date> in one pass" section** whose starting date is
+no later than the date of the commit you noted, follow it rather than assembling the ACTION list yourself: it orders
 the same entries' steps, private-layer edits before the apply and the terminal steps after it.
 An entry newer than that section is still yours to read.
 
