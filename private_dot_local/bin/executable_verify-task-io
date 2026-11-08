@@ -1,0 +1,912 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""verify-task-io -- does each cached Nx target declare every file it reads and writes?
+
+WHAT IT PROVES. Nx decides whether to re-run a cached target from a hash of the target's DECLARED
+inputs, and on a cache hit restores only the target's DECLARED outputs. Nothing checks either
+declaration against what the target's command really does. A file the command reads that the hash
+does not cover gives a stale PASS: edit the file and Nx replays the old result. A file the command
+writes that no output covers is missing after a cache hit, because the cache never stored it. A
+linter of the configuration can tell whether a declaration is well formed; only watching the command
+run can tell whether it is TRUE. This tool watches.
+
+HOW IT MEASURES. Each target is run once, alone (`--excludeTaskDependencies`, so only that task
+executes; its dependencies must have been built once beforehand), with the cache skipped, while
+`inotifywait` records every file read or written under the workspace. inotify is a kernel facility,
+so it sees every process, native binaries and grandchildren included, not only the one Nx started. A
+read is a file closed without having been opened for writing; a write is a file closed after
+writing, created, moved or deleted. Targets run dependencies first, and each target's declared
+outputs are deleted before it runs (files git tracks excepted), so an incremental tool cannot skip
+its sources because its last output looked current.
+
+ATTRIBUTION. inotify cannot say WHICH process touched a file, and Nx itself reads configuration while
+it builds the project graph, so attribution is by difference. Three control runs of a target whose
+executor is `nx:noop` (Nx does all of its own work and the task does nothing) give Nx's own reads; a
+file's highest control count is subtracted from the task's count, so a file both Nx and the task
+read is still attributed, because the count rises. A file whose control count varies between runs
+is listed as noisy, since one extra read of it cannot be attributed. Nx also re-reads every file
+whose timestamp changed since its last run, so before each traced run Nx is brought up to date
+unwatched, and a fourth control after the audit must show no read the first three did not.
+
+ISOLATION. Every Nx process this tool starts runs with NX_DAEMON=false and with
+NX_WORKSPACE_DATA_DIRECTORY and NX_CACHE_DIRECTORY pointed at a scratch directory, and every measured
+run passes --skip-nx-cache. Both variables are needed: Nx keeps the cache's index in the workspace
+data directory, which a git worktree shares with its main checkout, and only the artifacts in the
+cache directory, so redirecting the cache alone leaves index entries pointing at artifacts that
+exist only in the scratch directory, and every other checkout computing the same hash gets a cache
+hit that restores nothing. Measured on 2026-10-12 with Nx 23.1.0. The workspace's own cache and
+daemon are left as they were.
+
+HOW TO READ THE REPORT. One line per target, `ok` or `GAP`, with counts of what each attributed
+read and write was. A read is accounted for as: a declared input; a dependency output the target
+hashes (`dependentTasksOutputFiles`); its own declared output (an incremental tool reading its last
+state); a file the run wrote itself; tool state (a directory the register names); an `accepted`
+register entry; an ignore file Nx's own file walker reads. Anything else is a GAP:
+  UNDECLARED-READ            no declaration covers it. Declare it as an input, or stop reading it.
+  UNHASHED-UPSTREAM-OUTPUT   another task's output, from a task this one depends on, whose own
+                             source files this target does not hash.
+  UNORDERED-UPSTREAM-READ    another task's output, from a task this one does not depend on, so
+                             nothing orders the two.
+A write is accounted for as a declared output, tool state or an `accepted` entry; otherwise:
+  FOREIGN-WRITE              inside another project's root, inside another task's declared outputs,
+                             or a path another measured target also writes and neither declares.
+  UNDECLARED-WRITE           a file in the source tree (git does not ignore it), or an ignored file
+                             another measured target reads: a cache hit leaves it missing for that
+                             reader. An ignored file nothing else reads is counted as a byproduct.
+Without running anything it also reports EAGER-HASHED-DEPENDENCY-OUTPUT: a plain file input that is
+a declared output of a task this target depends on. Nx hashes the target at the start of the run,
+from the file as it is on disk BEFORE the dependency regenerates or restores it, so the key can
+describe content the target never consumed; declare such a file through `dependentTasksOutputFiles`,
+which Nx hashes only once every dependency has finished. The register itself is checked too:
+  STALE-ACCEPTANCE           an `accepted` entry that matched nothing in a run that measured every
+                             target it names. Delete it, so the register cannot outlive what it
+                             excuses.
+Traces, per-target Nx logs and summary.json (every file, ungrouped) are kept in the scratch
+directory the last line names.
+
+THE REGISTER. `.verify-task-io.toml` at the workspace root, optional. An entry is a person's
+judgment after measurement, never the audit's, so each one carries its reason:
+  [[accepted]]                  a read or write judged acceptable
+  kind = "read"                 or "write"
+  glob = "package.json"         workspace-relative glob (`*`, `**`, `?`, `[..]`, `{a,b}`)
+  targets = ["app:build"]       optional; without it the entry applies to every target
+  why = "..."                   required
+  [[tool_state]]                a directory a tool keeps its own cache in, which no target needs to
+  dir = ".angular"              declare because losing it on a cache hit costs only speed; matched
+  why = "..."                   by directory prefix, so dotfiles inside it count
+
+WHAT IT CANNOT SEE.
+  * node_modules and .git are not watched (external dependencies reach the hash through the
+    lockfile, and a tool cache under node_modules is invisible here), nor is anything outside the
+    workspace: $TMPDIR, the home directory, a sibling checkout.
+  * A file that does not exist yet but would be read if it did (a new spec a glob would pick up):
+    only reads of files present during the run are seen. Directory listings are not judged.
+  * A read through a path only some configurations take is seen only for the configuration run.
+  * A target that fails part way reads less than one that passes, so a failing target's report is
+    partial, and says so.
+  * A reader of an undeclared write among targets this tool does not run (uncached targets, release
+    tooling) is outside what it can see.
+  * A task that reads a file Nx's own walker also reads (an ignore file) is never attributed it, so a
+    tool that honors a nested ignore file is masked.
+  * Other processes on the machine writing into the workspace during a run (an editor, a second
+    session, a file watcher) are attributed to the measured target: run it on a quiet checkout.
+  * The inotify watch limit is per user, shared with every other watcher; the tool checks the
+    workspace's directory count against the limit, not against what is left of it, and a watch the
+    kernel refused is reported only if inotifywait says so.
+  * A file name containing a tab or a newline is mis-parsed from inotifywait's line output.
+  * An `accepted` entry, and a `tool_state` entry, are a person's judgment, not the audit's; a
+    `tool_state` entry is never reported stale.
+
+REQUIREMENTS. Linux (inotify has no equivalent this tool uses elsewhere; any other OS is refused at
+once), `inotifywait` from inotify-tools, git (tracked and ignored files are judged through it), and
+the workspace's own Nx at node_modules/.bin/nx, new enough for `nx show target <p:t> inputs --json`.
+The workspace needs one target whose executor is `nx:noop` to serve as the control.
+
+WHEN TO RUN IT. On demand, never on the commit path and never in a routine lane: a full run executes
+every cached target once, browser suites included. Run it after changing a target's command, its
+tool's configuration or its inputs, passing the changed targets after `--`; at landing; and on a
+schedule. Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+EXIT_GAPS = 1
+EXIT_UNTRUSTED = 2
+EXIT_USAGE = 3
+EXIT_PLATFORM = 4
+
+REGISTER_FILE = ".verify-task-io.toml"
+
+EPILOG = f"""\
+exit status:
+  0  every audited target's reads and writes are accounted for
+  1  at least one gap (or a stale register entry) was found
+  2  the measurement could not be trusted: the watch did not start or lost events, the control
+     runs disagreed or drifted, or Nx could not describe the workspace
+  3  usage: not an Nx workspace, not a git work tree, no nx:noop control target, a target that
+     matched nothing, or a malformed {REGISTER_FILE}
+  4  this machine cannot trace: not Linux, or inotifywait (inotify-tools) is missing
+
+The header of this script explains what each finding means, the register format and the blind
+spots; read it before acting on a report: less "$(command -v verify-task-io)".
+"""
+
+
+class MeasurementError(Exception):
+    """The trace cannot be trusted, so no verdict is given (exit 2)."""
+
+
+class UsageError(Exception):
+    """The workspace or the arguments are not something the audit can run on (exit 3)."""
+
+
+# ---- the Nx seam -------------------------------------------------------------------------------
+# Everything the audit knows about the workspace comes through an object with four methods (graph,
+# inputs, refresh, run). `Nx` below drives the real Nx; the tests drive a stand-in.
+
+@dataclass
+class Task:
+    id: str
+    project: str
+    target: str
+    outputs: list
+    cache: bool
+
+
+@dataclass
+class Graph:
+    projects: list  # (name, root) pairs, roots workspace-relative; the root project excluded
+    tasks: dict  # id -> Task
+    dependencies: dict  # id -> [id]
+    noop: str | None  # a project:target whose executor is nx:noop, the control
+
+
+@dataclass
+class Inputs:
+    files: set
+    dep_outputs: set
+
+
+def caller_env():
+    """The environment this tool was started with, minus what its own interpreter added.
+
+    `uv run --script` runs this tool in a virtual environment and puts that environment's `bin`
+    first on PATH, so a measured task would otherwise run a project's `python3` as this tool's
+    private interpreter. Only that directory is removed, and only inside a virtual environment."""
+    env = dict(os.environ)
+    if sys.prefix != sys.base_prefix:
+        own_bin = os.path.join(sys.prefix, "bin")
+        env["PATH"] = os.pathsep.join(e for e in env.get("PATH", "").split(os.pathsep)
+                                      if e and e != own_bin)
+        if env.get("VIRTUAL_ENV") == sys.prefix:
+            del env["VIRTUAL_ENV"]
+    return env
+
+
+def safe_name(text: str) -> str:
+    return re.sub(r"[^\w.-]", "_", text)
+
+
+class Nx:
+    """The real workspace, through its own Nx binary, isolated from its cache and daemon."""
+
+    def __init__(self, root: Path, scratch: Path):
+        self.root = root
+        self.scratch = scratch
+        self.bin = root / "node_modules" / ".bin" / "nx"
+        self.env = {**caller_env(), "NX_DAEMON": "false", "NX_TUI": "false",
+                    "NX_WORKSPACE_DATA_DIRECTORY": str(scratch / "nx-workspace-data"),
+                    "NX_CACHE_DIRECTORY": str(scratch / "nx-cache")}
+        self._inputs: dict[str, Inputs] = {}
+
+    def _to_file(self, file: Path, *args: str) -> int:
+        # Output goes straight to a file: piped output is cut off at 64 KiB when nx exits, and a
+        # warning printed while a plugin loads must not land inside JSON a caller parses.
+        with open(file, "wb") as out, open(f"{file}.stderr", "wb") as errf:
+            return subprocess.run([str(self.bin), *args], cwd=self.root, env=self.env,
+                                  stdin=subprocess.DEVNULL, stdout=out, stderr=errf).returncode
+
+    def _json(self, file: Path, what: str):
+        try:
+            return json.loads(file.read_text())
+        except (OSError, ValueError) as e:
+            raise MeasurementError(f"could not read {what} from Nx ({e}); see {file}.stderr") from e
+
+    def graph(self) -> Graph:
+        # Warm the scratch workspace data first: a cold one makes Nx read and hash every file in the
+        # workspace, which would bury the first measured trace.
+        self._to_file(self.scratch / "warm.log", "show", "projects")
+        gfile = self.scratch / "graph.json"
+        if self._to_file(self.scratch / "graph.log", "graph", f"--file={gfile}") != 0:
+            raise MeasurementError(
+                f"could not read the project graph; see {self.scratch / 'graph.log.stderr'}")
+        nodes = self._json(gfile, "the project graph")["graph"]["nodes"]
+        projects, cached_names, noop = [], set(), None
+        for name, node in nodes.items():
+            root = re.sub(r"^\./?", "", node["data"].get("root", ""))
+            if root not in ("", "."):
+                projects.append((name, root))
+            for t, conf in (node["data"].get("targets") or {}).items():
+                if conf.get("cache"):
+                    cached_names.add(t)
+                if conf.get("executor") == "nx:noop" and noop is None:
+                    noop = f"{name}:{t}"
+        if not cached_names:
+            return Graph(projects, {}, {}, noop)
+        # One task graph over every cached target name gives each task's resolved outputs and its
+        # dependency edges, which is what "this target depends on" means in the report.
+        tfile = self.scratch / "taskgraph.json"
+        self._to_file(self.scratch / "taskgraph.log", "run-many", "-t", ",".join(sorted(cached_names)),
+                      f"--graph={tfile}")
+        tg = self._json(tfile, "the task graph")["tasks"]
+        tasks = {tid: Task(id=tid, project=t["target"]["project"], target=t["target"]["target"],
+                           outputs=list(t.get("outputs") or []), cache=bool(t.get("cache")))
+                 for tid, t in tg["tasks"].items()}
+        return Graph(projects, tasks, {k: list(v) for k, v in tg["dependencies"].items()}, noop)
+
+    def inputs(self, key: str) -> Inputs:
+        if key not in self._inputs:
+            file = self.scratch / f"inputs-{safe_name(key)}.json"
+            self._to_file(file, "show", "target", key, "inputs", "--json")
+            raw = self._json(file, f"the inputs of {key}")
+            self._inputs[key] = Inputs(set(raw.get("files") or []), set(raw.get("depOutputs") or []))
+        return self._inputs[key]
+
+    def refresh(self) -> None:
+        # Nx re-reads and re-hashes every file whose timestamp changed since its last run, and
+        # re-walks the tree when it changed. Bringing it up to date, unwatched, before each traced
+        # run keeps those re-reads out of the next target's trace.
+        self._to_file(self.scratch / "refresh.log", "show", "projects")
+
+    def run(self, task_id: str, name: str) -> int:
+        return self._to_file(self.scratch / f"{name}.nx.log", "run", task_id,
+                             "--excludeTaskDependencies", "--skip-nx-cache", "--outputStyle=static")
+
+
+# ---- globs ---------------------------------------------------------------------------------------
+# Nx output globs and register globs, matched by path segment: `*` and `?` stay inside a segment,
+# `**` spans any number of them, `{a,b}` alternates. As in the glob library Nx uses, a wildcard does
+# not match a name that starts with a dot unless the pattern's segment does too.
+
+GLOB_CHARS = re.compile(r"[*?{\[]")
+
+
+def expand_braces(pattern: str) -> list[str]:
+    i = pattern.find("{")
+    if i < 0:
+        return [pattern]
+    depth = 0
+    for j in range(i, len(pattern)):
+        depth += {"{": 1, "}": -1}.get(pattern[j], 0)
+        if depth == 0:
+            break
+    else:
+        return [pattern]
+    body, parts, depth, start = pattern[i + 1:j], [], 0, 0
+    for k, c in enumerate(body):
+        depth += {"{": 1, "}": -1}.get(c, 0)
+        if c == "," and depth == 0:
+            parts.append(body[start:k])
+            start = k + 1
+    parts.append(body[start:])
+    return [x for part in parts for x in expand_braces(pattern[:i] + part + pattern[j + 1:])]
+
+
+def _segments_match(names: list[str], segs: list[str]) -> bool:
+    if not segs:
+        return not names
+    if segs[0] == "**":
+        if _segments_match(names, segs[1:]):
+            return True
+        return bool(names) and not names[0].startswith(".") and _segments_match(names[1:], segs)
+    if not names:
+        return False
+    name, seg = names[0], segs[0]
+    if name.startswith(".") and not seg.startswith("."):
+        return False
+    return fnmatch.fnmatchcase(name, seg) and _segments_match(names[1:], segs[1:])
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    names = path.split("/")
+    return any(_segments_match(names, p.split("/")) for p in expand_braces(pattern))
+
+
+def under_output(path: str, output: str) -> bool:
+    """Does a workspace-relative path fall under a declared output (a directory, a file or a glob)?"""
+    return path == output or path.startswith(f"{output}/") or glob_match(path, output)
+
+
+# ---- the register --------------------------------------------------------------------------------
+
+@dataclass
+class Accepted:
+    kind: str
+    glob: str
+    why: str
+    targets: list | None = None
+    uses: int = 0
+
+
+@dataclass
+class Register:
+    accepted: list = field(default_factory=list)
+    tool_state: list = field(default_factory=list)  # (dir, why) pairs
+
+    def accepts(self, kind: str, path: str, tid: str) -> bool:
+        for a in self.accepted:
+            if a.kind == kind and glob_match(path, a.glob) and (a.targets is None or tid in a.targets):
+                a.uses += 1
+                return True
+        return False
+
+    def tool_state_of(self, path: str) -> str | None:
+        for d, why in self.tool_state:
+            if path == d or path.startswith(f"{d}/"):
+                return why
+        return None
+
+
+def load_register(root: Path) -> Register:
+    file = Path(root) / REGISTER_FILE
+    if not file.exists():
+        return Register()
+    try:
+        data = tomllib.loads(file.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise UsageError(f"{file}: {e}") from e
+    problems, reg = [], Register()
+    for k in sorted(set(data) - {"accepted", "tool_state"}):
+        problems.append(f"unknown table '{k}'")
+
+    def text(entry, key, where):
+        v = entry.get(key)
+        if not (isinstance(v, str) and v.strip()):
+            problems.append(f"{where}: '{key}' must be a non-empty string")
+            return ""
+        return v
+
+    for n, e in enumerate(data.get("accepted", []), 1):
+        where = f"accepted entry {n}"
+        for k in sorted(set(e) - {"kind", "glob", "targets", "why"}):
+            problems.append(f"{where}: unknown key '{k}'")
+        kind, glob, why = text(e, "kind", where), text(e, "glob", where), text(e, "why", where)
+        if kind and kind not in ("read", "write"):
+            problems.append(f"{where}: kind is 'read' or 'write', not '{kind}'")
+        targets = e.get("targets")
+        if targets is not None and not (isinstance(targets, list) and targets
+                                        and all(isinstance(t, str) for t in targets)):
+            problems.append(f"{where}: 'targets' must be a non-empty list of project:target names")
+        reg.accepted.append(Accepted(kind, glob, why, targets))
+    for n, e in enumerate(data.get("tool_state", []), 1):
+        where = f"tool_state entry {n}"
+        for k in sorted(set(e) - {"dir", "why"}):
+            problems.append(f"{where}: unknown key '{k}'")
+        reg.tool_state.append((text(e, "dir", where).rstrip("/"), text(e, "why", where)))
+    if problems:
+        raise UsageError(f"{file}:\n  " + "\n  ".join(problems))
+    return reg
+
+
+# ---- the trace -----------------------------------------------------------------------------------
+
+WATCH_ARGS = ["-m", "-r", "-e", "close_nowrite,close_write,create,moved_to,moved_from,delete",
+              "--exclude", r"(^|/)(node_modules|\.git)(/|$)", "--format", "%e\t%w%f"]
+# inotifywait's --exclude stops it descending into node_modules and .git but still reports their
+# direct entries; .nx is Nx's own state. All three are dropped from what is judged.
+UNJUDGED = re.compile(r"^(\.nx|node_modules|\.git)(/|$)")
+WRITE_KINDS = {"CLOSE_WRITE", "CREATE", "MOVED_TO", "MOVED_FROM", "DELETE"}
+
+# Files Nx itself opens while it walks the workspace, which it does again before a run whenever
+# the tree changed since the last walk: every ignore file, to decide what the file map contains.
+NX_OWN_READS = ["**/.gitignore", "**/.nxignore"]
+# Nx's own configuration files, whose control read count may vary by one between identical runs.
+NX_CONFIG = re.compile(r"^(nx\.json|.*project\.json|.*package\.json|.*tsconfig[\w.]*\.json)$")
+
+
+@dataclass
+class Trace:
+    opens: Counter
+    writes: set
+    status: int
+
+
+def parse_events(text: str, name: str) -> tuple[Counter, set]:
+    opens, writes = Counter(), set()
+    for line in text.split("\n"):
+        tab = line.find("\t")
+        if tab < 0:
+            continue
+        kinds = set(line[:tab].split(","))
+        if "Q_OVERFLOW" in kinds:
+            raise MeasurementError(f"the kernel event queue overflowed ({name}); events were lost")
+        path = line[tab + 1:]
+        path = path[2:] if path.startswith("./") else path
+        if path == "" or UNJUDGED.match(path):
+            continue
+        is_dir = "ISDIR" in kinds
+        # A read is a file closed without having been opened for writing. Counting opens instead
+        # would count every write as a read too, since a writer opens the file first.
+        if "CLOSE_NOWRITE" in kinds and not is_dir:
+            opens[path] += 1
+        if kinds & WRITE_KINDS:
+            writes.add(f"{path}/" if is_dir else path)
+    return opens, writes
+
+
+def traced(root: Path, scratch: Path, name: str, run, drain: float) -> Trace:
+    """Run `run()` under a recursive inotify watch of the workspace and return what it touched."""
+    events, wlog = scratch / f"{name}.events", scratch / f"{name}.watch.log"
+    with open(wlog, "wb") as errf:
+        watcher = subprocess.Popen(["inotifywait", *WATCH_ARGS, "-o", str(events), "."], cwd=root,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errf)
+    try:
+        deadline = time.monotonic() + 60
+        while "Watches established" not in wlog.read_text(errors="replace"):
+            if time.monotonic() > deadline or watcher.poll() is not None:
+                raise MeasurementError(f"inotifywait did not start ({name}):\n"
+                                       f"{wlog.read_text(errors='replace')}")
+            time.sleep(0.05)
+        status = run()
+        # The kernel queues events asynchronously; give the watcher time to write them out.
+        time.sleep(drain)
+    finally:
+        watcher.terminate()
+        watcher.wait()
+    log = wlog.read_text(errors="replace")
+    if re.search(r"Q_OVERFLOW|upper limit|No space left", log, re.I):
+        raise MeasurementError(f"the watch lost events ({name}):\n{log}")
+    text = events.read_text(errors="surrogateescape") if events.exists() else ""
+    opens, writes = parse_events(text, name)
+    return Trace(opens, writes, status)
+
+
+def count_dirs(root: Path) -> int:
+    n = 0
+    for _, dirs, _ in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        n += 1
+    return n
+
+
+def read_watch_limit() -> int | None:
+    try:
+        return int(Path("/proc/sys/fs/inotify/max_user_watches").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+# ---- git ---------------------------------------------------------------------------------------
+
+class Git:
+    def __init__(self, root: Path):
+        self.root = root
+        self._ignored: dict[str, bool] = {}
+
+    def ignored(self, path: str) -> bool:
+        if path not in self._ignored:
+            self._ignored[path] = subprocess.run(
+                ["git", "check-ignore", "-q", "--", path], cwd=self.root,
+                stdin=subprocess.DEVNULL, capture_output=True).returncode == 0
+        return self._ignored[path]
+
+    def tracked(self, path: str) -> bool:
+        r = subprocess.run(["git", "ls-files", "--", path], cwd=self.root, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True)
+        # A failed query counts as tracked, so nothing is deleted on a guess.
+        return r.returncode != 0 or r.stdout.strip() != ""
+
+
+def output_paths(root: Path, output: str) -> list[str]:
+    """The existing workspace-relative paths a declared output names, a glob expanded."""
+    if not GLOB_CHARS.search(output):
+        return [output] if (root / output).exists() or (root / output).is_symlink() else []
+    lit = []
+    for s in output.split("/"):
+        if GLOB_CHARS.search(s):
+            break
+        lit.append(s)
+    base = root.joinpath(*lit) if lit else root
+    found = []
+    for dirpath, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        rel = Path(dirpath).relative_to(root).as_posix()
+        prefix = "" if rel == "." else f"{rel}/"
+        found += [f"{prefix}{n}" for n in [*dirs, *files] if glob_match(f"{prefix}{n}", output)]
+        # A matched directory is removed whole, so nothing below it needs listing.
+        dirs[:] = [d for d in dirs if not glob_match(f"{prefix}{d}", output)]
+    return found
+
+
+def clear_outputs(root: Path, task: Task, git: Git) -> None:
+    """Delete a target's declared outputs before it is measured, so an incremental tool that finds
+    its last output current cannot skip reading its sources. A tracked file is never deleted (a
+    target that regenerates a committed file rewrites it in place), nor anything outside the
+    workspace."""
+    top = root.resolve()
+    for output in task.outputs:
+        for path in output_paths(root, output):
+            full = (root / path).resolve()
+            if full == top or not full.is_relative_to(top) or git.tracked(path):
+                continue
+            if (root / path).is_dir() and not (root / path).is_symlink():
+                shutil.rmtree(root / path, ignore_errors=True)
+            else:
+                (root / path).unlink(missing_ok=True)
+
+
+# ---- the audit -----------------------------------------------------------------------------------
+
+@dataclass
+class Finding:
+    kind: str
+    path: str
+    detail: str
+
+
+@dataclass
+class Result:
+    code: int
+    findings: dict = field(default_factory=dict)
+    summary: dict = field(default_factory=dict)
+    text: str = ""
+
+
+REGISTER_ID = f"register ({REGISTER_FILE})"
+
+
+def audit(root, nx, scratch, requested, static_only, drain=1.5, out=sys.stdout, err=sys.stderr):
+    """Audit the selected cached targets through the Nx seam `nx`. Returns a Result whose code is
+    the exit status."""
+    root, scratch = Path(root), Path(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        return _audit(root, nx, scratch, list(requested), static_only, drain, out)
+    except UsageError as e:
+        print(f"verify-task-io: {e}", file=err)
+        return Result(EXIT_USAGE)
+    except MeasurementError as e:
+        print(f"verify-task-io: {e}", file=err)
+        return Result(EXIT_UNTRUSTED)
+
+
+def _audit(root, nx, scratch, requested, static_only, drain, out):
+    register = load_register(root)
+    git = Git(root)
+    graph = nx.graph()
+    deps = graph.dependencies
+
+    # Dependencies first, so a target whose outputs were deleted and rebuilt is rebuilt before
+    # anything downstream of it is measured.
+    ordered, placed = [], set()
+
+    def place(tid):
+        if tid in placed:
+            return
+        placed.add(tid)
+        for d in deps.get(tid, []):
+            place(d)
+        if tid in graph.tasks:
+            ordered.append(graph.tasks[tid])
+
+    for tid in graph.tasks:
+        place(tid)
+    cached = [t for t in ordered if t.cache]
+    selected = cached if not requested else [
+        t for t in cached if t.id in requested or f"{t.project}:{t.target}" in requested]
+    if not selected or len(selected) < len(requested):
+        raise UsageError(
+            f"matched {len(selected)} cached task(s) for {' '.join(requested) or 'all'}; name each as "
+            "project:target, as `nx show projects` and `nx show project <p>` list them.")
+
+    def closure_of(tid):
+        seen, stack = set(), list(deps.get(tid, []))
+        while stack:
+            n = stack.pop()
+            if n not in seen:
+                seen.add(n)
+                stack.extend(deps.get(n, []))
+        return seen
+
+    def producers_of(path):
+        return [t for t in graph.tasks.values() if any(under_output(path, o) for o in t.outputs)]
+
+    def owner(path):
+        best = None
+        for name, proot in graph.projects:
+            if (path == proot or path.startswith(f"{proot}/")) and (best is None or len(proot) > len(best[1])):
+                best = (name, proot)
+        return best[0] if best else None
+
+    def inputs_of(t):
+        return nx.inputs(f"{t.project}:{t.target}")
+
+    findings: dict[str, list[Finding]] = defaultdict(list)
+
+    # Static: a plain file input that a dependency writes is hashed before the dependency runs.
+    for t in selected:
+        closure = closure_of(t.id)
+        if not closure:
+            continue
+        for file in sorted(inputs_of(t).files):
+            for dep in sorted(closure):
+                producer = graph.tasks.get(dep)
+                if producer and any(under_output(file, o) for o in producer.outputs):
+                    findings[t.id].append(Finding(
+                        "EAGER-HASHED-DEPENDENCY-OUTPUT", file,
+                        f"a plain input, but {dep} writes it; declare it through dependentTasksOutputFiles"))
+
+    summary: dict[str, dict] = {}
+    opened_by: dict[str, set] = defaultdict(set)
+    written_by: dict[str, set] = defaultdict(set)
+
+    if not static_only:
+        if graph.noop is None:
+            raise UsageError("no target with executor nx:noop exists to serve as the control; add one "
+                             "(a target whose only setting is `\"executor\": \"nx:noop\"`) and rerun.")
+        dirs, limit = count_dirs(root), read_watch_limit()
+        if limit is not None and dirs > limit:
+            raise MeasurementError(f"{dirs} directories against an inotify limit of {limit}; raise "
+                                   "fs.inotify.max_user_watches.")
+
+        def trace(name, tid):
+            nx.refresh()
+            return traced(root, scratch, name, lambda: nx.run(tid, name), drain)
+
+        # Three control runs. Nx's own open count for a few configuration files varies by one between
+        # otherwise identical runs (measured: nx.json 43 vs 44), so the baseline is each file's
+        # HIGHEST control count, and a file whose count varies is noisy: a task's one extra read of
+        # it is not attributable.
+        controls = [trace(f"control-{i}", graph.noop) for i in (1, 2, 3)]
+        control_opens: Counter = Counter()
+        for c in controls:
+            for p, n in c.opens.items():
+                control_opens[p] = max(n, control_opens[p])
+        control_writes = set().union(*(c.writes for c in controls))
+        noisy = {p for c in controls[1:] for p in set(controls[0].opens) | set(c.opens)
+                 if controls[0].opens[p] != c.opens[p]}
+        # Variation in Nx's own configuration and ignore files cannot skew a verdict (an ignore file
+        # is never attributed to a task); variation anywhere else means nothing can be attributed.
+        noisy_elsewhere = sorted(p for p in noisy if not NX_CONFIG.match(p)
+                                 and not any(glob_match(p, g) for g in NX_OWN_READS))
+        if noisy_elsewhere:
+            raise MeasurementError("the control's read set varies beyond Nx's own configuration "
+                                   "files, so no difference can be attributed:\n  "
+                                   + "\n  ".join(noisy_elsewhere))
+        print(f"control ({graph.noop}, nx:noop, three runs): Nx itself read {len(control_opens)} "
+              f"file(s), {sum(control_opens.values())} open(s) at most, writing {len(control_writes)} "
+              f"path(s) in the workspace; noisy (count varies by run, so one extra read by a task is "
+              f"not attributable): {', '.join(sorted(noisy)) or 'none'}.", file=out)
+
+        for t in selected:
+            t0 = time.monotonic()
+            clear_outputs(root, t, git)
+            tr = trace(safe_name(t.id), t.id)
+            inputs = inputs_of(t)
+            closure = closure_of(t.id)
+            own = t.outputs
+            counts: Counter = Counter()
+
+            for path in sorted(tr.writes):
+                if path in control_writes:
+                    continue
+                file = path.removesuffix("/")
+                if not path.endswith("/"):
+                    written_by[file].add(t.id)
+                if any(under_output(file, o) or o.startswith(f"{file}/") for o in own):
+                    counts["write:declared-output"] += 1
+                elif register.tool_state_of(file) is not None:
+                    counts["write:tool-state"] += 1
+                elif register.accepts("write", file, t.id):
+                    counts["write:accepted"] += 1
+                else:
+                    o = owner(file)
+                    claimed = [p.id for p in producers_of(file) if p.id != t.id]
+                    if o is not None and o != t.project:
+                        findings[t.id].append(Finding("FOREIGN-WRITE", path, f"inside {o}'s root"))
+                    elif claimed:
+                        findings[t.id].append(Finding(
+                            "FOREIGN-WRITE", path, f"inside the declared outputs of {', '.join(claimed)}"))
+                    else:
+                        findings[t.id].append(Finding("UNDECLARED-WRITE", path,
+                                                      "a cache hit will not restore it"))
+
+            for path, n in sorted(tr.opens.items()):
+                if n <= control_opens[path]:
+                    continue
+                opened_by[path].add(t.id)
+                if path in inputs.files:
+                    counts["read:declared-input"] += 1
+                elif path in inputs.dep_outputs:
+                    counts["read:hashed-dependency-output"] += 1
+                elif any(under_output(path, o) for o in own):
+                    counts["read:own-output"] += 1
+                elif path in tr.writes:
+                    counts["read:self-written"] += 1
+                elif register.tool_state_of(path) is not None:
+                    counts["read:tool-state"] += 1
+                elif register.accepts("read", path, t.id):
+                    counts["read:accepted"] += 1
+                elif any(glob_match(path, g) for g in NX_OWN_READS):
+                    counts["read:nx-file-walker"] += 1
+                else:
+                    producers = [p for p in producers_of(path) if p.id != t.id]
+                    if not producers:
+                        findings[t.id].append(Finding(
+                            "UNDECLARED-READ", path,
+                            "an ignored file, which Nx cannot hash; produce it from a task or stop "
+                            "reading it" if git.ignored(path) else "no declared input covers it"))
+                        continue
+                    upstream = [p for p in producers if p.id in closure]
+                    if not upstream:
+                        findings[t.id].append(Finding(
+                            "UNORDERED-UPSTREAM-READ", path,
+                            f"written by {', '.join(p.id for p in producers)}, none of which this "
+                            "target depends on"))
+                        continue
+                    missing = [f for p in upstream for f in sorted(inputs_of(p).files)
+                               if f not in inputs.files]
+                    if not missing:
+                        counts["read:upstream-output-sources-hashed"] += 1
+                    else:
+                        findings[t.id].append(Finding(
+                            "UNHASHED-UPSTREAM-OUTPUT", path,
+                            f"output of {', '.join(p.id for p in upstream)}; {len(missing)} of its "
+                            f"input file(s) are not inputs here (e.g. {', '.join(missing[:3])})"))
+
+            summary[t.id] = {"status": tr.status, "seconds": round(time.monotonic() - t0),
+                             "counts": dict(counts)}
+            partial = f" (exited {tr.status}: a partial trace)" if tr.status != 0 else ""
+            print(f"measured {t.id}{partial} " + " ".join(f"{k}={v}" for k, v in counts.items()),
+                  file=out)
+
+        after = trace("control-after", graph.noop)
+        drift = [f"{p}: {n}, against at most {control_opens[p]}" for p, n in sorted(after.opens.items())
+                 if n > control_opens[p] and p not in noisy]
+        if drift:
+            raise MeasurementError("the control drifted during the audit; attribution is suspect:\n  "
+                                   + "\n  ".join(drift))
+
+    # An undeclared write into the source tree (a path git does not ignore) is always a gap: a cache
+    # hit does not reproduce it. An ignored one matters only if something reads it, since a cache hit
+    # leaves it missing for its reader; one no other measured target reads is a byproduct of the run
+    # (a test report, a compiler's emit beside its type check), counted rather than reported.
+    for tid in list(findings):
+        kept = []
+        for f in findings[tid]:
+            if f.kind != "UNDECLARED-WRITE":
+                kept.append(f)
+                continue
+            file = f.path.removesuffix("/")
+            if not git.ignored(file):
+                f.detail = "a file in the source tree (git does not ignore it); a cache hit will not reproduce it"
+                kept.append(f)
+                continue
+            readers = sorted(opened_by.get(file, set()) - {tid})
+            if readers:
+                f.detail = f"a cache hit will not restore it, and {', '.join(readers)} read(s) it"
+                kept.append(f)
+                continue
+            # Two targets writing one path that neither declares: which copy is on disk depends on
+            # which ran last.
+            writers = sorted(written_by.get(file, set()) - {tid})
+            if writers:
+                f.kind = "FOREIGN-WRITE"
+                f.detail = f"also written by {', '.join(writers)}, and declared by neither"
+                kept.append(f)
+                continue
+            if tid in summary:
+                c = summary[tid]["counts"]
+                c["write:unconsumed-byproduct"] = c.get("write:unconsumed-byproduct", 0) + 1
+        if kept:
+            findings[tid] = kept
+        else:
+            del findings[tid]
+
+    if not static_only:
+        measured = {t.id for t in selected}
+        for a in register.accepted:
+            relevant = not requested if a.targets is None else all(x in measured for x in a.targets)
+            if relevant and a.uses == 0:
+                findings[REGISTER_ID].append(Finding(
+                    "STALE-ACCEPTANCE", a.glob,
+                    f"the {a.kind} it accepts no longer happens; delete the entry"))
+        print("", file=out)
+        for t in selected:
+            s = summary.get(t.id, {})
+            gaps = len(findings.get(t.id, []))
+            partial = f" (exited {s['status']}: a partial trace)" if s and s["status"] != 0 else ""
+            print(f"{'GAP ' if gaps else 'ok  '} {t.id}{partial} "
+                  + " ".join(f"{k}={v}" for k, v in s.get("counts", {}).items()), file=out)
+
+    report = scratch / "report"
+    report.mkdir(exist_ok=True)
+    (report / "summary.json").write_text(json.dumps(
+        {"summary": summary, "findings": {k: [vars(f) for f in v] for k, v in findings.items()}},
+        indent=2))
+
+    # Grouped by kind and explanation, so thirty files from one cause read as one entry;
+    # summary.json keeps every file.
+    total = 0
+    for tid, items in findings.items():
+        print(f"\n{tid}:", file=out)
+        groups: dict[str, list] = {}
+        for f in items:
+            paths = groups.setdefault(f"{f.kind} -- {f.detail}", [])
+            if f.path not in paths:
+                paths.append(f.path)
+        for key, paths in groups.items():
+            total += len(paths)
+            more = f"\n      ... and {len(paths) - 4} more" if len(paths) > 4 else ""
+            print(f"  {key}\n      " + "\n      ".join(paths[:4]) + more, file=out)
+    print(f"\nverify-task-io: {total} gap(s) across {len(findings)} of {len(selected)} target(s). "
+          f"Traces and per-target Nx logs: {scratch} (delete it when read).", file=out)
+    return Result(EXIT_GAPS if total else 0, dict(findings), summary)
+
+
+# ---- cli ---------------------------------------------------------------------------------------
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="verify-task-io", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
+        usage="verify-task-io [--workspace DIR] [--static] [-- project:target ...]",
+        description="Run each cached Nx target alone under an inotify watch and report every file it "
+                    "reads that no declared input covers and every file it writes that no declared "
+                    "output claims. Linux only.")
+    p.add_argument("--workspace", metavar="DIR",
+                   help="the Nx workspace root (default: the current directory)")
+    p.add_argument("--static", action="store_true",
+                   help="only the eager-hash check, which reads the configuration and runs no target")
+    p.add_argument("targets", nargs="*", metavar="project:target",
+                   help="targets to audit, after `--` (default: every cached target)")
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if not sys.platform.startswith("linux"):
+        print(f"verify-task-io: Linux only; it traces file access with inotify, which {sys.platform} "
+              "does not have. Run it on a Linux checkout of the workspace.", file=sys.stderr)
+        return EXIT_PLATFORM
+    root = Path(args.workspace or os.getcwd()).resolve()
+    if not (root / "nx.json").is_file():
+        print(f"verify-task-io: {root} has no nx.json; run from the workspace root or pass "
+              "--workspace.", file=sys.stderr)
+        return EXIT_USAGE
+    if not (root / "node_modules" / ".bin" / "nx").exists():
+        print(f"verify-task-io: {root}/node_modules/.bin/nx is missing; install the workspace's "
+              "dependencies first.", file=sys.stderr)
+        return EXIT_USAGE
+    if subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=root, capture_output=True,
+                      stdin=subprocess.DEVNULL).returncode != 0:
+        print(f"verify-task-io: {root} is not in a git work tree; ignored and tracked files are "
+              "judged through git.", file=sys.stderr)
+        return EXIT_USAGE
+    if not args.static and shutil.which("inotifywait") is None:
+        print("verify-task-io: needs inotifywait (inotify-tools), which this machine lacks.",
+              file=sys.stderr)
+        return EXIT_PLATFORM
+    scratch = Path(tempfile.mkdtemp(prefix="verify-task-io-",
+                                    dir=os.environ.get("TMPDIR") or tempfile.gettempdir()))
+    return audit(root, Nx(root, scratch), scratch, args.targets, args.static).code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

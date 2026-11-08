@@ -34,6 +34,20 @@ Entries are newest first.
 
 ## 2026-11-07
 
+### New tool `verify-task-io`: audits an Nx workspace's declared task inputs and outputs
+
+- `verify-task-io [--workspace DIR] [--static] [-- project:target ...]` runs each cached Nx target
+  alone, cache skipped and isolated from the workspace's own cache and daemon, under an
+  `inotifywait` watch, and reports reads no declared input covers and writes no declared output
+  claims. Exits 0 clean, 1 on a gap, 2 when the measurement cannot be trusted, 3 on a usage error,
+  4 on a machine that cannot trace. See `--help` and the script's header.
+- Linux only: it needs `inotifywait` from inotify-tools, which this base does not install; a Linux
+  machine without it, and every macOS machine, gets a one-line refusal (exit 4) and nothing else.
+- A workspace keeps its judged exceptions in `.verify-task-io.toml` at its root, each with a reason;
+  the tool needs one `nx:noop` target in the workspace as its control.
+- A full run executes every cached target, so it is never wired to a commit hook.
+- Python run by `uv run --script`, standard library only, like `loop-time`.
+
 ### New tool `bing-webmaster`: Bing Webmaster Tools search statistics, read-only
 
 - `bing-webmaster sites|queries|pages|page-queries|traffic` prints a site's Bing statistics as
