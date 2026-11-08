@@ -1,0 +1,242 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""land -- move finished work onto a repository's integration branch only after its gate passed.
+
+The gate (a project's full check) must have passed on exactly the tree being landed. A pass is
+recorded against the git TREE hash, so one more commit, an amend or a rebase after the pass
+changes the tree or the history and the gate has to run again. Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import os
+import subprocess
+import sys
+
+EXIT_REFUSED = 1
+EXIT_USAGE = 2
+EXIT_GATE_FAILED = 3
+
+EPILOG = """\
+commands:
+  check     refuse a dirty tree, run the gate, and on success record HEAD's tree as passed
+  merge     move the integration branch onto HEAD (the default when no command is given)
+  status    say whether HEAD's tree has a recorded pass and what `merge` would do
+
+configuration (git config; nothing is committed):
+  land.gate     the gate command, run by the shell in the repository root (required)
+  land.branch   the integration branch (default: main)
+  land.merge    ff (default: fast-forward) or no-ff (a merge commit; its tree must equal HEAD's)
+
+`merge` lands only when the working tree is clean, HEAD's tree has a recorded pass, and the
+integration branch is an ancestor of HEAD (otherwise rebase onto it and run `land check` again).
+When the branch is checked out in another worktree the update is made there, and refused if that
+worktree is dirty. land never pushes.
+
+The ledger of passes is <git common dir>/land/passed: shared by every worktree, never committed.
+
+exit codes:
+  0  done (or, for status, `merge` would proceed)
+  1  refused: a precondition is not met (the message says which, and what to do)
+  2  usage or configuration error (for example no land.gate)
+  3  the gate failed
+"""
+
+
+class Refused(Exception):
+    pass
+
+
+class Usage(Exception):
+    pass
+
+
+def run(args, cwd, check=True):
+    p = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    if check and p.returncode != 0:
+        raise Refused(f"git {' '.join(args[1:])} failed: {p.stderr.strip() or p.stdout.strip()}")
+    return p
+
+
+def git(cwd, *args, check=True):
+    return run(["git", *args], cwd, check)
+
+
+def out(cwd, *args):
+    return git(cwd, *args).stdout.strip()
+
+
+class Repo:
+    def __init__(self, cwd):
+        p = git(cwd, "rev-parse", "--show-toplevel", check=False)
+        if p.returncode != 0:
+            raise Usage("not inside a git repository")
+        self.root = p.stdout.strip()
+        common = out(self.root, "rev-parse", "--git-common-dir")
+        self.common = os.path.abspath(os.path.join(self.root, common))
+        cfg = lambda k: (git(self.root, "config", "--get", k, check=False).stdout.strip() or None)
+        self.gate = cfg("land.gate")
+        self.branch = cfg("land.branch") or "main"
+        self.mode = cfg("land.merge") or "ff"
+        if self.mode not in ("ff", "no-ff"):
+            raise Usage(f"land.merge is '{self.mode}'; it must be ff or no-ff")
+        self.ledger = os.path.join(self.common, "land", "passed")
+
+    def need_gate(self):
+        if not self.gate:
+            raise Usage("no land.gate set; run: git config land.gate '<your full gate command>'")
+
+    def dirty(self, where=None):
+        return bool(out(where or self.root, "status", "--porcelain"))
+
+    def tree(self):
+        return out(self.root, "rev-parse", "HEAD^{tree}")
+
+    def passed(self, tree):
+        try:
+            with open(self.ledger) as f:
+                return any(line.split(" ", 1)[0] == tree for line in f)
+        except FileNotFoundError:
+            return False
+
+    def record(self, tree):
+        os.makedirs(os.path.dirname(self.ledger), exist_ok=True)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        head = out(self.root, "rev-parse", "HEAD")
+        with open(self.ledger, "a") as f:
+            f.write(f"{tree} {now} {head}\n")
+
+    def checkout_of(self, branch):
+        """The worktree path that has `branch` checked out, or None."""
+        path = None
+        for line in out(self.root, "worktree", "list", "--porcelain").splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree "):]
+            elif line == f"branch refs/heads/{branch}":
+                return path
+        return None
+
+
+def require_clean(repo):
+    if repo.dirty():
+        raise Refused("the working tree has uncommitted or untracked changes, so its content is not "
+                      "HEAD's tree. Commit them (or ignore or remove them), then run again.")
+
+
+def cmd_check(repo):
+    repo.need_gate()
+    require_clean(repo)
+    tree = repo.tree()
+    print(f"land: running the gate on tree {tree[:12]}: {repo.gate}", flush=True)
+    code = subprocess.run(repo.gate, shell=True, cwd=repo.root).returncode
+    if code != 0:
+        print(f"land: the gate failed (exit {code}); nothing recorded. Fix it and run `land check` again.",
+              file=sys.stderr)
+        return EXIT_GATE_FAILED
+    if repo.dirty() or repo.tree() != tree:
+        raise Refused("the gate changed the working tree (generated or modified files), so the pass "
+                      "is not about HEAD's tree and was not recorded. Make the gate leave the tree "
+                      "clean, or commit what it produces, then run `land check` again.")
+    repo.record(tree)
+    print(f"land: gate passed; tree {tree[:12]} recorded. Next: land")
+    return 0
+
+
+def plan(repo):
+    """Returns (problems, info). No problems means merge would proceed."""
+    problems = []
+    tree = repo.tree()
+    head = out(repo.root, "rev-parse", "HEAD")
+    if git(repo.root, "rev-parse", "--verify", "-q", f"refs/heads/{repo.branch}", check=False).returncode:
+        return [f"the integration branch '{repo.branch}' does not exist (set land.branch)"], {}
+    tip = out(repo.root, "rev-parse", f"refs/heads/{repo.branch}")
+    info = {"tree": tree, "head": head, "tip": tip}
+    if tip == head:
+        info["nothing"] = True
+        return problems, info
+    if repo.dirty():
+        problems.append("the working tree has uncommitted or untracked changes; commit them first")
+    if not repo.passed(tree):
+        problems.append(f"tree {tree[:12]} has no recorded pass; run `land check` (the gate must pass "
+                        "on exactly this tree)")
+    if git(repo.root, "merge-base", "--is-ancestor", tip, head, check=False).returncode != 0:
+        problems.append(f"'{repo.branch}' is not an ancestor of HEAD; rebase onto it, then run "
+                        "`land check` again")
+    return problems, info
+
+
+def cmd_status(repo):
+    tree = repo.tree()
+    print(f"tree {tree[:12]}: " + ("recorded pass" if repo.passed(tree) else
+                                   "no recorded pass (run `land check`)"))
+    problems, info = plan(repo)
+    if info.get("nothing"):
+        print(f"nothing to land: HEAD is already '{repo.branch}'")
+        return 0
+    if problems:
+        for p in problems:
+            print(f"would refuse: {p}")
+        return EXIT_REFUSED
+    where = repo.checkout_of(repo.branch)
+    print(f"would land onto '{repo.branch}' by {repo.mode}" +
+          (f" in the worktree {where}" if where else ""))
+    return 0
+
+
+def cmd_merge(repo):
+    problems, info = plan(repo)
+    if info.get("nothing"):
+        print(f"land: nothing to land; HEAD is already '{repo.branch}'")
+        return 0
+    if problems:
+        raise Refused("; ".join(problems))
+    head, tree, tip = info["head"], info["tree"], info["tip"]
+    where = repo.checkout_of(repo.branch)
+    msg = f"Merge branch '{out(repo.root, 'rev-parse', '--abbrev-ref', 'HEAD')}' into {repo.branch}"
+    if where:
+        if repo.dirty(where):
+            raise Refused(f"the worktree {where} has '{repo.branch}' checked out and is dirty; "
+                          "commit or stash there, then run again.")
+        if repo.mode == "ff":
+            git(where, "merge", "--ff-only", "-q", head)
+        else:
+            git(where, "merge", "--no-ff", "-q", "-m", msg, head)
+    else:
+        if repo.mode == "ff":
+            new = head
+        else:
+            new = out(repo.root, "commit-tree", tree, "-p", tip, "-p", head, "-m", msg)
+        git(repo.root, "update-ref", "-m", "land", f"refs/heads/{repo.branch}", new, tip)
+    new_tip = out(repo.root, "rev-parse", f"refs/heads/{repo.branch}")
+    got = out(repo.root, "rev-parse", f"{new_tip}^{{tree}}")
+    if got != tree:
+        raise Refused(f"'{repo.branch}' now has tree {got[:12]}, not the passed {tree[:12]}; "
+                      "inspect it before pushing anything.")
+    print(f"land: '{repo.branch}' is now {new_tip[:12]} (tree {tree[:12]}, {repo.mode}). Not pushed.")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="land", description=__doc__.split("\n\n")[0],
+                                 epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", nargs="?", default="merge", choices=["check", "merge", "status"])
+    args = ap.parse_args(argv)
+    try:
+        repo = Repo(os.getcwd())
+        if args.command in ("check", "merge"):
+            repo.need_gate()
+        return {"check": cmd_check, "merge": cmd_merge, "status": cmd_status}[args.command](repo)
+    except Refused as e:
+        print(f"land: refused: {e}", file=sys.stderr)
+        return EXIT_REFUSED
+    except Usage as e:
+        print(f"land: {e}", file=sys.stderr)
+        return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

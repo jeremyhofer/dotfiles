@@ -34,6 +34,17 @@ Entries are newest first.
 
 ## 2026-11-07
 
+### New tool `land`: a landing gate recorded against the git tree
+
+- `land check` runs the repository's gate command (`git config land.gate '<command>'`) on a clean
+  working tree and, on exit 0, records HEAD's tree hash as passed in `<git common dir>/land/passed`.
+  `land` (or `land merge`) then moves the integration branch (`land.branch`, default `main`;
+  `land.merge` `ff` or `no-ff`) only when that tree has a recorded pass, the branch is an ancestor
+  of HEAD and the tree is clean. A later commit, amend or rebase changes the tree, so the gate must
+  run again. `land status` previews; nothing is pushed. See `land --help` for the exit codes.
+- Python run by `uv run --script`, standard library only, like `loop-time`. Nothing to change in a
+  private layer; a repository opts in by setting `land.gate`.
+
 ### New tool `bing-webmaster`: Bing Webmaster Tools search statistics, read-only
 
 - `bing-webmaster sites|queries|pages|page-queries|traffic` prints a site's Bing statistics as
