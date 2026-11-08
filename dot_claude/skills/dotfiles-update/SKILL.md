@@ -146,6 +146,11 @@ what makes them safe to move off it.
 
 - **`chezmoi apply` does not apply the overlay.** Two instances, two commands. A clean `chezmoi diff`
   says nothing about the overlay.
+- **The base's apply runs every test suite first** (`tests/pre-apply.sh`, the generated config's
+  `hooks.apply.pre`), so it takes as long as the suite set, `--dry-run` included. A failing suite
+  aborts the apply before anything is written and names the suite, its log and the re-run command:
+  fix the source, or stop and report, rather than look for a way past it. A machine whose config
+  predates the hook needs `chezmoi init` once; until then its apply runs no suite.
 - **A failing external aborts the whole apply, part-way.** `.chezmoiexternal` fetches third-party
   content; if one fails (network down, a bad URL), the apply stops and later files are simply not
   written — with the earlier ones already changed. `chezmoi apply --exclude=externals` converges

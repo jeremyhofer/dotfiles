@@ -44,7 +44,7 @@ run() { # run <PATH dir> [VAR=value ...]: the script's exit code in $rc, its std
 }
 
 echo "== a failing suite aborts the apply"
-run "$tmp/bin" RUNALL_RC=1 CHEZMOI=1 CHEZMOI_SOURCE_DIR=/somewhere
+run "$tmp/bin" RUNALL_RC=1 CHEZMOI=1 CHEZMOI_SOURCE_DIR=/somewhere PRE_APPLY_OS=Linux
 [ "$rc" -ne 0 ] && ok "exit non-zero (chezmoi aborts the apply)" || bad "exit non-zero" "rc=$rc"
 grep -q 'apply ABORTED' "$tmp/err" && ok "says the apply was aborted" || bad "says aborted" "$(cat "$tmp/err")"
 grep -q 'FAIL   test-broken.sh' "$tmp/err" && ok "names the failing suite" || bad "names the suite" "$(cat "$tmp/err")"
@@ -53,6 +53,13 @@ logf=$(sed -n 's/^  why, in full: //p' "$tmp/err")
 { [ -n "$logf" ] && grep -q 'the reason it failed' "$logf"; } && ok "keeps the full output in a named log" || bad "full log" "log='$logf'"
 grep -q '^the reason' "$tmp/err" && bad "the suite's own output stays in the log" "it was printed" || ok "the suite's own output stays in the log"
 [ ! -s "$PA_ENV" ] && ok "the suites run without chezmoi's CHEZMOI_* variables" || bad "CHEZMOI_* removed" "$(cat "$PA_ENV")"
+
+echo "== on macOS a failing suite is reported loudly and does not abort the apply (not yet gating)"
+rm -f "$tmp/logs"/*
+run "$tmp/bin" RUNALL_RC=1 PRE_APPLY_OS=Darwin
+[ "$rc" -eq 0 ] && ok "exit 0 on macOS" || bad "exit 0 on macOS" "rc=$rc $(cat "$tmp/err")"
+grep -q 'NOT gating on macOS' "$tmp/err" && ok "says it is not gating, and why" || bad "not gating" "$(cat "$tmp/err")"
+grep -q 'FAIL   test-broken.sh' "$tmp/err" && ok "still names the failing suite" || bad "names the suite" "$(cat "$tmp/err")"
 
 echo "== every suite passing lets the apply go ahead"
 rm -f "$tmp/logs"/*

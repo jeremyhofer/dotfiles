@@ -49,6 +49,9 @@ Entries are newest first.
   While git, python3, uv, jq, yq, gitleaks or wt is missing (a first apply) it skips, saying so.
   An apply of the base therefore takes as long as the whole suite set; `chezmoi apply --dry-run`
   runs it too, as chezmoi runs hooks on a dry run.
+- **On macOS it reports and does not abort, for now.** Twelve suites fail on the Mac today (GNU-only
+  spellings among them), failures no commit gate saw because commits are made on Linux; a Mac apply
+  lists them in full and goes ahead, until the suite set passes there.
 - **Every machine: run `chezmoi init` before the next `chezmoi apply`.** The hook lives in the
   generated config, which only `chezmoi init` regenerates (it keeps every answer; nothing is
   prompted). In that order the apply that brings the scoped commit gate is already preceded by the
