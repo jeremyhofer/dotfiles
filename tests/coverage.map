@@ -92,6 +92,7 @@ test-kb-promote.sh                  private_dot_local/bin/executable_kb
 test-kb-rename.sh                   private_dot_local/bin/executable_kb
 test-kb-root.sh                     private_dot_local/bin/executable_kb
 test-land.py                        private_dot_local/bin/executable_land
+test-verify-task-io.py              private_dot_local/bin/executable_verify-task-io
 test-leak-guard.sh                  private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_run-repo-gates private_dot_local/bin/executable_fleet-decl
 test-lint-tasknames.sh              private_dot_local/bin/executable_lint-tasknames dot_claude/skills/naming-build-tasks/SKILL.md
 test-loop-time.py                   private_dot_local/bin/executable_loop-time
