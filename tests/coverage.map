@@ -1,0 +1,154 @@
+# coverage.map -- which source paths each suite reads, so a commit runs only the suites its staged
+# paths can break. tests/select-suites.sh reads this file; its header has the rules in full.
+#
+# Line forms (a keyword or a suite file name, then globs; a word may repeat on several lines):
+#   <suite file>  <glob>...   the suite READS these paths: staging one runs the suite
+#   tree <suite>  <glob>...   a whole-tree check: staging a match runs it, but it claims nothing,
+#                             so it can never be what makes a path count as covered
+#   core          <glob>...   the shared core: staging one runs EVERY suite
+#   exempt        <glob>...   shipped, and read by no suite on purpose; staging one runs no suite
+#                             of its own (a tree check that matches still runs)
+#   refs <suite>  <glob>...   the suite NAMES these paths without reading them (fixture text), so
+#                             the literal-reference check below does not require a claim
+# Globs: `*` is any run of characters but `/`, `**` any run including `/`, `?` one character but `/`.
+#
+# The fail-safe is "all", never "none": a staged path in the core, or one nothing claims and no
+# exemption names, runs every suite. `sh tests/select-suites.sh --check` (run by
+# test-select-suites.sh) refuses a tracked file nothing claims or exempts, a suite with no line
+# here, a line naming no suite, a glob that matches no tracked file, and a suite that names a tracked
+# path it does not claim. A suite file claims itself; it needs no line for that.
+
+# --- the shared core: what every suite runs through -------------------------------------------
+core tests/run-all.sh tests/git-isolate.sh tests/git-isolated.gitconfig tests/select-suites.sh
+core dot_gitconfig
+core private_dot_local/bin/executable_install-test-gate private_dot_local/bin/executable_git-staged-run
+core run_onchange_install-git-hooks.sh.tmpl
+
+# --- whole-tree checks -------------------------------------------------------------------------
+tree test-shell-parse.sh        setup/** tests/*.sh private_dot_local/bin/**
+tree test-python39-syntax.sh    private_dot_local/bin/**
+tree test-portability-lint.sh   private_dot_local/bin/** setup/**
+tree test-tooling-inventory.sh  private_dot_local/bin/**
+tree test-repo-hygiene.sh       **
+tree test-select-suites.sh      **
+
+# --- the selector, the map and the apply-time run ----------------------------------------------
+test-select-suites.sh  tests/coverage.map
+test-pre-apply.sh      tests/pre-apply.sh .chezmoi.toml.tmpl
+
+# --- tools: private_dot_local/bin --------------------------------------------------------------
+test-adr-lint.sh                    private_dot_local/bin/executable_adr-lint
+test-alert-digest.sh                private_dot_local/bin/executable_alert-digest
+test-bing-webmaster.py              private_dot_local/bin/executable_bing-webmaster
+test-chezmoi-overlay.sh             private_dot_local/bin/executable_chezmoi-overlay dot_zshrc.tmpl
+test-claude-context-probe.sh        private_dot_local/bin/executable_claude-context-probe
+test-claude-context-probe-fleet.sh  private_dot_local/bin/executable_claude-context-probe
+test-claude-dispatch-hook.sh        private_dot_local/bin/executable_claude-dispatch-hook
+test-claude-mask-sweep.sh           private_dot_local/bin/executable_claude-mask-sweep
+test-claude-project-settings.sh     private_dot_local/bin/executable_claude-project-settings private_dot_local/bin/executable_fleet-decl
+test-claude-scratch-hook.sh         private_dot_local/bin/executable_claude-scratch-hook
+test-claude-trust-check.sh          private_dot_local/bin/executable_claude-trust-check private_dot_local/bin/executable_fleet-decl
+test-claude-usage-report.sh         private_dot_local/bin/executable_claude-usage-report
+test-claude-worklog-hook.sh         private_dot_local/bin/executable_claude-worklog-hook
+test-claude-worktree-hook.sh        private_dot_local/bin/executable_claude-worktree-hook
+test-comment-lint.sh                private_dot_local/bin/executable_comment-lint
+test-repo-hygiene.sh                private_dot_local/bin/executable_comment-lint
+test-context-footprint.sh           private_dot_local/bin/executable_context-footprint
+test-context-lint.sh                private_dot_local/bin/executable_context-lint
+test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
+test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
+test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
+test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
+# fleet-repo runs fleet-decl from beside itself, and git-clone-worktree runs fleet-repo the same way.
+test-fleet-repo.sh                  private_dot_local/bin/executable_fleet-repo private_dot_local/bin/executable_fleet-decl
+test-git-clone-worktree.sh          private_dot_local/bin/executable_git-clone-worktree private_dot_local/bin/executable_fleet-repo private_dot_local/bin/executable_fleet-decl
+test-worktree-post-create.sh        private_dot_local/bin/executable_git-clone-worktree private_dot_local/bin/executable_fleet-repo private_dot_local/bin/executable_fleet-decl
+test-git-ai-coauthor.sh             private_dot_local/bin/executable_git-ai-coauthor
+test-git-secret-scan.sh             private_dot_local/bin/executable_git-secret-scan dot_config/gitleaks/floor.toml
+test-git-snapshot.sh                private_dot_local/bin/executable_git-snapshot
+test-hc-status.sh                   private_dot_local/bin/executable_hc-status tests/stub-hc-server.py
+# hook-doctor's suite installs leak-guard, run-repo-gates and git-secret-scan from this tree.
+test-hook-doctor.sh                 private_dot_local/bin/executable_hook-doctor private_dot_local/bin/executable_fleet-decl
+test-hook-doctor.sh                 private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_run-repo-gates
+test-hook-doctor.sh                 private_dot_local/bin/executable_git-secret-scan dot_config/gitleaks/floor.toml
+test-hook-doctor-chpwd.sh           .chezmoitemplates/zshrc.guard-check
+test-image-bump.sh                  private_dot_local/bin/executable_image-bump
+test-image-bump-check.sh            private_dot_local/bin/executable_image-bump
+test-image-bump-deploy.sh           private_dot_local/bin/executable_image-bump
+test-image-bump-estate.sh           private_dot_local/bin/executable_image-bump
+test-image-bump-latest.sh           private_dot_local/bin/executable_image-bump
+test-install-claude-plugins.sh      private_dot_local/bin/executable_install-claude-plugins
+test-install-test-gate.sh           private_dot_local/bin/executable_install-test-gate
+test-pre-commit-trigger.sh          private_dot_local/bin/executable_install-test-gate run_onchange_install-git-hooks.sh.tmpl
+test-kb.sh                          private_dot_local/bin/executable_kb
+test-kb-domain.sh                   private_dot_local/bin/executable_kb
+test-kb-index.sh                    private_dot_local/bin/executable_kb
+test-kb-link.sh                     private_dot_local/bin/executable_kb
+test-kb-lint.sh                     private_dot_local/bin/executable_kb
+test-kb-new.sh                      private_dot_local/bin/executable_kb
+test-kb-precommit.sh                private_dot_local/bin/executable_kb
+test-kb-project.sh                  private_dot_local/bin/executable_kb
+test-kb-promote.sh                  private_dot_local/bin/executable_kb
+test-kb-rename.sh                   private_dot_local/bin/executable_kb
+test-kb-root.sh                     private_dot_local/bin/executable_kb
+test-land.py                        private_dot_local/bin/executable_land
+test-leak-guard.sh                  private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_run-repo-gates private_dot_local/bin/executable_fleet-decl
+test-lint-tasknames.sh              private_dot_local/bin/executable_lint-tasknames dot_claude/skills/naming-build-tasks/SKILL.md
+test-loop-time.py                   private_dot_local/bin/executable_loop-time
+test-machine-snapshot.sh            private_dot_local/bin/executable_machine-snapshot
+test-machine-snapshot-darwin.sh     private_dot_local/bin/executable_machine-snapshot
+test-memory-doctor.sh               private_dot_local/bin/executable_memory-doctor
+test-ntfy-inbox.sh                  private_dot_local/bin/executable_ntfy-inbox tests/stub-ntfy-server.py
+test-portability-lint.sh            private_dot_local/bin/executable_portability-lint
+test-register.sh                    private_dot_local/bin/executable_register private_dot_local/bin/executable_fleet-decl
+test-register-lint.sh               private_dot_local/bin/executable_register-lint private_dot_local/bin/executable_register
+test-run-repo-gates.sh              private_dot_local/bin/executable_run-repo-gates private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_fleet-decl
+test-skill-externals-sync.sh        private_dot_local/bin/executable_skill-externals-sync
+test-spell-capture.sh               private_dot_local/bin/executable_spell-capture
+test-ui-shot.sh                     private_dot_local/bin/executable_ui-shot
+test-us-spelling-lint.sh            private_dot_local/bin/executable_us-spelling-lint
+test-wt-bootstrap.sh                private_dot_local/bin/executable_wt-bootstrap
+test-wt-config-gen.sh               private_dot_local/bin/executable_wt-config-gen private_dot_local/bin/executable_fleet-decl dot_config/worktrunk/base.toml
+test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-base private_dot_local/bin/executable_wt-config-gen dot_config/worktrunk/base.toml
+
+# --- setup/, run from the checkout -------------------------------------------------------------
+test-adopt-audit.sh                 setup/adopt-audit
+test-brew-inventory.sh              setup/brew-inventory
+test-check-required-brew-tools.sh   setup/check-required-brew-tools
+test-overlay-doctor.sh              setup/overlay-doctor overlay-skeleton/dot_gitignore_global.example
+test-preserve-claude-md.sh          setup/preserve-claude-md
+test-publish-check.sh               setup/publish-check
+test-scaffold-overlay.sh            setup/scaffold-overlay overlay-skeleton/**
+
+# --- deployed configuration with a suite ---------------------------------------------------------
+test-modify-settings.sh             dot_claude/modify_settings.json
+test-statusline-dir.sh              dot_claude/statusline-command.sh
+test-statusline-usage.sh            dot_claude/statusline-command.sh
+test-tooling-inventory.sh           dot_claude/tooling.md
+test-mani-config.sh                 dot_zshenv.tmpl
+test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl
+test-spell-tier-name.sh             dot_config/nvim/lua/config/spell.lua
+test-run-all.sh                     tests/run-all.sh
+
+# --- names in fixture text, not reads ------------------------------------------------------------
+refs test-pre-commit-trigger.sh     dot_claude/modify_settings.json setup/overlay-doctor
+refs test-publish-check.sh          dot_claude/tooling.md docs/reference/private-layer.md
+refs test-context-lint.sh           docs/README.md
+refs test-register.sh               docs/README.md
+refs test-skip-skills.sh            .claude/skills/tuicr-code-review
+
+# --- shipped, read by no suite -------------------------------------------------------------------
+# Documentation: the commit hook skips a commit that stages nothing else.
+exempt docs/** *.md setup/README.md
+# Tools with no suite of their own; the tree checks above still read them.
+exempt private_dot_local/bin/executable_git-merge-diff private_dot_local/bin/executable_nvim-healthdump
+exempt setup/chezmoi-safe-apply bootstrap-mac.sh Brewfile
+# Install scripts chezmoi runs at apply time; no suite renders them.
+exempt run_*.sh run_*.sh.tmpl
+# chezmoi metadata and fragments no suite reads.
+exempt .chezmoidata.yaml .chezmoiexternal.toml.tmpl .chezmoiremove .chezmoitemplates/zprofile.linux
+exempt .gitignore .us-spelling-lint
+# Configuration and content deployed as is.
+exempt dot_claude/CLAUDE.md.tmpl dot_claude/standards/** dot_claude/skills/** .claude/skills/*
+exempt dot_config/** private_Library/** private_dot_local/share/**
+exempt dot_editorconfig dot_ssh/** dot_tmux.conf dot_xbindkeysrc dot_xinitrc dot_Xresources.tmpl dot_zprofile.tmpl

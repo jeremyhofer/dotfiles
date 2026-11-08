@@ -34,6 +34,29 @@ Entries are newest first.
 
 ## 2026-11-07
 
+### The base's commit gate runs only the suites a commit can break; every suite runs before `chezmoi apply`
+
+- **The pre-commit hook in this source repository is scoped.** `tests/select-suites.sh` reads the
+  staged paths and `tests/coverage.map`, which declares the source paths each suite reads, and runs
+  only those suites (`tests/run-all.sh --only`). The fail-safe is every suite: a staged path in the
+  shared core (the runner, the git isolation, the selector, `install-test-gate`, `git-staged-run`,
+  the gitconfig) or one no suite claims runs them all. `sh tests/select-suites.sh --check`, run by
+  `test-select-suites.sh` on every gated commit, refuses a tracked file the map neither claims nor
+  exempts, so a new file needs a line in the map.
+- **Every suite now runs before an apply instead.** The generated config gains a
+  `[hooks.apply.pre]` running `tests/pre-apply.sh`; a failing suite aborts the apply before
+  anything is written, naming the suite, a log with its output and the command that re-runs it.
+  While git, python3, uv, jq, yq, gitleaks or wt is missing (a first apply) it skips, saying so.
+  An apply of the base therefore takes as long as the whole suite set; `chezmoi apply --dry-run`
+  runs it too, as chezmoi runs hooks on a dry run.
+- **Every machine: run `chezmoi init` before the next `chezmoi apply`.** The hook lives in the
+  generated config, which only `chezmoi init` regenerates (it keeps every answer; nothing is
+  prompted). In that order the apply that brings the scoped commit gate is already preceded by the
+  full set; a machine that applies without it gets the scoped gate and no full run anywhere.
+- `install-test-gate`: a repository that ships `tests/select-suites.sh` gets the scoped gate; one
+  that does not keeps running `tests/run-all.sh` whole. A private layer's gate is unchanged, and
+  regenerating it changes nothing until the layer adds a selector and a map of its own.
+
 ### New tool `land`: a landing gate recorded against the git tree
 
 - `land check` runs the repository's gate command (`git config land.gate '<command>'`) on a clean

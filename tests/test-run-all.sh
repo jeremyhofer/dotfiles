@@ -45,6 +45,20 @@ out=$(PATH="$w/nouv" sh "$w/tests/run-all.sh" good 2>&1); rc=$?
 has "without uv the suite is SKIPped visibly" "$out" "SKIP   test-good.py (uv not installed)"
 [ "$rc" -eq 2 ] && ok "all suites skipped is not a green run (exit 2)" || no "all skipped exits 2 (rc $rc)"
 
+# --only runs exactly the named suites (the commit gate's selector hands it its list).
+printf '#!/bin/sh\nexit 0\n' > "$w/tests/test-one.sh"; printf '#!/bin/sh\nexit 1\n' > "$w/tests/test-two.sh"
+out=$(PATH="$w/fakebin:$PATH" sh "$w/tests/run-all.sh" --only test-one.sh 2>&1); rc=$?
+has "--only runs the named suite" "$out" "PASS   test-one.sh"
+case "$out" in *test-two.sh*|*test-good.py*) no "--only runs nothing else ($out)" ;; *) ok "--only runs nothing else" ;; esac
+[ "$rc" -eq 0 ] && ok "--only: a passing selection exits 0" || no "--only: a passing selection exits 0 (rc $rc)"
+out=$(PATH="$w/fakebin:$PATH" sh "$w/tests/run-all.sh" --only test-one.sh test-two.sh 2>&1); rc=$?
+has "--only: a failing named suite is reported" "$out" "FAIL   test-two.sh (exit 1)"
+[ "$rc" -eq 1 ] && ok "--only: a failing selection exits 1" || no "--only: a failing selection exits 1 (rc $rc)"
+out=$(PATH="$w/fakebin:$PATH" sh "$w/tests/run-all.sh" --only test-one.sh test-gone.sh 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--only naming a missing suite exits 2" || no "--only naming a missing suite exits 2 (rc $rc: $out)"
+out=$(PATH="$w/nouv" sh "$w/tests/run-all.sh" --only test-good.py 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--only: every named suite skipped is not a green run (exit 2)" || no "--only all skipped exits 2 (rc $rc)"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] && echo PASS
 [ "$fail" -eq 0 ]

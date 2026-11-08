@@ -49,6 +49,15 @@ echo "installed pre-push leak guard -> $hook"
 # and an earlier, narrower trigger let changes to those commit without the suites that cover
 # them. tests/test-pre-commit-trigger.sh pins the rule.
 #
+# SCOPED AGAIN, to the suites the staged paths select. This repository ships
+# tests/select-suites.sh and its map (tests/coverage.map), so the hook runs only the suites that
+# read a staged path, every suite when one is in the shared core or claimed by none. The whole set
+# runs before `chezmoi apply` instead (tests/pre-apply.sh, from .chezmoi.toml.tmpl's hook), the
+# moment a change starts to affect a machine; nothing is dropped, only moved.
+#
+# Re-run when the generator changes, so a machine that applies a new install-test-gate gets the
+# hook it writes: install-test-gate {{ include "private_dot_local/bin/executable_install-test-gate" | sha256sum }}
+#
 # COMMIT PATH, not a build lane: a gate reachable only through a lane goes dark whenever
 # something earlier in that lane fails, and says nothing when it does.
 #

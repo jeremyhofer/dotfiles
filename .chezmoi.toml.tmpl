@@ -20,3 +20,11 @@
 {{- if eq .chezmoi.os "linux" }}
     dpi = {{ .dpi | quote }}
 {{- end }}
+
+{{- /* Every suite runs before an apply deploys anything, and a failure aborts it; the commit gate
+       runs only the suites a commit's staged paths select (tests/select-suites.sh). The script
+       skips, saying so, while the tools the suites need are not installed (a first apply). A
+       config generated before this hook existed gets it at the next `chezmoi init`. */}}
+[hooks.apply.pre]
+    command = "sh"
+    args = [{{ printf "%s/tests/pre-apply.sh" .chezmoi.sourceDir | quote }}]

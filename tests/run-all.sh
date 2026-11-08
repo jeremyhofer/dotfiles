@@ -20,16 +20,29 @@
 # Usage:
 #   sh tests/run-all.sh            # every suite
 #   sh tests/run-all.sh kb         # only suites whose name contains "kb"
+#   sh tests/run-all.sh --only test-kb.sh test-hc-status.sh   # exactly these (select-suites.sh)
 #   RUN_ALL_JOBS=1 sh tests/run-all.sh   # one at a time, as before
 #
 # RUN_ALL_JOBS: suites running at once. Default: the CPU count, at most 8 (each suite keeps
 # a scratch tree under $TMPDIR, so more is not worth the disk).
 #
-# Exits 1 if any suite failed, naming each one and replaying its output; 2 if none matched.
+# Exits 1 if any suite failed, naming each one and replaying its output; 2 if none matched, or
+# if --only names a file that is not a suite here (a selector naming a missing suite is a broken
+# map, and must not read as a pass).
 # POSIX sh and BSD userland only: no `wait -n`, no `timeout`, nothing GNU-specific.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 filter=${1:-}
+only=""
+if [ "$filter" = --only ]; then
+  shift
+  [ $# -gt 0 ] || { echo "run-all: --only needs suite names" >&2; exit 2; }
+  for n in "$@"; do
+    case "$n" in test-*.sh|test-*.py) ;; *) printf 'run-all: --only: %s is not a suite name\n' "$n" >&2; exit 2 ;; esac
+    [ -f "$here/$n" ] || { printf 'run-all: --only: no suite %s in %s\n' "$n" "$here" >&2; exit 2; }
+  done
+  only=" $* "; filter=""
+fi
 
 # No suite may reach the machine's own global git config, so none can fire its commit hooks.
 . "$here/git-isolate.sh"
@@ -69,6 +82,9 @@ for t in "$here"/test-*.sh "$here"/test-*.py; do
   if [ -n "$filter" ]; then
     case "$name" in *"$filter"*) ;; *) continue ;; esac
   fi
+  if [ -n "$only" ]; then
+    case "$only" in *" $name "*) ;; *) continue ;; esac
+  fi
   # The interpreter comes from the shebang (`#!/usr/bin/env X` and `#!/bin/X` both reduce to X):
   # a zsh suite run through `sh` fails on zsh-only syntax, which reads like a broken test rather
   # than a broken runner.
@@ -91,7 +107,11 @@ for t in "$here"/test-*.sh "$here"/test-*.py; do
 done
 
 if [ ! -s "$work/list" ]; then
-  echo "run-all: no suites matched${filter:+ filter '$filter'}" >&2
+  if [ -n "$only" ]; then
+    echo "run-all: every suite named by --only was skipped, so nothing was tested" >&2
+  else
+    echo "run-all: no suites matched${filter:+ filter '$filter'}" >&2
+  fi
   exit 2
 fi
 

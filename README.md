@@ -78,7 +78,7 @@ dot_*  private_dot_local/   deployed to ~ (chezmoi source-state names)
 docs/                       architecture and reference
 setup/                      adoption and audit tools, run from the checkout
 overlay-skeleton/           what a new private layer starts from
-tests/                      the suites; tests/run-all.sh runs them
+tests/                      the suites; tests/run-all.sh runs them, tests/coverage.map maps them
 ```
 
 Working on the repository itself, as a person or an agent: [`AGENTS.md`](AGENTS.md) has the rules,

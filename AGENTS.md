@@ -10,8 +10,11 @@ details of how any one machine is set up.
 
 No task runner; the commands are plain.
 
-- `sh tests/run-all.sh [filter]`: every suite, or those whose name contains the filter. The
-  pre-commit hook runs it when a shipped file is staged.
+- `sh tests/run-all.sh [filter]`: every suite, or those whose name contains the filter;
+  `--only <suite>...` runs exactly those. The pre-commit hook runs the suites the staged paths
+  select (`tests/select-suites.sh`); every suite runs before `chezmoi apply` (`tests/pre-apply.sh`).
+  A new file needs a line in `tests/coverage.map`, or every commit runs every suite and
+  `sh tests/select-suites.sh --check` refuses.
 - `chezmoi diff`, then `chezmoi apply`: deploy this source to the machine. The private layer is a
   second instance: `chezmoi-overlay diff`, `chezmoi-overlay apply`.
 - `sh setup/overlay-doctor`: is this machine's private layer complete and disjoint from the base;
