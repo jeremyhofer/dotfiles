@@ -132,11 +132,13 @@ session in the repository, with nothing announcing it. Hence:
 - **Where a private layer manages these with `claude-project-settings`** (`claudeDirSettings` per
   directory, `claudeLocalSettings` for the root), `claude-project-settings check` reports, as
   drift, every permission rule (`permissions.allow`, `.ask`, `.deny`) found in the root's local file,
-  and any leftover `<directory>/.claude/settings.local.json`. To resolve: remove the rule from the
-  root's local file, and move a leftover file's sandbox grants into the directory's declared file,
-  then delete it. Permission rules cannot be declared through the tool, by design, and `apply`
-  never removes one: removal is the person's edit. A rule a session keeps needing is the person's
-  call; there is no declared home for it.
+  and any leftover `<directory>/.claude/settings.local.json`. To resolve: a rule a seat keeps
+  needing is declared in that seat's own `claudeDirSettings` file, and every rule is removed from
+  the root's local file; move a leftover file's sandbox grants into the directory's declared file,
+  then delete it. Permission rules are declarable only in a directory's file: an allow of a whole
+  tool (`Bash`, `Bash(*)`) or of a protected directory is refused, and the root's file takes none,
+  since Claude Code saves approvals into those arrays. `apply` never removes a rule: removal is the
+  person's edit, and so is the choice to declare one, rule by rule.
 
 A repository whose only session starts at its root has one reader of that file, and none of this
 applies.

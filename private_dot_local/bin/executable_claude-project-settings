@@ -9,8 +9,11 @@
 #                                                 every permission rule in the shared root file
 #                                                 and every leftover directory settings.local.json;
 #                                                 write nothing
-#   claude-project-settings validate [<file>...]  check files against the rules; with no file,
-#                                                 every file the record points at
+#   claude-project-settings validate [--seat] [<file>...]
+#                                                 check files against the rules (--seat: a
+#                                                 directory's file, which may hold permission
+#                                                 rules); with no file, every file the record
+#                                                 points at, each by the rules for its place
 #
 #   exit 0  done / no drift / valid
 #   exit 1  a project could not be written (an invalid declaration, an unparseable live file), or
@@ -39,15 +42,21 @@
 #
 # WHAT MAY BE DECLARED, checked by `validate` and again before every write. The rules are closed:
 #   - only the keys listed in ALLOWED_KEYS below, today sandbox.filesystem.allowWrite and
-#     sandbox.excludedCommands. Anything else, permissions included, is refused until it is added
-#     here on purpose;
+#     sandbox.excludedCommands, and in a directory's file (DIRECTORIES below) also the permission
+#     rules in SEAT_KEYS: permissions.allow, .ask and .deny. Anything else is refused until it is
+#     added here on purpose, and permission rules are refused in the root's file;
 #   - allowWrite is a list of paths written ~/..., with no glob characters, no `.` or `..`
 #     segments, no doubled slash, not the whole home directory, and nothing at or under a
 #     protected directory (PROTECTED below: keys, the GPG home, and Claude's own configuration);
 #   - excludedCommands, the commands that run OUTSIDE the sandbox in that project, is a list of
 #     entries of exactly the form `<command> *`: one plain command name, a space, a star. Never a
 #     shell, interpreter or wrapper (SHELLISH below), because excluding one would take every
-#     command written through it out of the sandbox, which leaves no boundary at all.
+#     command written through it out of the sandbox, which leaves no boundary at all;
+#   - a permission rule is a non-empty string in a list. An allow rule may not grant a whole tool:
+#     a bare tool name (`Bash`, `Edit`, an MCP tool) or a specifier that matches everything
+#     (`Bash(*)`, `Bash(:*)`, `Bash()`) is refused, and so is an allow rule naming a protected
+#     directory. Ask and deny rules only narrow, so a whole tool is fine there. Declaring a rule is
+#     still a change to that session's permissions, which a person approves rule by rule.
 # A layer's commit gate should run `validate`, so a bad file is refused when it is committed, not
 # when it is applied.
 #
@@ -80,9 +89,11 @@
 # its own declared file; the root's claudeLocalSettings holds only what every session in the
 # repository may have. `check` reports, as drift, each permission rule (permissions.allow, .ask and
 # .deny entries) in the root's live settings.local.json: such a rule is an approval one session
-# saved, now applying to every session, and nothing declared it. Permission rules cannot be declared
-# through this tool (WHAT MAY BE DECLARED), so the resolution is to remove the rule from that file;
-# `apply` never removes one, because that stays a person's decision. `check` also reports a
+# saved, now applying to every session, and nothing declared it. A rule a seat needs every time is
+# declared in that seat's own file (WHAT MAY BE DECLARED); any other is removed from the root file.
+# `apply` never removes one, because that stays a person's decision. Permission rules are not
+# declarable in the root's file at all: Claude Code writes approvals into the same arrays, so a
+# declared array there would replace them, and the root file reaches every session. `check` also reports a
 # settings.local.json in a declared directory: Claude Code still reads one left in a session's
 # starting directory from before v2.1.211, unseen beside the directory's declared file. A project
 # without claudeDirSettings has one session's worth of root file, and none of this applies to it.
@@ -104,6 +115,7 @@
 set -u
 
 ALLOWED_KEYS='[["sandbox","filesystem","allowWrite"],["sandbox","excludedCommands"]]'
+SEAT_KEYS='[["permissions","allow"],["permissions","ask"],["permissions","deny"]]'
 SHELLISH='["sh","bash","zsh","dash","fish","ksh","env","sudo","doas","su","exec","eval","command","xargs","nohup","timeout","nice","python","python3","node","perl","ruby","npx","uv","uvx"]'
 PROTECTED='["~/.ssh","~/.gnupg","~/.claude"]'
 
@@ -115,7 +127,7 @@ cmd=${1:-}
 case "$cmd" in
   apply|check|validate) shift ;;
   -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
-  *) die2 "usage: claude-project-settings apply|check [<project>] | validate [<file>...]" ;;
+  *) die2 "usage: claude-project-settings apply|check [<project>] | validate [--seat] [<file>...]" ;;
 esac
 [ "$cmd" = validate ] || [ $# -le 1 ] || die2 "usage: claude-project-settings $cmd [<project>]"
 
@@ -150,17 +162,37 @@ if [ -f "$WROOTS_FILE" ]; then
   WROOTS=$(printf '%s' "$_r" | jq -c .roots)
 fi
 
-# Prints one line per rule the JSON file $1 breaks; prints nothing for a valid file.
+# Prints one line per rule the JSON file $1 breaks; prints nothing for a valid file. $2 is `seat`
+# for a directory's file, which may also hold permission rules, else the root's rules apply.
 violations() {
-  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson protected "$PROTECTED" --argjson shellish "$SHELLISH" \
+  jq -r --argjson allowed "$ALLOWED_KEYS" --argjson seatkeys "$SEAT_KEYS" --arg kind "${2:-root}" \
+    --argjson protected "$PROTECTED" --argjson shellish "$SHELLISH" \
     --argjson roots "$WROOTS" --arg rootsfile "$WROOTS_FILE" '
     def under($dirs): sub("/+$"; "") as $n
       | any($dirs[] as $d | ($n == $d or ($n | startswith($d + "/"))); .);
-    if type != "object" then "the file is not a JSON object" else
+    (if $kind == "seat" then $allowed + $seatkeys else $allowed end) as $keys
+    | if type != "object" then "the file is not a JSON object" else
       ([paths | map(select(type == "string")) | select(length > 0)] | unique[]
         | . as $k
-        | select(any($allowed[]; .[0:($k | length)] == $k) | not)
-        | "key \(join(".")) may not be declared"),
+        | select(any($keys[]; .[0:($k | length)] == $k) | not)
+        | if $k[0] == "permissions" and $kind != "seat"
+          then "key \(join(".")) may not be declared here: permission rules may be declared only in a directory'"'"'s file (claudeDirSettings)"
+          else "key \(join(".")) may not be declared" end),
+      (if $kind != "seat" or (.permissions | type) != "object" then empty else
+        .permissions as $p | ["allow", "ask", "deny"][] as $l | $p[$l] as $v
+        | if $v == null then empty
+          elif ($v | type) != "array" then "permissions.\($l) must be a list"
+          else $v[]
+            | if (type != "string") or (gsub("\\s"; "") == "") then "permissions.\($l) entry \(tojson) is not a rule"
+              elif $l != "allow" then empty
+              elif test("^\\s*[A-Za-z0-9_-]+\\s*$") then "permissions.allow entry \(.) allows a whole tool"
+              elif test("^\\s*[A-Za-z0-9_-]+\\(\\s*(\\*+|:\\*+|)\\s*\\)\\s*$") then "permissions.allow entry \(.) allows a whole tool"
+              elif . as $r | any($protected[] | (., sub("^~"; env.HOME)) | gsub("\\."; "\\.");
+                     . as $d | $r | test("(^|[^A-Za-z0-9._-])" + $d + "(/|\\)|\\s|$)"))
+                then "permissions.allow entry \(.) names a protected directory"
+              else empty end
+          end
+      end),
       (.sandbox.filesystem.allowWrite as $w
         | if $w == null then empty
           elif ($w | type) != "array" then "sandbox.filesystem.allowWrite must be a list"
@@ -187,9 +219,9 @@ violations() {
     end' "$1" 2>/dev/null || echo "the file is not valid JSON"
 }
 
-check_file() {  # $1 file, $2 label; warns for each violation, returns 1 if any
+check_file() {  # $1 file, $2 label, $3 `seat` for a directory's file; warns for each violation, returns 1 if any
   [ -f "$1" ] || { warn "$2: $1 does not exist"; return 1; }
-  _v=$(violations "$1")
+  _v=$(violations "$1" "${3:-root}")
   [ -z "$_v" ] && return 0
   printf '%s\n' "$_v" | while IFS= read -r _l; do printf 'claude-project-settings: %s: %s\n' "$2" "$_l" >&2; done
   problems=$((problems + 1))
@@ -236,8 +268,13 @@ dir_pointers() {
 TAB=$(printf '\t')
 
 if [ "$cmd" = validate ]; then
+  kind=root
+  if [ "${1:-}" = --seat ]; then
+    kind=seat; shift
+    [ $# -gt 0 ] || die2 "usage: claude-project-settings validate --seat <file>..."
+  fi
   if [ $# -gt 0 ]; then
-    for f in "$@"; do check_file "$f" "$f" || :; done
+    for f in "$@"; do check_file "$f" "$f" "$kind" || :; done
   else
     need_record; load_projects
     for p in $PROJECTS; do
@@ -246,7 +283,7 @@ if [ "$cmd" = validate ]; then
       dir_pointers "$p"
       [ -n "$DIRS" ] || continue
       while IFS=$TAB read -r d s; do
-        check_file "$(resolve "$s")" "$p:${d%/}" </dev/null || :
+        check_file "$(resolve "$s")" "$p:${d%/}" seat </dev/null || :
       done <<EOF
 $DIRS
 EOF
@@ -298,7 +335,7 @@ write_dir() {
       warn "$_l: a $DKEY key must be a relative path inside the repository, with no . or .. segment or doubled slash; not written"; return ;;
   esac
   _src=$(resolve "$4")
-  check_file "$_src" "$_l" || { warn "$_l: not written"; return; }
+  check_file "$_src" "$_l" seat || { warn "$_l: not written"; return; }
   _sd=$2/$_d
   if [ ! -d "$_sd" ]; then say "$_l: $_sd is not on this machine; skipped"; return; fi
   _rp=$(cd -P -- "$2" && pwd -P); _sp=$(cd -P -- "$_sd" && pwd -P)
@@ -336,7 +373,7 @@ shared_rules() {
   done <<EOF
 $_rules
 EOF
-  say "$1: a rule one session saved there reaches every session started anywhere in the repository; remove it from $_f (permission rules cannot be declared through claude-project-settings, by design)"
+  say "$1: a rule one session saved there reaches every session started anywhere in the repository; declare one a seat needs in that seat's own claudeDirSettings file, and remove each from $_f (permission rules are not declarable in the root's file)"
 }
 
 need_record

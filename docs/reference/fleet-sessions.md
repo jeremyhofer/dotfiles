@@ -331,7 +331,8 @@ entry. Where several canonicals start in subdirectories of one repository, the r
 `settings.local.json` is shared by all of them, and Claude Code saves there an approval from any of
 them: put each session's entries in its own directory's file, keep the root's to what every session
 may have, and run `claude-project-settings check`, which reports a permission rule saved there as
-drift (skill `claude-config-layers`, §5a). On a machine without one, edit the file by hand. Managed settings outrank both, and if they
+drift: declare one a seat needs in that seat's own file, and remove each from the root's (skill
+`claude-config-layers`, §5a). On a machine without one, edit the file by hand. Managed settings outrank both, and if they
 refuse the entry, the canonicals there cannot stage and the human runs `stage` for them.
 
 If the handoffs repository signs its commits and the sandbox blocks Unix sockets, the hub's `place`

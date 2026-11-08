@@ -325,7 +325,8 @@ A project's own Claude Code settings, such as the extra directories its sessions
 one plain JSON file per project, in settings.json's own shape, which the project's entry points at:
 `claudeLocalSettings: claude/projects/<project>.json`, relative to `~/.dotlocal`. Document each grant
 beside the files (a README), not in them. `claude-project-settings validate` checks a file against
-closed rules: only two keys may be declared. `sandbox.filesystem.allowWrite` takes `~/...` paths with
+closed rules: only two keys may be declared, plus permission rules in a directory's file (below).
+`sandbox.filesystem.allowWrite` takes `~/...` paths with
 no globs, no `.` or `..` segments, and nothing under `~/.ssh`, `~/.gnupg` or `~/.claude`. A path
 outside the home directory, such as a network share's mount, is accepted only at or under a root
 the layer declares in `claude/write-roots`, relative to `~/.dotlocal`: one absolute directory per
@@ -366,8 +367,13 @@ directory's grants go only in its own declared file, and the root's `claudeLocal
 what every session in the repository may have. In a project that declares `claudeDirSettings`,
 `check` reports as drift every permission rule in the root's live `settings.local.json`, and any
 `<directory>/.claude/settings.local.json` left over from before v2.1.211 (Claude Code still reads
-one). Resolve the first by removing the rule from that file: permission rules cannot be declared
-through the tool, and `apply` never removes one. Resolve the second by moving its sandbox grants into
+one). Resolve the first by declaring a rule a seat needs in that seat's own `claudeDirSettings`
+file and removing each rule from the root's file; `apply` never removes one. A directory's file may
+hold `permissions.allow`, `.ask` and `.deny` lists (`validate --seat` checks one by hand); an allow
+rule that grants a whole tool (`Bash`, `Bash(*)`) or names a protected directory is refused, and the
+root's file may hold none, because Claude Code saves approvals into the same arrays there. Each rule
+declared is still a change to that session's permissions, approved by a person rule by rule.
+Resolve the second by moving its sandbox grants into
 the directory's declared file and deleting it. Skill `claude-config-layers` (§5a) has the file
 table.
 

@@ -73,7 +73,7 @@ v() {  # <name> <json> <expected substring, or "" for valid>
 v "an allowWrite list of home paths" '{"sandbox":{"filesystem":{"allowWrite":["~/Devel/internal/x","~/.local/share/y"]}}}' ""
 v "an empty list (how entries are taken away)" '{"sandbox":{"filesystem":{"allowWrite":[]}}}' ""
 v "a key outside the allowlist" '{"sandbox":{"enabled":false}}' "key sandbox.enabled may not be declared"
-v "permissions" '{"permissions":{"allow":["Bash(rm:*)"]}}' "key permissions may not be declared"
+v "permissions in a root file" '{"permissions":{"allow":["Bash(rm:*)"]}}' "permission rules may be declared only in a directory's file"
 v "allowWrite that is not a list" '{"sandbox":{"filesystem":{"allowWrite":"~/x"}}}' "must be a list"
 v "a path not written ~/" '{"sandbox":{"filesystem":{"allowWrite":["/etc"]}}}' "must be written ~/"
 v "a glob" '{"sandbox":{"filesystem":{"allowWrite":["~/Devel/**/x"]}}}' "glob"
@@ -93,6 +93,35 @@ v "an excluded wrapper" '{"sandbox":{"excludedCommands":["env *"]}}' "shell, int
 v "a sandbox key beside excludedCommands" '{"sandbox":{"excludedCommands":["ssh *"],"network":{"allowAllUnixSockets":true}}}' "key sandbox.network may not be declared"
 v "a non-object file" '["~/x"]' "not a JSON object"
 v "unparseable JSON" '{ nope' "not valid JSON"
+
+echo "== validate --seat: a directory's file may also hold permission rules"
+vs() {  # <name> <json> <expected substring, or "" for valid>: validate as a directory's file
+  printf '%s\n' "$2" > "$tmp/v.json"
+  out=$(sh "$tool" validate --seat "$tmp/v.json" 2>&1); rc=$?
+  if [ -z "$3" ]; then
+    [ $rc = 0 ] && ok "seat valid: $1" || bad "seat valid: $1" "rc=$rc $out"
+  else
+    { [ $rc = 1 ] && printf '%s' "$out" | grep -qF -- "$3"; } && ok "seat refused: $1" || bad "seat refused: $1" "rc=$rc $out"
+  fi
+}
+vs "allow, ask and deny rules" '{"permissions":{"allow":["Bash(make:*)","Read(~/Devel/**)"],"ask":["Bash(git push:*)"],"deny":["WebFetch"]}}' ""
+vs "permission rules beside sandbox keys" '{"permissions":{"allow":["Bash(make:*)"]},"sandbox":{"filesystem":{"allowWrite":["~/x"]}}}' ""
+vs "a whole tool in ask or deny (they only narrow)" '{"permissions":{"ask":["Bash"],"deny":["Edit(*)"]}}' ""
+vs "a sibling of a protected directory" '{"permissions":{"allow":["Edit(~/.sshfoo/**)"]}}' ""
+vs "a bare whole-tool allow" '{"permissions":{"allow":["Bash"]}}' "permissions.allow entry Bash allows a whole tool"
+vs "a bare MCP tool allow" '{"permissions":{"allow":["mcp__srv__run"]}}' "allows a whole tool"
+vs "an allow of Bash(*)" '{"permissions":{"allow":["Bash(*)"]}}' "allows a whole tool"
+vs "an allow of Bash(:*)" '{"permissions":{"allow":["Bash( :* )"]}}' "allows a whole tool"
+vs "an allow of Edit()" '{"permissions":{"allow":["Edit()"]}}' "allows a whole tool"
+vs "an allow naming ~/.ssh" '{"permissions":{"allow":["Read(~/.ssh/**)"]}}' "names a protected directory"
+vs "an allow naming the absolute ~/.claude" "{\"permissions\":{\"allow\":[\"Edit($HOME/.claude/settings.json)\"]}}" "names a protected directory"
+vs "a rules list that is not a list" '{"permissions":{"allow":"Bash(make:*)"}}' "permissions.allow must be a list"
+vs "an empty rule" '{"permissions":{"deny":[" "]}}' "is not a rule"
+vs "a rule that is not a string" '{"permissions":{"ask":[1]}}' "is not a rule"
+vs "another permissions key" '{"permissions":{"defaultMode":"bypassPermissions"}}' "key permissions.defaultMode may not be declared"
+vs "a key outside the allowlist, as for the root" '{"sandbox":{"enabled":false}}' "key sandbox.enabled may not be declared"
+out=$(sh "$tool" validate --seat 2>&1); rc=$?
+[ $rc = 2 ] && ok "validate --seat with no file is a usage error" || bad "validate --seat alone" "rc=$rc $out"
 
 echo "== validate: write roots outside the home directory, declared by the private layer"
 mkdir -p "$tmp/share/music"
@@ -196,13 +225,14 @@ projects:
       linkedclaude: claude/projects/ok.json
       tracked: claude/projects/ok.json
       absent: claude/projects/ok.json
-      greedy: claude/projects/greedy.json
+      greedy: claude/projects/greedy-seat.json
 YAML
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/root"]}}}\n' > "$P/multi.json"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/s1","~/shared"]}}}\n' > "$P/multi-one.json"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/s2","~/shared"]}}}\n' > "$P/multi-two.json"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/sub"]}}}\n' > "$P/dirsonly-sub.json"
 printf '{"sandbox":{"filesystem":{"allowWrite":["~/ok"]}}}\n' > "$P/ok.json"
+printf '{"permissions":{"allow":["Bash"]}}\n' > "$P/greedy-seat.json"
 mkdir -p "$root/work/multi/seats/one/.claude" "$root/work/multi/seats/two" "$root/work/dirsonly/sub" \
          "$root/work/escapes/a/b" "$root/work/escapes/tracked/.claude" "$root/work/escapes/greedy" "$tmp/outside"
 ln -s "$tmp/outside" "$root/work/escapes/linked"
@@ -263,8 +293,9 @@ FLEET_RECORD=$rec2 sh "$tool" check multi > "$tmp/out" 2>&1; rc=$?
 before=$(cat "$one"); FLEET_RECORD=$rec2 sh "$tool" apply multi >/dev/null 2>&1
 [ "$(cat "$one")" = "$before" ] && ok "a second apply changes no directory file" || bad "dir idempotent" "$(cat "$one")"
 out=$(FLEET_RECORD=$rec2 sh "$tool" validate 2>&1); rc=$?
-{ [ $rc = 1 ] && printf '%s' "$out" | grep -q 'escapes:greedy: key permissions'; } \
-  && ok "validate with no file checks every directory's file too" || bad "dir validate all" "rc=$rc $out"
+{ [ $rc = 1 ] && printf '%s' "$out" | grep -q 'escapes:greedy: permissions.allow entry Bash allows a whole tool'; } \
+  && ok "validate with no file checks every directory's file too, by the directory rules (a bare Bash allow is refused)" \
+  || bad "dir validate all" "rc=$rc $out"
 
 echo "== the root's settings.local.json, shared by every session in a repository with directories"
 # Claude Code reads and writes the root's .claude/settings.local.json for every session in the
@@ -303,7 +334,8 @@ FLEET_RECORD=$rec3 sh "$tool" check seated > "$tmp/out" 2>&1; rc=$?
   && grep -F 'seated: ' "$tmp/out" | grep -F 'permissions.ask' | grep -qF 'Bash(git push:*)'; } \
   && ok "a permission rule in the shared root file of a project with directories is reported, exit 1" \
   || bad "shared: rule reported" "rc=$rc $(cat "$tmp/out")"
-grep -qF 'remove it' "$tmp/out" && ok "the report says what to do" || bad "shared: what to do" "$(cat "$tmp/out")"
+{ grep -qF "declare one a seat needs in that seat's own claudeDirSettings file" "$tmp/out" && grep -qF 'remove each' "$tmp/out"; } \
+  && ok "the report says what to do: declare it for the seat, or remove it" || bad "shared: what to do" "$(cat "$tmp/out")"
 cmp -s "$tmp/seated.before" "$root/work/seated/.claude/settings.local.json" \
   && ok "check leaves the shared root file as it is" || bad "shared: check wrote" "$(cat "$root/work/seated/.claude/settings.local.json")"
 FLEET_RECORD=$rec3 sh "$tool" check seatsonly > "$tmp/out" 2>&1; rc=$?
@@ -327,6 +359,35 @@ FLEET_RECORD=$rec3 sh "$tool" check seated > "$tmp/out" 2>&1; rc=$?
 rm -f "$root/work/seated/seats/s1/.claude/settings.local.json"
 FLEET_RECORD=$rec3 sh "$tool" check seated > "$tmp/out" 2>&1; rc=$?
 [ $rc = 0 ] && ok "once resolved, check is clean, exit 0" || bad "shared: resolved" "rc=$rc $(cat "$tmp/out")"
+
+echo "== permission rules declared for a seat (claudeDirSettings), and only there"
+rec4="$root/mani-perms.yaml"
+cat > "$rec4" <<'YAML'
+projects:
+  permseat:
+    path: work/permseat
+    claudeLocalSettings: claude/projects/permroot.json
+    claudeDirSettings:
+      seats/s1: claude/projects/permseat-s1.json
+YAML
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/r"]}}}\n' > "$P/permroot.json"
+printf '{"permissions":{"allow":["Bash(make:*)"],"deny":["Bash(git push:*)"]},"sandbox":{"filesystem":{"allowWrite":["~/s1"]}}}\n' > "$P/permseat-s1.json"
+mkdir -p "$root/work/permseat/seats/s1"
+FLEET_RECORD=$rec4 sh "$tool" apply permseat > "$tmp/out" 2>&1; rc=$?
+s1="$root/work/permseat/seats/s1/.claude/settings.json"
+{ [ $rc = 0 ] && [ "$(jq -c .permissions "$s1" 2>/dev/null)" = '{"allow":["Bash(make:*)"],"deny":["Bash(git push:*)"]}' ]; } \
+  && ok "a seat's declared permission rules are written into its settings.json" || bad "perm seat apply" "rc=$rc $(cat "$tmp/out") $(cat "$s1" 2>&1)"
+[ "$(jq -c '.permissions // null' "$root/work/permseat/.claude/settings.local.json" 2>/dev/null)" = null ] \
+  && ok "...and none reach the shared root file" || bad "perm seat root" "$(cat "$root/work/permseat/.claude/settings.local.json")"
+FLEET_RECORD=$rec4 sh "$tool" check permseat > "$tmp/out" 2>&1; rc=$?
+[ $rc = 0 ] && ok "check after apply is clean" || bad "perm seat check" "rc=$rc $(cat "$tmp/out")"
+jq '.permissions = {"allow":["Bash(make:*)"]}' "$P/permroot.json" > "$P/permroot.n" && mv "$P/permroot.n" "$P/permroot.json"
+cp "$root/work/permseat/.claude/settings.local.json" "$tmp/permroot.before"
+FLEET_RECORD=$rec4 sh "$tool" apply permseat > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 1 ] && grep -qF "permseat: key permissions" "$tmp/out" && grep -qF "only in a directory's file" "$tmp/out" \
+  && cmp -s "$tmp/permroot.before" "$root/work/permseat/.claude/settings.local.json"; } \
+  && ok "the same rule declared for the root's file is refused, and the root file is not written" \
+  || bad "perm root refused" "rc=$rc $(cat "$tmp/out")"
 
 [ "$fails" = 0 ] && { echo PASS; exit 0; }
 echo "FAILED: $fails"; exit 1

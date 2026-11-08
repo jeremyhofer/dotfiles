@@ -66,9 +66,10 @@ this follows. The private-layer steps happen in that layer's repository, before 
      repository and saves there an approval from any of them, so keep the root's
      `claudeLocalSettings` to what every session may have. `claude-project-settings check` (step 6)
      reports each permission rule in that root file, and any leftover
-     `<directory>/.claude/settings.local.json`, as drift to remove (2026-11-08, `claudeDirSettings`,
-     ACTION, and "`claude-project-settings check` reports permission rules in a shared root file",
-     ACTION).
+     `<directory>/.claude/settings.local.json`, as drift to resolve: a rule a seat needs is declared
+     in that seat's own file, and each is removed from the root's (2026-11-08, `claudeDirSettings`,
+     ACTION, "`claude-project-settings check` reports permission rules in a shared root file",
+     ACTION, and "permission rules declarable in a directory's file").
    - Optionally, `ensureAllow` in the settings fragment for rules every machine should allow
      (2026-11-08, `ensureAllow`).
    - A clone whose integration branch is not its remote's default:
@@ -98,6 +99,18 @@ New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-
 `LIVE-UNLISTED`. A push to the publish remote is gated only in a clone that sets
 `dotfiles.publishRemote`.
 
+### `claude-project-settings`: permission rules declarable in a directory's file
+
+- A `claudeDirSettings` file, the one merged into `<directory>/.claude/settings.json`, may now hold
+  `permissions.allow`, `.ask` and `.deny` lists, so a seat that needs a rule every time carries it
+  in its own file. An allow rule that grants a whole tool (a bare name such as `Bash`, or `Bash(*)`,
+  `Bash(:*)`, `Bash()`) or names `~/.ssh`, `~/.gnupg` or `~/.claude` is refused. The root's
+  `claudeLocalSettings` file still takes no permission rules: Claude Code saves approvals into the
+  same arrays there, and that file reaches every session. `validate --seat <file>` checks a
+  directory's file by hand; `validate` with no file applies each file's own rules. Nothing changes
+  for a layer that declares no rules. Each rule declared is a change to that session's permissions,
+  approved by a person rule by rule.
+
 ### `claude-project-settings check` reports permission rules in a shared root file — ACTION
 
 - Claude Code's rule, the same on every machine (v2.1.211 and later): a repository root's
@@ -108,14 +121,14 @@ New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-
   permission rule (`permissions.allow`, `.ask`, `.deny` entries) in the root's live
   `settings.local.json`, naming it, and each `<directory>/.claude/settings.local.json` in a declared
   directory: a file from before v2.1.211 that Claude Code still reads for a session started there.
-  `apply` is unchanged and removes nothing. Permission rules cannot be declared through the tool, by
-  design, so the resolution is to remove the rule from the root file. A project without
+  `apply` is unchanged and removes nothing. The resolution is to remove the rule from the root file,
+  first declaring it in a seat's own file if that seat needs it (the entry above). A project without
   `claudeDirSettings` sees no change. The header (`--help`), skill `claude-config-layers` (§5a),
   `docs/reference/private-layer.md` and `docs/reference/fleet-sessions.md` state the two-file rule.
 - **ACTION, for a layer with `claudeDirSettings`:** keep the root's `claudeLocalSettings` to what
   every session in the repository may have, with each directory's grants in its own file. Run
-  `claude-project-settings check` after the apply, remove each permission rule it reports from the
-  root's `settings.local.json`, and move a leftover directory `settings.local.json`'s sandbox grants
+  `claude-project-settings check` after the apply, declare in a seat's own file any rule it reports
+  that the seat needs, remove each from the root's `settings.local.json`, and move a leftover directory `settings.local.json`'s sandbox grants
   into that directory's declared file before deleting it.
 
 ### `fleet-canonicals serve-requests --loop`: the request runner as a long-lived process
