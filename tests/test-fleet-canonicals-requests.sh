@@ -565,4 +565,45 @@ out=$(serve)
 wait $lockpid
 serve >/dev/null; expect r-l done "" "once the lock is free the request is served"
 
+# --loop: one pass, then another every --interval seconds, until SIGTERM/SIGINT; every wait bounded.
+# waitfor SECONDS CMD... -- poll CMD every 0.1s for at most SECONDS; true once it succeeds
+waitfor() { local n=$(( $1 * 10 )) i; shift; for (( i = 0; i < n; i++ )); do "$@" && return 0; sleep 0.1; done; return 1 }
+served_req() { [[ -f "$Q/$1.result.json" ]] }
+gone() { ! kill -0 $1 2>/dev/null }
+stop_loop() { kill -TERM $1 2>/dev/null; waitfor 8 gone $1 && { wait $1; return $? }; kill -KILL $1 2>/dev/null; wait $1 2>/dev/null; return 99 }
+
+reset; plant l-1 up alpha-canonical alpha-canonical
+bash "$TOOL" serve-requests --loop --interval 1 > "$T/loop.out" 2> "$T/loop.err" &
+looppid=$!
+waitfor 15 served_req l-1 && ok "--loop serves the queue on its first pass" || bad "--loop first pass: $(cat "$T/loop.out" "$T/loop.err")"
+plant l-2 up beta-canonical beta-canonical
+waitfor 15 served_req l-2 && ok "--loop serves a request that arrives after the first pass (a second pass ran)" \
+  || bad "--loop second pass never served l-2: $(cat "$T/loop.out" "$T/loop.err")"
+stop_loop $looppid; rc=$?
+[[ $rc == 0 ]] && ok "SIGTERM ends --loop with status 0" || bad "SIGTERM exit status $rc (99: had to be killed)"
+[[ ! -s "$T/loop.err" ]] && ok "SIGTERM leaves nothing on stderr (no traceback)" || bad "stderr after SIGTERM: $(cat "$T/loop.err")"
+[[ "$(grep -c '^done ' "$T/loop.out")" == 2 ]] && ok "--loop's per-pass output is the one-shot output, one line per served request" \
+  || bad "loop output: $(cat "$T/loop.out")"
+
+# a pass that fails is reported and does not end the loop: the lock file is a directory, so the
+# pass cannot open it; once it is removed the next pass serves.
+reset; mkdir -p "$Q/.serve.lock"; plant l-3 up gamma-canonical gamma-canonical
+bash "$TOOL" serve-requests --loop --interval 1 > "$T/loop.out" 2> "$T/loop.err" &
+looppid=$!
+failed_reported() { grep -q 'pass failed' "$T/loop.err" }
+waitfor 15 failed_reported && ok "a failing pass is reported on stderr" || bad "no failure report: $(cat "$T/loop.err")"
+kill -0 $looppid 2>/dev/null && ok "the loop is still running after a failed pass" || bad "the loop ended with its first failed pass"
+rmdir "$Q/.serve.lock"
+waitfor 15 served_req l-3 && ok "a later pass serves once the fault clears" || bad "no recovery: $(cat "$T/loop.out" "$T/loop.err")"
+stop_loop $looppid; rc=$?
+[[ $rc == 0 ]] && ok "SIGTERM after a failed pass still ends the loop with status 0" || bad "exit status $rc"
+
+# usage errors at startup exit as they do today
+out=$(fc serve-requests --interval 1); rc=$?
+[[ $rc -ne 0 && "$out" == *"--loop"* ]] && ok "--interval without --loop is a usage error" || bad "--interval alone (rc=$rc): $out"
+out=$(fc serve-requests --loop --interval 0); rc=$?
+[[ $rc -ne 0 ]] && ok "--interval must be positive" || bad "--interval 0 accepted: $out"
+out=$(fc serve-requests extra); rc=$?
+[[ $rc -ne 0 ]] && ok "serve-requests still takes no other arguments" || bad "extra argument accepted: $out"
+
 [[ $fail == 0 ]] && { print "ALL PASS"; exit 0 } || { print "FAILURES"; exit 1 }

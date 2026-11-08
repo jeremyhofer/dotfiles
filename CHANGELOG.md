@@ -34,6 +34,15 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `fleet-canonicals serve-requests --loop`: the request runner as a long-lived process
+
+- `fleet-canonicals serve-requests --loop [--interval SECONDS]` serves the queue, then again every
+  `SECONDS` (default 60) until SIGINT or SIGTERM, which end it with status 0 between passes. Each
+  pass prints what a one-shot run prints; a pass that fails is reported on stderr and the loop goes
+  on. It is the fallback for a Mac whose managed profile refuses to load the LaunchAgent: run it in a
+  tmux pane. Without `--loop` nothing changes, and `--interval` alone is a usage error. Nothing to
+  change in a private layer.
+
 ### `claude-project-settings` writes settings for sessions started in a subdirectory: `claudeDirSettings` — ACTION
 
 - A manifest entry may now map directories inside its repository to settings files:

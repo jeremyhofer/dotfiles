@@ -401,6 +401,11 @@ earlier one.
     - macOS: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist`.
       Check: `launchctl print gui/$(id -u)/local.dotfiles.fleet-canonicals-requests` shows
       `run interval = 60 seconds`; its output goes to `~/Library/Logs/fleet-canonicals-requests.log`.
+    - Where the LaunchAgent cannot be loaded (a managed Mac may refuse it): run
+      `fleet-canonicals serve-requests --loop` in a tmux pane outside every sandbox. It serves the
+      queue, then again every 60 seconds (`--interval SECONDS` changes that) until `Ctrl-C` or
+      SIGTERM, which end it with status 0 between passes. A pass that fails is reported on stderr
+      and the loop goes on. It does not survive a reboot or a closed pane; it is a fallback.
 
     Then prove a refusal from inside a session: `fleet-canonicals request up <a name declared for
     another machine> --reason probe --as <name>` must exit 1 naming the machine, and a request for

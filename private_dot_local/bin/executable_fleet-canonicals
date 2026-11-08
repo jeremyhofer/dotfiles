@@ -242,8 +242,13 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     anything. Refuses --force and --stub, a name not declared for this machine,
                     a never-touch name, and a second request for a canonical already queued.
                     The requester is the calling session's name when it can be read, else --as.
-  serve-requests    serve the queue once, outside every sandbox (a systemd user timer or a
-                    LaunchAgent runs it every minute). Refuses a request that is stale (10 min),
+  serve-requests [--loop [--interval SECONDS]]
+                    serve the queue once, outside every sandbox (a systemd user timer or a
+                    LaunchAgent runs it every minute). With --loop it serves, then serves
+                    again every SECONDS (default 60) until SIGINT or SIGTERM, which end it
+                    with status 0 between passes; a pass that fails is reported on stderr
+                    and the loop goes on. For a machine that cannot load the LaunchAgent:
+                    run it in a tmux pane. Refuses a request that is stale (10 min),
                     for a canonical with another request queued or running, from a canonical
                     acting on another (unless the requester is on request-any), a self-refresh
                     (unless allow-self-refresh), over the rate limits (3 per canonical, 10 for

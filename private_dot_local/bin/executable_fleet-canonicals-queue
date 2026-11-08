@@ -12,7 +12,8 @@ launch writes a job directory under ~/.claude, which the sandbox cannot write, a
 sandbox the live session list can read every peer as stopped, so a sandboxed `up` can launch a
 duplicate. What a sandboxed session CAN do is write a file under ~/.local/state. So it writes a
 request there (`request`), and a runner outside every sandbox, started once a minute by a systemd
-user timer or a LaunchAgent, reads the queue and runs the existing verb (`serve-requests`). The
+user timer or a LaunchAgent, reads the queue and runs the existing verb (`serve-requests`; where
+neither can be loaded, `serve-requests --loop` repeats the pass every 60 seconds, e.g. in a tmux pane). The
 verb's own checks still apply -- the pre-flight that the name can be launched, the handoff
 freshness gate on `down` and `refresh`, a pointer that resolves -- and the runner adds the checks
 the verbs lack, listed in CHECKS below.
@@ -53,6 +54,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -1000,22 +1002,56 @@ def prune(t: int) -> None:
             pass
 
 
-def cmd_serve(argv: list[str]) -> int:
-    if argv:
-        die("serve-requests: takes no arguments (it serves the whole queue once)")
+def serve_pass() -> None:
+    """One pass over the queue. Holds the runner lock for the pass only."""
     if not QUEUE.is_dir():
+        return
+    with open(QUEUE / ".serve.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("serve-requests: another runner is serving the queue; leaving it to that one")
+            return
+        ctx = Pass(config())
+        for path, _ in ctx.snapshot:
+            if path.exists():
+                serve_one(path, ctx)
+        prune(now())
+
+
+def cmd_serve(argv: list[str]) -> int:
+    usage = "serve-requests: takes no arguments except --loop [--interval SECONDS]"
+    loop, interval = False, 60.0
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--loop":
+            loop = True
+        elif a == "--interval" and args:
+            try:
+                interval = float(args.pop(0))
+            except ValueError:
+                die("serve-requests: --interval takes a number of seconds")
+            if interval <= 0:
+                die("serve-requests: --interval must be positive")
+        else:
+            die(usage)
+    if "--interval" in argv and not loop:
+        die("serve-requests: --interval only applies with --loop")
+    if not loop:
+        serve_pass()
         return 0
-    lock = open(QUEUE / ".serve.lock", "w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print("serve-requests: another runner is serving the queue; leaving it to that one")
-        return 0
-    ctx = Pass(config())
-    for path, _ in ctx.snapshot:
-        if path.exists():
-            serve_one(path, ctx)
-    prune(now())
+    stop: list[int] = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda signum, _frame: stop.append(signum))
+    while not stop:
+        try:
+            serve_pass()
+        except Exception as exc:  # a failed pass is reported; the next one may succeed
+            print(f"serve-requests: pass failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        deadline = time.monotonic() + interval
+        while not stop and time.monotonic() < deadline:
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
     return 0
 
 

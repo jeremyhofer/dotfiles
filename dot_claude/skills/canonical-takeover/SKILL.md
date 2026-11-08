@@ -148,7 +148,8 @@ machine whose sandbox could not reach the session service, every other session r
 
 Where the machine's owner has enabled the request runner (the base's
 `docs/reference/fleet-sessions.md`, "Requesting a lifecycle action"), a session asks for a lifecycle
-action instead of running it:
+action instead of running it (the runner is a timer or LaunchAgent, or, on a Mac that cannot load
+the LaunchAgent, `fleet-canonicals serve-requests --loop` in a tmux pane):
 
 ```sh
 fleet-canonicals request <up|down|refresh|resume> <name> --reason '<why, for the audit log>'
