@@ -154,11 +154,14 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
 
   list              every canonical the fleet record declares, with what it owns and where it
                     runs; fleet-wide, so it answers "which peer handles X" from any machine
-  status            one line per expected session; exit 0 only if every one is OK
+  status            one line per expected session: OK, MISSING, DUPLICATE, or LIVE-UNLISTED (a
+                    live process holds the name though `claude agents --json` omits it, so down
+                    and refresh cannot see it either); exit 0 only if every one is OK
   up | start [--dry-run] [name...]
                     launch MISSING sessions as the fleet record declares them. With no names,
                     every missing canonical; with names, only those. An unknown name is
-                    refused rather than treated as "no filter".
+                    refused rather than treated as "no filter", and so is a name a live process
+                    holds though the sessions list omits it (a second session would start).
   down | stop [--dry-run] [--stub [reason] | --force [reason]] <name>... | --all
                     stop the named canonical(s) and delete their rows (transcripts kept,
                     so they stay resumable). Names are required; --all must be explicit.
@@ -544,10 +547,16 @@ fmt_started() {
 
 # Name first, then the verdict word: these lines get scanned down a column and grepped by status.
 report_line() {
-  local name="$1" json="$2" count ids
+  local name="$1" json="$2" count ids holder
   count=$(printf '%s' "$json" | jq --arg n "$name" '[.[] | select(.name == $n)] | length')
   case "$count" in
-    0) printf '%-28s MISSING\n' "$name" ;;
+    0) holder=$(live_holder "$name")
+       # Not "MISSING": the word is what `up` and the health check read as absent.
+       if [ -n "$holder" ]; then
+         printf '%-28s LIVE-UNLISTED (%s; the sessions list omits it)\n' "$name" "$holder"
+       else
+         printf '%-28s MISSING\n' "$name"
+       fi ;;
     1) printf '%-28s OK        (%s, started %s)\n' "$name" \
          "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.id')" \
          "$(fmt_started "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.startedAt')")" ;;
@@ -648,7 +657,7 @@ cmd_status() {
     [ -n "$name" ] || continue
     line=$(report_line "$name" "$json")
     printf '%s\n' "$line"
-    case "$line" in *MISSING*|*DUPLICATE*) unhealthy=1 ;; esac
+    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*) unhealthy=1 ;; esac
   done < <(expected_names)
   while IFS= read -r orphan; do
     [ -n "$orphan" ] || continue
@@ -664,7 +673,7 @@ cmd_status() {
 }
 
 cmd_up() {
-  local json name count script why started=0 refused=0 dry=0 failed=0 rc=0
+  local json name count script why holder started=0 refused=0 dry=0 failed=0 rc=0
   # `up` starts real, long-lived sessions, so it needs a way to be exercised that does not. Without
   # this the only way to test bring-up is to perform it.
   #
@@ -696,6 +705,12 @@ cmd_up() {
     fi
     count=$(printf '%s' "$json" | jq --arg n "$name" '[.[]|select(.name==$n)]|length')
     [ "$count" = "0" ] || continue
+    holder=$(live_holder "$name")
+    if [ -n "$holder" ]; then
+      printf 'REFUSED %-24s a live process holds the name though the sessions list omits it: %s\n' "$name" "$holder" >&2
+      refused=1
+      continue
+    fi
     if ! script=$(launch_desc "$name"); then
       # Deliberately refuse rather than synthesize a launch. The declaration carries the working
       # directory, the model tier and the role; a guessed launch would start a session that looks
@@ -2305,7 +2320,7 @@ cmd_resume() {
 # fleet-canonicals-queue, a Python script beside this one: its checks are the queue's containment,
 # and they are easier to state and test there than in bash. The verbs it runs are these, so their
 # own pre-flights and gates still apply. See that file's header.
-exec_queue() {
+queue_script() {
   local here q
   here=$(cd "$(dirname "$0")" && pwd)
   q=${FLEET_CANONICALS_QUEUE:-}
@@ -2314,9 +2329,27 @@ exec_queue() {
       [ -z "$q" ] || [ -f "$q" ] && break
     done
   fi
-  [ -n "$q" ] && [ -f "$q" ] || die "the request queue (fleet-canonicals-queue) is not installed beside $0"
+  [ -n "$q" ] && [ -f "$q" ] && printf '%s' "$q"
+}
+exec_queue() {
+  local q
+  q=$(queue_script) || die "the request queue (fleet-canonicals-queue) is not installed beside $0"
   command -v uv >/dev/null 2>&1 || die "uv is required for request and serve-requests (they run fleet-canonicals-queue with uv run --script)"
   exec uv run --quiet --script "$q" "$@"
+}
+
+# live_holder <name> -> a live process that holds the name according to Claude Code's per-process
+# records, or nothing. Measured 2026-11-08: a canonical resumed after the supervisor's idle stop ran
+# idle while `claude agents --json` had its job as `done` and left it out, so `status` read it
+# MISSING and `up` would have started a second session under the name. The queue's check reads
+# those records (see fleet-canonicals-queue, live_pid_records). Inside a sandbox other sessions'
+# processes are hidden, so this finds nothing there and the verbs behave as they did before it;
+# with no queue or no uv it also finds nothing.
+live_holder() {
+  local q
+  q=$(queue_script) || return 0
+  command -v uv >/dev/null 2>&1 || return 0
+  uv run --quiet --script "$q" live-holders "$1" 2>/dev/null | head -n 1 | cut -f 2-
 }
 
 case "${1:-}" in

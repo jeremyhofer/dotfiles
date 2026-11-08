@@ -853,10 +853,23 @@ def cmd_serve(argv: list[str]) -> int:
     return 0
 
 
+def cmd_live_holders(argv: list[str]) -> int:
+    """For `fleet-canonicals up` and `status`: one `<name><TAB><holder>` line per live process whose
+    Claude Code pid record names the canonical. Prints nothing where none is found, or where the
+    processes cannot be seen (inside a sandbox, other sessions' pids are hidden)."""
+    for name in argv:
+        for h in live_pid_records(name):
+            print(f"{name}\t{h}")
+    return 0
+
+
 def main() -> int:
-    if len(sys.argv) < 2 or sys.argv[1] not in ("request", "serve-requests"):
-        die("usage: fleet-canonicals-queue request|serve-requests ... (run it as `fleet-canonicals`)")
+    verbs = ("request", "serve-requests", "live-holders")
+    if len(sys.argv) < 2 or sys.argv[1] not in verbs:
+        die("usage: fleet-canonicals-queue request|serve-requests|live-holders ... (run it as `fleet-canonicals`)")
     verb, rest = sys.argv[1], sys.argv[2:]
+    if verb == "live-holders":
+        return cmd_live_holders(rest)
     return cmd_request(rest) if verb == "request" else cmd_serve(rest)
 
 

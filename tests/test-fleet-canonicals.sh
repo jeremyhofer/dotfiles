@@ -26,6 +26,10 @@ TOOL="$HERE/../private_dot_local/bin/executable_fleet-canonicals"
 # handoffs directory and hub into every case below. Pointed at a path that does not exist, so each
 # case starts from the defaults and sets what it needs.
 export FLEET_CANONICALS_CONFIG="$_srcbin/no-config"
+# Claude Code's per-process records and /proc, which `up` and `status` consult for a live process
+# holding a name, are fixtures too, so no case reads the machine's real sessions.
+export FLEET_PID_RECORD_DIR="$_srcbin/pids" FLEET_PROC_ROOT="$_srcbin/proc"
+mkdir -p "$FLEET_PID_RECORD_DIR" "$FLEET_PROC_ROOT"
 REAL_TMP_BEFORE=$(find /tmp -maxdepth 1 -name 'c-*' 2>/dev/null | sort)
 [[ -f "$TOOL" ]] || { print "FAIL: tool not found at $TOOL"; exit 1 }
 
@@ -508,6 +512,31 @@ out=$(fc up delta-canonical --dry-run)
 out=$(fc start delta-canonical --dry-run)
 [[ "$out" == *"would start"*"delta-canonical"* ]] && ok "start is an alias for up" \
     || bad "start alias: $out"
+
+# A live process that holds a name the sessions list omits: `up` refuses it and `status` says so,
+# rather than reading it MISSING (measured 2026-11-08: a resumed canonical, idle, listed `done`).
+if command -v uv >/dev/null 2>&1; then
+  jq -n '{pid:4242, sessionId:"s", kind:"bg", name:"delta-canonical", procStart:"777", status:"idle"}' \
+    > "$FLEET_PID_RECORD_DIR/4242.json"
+  out=$(fc up delta-canonical --dry-run)   # no /proc/4242: the record's process is gone
+  [[ "$out" == *"would start"*"delta-canonical"* ]] && ok "up: a record whose pid is not running does not refuse (control)" \
+      || bad "up with a dead record: $out"
+  mkdir -p "$FLEET_PROC_ROOT/4242"
+  print "4242 (claude) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 777 1 1" > "$FLEET_PROC_ROOT/4242/stat"
+  out=$(fc up delta-canonical --dry-run)
+  [[ "$out" == *"REFUSED"*"delta-canonical"*"live process"*"pid 4242"* && "$out" != *"would start"* ]] \
+      && ok "up refuses a name a live process holds though the sessions list omits it" || bad "up with a live holder: $out"
+  # Not asserted: status's non-zero exit for LIVE-UNLISTED. Other names in this fixture read MISSING,
+  # so the exit is non-zero with or without it, and a mutant dropping it from the unhealthy set passed.
+  out=$(fc status)
+  [[ "$out" == *"delta-canonical"*"LIVE-UNLISTED"*"pid 4242"* ]] && ok "status names a live, unlisted holder instead of MISSING" \
+      || bad "status with a live holder: $out"
+  [[ "$(print -r -- "$out" | grep '^delta-canonical')" != *MISSING* ]] && ok "the live holder's line does not say MISSING" \
+      || bad "status still says MISSING: $out"
+  rm -rf "$FLEET_PROC_ROOT/4242" "$FLEET_PID_RECORD_DIR/4242.json"
+else
+  print "SKIP: uv is not installed, so the live-holder cases cannot run the queue"
+fi
 
 # The safety property: an unrecognized name must be REFUSED, never fall through to "no filter".
 out=$(fc up delta-canonicl --dry-run); rc=$?
