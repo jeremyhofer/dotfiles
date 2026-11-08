@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### A push to the publish remote runs `setup/publish-check` first
+
+- The base now tracks `.githooks/pre-push`, which the fleet's `run-repo-gates` hook runs. A push to
+  the remote `git config dotfiles.publishRemote` names (by name or URL) runs `setup/publish-check`,
+  the full suite set included, and is refused unless it passes; only `main` from `HEAD` is published.
+  Every other push, the forge's included, is not gated. Nothing to change in a private layer; a
+  clone with no `dotfiles.publishRemote` is never gated.
+
 ### On macOS, `claude-scratch-hook` now acts
 
 - It required a session's scratch root to sit directly under the literal `/tmp`, after resolving

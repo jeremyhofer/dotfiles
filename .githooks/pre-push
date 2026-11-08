@@ -1,0 +1,53 @@
+#!/bin/sh
+# dotfiles base pre-push, run by the fleet's run-repo-gates hook (tracked, so every clone gets it).
+#
+# Publishing is gated; development pushes are not. A push to the PUBLISH remote, the one
+# `git config dotfiles.publishRemote` names (matched by remote name or by URL), runs
+# setup/publish-check and is refused unless it passes. A push anywhere else (the forge, a backup)
+# passes untouched, so the development loop's pushes stay ungated. Publishing is the irreversible
+# step: what reaches the public remote is cached and read by others, and twice on 2026-11-08 the
+# check was skipped by hand before a push.
+#
+# Only `main`, pushed from HEAD, is published, because publish-check judges HEAD's checkout. No
+# variable skips this; a push that must bypass it is the operator's, from a terminal.
+#
+# Args (from git): $1 the remote's name, $2 its URL. Stdin: one line per ref,
+# "<local ref> <local sha> <remote ref> <remote sha>".
+set -u
+remote=${1:-} url=${2:-}
+pub=$(git config --get dotfiles.publishRemote 2>/dev/null) || exit 0
+[ -n "$pub" ] || exit 0
+publishing=0
+[ "$remote" = "$pub" ] && publishing=1
+if [ "$publishing" = 0 ] && [ -n "$url" ]; then
+  for u in $(git remote get-url --all "$pub" 2>/dev/null) $(git remote get-url --push --all "$pub" 2>/dev/null); do
+    [ "$u" = "$url" ] && publishing=1
+  done
+fi
+[ "$publishing" = 1 ] || { cat > /dev/null; exit 0; }
+
+head=$(git rev-parse HEAD) || exit 1
+zero=0000000000000000000000000000000000000000
+bad=0
+while read -r lref lsha rref rsha; do
+  [ -n "$lref" ] || continue
+  if [ "$rref" != refs/heads/main ]; then
+    echo "pre-push: only main is published to '$pub'; refusing $lref -> $rref" >&2; bad=1
+  elif [ "$lsha" = "$zero" ]; then
+    echo "pre-push: refusing to delete main on '$pub'" >&2; bad=1
+  elif [ "$lsha" != "$head" ]; then
+    echo "pre-push: publish-check judges HEAD ($head), but this push sends $lsha to main; push main from HEAD" >&2; bad=1
+  fi
+done
+[ "$bad" = 0 ] || exit 1
+
+# A hook inherits git's variables naming this repository; the suites publish-check runs shell out
+# to git in fixtures of their own, which must not see them.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES 2>/dev/null
+top=$(git rev-parse --show-toplevel) || exit 1
+echo "pre-push: publishing to '$pub', so setup/publish-check runs first (the full suite set included)" >&2
+sh "$top/setup/publish-check" --remote "$pub" || {
+  echo "pre-push: publish-check failed; nothing was pushed to '$pub'" >&2
+  exit 1
+}

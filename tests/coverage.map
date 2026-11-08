@@ -120,6 +120,7 @@ test-check-required-brew-tools.sh   setup/check-required-brew-tools
 test-overlay-doctor.sh              setup/overlay-doctor overlay-skeleton/dot_gitignore_global.example
 test-preserve-claude-md.sh          setup/preserve-claude-md
 test-publish-check.sh               setup/publish-check
+test-publish-pre-push.sh           .githooks/pre-push setup/publish-check
 test-scaffold-overlay.sh            setup/scaffold-overlay overlay-skeleton/**
 
 # --- deployed configuration with a suite ---------------------------------------------------------
