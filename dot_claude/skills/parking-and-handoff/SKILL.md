@@ -1,6 +1,6 @@
 ---
 name: parking-and-handoff
-description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, why the final turn before going idle ends with a statement rather than a question, and the timestamp and kickoff-block shape a successor reads.
+description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, why every turn of a background session ends with a statement rather than a question, what the coordinating seat tells its peers before its own refresh, and the timestamp and kickoff-block shape a successor reads.
 ---
 
 # Parking, checkpointing and handoff
@@ -38,7 +38,7 @@ human asks for stays allowed at any threshold.
 
 Steps 1, 1b, 2 and 4 are **unconditional**: they apply at a checkpoint as much as at a park. Steps 3
 and 5 are **recycling** steps, taken only when a successor will actually read the handoff, except
-step 5's closing rule (end on a statement), which holds before any idle.
+step 5's closing rule (end on a statement), which holds at every turn of a background session.
 
 1. **Finish or cleanly abort the unit in flight, fast.** Start nothing new, not even a fix a review
    just surfaced; write it down as a one-line next-session item instead.
@@ -95,18 +95,21 @@ step 5's closing rule (end on a statement), which holds before any idle.
    fill: a compaction costs about one full-history request and is cheap only at roughly 60% fill or
    less with a warm cache. At high fill, a fresh session beats compacting.
 
-   **The final turn ends with a statement, never a question.** This holds at a park, at a
-   checkpoint, and at any stop after which the session goes idle. Anything that needs the human
-   is recorded where it lasts, in the handoff's open list or the project's work tracker (step 1b),
-   and the closing message says where. It is not asked in the closing message. **Why:** Claude
-   Code's agent view marks a session whose last turn asked its human something as `blocked`. The
-   mark outlives the process: after an idle stop the session stays in the live listing as
-   `blocked`, so `up` reads it as running. A queued `resume` still reaches it once the runner can
-   prove no process is behind it, but resuming brings back the stale question. A queued `refresh`
-   reaches it only if the session parked first, its handoff recorded after it started; otherwise
-   only a `refresh` from a terminal does. Three long-running sessions on one machine
-   were left in that state in one day, each by a closing question. A question asked mid-session,
-   while the human is there to answer it, does no harm; what counts is the last turn before idle.
+   **Every turn of a background session ends with a statement, never a question**, not only the
+   last one before a park. A long-running session cannot tell which turn will precede an idle
+   stop, so a rule kept for "the final turn" is kept too late. Anything that needs the human is
+   recorded where it lasts, in the project's work tracker or the handoff's open list (step 1b), and
+   the message says what is pending and where, as a statement: "Pending your decision, recorded in
+   <entry>: A or B." Whether the agent view still reads that as asking is unmeasured; the record,
+   not the phrasing, is what keeps the ask reachable after a stop. **Why:** Claude Code's agent view marks a session whose last turn asked its
+   human something as `blocked`. The mark outlives the process: after an idle stop the session
+   stays in the live listing as `blocked`, so `up` reads it as running. A queued `resume` still
+   reaches it once the runner can prove no process is behind it, but resuming brings back the
+   stale question. A queued `refresh` reaches it only if the session parked first, its handoff
+   recorded after it started; otherwise only a `refresh` from a terminal does. Four long-running
+   sessions on one machine were left in that state in one day (2026-11-08): three by a closing
+   question before going idle, and one by a mid-session turn ending "Which do you want?", after which the
+   human stepped away and the idle stop came.
 
 ## Checkpointing is not parking, and most pauses are checkpoints
 
@@ -247,7 +250,7 @@ the runner's refresh replaces the session), the park's last action, after the ha
 is `fleet-canonicals request refresh <own name> --reason 'parked: <handoff>'`. The runner waits for
 the turn to end, so the request cannot cut the park short, and refreshes it within a few minutes;
 the kickoff block then says so instead of asking the human. The turn that makes the request ends
-with a statement like any other final turn (step 5): a closing question leaves the session marked
+with a statement like every other turn (step 5): a closing question leaves the session marked
 `blocked`, and nothing the human can answer later is left to reach. Until self-refresh is
 enabled the runner refuses that request (check `self-refresh` in its result file), and the human runs `refresh`.
 Skill `canonical-takeover`, "Requesting from a sandbox", has the rules.
@@ -271,6 +274,23 @@ session through the always-on context layers. **Needing a preference spelled out
 prompt is the signal that it belongs in those layers.** And on a by-hand launch, a long prompt is a
 shell argument, with quoting, newline and truncation hazards that produce a session started from a
 mangled instruction and no sign of it.
+
+## When the coordinating seat parks
+
+The seat the other canonicals report to (the coordinating hub, skill `fleet-messaging`) is the one
+they all message. While it is being refreshed, a message to it lands on a session about to stop, or
+on nothing, and the sender is not told. So when that seat parks for a refresh:
+
+1. **Before the refresh, tell every live canonical to hold messages for it** until its successor
+   announces itself. One line each, through the domain's cross-session messaging; list who is live
+   first (`ListAgents`, or `fleet-canonicals status`), and name them in the handoff.
+2. **The successor's first act, once it has read its handoff, is that announcement:** one line to
+   each live canonical saying it is back and held messages can be sent. The launch prompt is generic,
+   so the handoff's kickoff block names this step.
+
+A peer that receives the hold keeps what it would have sent and sends it after the announcement.
+Neither message needs a reply. Where sessions cannot message each other, there is nothing to hold,
+and this does not apply.
 
 ## Closing the outgoing session
 
