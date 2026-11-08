@@ -74,6 +74,47 @@ run "$tmp/nouv" RUNALL_RC=1
 grep -q 'SKIPPED, not installed: uv' "$tmp/err" && ok "names what is missing" || bad "names uv" "$(cat "$tmp/err")"
 [ ! -e "$PA_MARK" ] && ok "runs no suite" || bad "runs no suite" "the runner ran"
 
+echo "== the pass ledger: a clean tree that passed every suite on this OS is not run again"
+# A real git repository holding the script and the stand-in runner, run under a PATH whose git is
+# the real one, so HEAD's tree, a dirty tree and the ledger under the git common directory are real.
+realgit=$(command -v git)
+mkdir -p "$tmp/gitbin" "$tmp/repo/tests"
+for u in sh env sed grep mktemp tail cat rm dirname date mkdir; do
+  p=$(command -v "$u") && ln -s "$p" "$tmp/gitbin/$u"
+done
+ln -s "$realgit" "$tmp/gitbin/git"
+for r in python3 uv jq yq gitleaks wt; do ln -s "$tmp/bin/$r" "$tmp/gitbin/$r"; done
+cp "$tmp/tests/pre-apply.sh" "$tmp/tests/run-all.sh" "$tmp/repo/tests/"
+g() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$realgit" -C "$tmp/repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+g init -q && g add -A && g commit -q -m one
+ledger="$(cd "$tmp/repo" && GIT_CONFIG_GLOBAL=/dev/null "$realgit" rev-parse --absolute-git-dir)/pre-apply/passed"
+lrun() { # lrun [VAR=value ...]: run the repository's copy; rc and $tmp/err as run()
+  rm -f "$PA_MARK"
+  env PATH="$tmp/gitbin" TMPDIR="$tmp/logs" GIT_CONFIG_GLOBAL=/dev/null "$@" sh "$tmp/repo/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
+}
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+{ [ "$rc" -eq 0 ] && [ -e "$PA_MARK" ]; } && ok "a first run on a clean tree runs the suites" || bad "first run" "rc=$rc $(cat "$tmp/err")"
+tree=$(g rev-parse 'HEAD^{tree}')
+grep -q "^$tree Linux " "$ledger" 2>/dev/null && ok "a clean passing run records the tree and OS" || bad "pass recorded" "ledger: $(cat "$ledger" 2>&1)"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+{ [ "$rc" -eq 0 ] && [ ! -e "$PA_MARK" ]; } && ok "the same tree again is skipped, no suite run" || bad "skip same tree" "rc=$rc ran=$([ -e "$PA_MARK" ] && echo yes)"
+grep -q 'already passed on Linux at' "$tmp/err" && ok "says it skipped, and when the tree passed" || bad "skip line" "$(cat "$tmp/err")"
+echo two > "$tmp/repo/tests/extra.txt"; g add -A; g commit -q -m two
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ -e "$PA_MARK" ] && ok "a changed tree runs the suites again" || bad "changed tree runs" "skipped"
+echo dirty >> "$tmp/repo/tests/extra.txt"
+before=$(wc -l < "$ledger")
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+{ [ -e "$PA_MARK" ] && [ "$(wc -l < "$ledger")" -eq "$before" ]; } && ok "a dirty tree runs and records nothing" || bad "dirty tree" "ran=$([ -e "$PA_MARK" ] && echo yes) lines $before -> $(wc -l < "$ledger")"
+g checkout -q -- tests/extra.txt
+echo three > "$tmp/repo/tests/extra.txt"; g add -A; g commit -q -m three
+before=$(wc -l < "$ledger")
+lrun RUNALL_RC=1 PRE_APPLY_OS=Linux
+{ [ "$rc" -ne 0 ] && [ "$(wc -l < "$ledger")" -eq "$before" ]; } && ok "a failing run records nothing" || bad "failing run records nothing" "rc=$rc lines $before -> $(wc -l < "$ledger")"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Darwin
+lrun RUNALL_RC=0 PRE_APPLY_OS=Darwin
+{ [ -e "$PA_MARK" ] && ! grep -q ' Darwin ' "$ledger"; } && ok "macOS, not yet gating, records nothing and always runs" || bad "macOS records nothing" "ran=$([ -e "$PA_MARK" ] && echo yes) $(grep Darwin "$ledger")"
+
 echo "== .chezmoi.toml.tmpl renders the hook"
 if command -v chezmoi >/dev/null 2>&1; then
   printf '[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n' > "$tmp/old.toml"

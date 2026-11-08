@@ -147,7 +147,9 @@ what makes them safe to move off it.
 - **`chezmoi apply` does not apply the overlay.** Two instances, two commands. A clean `chezmoi diff`
   says nothing about the overlay.
 - **The base's apply runs every test suite first** (`tests/pre-apply.sh`, the generated config's
-  `hooks.apply.pre`), so it takes as long as the suite set, `--dry-run` included. A failing suite
+  `hooks.apply.pre`), so it takes as long as the suite set, `--dry-run` included, unless this clean
+  tree already passed every suite on this OS, which it then says and skips (a ledger under the source's
+  git directory; macOS, not yet gating, always runs and records nothing). A failing suite
   aborts the apply before anything is written and names the suite, its log and the re-run command:
   fix the source, or stop and report, rather than look for a way past it. A machine whose config
   predates the hook needs `chezmoi init` once; until then its apply runs no suite.

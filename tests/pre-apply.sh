@@ -25,6 +25,12 @@
 # it was, so on macOS a failure is reported in full and the apply goes ahead. Remove this once the
 # suite set passes there. PRE_APPLY_OS overrides `uname -s`, for the tests.
 #
+# A PASS IS NOT RE-EARNED. A clean source tree whose HEAD tree already passed every suite on this OS
+# is not run again: the pass is recorded as `<tree> <os> <utc time>` in <git common dir>/pre-apply/
+# passed, shared by every worktree and never committed. Recorded only when every suite passed on a
+# clean tree that is still HEAD's afterwards; a dirty tree is not HEAD's tree, so it is never skipped
+# or recorded. macOS records nothing while it is not gating.
+#
 # Exit 0 every suite passed, or skipped (above), or failed on macOS (reported); 1 a suite failed on
 # Linux (the apply is aborted).
 set -u
@@ -42,15 +48,38 @@ fi
 
 for v in $(env | sed -n 's/^\(CHEZMOI[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 
+os=${PRE_APPLY_OS:-$(uname -s)}
+src=$(cd "$here/.." && pwd)
+tree=""; ledger=""
+# Only a clean tree is HEAD's tree; anything git cannot answer leaves the ledger out of it.
+if [ -z "$(git -C "$src" status --porcelain 2>/dev/null)" ] && git -C "$src" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+  tree=$(git -C "$src" rev-parse "HEAD^{tree}" 2>/dev/null) || tree=""
+  gdir=$(git -C "$src" rev-parse --git-common-dir 2>/dev/null) || gdir=""
+  case $gdir in "") ;; /*) ledger="$gdir/pre-apply/passed" ;; *) ledger="$src/$gdir/pre-apply/passed" ;; esac
+fi
+if [ -n "$tree" ] && [ -n "$ledger" ] && [ "$os" != Darwin ] && [ -f "$ledger" ]; then
+  when=$(grep "^$tree $os " "$ledger" | tail -n 1 | sed 's/^[^ ]* [^ ]* //')
+  if [ -n "$when" ]; then
+    printf 'dotfiles pre-apply: this tree already passed on %s at %s; skipped\n' "$os" "$when" >&2
+    exit 0
+  fi
+fi
+
 t=${TMPDIR:-/tmp}; t=${t%/}
 log=$(mktemp "$t/dotfiles-pre-apply.XXXXXX") || { echo "dotfiles pre-apply: no temp file for the log; apply refused" >&2; exit 1; }
 printf 'dotfiles pre-apply: running every suite (tests/run-all.sh) before the apply...\n' >&2
 if sh "$here/run-all.sh" > "$log" 2>&1; then
   printf 'dotfiles pre-apply: %s\n' "$(tail -n 1 "$log")" >&2
   rm -f "$log"
+  # Recorded only if the tree is still clean and still the one that was run.
+  if [ -n "$tree" ] && [ -n "$ledger" ] && [ "$os" != Darwin ] \
+     && [ -z "$(git -C "$src" status --porcelain 2>/dev/null)" ] \
+     && [ "$(git -C "$src" rev-parse "HEAD^{tree}" 2>/dev/null)" = "$tree" ]; then
+    mkdir -p "$(dirname "$ledger")" \
+      && printf '%s %s %s\n' "$tree" "$os" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ledger"
+  fi
   exit 0
 fi
-os=${PRE_APPLY_OS:-$(uname -s)}
 if [ "$os" = Darwin ]; then
   printf '\ndotfiles pre-apply: a suite failed -- NOT gating on macOS until the suite set passes here;\n' >&2
   printf '  the apply goes ahead. Failing suites:\n' >&2

@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### An apply of a tree that already passed is not tested again
+
+- `tests/pre-apply.sh` records a pass as the source's HEAD tree and the OS, in
+  `<git common dir>/pre-apply/passed`, when every suite passed on a clean tree, and skips the run
+  when a clean tree with the same tree and OS is in it, saying so in one line. A dirty tree is never
+  skipped or recorded; macOS, where the run reports without gating, records nothing. A re-apply of a
+  tested commit no longer costs the whole suite set. Nothing to change in a private layer.
+
 ### New skill `working-with-nx`: Nx behavior verified in the installed source
 
 - The cache and where it lives (`~/.nx`, shared by every checkout), inputs and `affected`, `--nxBail`,
