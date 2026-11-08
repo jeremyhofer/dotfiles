@@ -173,7 +173,11 @@ and runs the plain verb, so the pre-flight and the handoff gate still apply. The
 - **No escape hatches.** `--force` and `--stub` are refused; a handoff the gate refuses is fixed by
   parking properly, or by the human from a terminal.
 - **`resume`** runs `claude respawn` on the canonical's last session, for a session that stopped
-  without parking; `up` starts a fresh one from its handoff.
+  without parking; `up` starts a fresh one from its handoff. A session the list still shows, in
+  any state (an idle stop often leaves one `blocked`), is resumed only when no live pid record
+  holds the name and the daemon roster (`~/.claude/daemon/roster.json`) lists no worker for it,
+  and the result says `done` only once a process holds it again. A live process is refused,
+  whatever its row says.
 - Also refused: a second request for a canonical already queued, more than three actions per
   canonical (ten for the fleet) an hour, a starting verb at 85% of the 7-day window unless exempt,
   `up` or `resume` in an untrusted workspace, any verb for a name a live process holds while the

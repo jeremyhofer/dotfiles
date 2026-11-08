@@ -256,7 +256,10 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     of the 7-day window (unless exempt), up/resume in an untrusted workspace,
                     and any verb for a name a live process holds that the sessions list omits.
                     A stop of a session that is working waits, queued, until it is idle or
-                    stale. Otherwise runs the verb above (resume: `claude respawn` on its last
+                    stale. A resume of a session still listed, in any state, is served only
+                    when no live pid record holds the name and the daemon roster lists no
+                    worker for it, and is confirmed by a process coming back; else refused.
+                    Otherwise runs the verb above (resume: `claude respawn` on its last
                     session). A result file per request and a line in
                     $FLEET_STATE/requests-audit.jsonl; no notification.
 

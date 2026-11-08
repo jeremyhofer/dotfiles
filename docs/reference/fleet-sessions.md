@@ -285,7 +285,10 @@ No notification is sent. The runner refuses, in this order, a request that:
   a canonical resumed after the supervisor's idle stop ran idle while the listing had its job as
   `done`, so `up` would have started a second session and `resume` respawned a running one;
 - is `down` or `refresh` while the session's listing or transcript cannot be read; or is `resume`
-  while the session is running.
+  while the session is running. For `resume`, running means a process: a live pid record holds the
+  name, or the daemon roster lists a worker for the session, or the roster cannot be read. A
+  session still listed with no process behind it, in any state (an idle stop often leaves one
+  `blocked`), is resumed, and the result says `done` only once a process holds it again.
 
 **A request for a working session waits** rather than being refused: when the only check that
 fails is that the session's listed state is not in `request-idle-states` or its transcript's last

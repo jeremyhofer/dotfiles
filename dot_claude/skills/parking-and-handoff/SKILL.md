@@ -101,9 +101,10 @@ step 5's closing rule (end on a statement), which holds before any idle.
    and the closing message says where. It is not asked in the closing message. **Why:** Claude
    Code's agent view marks a session whose last turn asked its human something as `blocked`. The
    mark outlives the process: after an idle stop the session stays in the live listing as
-   `blocked`, so `up` reads it as running and a request queue will not resume it. A queued
-   `refresh` reaches it only if the session parked first, its handoff recorded after it started;
-   otherwise only a `refresh` from a terminal does. Three long-running sessions on one machine
+   `blocked`, so `up` reads it as running. A queued `resume` still reaches it once the runner can
+   prove no process is behind it, but resuming brings back the stale question. A queued `refresh`
+   reaches it only if the session parked first, its handoff recorded after it started; otherwise
+   only a `refresh` from a terminal does. Three long-running sessions on one machine
    were left in that state in one day, each by a closing question. A question asked mid-session,
    while the human is there to answer it, does no harm; what counts is the last turn before idle.
 

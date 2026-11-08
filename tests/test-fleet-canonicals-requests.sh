@@ -74,7 +74,7 @@ export FLEET_TRANSCRIPT_DIR="$T/transcripts" XDG_RUNTIME_DIR="$T/run"
 export FLEET_CANONICALS_CONFIG="$T/config" FLEET_RESPAWN_WAIT=4
 # Claude Code's per-process records and /proc are fixtures too, so the real ones are never read.
 export FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc" FLEET_JOBS_DIR="$T/jobs"
-export FLEET_DAEMON_ROSTER="$T/roster.json"
+export FLEET_DAEMON_ROSTER="$T/roster.json" ROSTER="$T/roster.json"
 mkdir -p "$T/state" "$T/tmproots" "$T/transcripts/p" "$T/run/claude-usage" "$T/pids" "$T/proc"
 Q="$T/state/requests"
 # The suite itself may run inside a session; its id must not make the fixtures' requester.
@@ -89,7 +89,11 @@ cat > "$T/bin/claude-stub" <<'STUB'
 printf '%s\n' "$*" >> "$CLAUDE_LOG"
 printf '%s\n' "$PATH" > "$CLAUDE_LOG.path"
 case "$1" in
-  respawn) jq --arg i "$2" 'map(if .id == $i then .state = "working" | .live = true else . end)' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS" ;;
+  respawn) jq --arg i "$2" 'map(if .id == $i then .state = "working" | .live = true else . end)' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS"
+           # A respawned session runs under the daemon, so its roster lists a worker for it, unless
+           # the fixture says the respawn brought no process up.
+           sid=$(jq -r --arg i "$2" '.[] | select(.id == $i) | .sessionId' "$AGENTS")
+           [ -n "${RESPAWN_NO_PROCESS:-}" ] || { jq --arg sid "$sid" '.workers[$sid] = {pid: 1, sessionId: $sid}' "$ROSTER" > "$ROSTER.n" && mv "$ROSTER.n" "$ROSTER"; } ;;
   rm)      # The removed session's process exits too: drop its fixture pid records and /proc entries.
            sid=$(jq -r --arg i "$2" '.[] | select(.id == $i) | .sessionId' "$AGENTS")
            for r in "$FLEET_PID_RECORD_DIR"/*.json; do
@@ -552,6 +556,39 @@ plant r-r2 resume alpha-canonical alpha-canonical
 serve >/dev/null; expect r-r2 refused working "resume is refused while the session is running"
 reset; plant r-r3 resume alpha-canonical alpha-canonical
 serve >/dev/null; expect r-r3 failed "" "resume with no listed session fails, naming up"
+
+# resume of a LISTED row whose process is provably gone (measured 2026-11-08): the idle stop leaves
+# a session listed, often `blocked`, with nothing running it. Served whatever its state once no live
+# pid record holds the name and the daemon roster lists no worker; a live process is refused.
+for st in blocked idle done; do
+  reset; live_row gn-$st alpha-canonical $st s-gn; transcript s-gn ended
+  plant r-gn-$st resume alpha-canonical director-canonical
+  serve >/dev/null; expect r-gn-$st done "" "resume of a listed '$st' row with no process and no roster worker is served"
+done
+[[ "$(cat "$CLAUDE_LOG")" == "respawn gn-done" ]] && ok "...and it respawns the listed row" || bad "gone resume called: $(cat "$CLAUDE_LOG")"
+[[ "$(result r-gn-done output)" == *"a process holds the session again"* ]] \
+  && ok "...and confirms by a process, not by the row it already saw" || bad "gone output: $(result r-gn-done output)"
+reset; live_row gb000001 alpha-canonical blocked s-gb; transcript s-gb ended; pid_for 5401 alpha-canonical s-gb idle
+plant r-gb1 resume alpha-canonical director-canonical
+serve >/dev/null; expect r-gb1 refused working "resume of a listed 'blocked' row is refused while a live pid record holds the name"
+[[ "$(result r-gb1 detail)" == *"listed 'blocked'"*"live process still holds the name"* && ! -s "$CLAUDE_LOG" ]] \
+  && ok "...naming the process, and nothing was respawned" || bad "gb1 detail '$(result r-gb1 detail)', claude: $(cat "$CLAUDE_LOG")"
+reset; live_row gb000002 alpha-canonical blocked s-gb; transcript s-gb ended; roster_worker s-gb
+plant r-gb2 resume alpha-canonical director-canonical
+serve >/dev/null; expect r-gb2 refused working "resume of a listed 'blocked' row is refused while the daemon roster lists its worker"
+[[ "$(result r-gb2 detail)" == *"roster lists a running worker"* ]] && ok "...naming the roster worker" || bad "gb2 detail: $(result r-gb2 detail)"
+reset; live_row gb000003 alpha-canonical blocked s-gb; transcript s-gb ended; rm -f "$T/roster.json"
+plant r-gb3 resume alpha-canonical director-canonical
+serve >/dev/null; expect r-gb3 refused working "resume is refused when the daemon roster cannot be read (fail closed)"
+reset; live_row gb000004 alpha-canonical blocked ""; transcript s-gb ended
+plant r-gb4 resume alpha-canonical director-canonical
+serve >/dev/null; expect r-gb4 refused working "resume is refused for a listed row with no session id to look up"
+reset; live_row gf000001 alpha-canonical blocked s-gf; transcript s-gf ended
+plant r-gf1 resume alpha-canonical director-canonical
+RESPAWN_NO_PROCESS=1 serve >/dev/null
+expect r-gf1 failed "" "a respawn that brings no process up fails, though the row was listed all along"
+[[ "$(result r-gf1 output)" == *"no process (pid record or daemon roster worker) appeared"* ]] \
+  && ok "...saying no process appeared" || bad "gf1 output: $(result r-gf1 output)"
 
 # the lock: a second runner leaves the queue to the first
 reset; mkdir -p "$Q"; plant r-l up alpha-canonical alpha-canonical

@@ -802,15 +802,35 @@ def stopped_signals(name: str, session_id: str, placed_under: str) -> str | None
     session's record when its process ends), and the daemon's roster lists no worker for the
     session. Parked means its handoff pointer names a placed file recorded after the session began.
     A live process fails the first two; a stopped session that never parked fails the third."""
+    return process_gone(name, session_id, need_session=False) or handoff_since_start(name, session_id, placed_under)
+
+
+def process_present(name: str, session_id: str) -> bool:
+    """A positive sign that a process runs the canonical: a live pid record holding the name, or a
+    daemon roster worker for the session. An unreadable roster is not a sign."""
+    if live_pid_records(name):
+        return True
+    ids = roster_session_ids()
+    return bool(session_id and ids and session_id in ids)
+
+
+def process_gone(name: str, session_id: str, need_session: bool = True) -> str | None:
+    """None when no process is behind the canonical's listed session; else what says one may be.
+    Two independent signals must agree: no live pid record holds the name (Claude Code removes a
+    session's record when its process ends), and the daemon's roster lists no worker for the
+    session. An unreadable roster, or (with need_session) a row with no session id to look up in
+    it, cannot rule a worker out, so it never reads as gone."""
     holders = live_pid_records(name)
     if holders:
         return f"a live process still holds the name ({holders[0]})"
     ids = roster_session_ids()
     if ids is None:
         return f"the daemon roster ({ROSTER}) cannot be read, so a running worker cannot be ruled out"
+    if need_session and not session_id:
+        return "its listed row carries no session id, so the daemon roster cannot be checked for it"
     if session_id and session_id in ids:
         return "the daemon roster lists a running worker for the session"
-    return handoff_since_start(name, session_id, placed_under)
+    return None
 
 
 def parked_signals(name: str, session_id: str, placed_under: str = "") -> str | None:
@@ -838,7 +858,16 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
     if row is None:
         return None
     if req["verb"] == "resume":
-        return f"'{req['name']}' is running (id {row.get('id')}); there is nothing to resume"
+        # Measured 2026-11-08: the idle stop leaves a session listed, often `blocked`, with no
+        # process behind it, and refusing every listed row left the director no way to reach it.
+        # With no process there is no pending prompt or turn to lose, so a listed row is resumed
+        # whatever its state once process_gone proves nothing runs it; a live process is still
+        # refused, whatever its row says.
+        gone = process_gone(req["name"], str(row.get("sessionId") or ""))
+        if gone is None:
+            return None
+        return (f"'{req['name']}' is running (id {row.get('id')}, listed "
+                f"'{row.get('state') or 'none'}'): {gone}; there is nothing to resume")
     state = str(row.get("state") or "")
     if state not in as_list(ctx.cfg["request-idle-states"]):
         # The agent-view docs pair `blocked` with a waitingFor (a permission prompt, input, a sandbox
@@ -918,6 +947,11 @@ def respawn(name: str, ctx: Pass) -> tuple[str, str]:
     if row is None or not row.get("id"):
         return "failed", f"no session is listed for '{name}', so there is nothing to resume; request `up`"
     rid = str(row["id"])
+    sid = str(row.get("sessionId") or "")
+    # A row the live listing already showed (the process-gone case in check_working) proves
+    # nothing by showing again, so its confirmation is a process: a live pid record holding the
+    # name, or a roster worker for the session.
+    listed = any(r.get("id") == rid or r.get("name") == name for r in (ctx.live() or []))
     rc, out = run(claude_cmd() + ["respawn", rid], timeout=120)
     if rc != 0:
         return "failed", f"claude respawn {rid} exited {rc}\n{out}"
@@ -925,11 +959,14 @@ def respawn(name: str, ctx: Pass) -> tuple[str, str]:
     deadline = time.time() + wait
     while True:
         ctx.refresh_listing()
-        live = ctx.live() or []
-        if any(r.get("id") == rid or r.get("name") == name for r in live):
+        if listed:
+            if process_present(name, sid):
+                return "done", f"claude respawn {rid}: a process holds the session again\n{out}"
+        elif any(r.get("id") == rid or r.get("name") == name for r in (ctx.live() or [])):
             return "done", f"claude respawn {rid}: live again\n{out}"
         if time.time() >= deadline:
-            return "failed", f"claude respawn {rid} exited 0 but no live session appeared within {wait}s\n{out}"
+            seen = "no process (pid record or daemon roster worker)" if listed else "no live session"
+            return "failed", f"claude respawn {rid} exited 0 but {seen} appeared within {wait}s\n{out}"
         time.sleep(2)
 
 
