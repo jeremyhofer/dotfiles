@@ -1,6 +1,6 @@
 ---
 name: test-coverage
-description: Use when setting up, changing or reviewing a project's test configuration (Vitest, Jest, pytest, Playwright), adding a package or module that ships, when a coverage threshold fails a run, or when deciding whether a line may be excluded from coverage. Fires on "coverage", "thresholds", "v8 ignore", "istanbul ignore", "pragma: no cover", "fail_under", "--cov-fail-under", and on "why is this uncovered". Covers the expected bar (100%, enforced), where the threshold lives, how an exception is written, ratcheting a project that is not there yet, proving the threshold can fail, how a browser lane that runs in several engines enforces coverage, and which environment (browser or node) a unit test belongs in.
+description: Use when setting up, changing or reviewing a project's test configuration (Vitest, Jest, pytest, Playwright), adding a package or module that ships, when a coverage threshold fails a run, or when deciding whether a line may be excluded from coverage. Fires on "coverage", "thresholds", "v8 ignore", "istanbul ignore", "pragma: no cover", "fail_under", "--cov-fail-under", and on "why is this uncovered". Covers the expected bar (100%, enforced), where the threshold lives, how an exception is written, ratcheting a project that is not there yet, proving the threshold can fail, how a browser lane that runs in several engines enforces coverage, which environment (browser or node) a unit test belongs in, and what a mutation run (mutmut) needs before its first mutant is checked.
 ---
 
 # Test coverage: 100%, enforced by the test run itself
@@ -111,3 +111,20 @@ which is the worst kind of green, because it reads as coverage.
 measuring layer, tested in the browser, and pure judging functions that hold the rules and the
 branching, tested in Node. Most of the logic then runs in the fast lane, and the browser lane
 tests only what needs a browser.
+
+## 8. A mutation run needs its own working copy to be complete
+
+A mutation tester runs the suite against a copy of the source with one change planted, so a
+surviving mutant marks a line no test pins down. Coverage says a line ran; a killed mutant says a test
+noticed it change. mutmut 3 (Python), measured on one project 2026-11-08:
+
+- **It mutates every file under `source_paths`**, whatever narrower pattern names the mutants to
+  run: a run aimed at one module spent 323 s of 365 generating mutants for all 363 source files at
+  one child process. More children cut the generation step (reported: 51 s at eight). Narrow
+  `source_paths` itself when a run is meant to be local.
+- **Its working copy (`mutants/`) holds only what it copies.** A root file the tests read, such as a
+  migration tool's config, must be listed in `also_copy`, or the first run fails at collection and
+  checks no mutant at all, which reads as a broken tool rather than a missing file.
+- **A test that reads the source tree itself** (an `ast` scan of every module, say) sees every
+  function's mutated variants in the copy and can time out. Mark it and deselect the marker under
+  mutation runs; the ordinary gate still runs it.
