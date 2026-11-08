@@ -66,6 +66,17 @@ Entries are newest first.
   working is not refused but waits, queued with a `waiting` result, until the session is idle or the
   request is stale. A result file per request, a line in
   `~/.local/state/fleet-canonicals/requests-audit.jsonl` (none while waiting), no notification.
+- What the runner launches inherits the runner's environment. Its units now put fnm's default Node
+  (`~/.local/share/fnm/aliases/default/bin`) on `PATH`, so a launched session has `node`, `npm` and
+  `npx`, and the queue no longer passes on `uv run`'s own environment. **ACTION after the apply, on
+  each machine whose timer is enabled:** `systemctl --user daemon-reload`, since systemd keeps the old
+  unit until it reloads; a LaunchAgent already bootstrapped is reloaded with `launchctl bootout` and
+  `bootstrap`.
+- `fleet-canonicals status` has a fourth verdict, `LIVE-UNLISTED`: a live process holds the name
+  (by Claude Code's per-process records) though `claude agents --json` omits it. It is not OK, so
+  `status` exits non-zero, and `up` refuses such a name rather than start a second session. Inside a
+  sandbox other sessions' processes are hidden, so the check finds nothing there and both behave as
+  before. A script that parses `status` and knows only OK, MISSING and DUPLICATE should learn it.
 - New configuration keys in `~/.config/fleet-canonicals/config`, each with a default, listed in
   `fleet-canonicals --help` and `docs/reference/fleet-sessions.md`. A private layer that wants a
   person to request for any canonical adds that name to `request-any`.

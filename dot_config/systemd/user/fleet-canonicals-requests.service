@@ -12,8 +12,12 @@ Description=Serve the canonical lifecycle request queue (fleet-canonicals serve-
 [Service]
 Type=oneshot
 # A user unit's PATH is the manager's, which lacks ~/.local/bin, where the base installs
-# fleet-canonicals and fleet-decl and where Claude Code installs `claude`.
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# fleet-canonicals and fleet-decl and where Claude Code installs `claude`. A session this runner
+# launches inherits this PATH, so it also carries fnm's default Node (node, npm, npx), which an
+# interactive shell gets from .zshrc and a service never reads (measured 2026-11-08: a refreshed
+# canonical had no npm or npx). It is fnm's default alias, not a shell's per-session multishell
+# link, so every launch gets the same Node. A machine without fnm simply has no such directory.
+Environment=PATH=%h/.local/bin:%h/.local/share/fnm/aliases/default/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/bin/fleet-canonicals serve-requests
 # A refresh waits for a stopped row and a launch; this bounds a pass that hangs.
 TimeoutStartSec=15min

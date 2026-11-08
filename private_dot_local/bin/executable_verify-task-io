@@ -95,8 +95,9 @@ WHAT IT CANNOT SEE.
   * A task that reads a file Nx's own walker also reads (an ignore file) is never attributed it, so a
     tool that honors a nested ignore file is masked.
   * The first trace of a target that CREATES an ignored directory carrying its own .gitignore
-    (Hypothesis's `.hypothesis/`) can fail on a control that drifts; trace again once the
-    directory exists (financial-management, 2026-11-08).
+    (Hypothesis's `.hypothesis/`) fails on a control that drifts, in a fresh worktree every time:
+    run the target once before tracing, so the directory exists (financial-management,
+    2026-11-08).
   * Other processes on the machine writing into the workspace during a run (an editor, a second
     session, a file watcher) are attributed to the measured target: run it on a quiet checkout.
   * The inotify watch limit is per user, shared with every other watcher; the tool checks the

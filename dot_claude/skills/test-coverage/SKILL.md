@@ -125,6 +125,10 @@ noticed it change. mutmut 3 (Python), measured on one project 2026-11-08:
 - **Its working copy (`mutants/`) holds only what it copies.** A root file the tests read, such as a
   migration tool's config, must be listed in `also_copy`, or the first run fails at collection and
   checks no mutant at all, which reads as a broken tool rather than a missing file.
+- **Keep `mutants/` between runs.** With it present, mutmut regenerates only the files that changed
+  (2.2 s for one file) and a warm affected run took 11 to 25 s at eight children; a fresh checkout
+  pays the whole generation again (about 55 s for 363 files). A landing gate that runs mutations
+  should keep the directory, as the cache of that step.
 - **A test that reads the source tree itself** (an `ast` scan of every module, say) sees every
   function's mutated variants in the copy and can time out. Mark it and deselect the marker under
   mutation runs; the ordinary gate still runs it.
