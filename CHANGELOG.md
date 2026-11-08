@@ -34,6 +34,64 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### Catching up from 2026-11-06 in one pass: every ACTION through 2026-11-08, in order
+
+A machine whose base predates the 2026-11-06 move of the standards into `~/.claude/standards/` has
+the entries below, from here down to that one, to act on. This is the same set in the order to do
+it; each step names the entry that explains it. Skill `dotfiles-update` has the general walk, which
+this follows. The private-layer steps happen in that layer's repository, before either apply.
+
+1. **Note where you are, pull both instances, regenerate the config.**
+   `git -C ~/.local/share/chezmoi log -1 --format='%h %ad' --date=short`, then pull the base and
+   the private layer, then `chezmoi init` once, so the generated config gains the pre-apply hook
+   (2026-11-07, "The base's commit gate runs only the suites a commit can break"). Nothing new is
+   required in the Brewfile since 2026-11-06; `uv` (already listed) is needed by `fleet-slot`,
+   `loop-time`, `land` and the request queue.
+2. **In the private layer, before applying:**
+   - Remove any copy of the always-on rules the base now ships in `~/.claude/standards/` from the
+     layer's own always-on context, such as `~/.dotlocal/claude/CLAUDE.md` (2026-11-06, ACTION).
+   - Write `~/.config/fleet-canonicals/config` for the session fleet: `hub`, `handoffs`,
+     `place-commit`, `stage-check`, and the queue's `request-any` and `never-touch` (both default
+     to `director-canonical`) and `slot-arbiter`. Leave `slot-arbiter` unset to let the director
+     arbitrate once the fleet record declares it, first come, first served until then (2026-11-08,
+     "`fleet-slot` goes first come, first served"). `fleet-canonicals --help` lists its keys and
+     defaults, `fleet-slot --help` the `slot-arbiter` key; `docs/reference/fleet-sessions.md` has the
+     setup steps.
+   - Declare the fleet's sessions in the fleet record (`canonical`, `canonicalLaunchDir`,
+     `canonicalMachines`), the director among them.
+   - For a repository hosting sessions started in its subdirectories: `claudeDirSettings` on its
+     entry, one complete file per directory, and the repository ignoring each
+     `<directory>/.claude/settings.json`. Keep the root's `claudeLocalSettings` to what every
+     session in that repository may hold, since Claude Code applies the root's
+     `settings.local.json` to all of them (2026-11-08, `claudeDirSettings`, ACTION).
+   - Optionally, `ensureAllow` in the settings fragment for rules every machine should allow
+     (2026-11-08, `ensureAllow`).
+   - A clone whose integration branch is not its remote's default:
+     `git config worktrunk.default-branch <branch>`, or `git-branch-gone` judges against the wrong
+     branch and refuses (2026-11-08, `git-branch-gone`).
+3. **Apply both instances,** `chezmoi apply` then `chezmoi-overlay apply`. Every suite runs first;
+   on macOS a failing suite is reported and the apply goes ahead.
+4. **After the apply, from a terminal, for the request runner** (2026-11-08,
+   "`fleet-canonicals request` and `serve-requests`", ACTION):
+   - Linux: `systemctl --user daemon-reload`, then
+     `systemctl --user enable --now fleet-canonicals-requests.timer` if this machine serves requests.
+   - macOS: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist`.
+     Where a managed profile refuses it, run `fleet-canonicals serve-requests --loop` in a tmux pane
+     instead (2026-11-08, `--loop`); it stops with the pane.
+5. **Where no status line runs,** sessions cannot be named from its usage file. `fleet-slot` and
+   `loop-time` fall back to `FLEET_SLOT_AS`, then the agents listing; set `FLEET_SLOT_AS` per session
+   where the listing is unreadable, or pass `--slot-holder` (2026-11-08, "`fleet-slot` names its
+   caller").
+6. **Confirm:** `sh ~/.local/share/chezmoi/setup/overlay-doctor`, then `context-footprint` (the
+   global context grew by about 50 KB on 2026-11-06), then `claude-context-probe` and
+   `claude-context-probe --fleet` from an ordinary terminal.
+
+New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-time`,
+`verify-task-io` (Linux only), `bing-webmaster`, `git-branch-gone` with the worktrunk alias
+`wt done`, and skill `working-with-nx`. `fleet-canonicals status` has a fourth verdict,
+`LIVE-UNLISTED`. A push to the publish remote is gated only in a clone that sets
+`dotfiles.publishRemote`.
+
 ### `fleet-canonicals serve-requests --loop`: the request runner as a long-lived process
 
 - `fleet-canonicals serve-requests --loop [--interval SECONDS]` serves the queue, then again every

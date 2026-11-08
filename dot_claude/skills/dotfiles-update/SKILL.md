@@ -72,6 +72,7 @@ apply itself refuse. Take it in this order:
 git -C ~/.local/share/chezmoi log -1 --format='%h %ad' --date=short    # note it: the changelog starts here
 git -C ~/.local/share/chezmoi pull --ff-only
 # Read CHANGELOG.md from the top down to that date. List every ACTION before touching anything.
+chezmoi init                                          # regenerate the generated config from the pulled templates
 brew bundle --file ~/.local/share/chezmoi/Brewfile    # macOS: install what the Brewfile now requires
 exec zsh -l                                           # a new login shell, so PATH changes take effect
 sh ~/.local/share/chezmoi/private_dot_local/bin/executable_fleet-decl --check   # the manifest the git hooks read
@@ -83,6 +84,11 @@ chezmoi apply
 chezmoi-overlay diff && chezmoi-overlay apply         # if the machine has a private layer
 sh ~/.local/share/chezmoi/setup/overlay-doctor        # overlay compliance, then the assessment again
 ```
+
+**When the changelog has a "Catching up from <date> in one pass" section** whose date is on or
+after the commit you noted, follow it rather than assembling the ACTION list yourself: it orders
+the same entries' steps, private-layer edits before the apply and the terminal steps after it.
+An entry newer than that section is still yours to read.
 
 **Why the full `overlay-doctor` runs before the apply as well as after:** its cross-layer section
 compares the two source trees, which are both current once pulled, so it can name a conflict before
