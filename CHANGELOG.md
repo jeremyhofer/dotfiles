@@ -32,6 +32,15 @@ Entries are newest first.
 
 ---
 
+## 2026-11-08
+
+### New skill `working-with-nx`: Nx behavior verified in the installed source
+
+- The cache and where it lives (`~/.nx`, shared by every checkout), inputs and `affected`, `--nxBail`,
+  profiling and the task-graph file's edge shape, plugins and atomizers, and two sandbox cases; each
+  point names the Nx file it was read from and the version (24.0.2), so it can be re-checked after an
+  upgrade. It fires on Nx's own failure text. Nothing to change in a private layer.
+
 ## 2026-11-07
 
 ### The base's commit gate runs only the suites a commit can break; every suite runs before `chezmoi apply`
