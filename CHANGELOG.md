@@ -34,6 +34,26 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### The request queue refreshes a stopped session still listed `blocked`, once it parked
+
+- After an idle stop, a session whose last turn asked its human something stays in the live
+  listing as `blocked`, with no process behind it, and every verb read it as running. A queued
+  `down` or `refresh` is now served for it when no live pid record holds the name, the daemon roster
+  (`~/.claude/daemon/roster.json`) lists no worker for it, and its handoff pointer names a placed
+  file recorded after it started. Anything else still waits. Nothing to change in a private layer.
+
+### `git-branch-gone` and `wt done`: a merged branch leaves the remotes too
+
+- New tool `~/.local/bin/git-branch-gone <branch> [--delete]`. It deletes a branch from each remote
+  only after proving that remote's own tip is in the clone's integration branch, then confirms the
+  deletion with `ls-remote`. Without `--delete` it reports and changes nothing. A clone whose
+  integration branch is not its remote's default sets `git config worktrunk.default-branch <branch>`
+  (as `wt config state default-branch set` does), or the tool judges against the wrong branch and
+  refuses.
+- New worktrunk alias in the generated user config, `wt done <branch>`: `wt remove`, then
+  `git-branch-gone --delete`. It is for a person at a terminal; an agent runs the two commands. No
+  remove hook deletes a remote branch. Nothing to change in a private layer.
+
 ### `fleet-slot`: the timing slot in a file every session can read; `loop-time run` refuses while another session holds it
 
 - New tool `~/.local/bin/fleet-slot`. Sessions sharing a machine take turns at heavy work: `request`

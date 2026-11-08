@@ -274,6 +274,19 @@ it again from the start. It is served once the session is idle, or refused as st
 against the rate limits. This is what lets a session request its own refresh: it is working when
 it writes the request, and the runner serves a new request within seconds.
 
+**A session listed `blocked` with no `waitingFor` is treated as idle only on evidence that it
+parked.** Claude Code's agent view gives that state to a session whose last turn asked its human
+something, and it keeps a stopped session listed that way after an idle stop. A `down` or `refresh`
+is served for one in two cases. First, a live process whose own pid record says `idle`, with a
+handoff pointer set after the session started. Second, a session that is provably stopped, which
+means no live pid record holds the name and the daemon's roster (`~/.claude/daemon/roster.json`,
+`FLEET_DAEMON_ROSTER`) lists no worker for it, with a handoff pointer naming a placed file
+(under `handoffs-search`, else `handoffs`) set after it started. Anything else waits: a busy
+record, a roster worker, an unreadable roster, a pointer that is older than the session or names a
+staged draft, or a real `waitingFor`. Pid records and the roster are both undocumented files.
+A change to the pid records' format would make them read as "no live process", leaving the roster
+as the only guard. A roster that cannot be read waits.
+
 A keep-alive, which would hold a canonical up against an idle stop, is not built; the runner has
 the check's place for it and no hold can exist yet.
 

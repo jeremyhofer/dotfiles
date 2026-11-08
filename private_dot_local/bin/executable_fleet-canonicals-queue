@@ -753,29 +753,77 @@ def job_needs(job_id: str) -> str:
     return " ".join(str(needs).split())[:160] if needs else ""
 
 
-def parked_signals(name: str, session_id: str) -> str | None:
-    """None when two independent signals say the session parked and is idle; else which one fails.
-    For a `blocked` row with no waitingFor (three parked, idle canonicals read so on 2026-11-08,
-    matching no documented blocked state): the session's own pid record must say `idle`, and its
-    handoff pointer must have been set after its work began. A session stuck on a real prompt fails
-    the first; a working session that never parked fails the second."""
-    statuses = pid_record_statuses(name, session_id)
-    if not statuses:
-        return "no live pid record says how the session itself reads its state"
-    if any(st != "idle" for st in statuses):
-        return f"the session's own pid record says '{', '.join(statuses)}', not idle"
+ROSTER = Path(os.environ.get("FLEET_DAEMON_ROSTER") or HOME / ".claude" / "daemon" / "roster.json")
+
+
+def roster_session_ids() -> set[str] | None:
+    """The session ids of the daemon's running workers, from ~/.claude/daemon/roster.json (an
+    undocumented file: `workers` maps a short id to a record carrying `sessionId`). None when it
+    cannot be read, which never counts as "no workers"."""
+    try:
+        d = json.loads(ROSTER.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    workers = d.get("workers") if isinstance(d, dict) else None
+    if not isinstance(workers, dict):
+        return None
+    return {str(w["sessionId"]) for w in workers.values() if isinstance(w, dict) and w.get("sessionId")}
+
+
+def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> str | None:
+    """None when the handoff pointer names an existing file, under `placed_under` when one is given
+    (a placed copy, not a staged draft), recorded after the session's work began; else what fails."""
     pointer = handoff_set_at(name)
     if pointer is None:
         return "no handoff pointer with a set-at stamp is recorded"
     target, set_at = pointer
     if not Path(target).is_file():
         return f"the handoff pointer names a missing file ({target})"
+    if placed_under:
+        root = os.path.realpath(placed_under)
+        if os.path.commonpath([root, os.path.realpath(target)]) != root:
+            return f"the handoff pointer names {target}, which is not under the placed handoffs ({placed_under})"
     start = transcript_start(session_id)
     if start is None:
         return "the session's transcript gives no start time to compare the handoff against"
     if set_at <= start:
         return "its handoff was recorded before the session started, so it has not parked since"
     return None
+
+
+def stopped_signals(name: str, session_id: str, placed_under: str) -> str | None:
+    """None when a `blocked` row with no waitingFor belongs to a session that is provably stopped
+    and parked; else which signal fails. Measured 2026-11-08 (keystone, life, then russ): after the
+    supervisor's idle stop a session whose last turn asked its human something stays in the live
+    listing as `blocked`, with no process behind it, so every verb read it as running. Stopped means
+    two independent signals agree: no live pid record holds the name (Claude Code removes a
+    session's record when its process ends), and the daemon's roster lists no worker for the
+    session. Parked means its handoff pointer names a placed file recorded after the session began.
+    A live process fails the first two; a stopped session that never parked fails the third."""
+    holders = live_pid_records(name)
+    if holders:
+        return f"a live process still holds the name ({holders[0]})"
+    ids = roster_session_ids()
+    if ids is None:
+        return f"the daemon roster ({ROSTER}) cannot be read, so a running worker cannot be ruled out"
+    if session_id and session_id in ids:
+        return "the daemon roster lists a running worker for the session"
+    return handoff_since_start(name, session_id, placed_under)
+
+
+def parked_signals(name: str, session_id: str, placed_under: str = "") -> str | None:
+    """None when independent signals say the session parked and is idle; else which one fails.
+    For a `blocked` row with no waitingFor (three parked, idle canonicals read so on 2026-11-08,
+    matching no documented blocked state). With a live process: its own pid record must say `idle`,
+    and its handoff pointer must have been set after its work began. A session stuck on a real
+    prompt fails the first; a working session that never parked fails the second. With no live pid
+    record at all, the session must be provably stopped and parked (stopped_signals)."""
+    statuses = pid_record_statuses(name, session_id)
+    if not statuses:
+        return stopped_signals(name, session_id, placed_under)
+    if any(st != "idle" for st in statuses):
+        return f"the session's own pid record says '{', '.join(statuses)}', not idle"
+    return handoff_since_start(name, session_id)
 
 
 def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
@@ -800,7 +848,9 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
         if state == "blocked" and not row.get("waitingFor"):
             # Undocumented; accepted as idle only on two independent parked signals (parked_signals),
             # and the transcript's last turn must still have ended (below).
-            parked = parked_signals(req["name"], str(row.get("sessionId") or ""))
+            placed = (os.environ.get("FLEET_HANDOFFS_SEARCH") or ctx.cfg.get("handoffs-search")
+                      or ctx.cfg.get("handoffs") or "")
+            parked = parked_signals(req["name"], str(row.get("sessionId") or ""), placed)
             needs = job_needs(str(row.get("id") or ""))
             asked = f" (its last turn asked: {needs})" if needs else ""
             why = f" with no waitingFor, so its last turn ended asking its human something{asked}, and " + (parked or "")

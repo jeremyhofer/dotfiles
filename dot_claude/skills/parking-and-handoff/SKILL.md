@@ -100,10 +100,11 @@ step 5's closing rule (end on a statement), which holds before any idle.
    and the closing message says where. It is not asked in the closing message. **Why:** Claude
    Code's agent view marks a session whose last turn asked its human something as `blocked`. The
    mark outlives the process: after an idle stop the session stays in the live listing as
-   `blocked`, so `up` reads it as running, a request queue refuses to resume or refresh it, and
-   only a `refresh` from a terminal reaches it. Three long-running sessions on one machine were left
-   in that state in one day, each by a closing question. A question asked mid-session, while the
-   human is there to answer it, does no harm; what counts is the last turn before idle.
+   `blocked`, so `up` reads it as running and a request queue will not resume it. A queued
+   `refresh` reaches it only if the session parked first, its handoff recorded after it started;
+   otherwise only a `refresh` from a terminal does. Three long-running sessions on one machine
+   were left in that state in one day, each by a closing question. A question asked mid-session,
+   while the human is there to answer it, does no harm; what counts is the last turn before idle.
 
 ## Checkpointing is not parking, and most pauses are checkpoints
 
@@ -245,8 +246,8 @@ is `fleet-canonicals request refresh <own name> --reason 'parked: <handoff>'`. T
 the turn to end, so the request cannot cut the park short, and refreshes it within a few minutes;
 the kickoff block then says so instead of asking the human. The turn that makes the request ends
 with a statement like any other final turn (step 5): a closing question leaves the session marked
-`blocked`, which no request can reach once the process has gone. Until self-refresh is enabled the runner
-refuses that request (check `self-refresh` in its result file), and the human runs `refresh`.
+`blocked`, and nothing the human can answer later is left to reach. Until self-refresh is
+enabled the runner refuses that request (check `self-refresh` in its result file), and the human runs `refresh`.
 Skill `canonical-takeover`, "Requesting from a sandbox", has the rules.
 
 **(b) The prompt:** thin. Identity (which canonical this is), what to read first (the handoff,

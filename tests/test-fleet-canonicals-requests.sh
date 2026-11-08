@@ -74,6 +74,7 @@ export FLEET_TRANSCRIPT_DIR="$T/transcripts" XDG_RUNTIME_DIR="$T/run"
 export FLEET_CANONICALS_CONFIG="$T/config" FLEET_RESPAWN_WAIT=4
 # Claude Code's per-process records and /proc are fixtures too, so the real ones are never read.
 export FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc" FLEET_JOBS_DIR="$T/jobs"
+export FLEET_DAEMON_ROSTER="$T/roster.json"
 mkdir -p "$T/state" "$T/tmproots" "$T/transcripts/p" "$T/run/claude-usage" "$T/pids" "$T/proc"
 Q="$T/state/requests"
 # The suite itself may run inside a session; its id must not make the fixtures' requester.
@@ -126,6 +127,11 @@ reset() {
   print '[]' > "$T/agents.json"; rm -f "$T/run/claude-usage/"*(N)
   print 0 > "$T/trust.rc"; : > "$T/trust.names"
   rm -rf "$T/pids" "$T/proc"; mkdir -p "$T/pids" "$T/proc"
+  print '{"workers":{}}' > "$T/roster.json"
+}
+# roster_worker SESSION -- the daemon's roster lists a running worker for the session
+roster_worker() {
+  jq --arg sid "$1" '.workers[$sid[0:8]] = {pid: 1, sessionId: $sid}' "$T/roster.json" > "$T/roster.n" && mv "$T/roster.n" "$T/roster.json"
 }
 # pid_record PID NAME PROCSTART -- a Claude Code per-process record naming a canonical
 pid_record() {
@@ -426,7 +432,7 @@ serve >/dev/null; expect r-w5 refused working "an unreadable sessions list refus
 export FLEET_AGENTS_JSON_CMD="jq -c map(select(.live)) $T/agents.json"
 
 # a `blocked` row with no waitingFor still waits, and the reason names the anomaly
-reset; live_row bl000001 alpha-canonical blocked s-bl; transcript s-bl ended
+reset; live_row bl000001 alpha-canonical blocked s-bl; transcript s-bl ended; roster_worker s-bl
 plant r-bl down alpha-canonical alpha-canonical
 serve >/dev/null; expect r-bl waiting working "a blocked session's stop waits"
 [[ "$(result r-bl detail)" == *"no waitingFor"* ]] && ok "the reason names a blocked state with no waitingFor" \
@@ -459,6 +465,42 @@ jq 'map(if .id == "pk000004" then .waitingFor = "permission prompt" else . end)'
 plant r-pk4 refresh alpha-canonical director-canonical
 serve >/dev/null; expect r-pk4 waiting working "a blocked session with a real waitingFor still waits, parked or not"
 [[ "$(result r-pk4 detail)" == *"waiting for permission prompt"* ]] && ok "...and the reason quotes its waitingFor" || bad "pk4 detail: $(result r-pk4 detail)"
+
+# stopped and parked: `blocked` with no waitingFor and NO live process (the idle stop leaves the row
+# listed) is served only when no live pid record holds the name, the daemon roster lists no worker
+# for the session, and its handoff names a placed file recorded after the session started
+reset; live_row st000001 alpha-canonical blocked s-st; transcript s-st ended
+plant r-st1 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st1 done "" "blocked, no process, no roster worker, parked since it started: the refresh is served"
+reset; live_row st000002 alpha-canonical blocked s-st; transcript s-st ended; roster_worker s-st
+plant r-st2 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st2 waiting working "the same, but the daemon roster lists a worker for it: waits"
+[[ "$(result r-st2 detail)" == *"roster lists a running worker"* ]] && ok "...and the reason names the roster worker" || bad "st2 detail: $(result r-st2 detail)"
+reset; live_row st000003 alpha-canonical blocked s-st; transcript s-st ended; pid_for 5301 alpha-canonical s-other idle
+plant r-st3 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st3 waiting working "the same, but a live pid record holds the name: waits"
+[[ "$(result r-st3 detail)" == *"live process still holds the name"* ]] && ok "...and the reason names the live process" || bad "st3 detail: $(result r-st3 detail)"
+reset; live_row st000004 alpha-canonical blocked s-sx
+print -l '{"type":"user","message":{"role":"user","content":"go"},"timestamp":"2099-01-01T00:00:00Z"}' \
+  '{"type":"system","subtype":"turn_duration","timestamp":"2099-01-01T00:00:06Z"}' > "$T/transcripts/p/s-sx.jsonl"
+plant r-st4 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st4 waiting working "stopped, but its handoff predates the session (never parked): waits"
+[[ "$(result r-st4 detail)" == *"before the session started"* ]] && ok "...and the reason says the handoff predates it" || bad "st4 detail: $(result r-st4 detail)"
+reset; live_row st000005 alpha-canonical blocked s-st; transcript s-st ended
+jq 'map(if .id == "st000005" then .waitingFor = "permission prompt" else . end)' "$T/agents.json" > "$T/agents.n" && mv "$T/agents.n" "$T/agents.json"
+plant r-st5 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st5 waiting working "stopped and parked, but a real waitingFor: waits"
+reset; live_row st000006 alpha-canonical blocked s-st; transcript s-st ended; rm -f "$T/roster.json"
+plant r-st6 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st6 waiting working "an unreadable daemon roster waits (fail closed)"
+[[ "$(result r-st6 detail)" == *"roster"*"cannot be read"* ]] && ok "...and the reason names the roster" || bad "st6 detail: $(result r-st6 detail)"
+outside=$(mktemp "$_t/fcq-outside.XXXXXX"); print "a draft" > "$outside"
+bash "$TOOL" handoff alpha-canonical --set "$outside" >/dev/null 2>&1
+reset; live_row st000007 alpha-canonical blocked s-st; transcript s-st ended
+plant r-st7 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-st7 waiting working "stopped, but the pointer names a file outside the placed handoffs: waits"
+[[ "$(result r-st7 detail)" == *"not under the placed handoffs"* ]] && ok "...and the reason says it is not a placed copy" || bad "st7 detail: $(result r-st7 detail)"
+rm -f "$outside"; bash "$TOOL" handoff alpha-canonical --set "$T/alpha.handoff.md" >/dev/null 2>&1
 
 # refresh: after the stop, a live process that still holds the name is waited for, then refused
 # loudly, rather than handed to a launch that would refuse halfway through
