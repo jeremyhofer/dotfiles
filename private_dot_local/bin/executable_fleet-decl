@@ -16,6 +16,7 @@
 #                                                # the items of a sequence on <project>, one per line;
 #                                                # with <item-key> the items are maps and that key is
 #                                                # read from each (`--entry-list ios worktrees name`)
+#          fleet-decl --entry-map <project> <key>  # <map key><TAB><value> for each pair of a map on <project>
 #          fleet-decl --layout <project>         # `bare` or `standard`: how <project> is laid out on disk
 #          fleet-decl --check                    # validate the record; print findings
 #
@@ -256,6 +257,22 @@ case "${1:-}" in
     _out=$(yq -e -r "$_q" "$RECORD" 2>/dev/null) || exit 1
     printf '%s\n' "$_out"
     exit 0 ;;
+  --entry-map)
+    # The map form of --entry, for a declaration keyed by something a dotted key path cannot
+    # address, such as a directory path (`claudeDirSettings: {seats/one: x.json}`). One
+    # <key><TAB><value> line per pair, in the record's order. Exit 1 when the key is absent, is not a
+    # map, or is empty. A key or value holding a tab or a newline would break the line format, so the
+    # caller that reads paths must refuse those; this reader passes them through unchanged.
+    [ $# -eq 3 ] || { printf 'usage: fleet-decl --entry-map <project> <key>\n' >&2; exit 2; }
+    case "$2" in
+      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+    esac
+    valid_key "$3"
+    _out=$(yq -e -r ".projects.\"$2\".$3 | select(tag == \"!!map\") | to_entries | .[] | .key + \"\t\" + (.value | tostring)" \
+           "$RECORD" 2>/dev/null) || exit 1
+    [ -n "$_out" ] || exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
   --layout)
     # Which of the two shapes a project's repository takes on disk. A STANDARD clone is an ordinary,
     # non-bare clone at `path`, its worktrees nested under <path>/.worktrees/. A BARE CONTAINER is a
@@ -322,7 +339,7 @@ case "${1:-}" in
           worktrunk) ;;
           container) ;;
           claudeTrust) ;;
-          claudeLocalSettings) ;;   # read by claude-project-settings
+          claudeLocalSettings|claudeDirSettings) ;;   # read by claude-project-settings
           leak*|canonical*|container*|claude*|Claude*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
@@ -350,6 +367,18 @@ case "${1:-}" in
       if [ "$(yq -r ".projects.\"$p\".claudeTrust | tag" "$RECORD" 2>/dev/null)" != '!!bool' ]; then
         printf '[claudeTrust-value] %s: claudeTrust must be true or false, unquoted\n' "$p"; rc=1
       fi
+    done
+    # claudeDirSettings maps a directory inside the repository to its settings file. Its keys are
+    # paths, so they are checked where they are used (claude-project-settings refuses one that leaves
+    # the repository); here only the shape: a map whose every value is a non-empty string.
+    for p in $(yq -r '.projects | to_entries[] | select(.value | has("claudeDirSettings")) | .key' "$RECORD" 2>/dev/null || true); do
+      if [ "$(yq -r ".projects.\"$p\".claudeDirSettings | tag" "$RECORD" 2>/dev/null)" != '!!map' ]; then
+        printf '[claudeDirSettings-value] %s: claudeDirSettings must be a map of <directory>: <settings file>\n' "$p"; rc=1; continue
+      fi
+      yq -r ".projects.\"$p\".claudeDirSettings | to_entries | .[] | select((.value | tag) != \"!!str\" or .value == \"\") | .key" \
+         "$RECORD" 2>/dev/null | while IFS= read -r _d; do
+        printf '[claudeDirSettings-value] %s: claudeDirSettings.%s must name a settings file\n' "$p" "$_d"
+      done | grep . && rc=1
     done
     # The container block is read by the cloner (fleet-repo), which would otherwise have to decide
     # what to do with a value it does not understand -- and a mistyped `branchs: default` would

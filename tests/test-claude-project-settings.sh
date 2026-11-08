@@ -164,5 +164,107 @@ sh "$tool" apply nofile > "$tmp/out" 2>&1; rc=$?
 FLEET_RECORD="$tmp/nope.yaml" sh "$tool" apply > "$tmp/out" 2>&1; rc=$?
 [ $rc = 2 ] && ok "an unreadable record is exit 2, nothing written" || bad "unreadable record" "rc=$rc $(cat "$tmp/out")"
 
+echo "== directories inside a repository: claudeDirSettings"
+# A session started in a subdirectory reads .claude/settings.json from that directory only, so each
+# declared directory gets its own complete <dir>/.claude/settings.json; the repository root keeps
+# claudeLocalSettings and settings.local.json.
+rec2="$root/mani-dirs.yaml"
+cat > "$rec2" <<'YAML'
+projects:
+  multi:
+    path: work/multi
+    claudeLocalSettings: claude/projects/multi.json
+    claudeDirSettings:
+      seats/one: claude/projects/multi-one.json
+      seats/two/: claude/projects/multi-two.json
+  dirsonly:
+    path: work/dirsonly
+    claudeDirSettings:
+      sub: claude/projects/dirsonly-sub.json
+  badshape:
+    path: work/dirsonly
+    claudeDirSettings: claude/projects/ok.json
+  escapes:
+    path: work/escapes
+    claudeDirSettings:
+      ../outside: claude/projects/ok.json
+      /abs: claude/projects/ok.json
+      .: claude/projects/ok.json
+      a/../b: claude/projects/ok.json
+      a//b: claude/projects/ok.json
+      linked: claude/projects/ok.json
+      linkedclaude: claude/projects/ok.json
+      tracked: claude/projects/ok.json
+      absent: claude/projects/ok.json
+      greedy: claude/projects/greedy.json
+YAML
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/root"]}}}\n' > "$P/multi.json"
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/s1","~/shared"]}}}\n' > "$P/multi-one.json"
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/s2","~/shared"]}}}\n' > "$P/multi-two.json"
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/sub"]}}}\n' > "$P/dirsonly-sub.json"
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/ok"]}}}\n' > "$P/ok.json"
+mkdir -p "$root/work/multi/seats/one/.claude" "$root/work/multi/seats/two" "$root/work/dirsonly/sub" \
+         "$root/work/escapes/a/b" "$root/work/escapes/tracked/.claude" "$root/work/escapes/greedy" "$tmp/outside"
+ln -s "$tmp/outside" "$root/work/escapes/linked"
+mkdir -p "$root/work/escapes/linkedclaude" "$tmp/outside2"; ln -s "$tmp/outside2" "$root/work/escapes/linkedclaude/.claude"
+cat > "$root/work/multi/seats/one/.claude/settings.json" <<'JSON'
+{ "sandbox": { "filesystem": { "allowWrite": ["~/old"] } }, "model": "kept" }
+JSON
+printf '{"committed": true}\n' > "$root/work/escapes/tracked/.claude/settings.json"
+git -C "$root/work/escapes" init -q && git -C "$root/work/escapes" add tracked/.claude/settings.json \
+  || { echo "FAIL: git fixture"; exit 1; }
+cp "$root/work/escapes/tracked/.claude/settings.json" "$tmp/tracked.before"
+
+FLEET_RECORD=$rec2 sh "$tool" check > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 1 ] && grep -q 'multi:seats/one: .*differs' "$tmp/out"; } \
+  && ok "check reports a directory's drift under <project>:<dir>" || bad "dir check drift" "rc=$rc $(cat "$tmp/out")"
+[ "$(jq -c .sandbox.filesystem.allowWrite "$root/work/multi/seats/one/.claude/settings.json")" = '["~/old"]' ] \
+  && ok "check writes no directory file" || bad "dir check wrote" "$(cat "$root/work/multi/seats/one/.claude/settings.json")"
+
+FLEET_RECORD=$rec2 sh "$tool" apply > "$tmp/out" 2>&1; rc=$?
+one="$root/work/multi/seats/one/.claude/settings.json"
+[ "$(jq -c .sandbox.filesystem.allowWrite "$one" 2>/dev/null)" = '["~/s1","~/shared"]' ] \
+  && ok "a directory's declaration is written to <dir>/.claude/settings.json, its array replacing the live one" || bad "dir written" "$(cat "$one")"
+[ "$(jq -r .model "$one" 2>/dev/null)" = kept ] && ok "an undeclared key in a directory's live file is kept" || bad "dir live key" "$(cat "$one")"
+[ "$(jq -c .sandbox.filesystem.allowWrite "$root/work/multi/seats/two/.claude/settings.json" 2>/dev/null)" = '["~/s2","~/shared"]' ] \
+  && ok "each directory gets only its own declaration (a trailing slash in the key is the same directory)" || bad "dir two" "$(cat "$tmp/out")"
+{ [ ! -e "$root/work/multi/seats/one/.claude/settings.local.json" ] && [ ! -e "$root/work/multi/seats/two/.claude/settings.local.json" ]; } \
+  && ok "no settings.local.json is written in a directory" || bad "dir local file" "$(ls -a "$root/work/multi/seats/one/.claude")"
+{ [ "$(jq -c .sandbox.filesystem.allowWrite "$root/work/multi/.claude/settings.local.json" 2>/dev/null)" = '["~/root"]' ] \
+  && [ ! -e "$root/work/multi/.claude/settings.json" ]; } \
+  && ok "the repository root still gets claudeLocalSettings in settings.local.json, and no settings.json" || bad "root beside dirs" "$(ls -a "$root/work/multi/.claude" 2>&1)"
+[ "$(jq -c .sandbox.filesystem.allowWrite "$root/work/dirsonly/sub/.claude/settings.json" 2>/dev/null)" = '["~/sub"]' ] \
+  && ok "a project that declares only claudeDirSettings is written" || bad "dirs only" "$(cat "$tmp/out")"
+refused() {  # <name> <dir key> <expected substring>
+  grep -F -- "escapes:$2: " "$tmp/out" | grep -q -- "$3" && ok "refused directory: $1" || bad "refused directory: $1" "$(cat "$tmp/out")"
+}
+grep -q 'badshape: claudeDirSettings must be a map' "$tmp/out" \
+  && ok "a claudeDirSettings that is not a map is reported, not ignored" || bad "dir badshape" "$(cat "$tmp/out")"
+refused "a .. path out of the repository" "../outside" "relative path inside the repository"
+refused "an absolute path" "/abs" "relative path inside the repository"
+refused "the root itself, which is claudeLocalSettings" "." "claudeLocalSettings"
+refused "a .. segment" "a/../b" "relative path inside the repository"
+refused "a doubled slash" "a//b" "relative path inside the repository"
+refused "a symlink out of the repository" "linked" "outside the repository"
+refused "a .claude that is a symlink" "linkedclaude" "is a symlink"
+refused "a file git tracks" "tracked" "tracked by git"
+refused "a declaration that fails validation" "greedy" "not written"
+{ [ ! -e "$root/work/outside" ] && [ ! -e "$tmp/outside/.claude" ] && [ -z "$(ls -A "$tmp/outside2")" ] && [ ! -e "$root/work/escapes/.claude" ]; } \
+  && ok "nothing is written outside the repository or at its root" || bad "escape wrote" "$(ls -a "$tmp/outside" "$root/work" 2>&1)"
+cmp -s "$tmp/tracked.before" "$root/work/escapes/tracked/.claude/settings.json" \
+  && ok "a tracked settings.json is left unchanged" || bad "tracked changed" "$(cat "$root/work/escapes/tracked/.claude/settings.json")"
+{ grep -q 'escapes:absent: .*not on this machine; skipped' "$tmp/out" && [ ! -e "$root/work/escapes/absent" ]; } \
+  && ok "a declared directory that does not exist is skipped, not created" || bad "absent dir" "$(cat "$tmp/out")"
+[ $rc = 1 ] && ok "apply exits 1 when a directory could not be written" || bad "dir apply rc" "rc=$rc"
+
+FLEET_RECORD=$rec2 sh "$tool" check multi > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 0 ] && grep -q 'multi:seats/one: current' "$tmp/out"; } \
+  && ok "check <project> after apply covers its directories: current, exit 0" || bad "dir check after" "rc=$rc $(cat "$tmp/out")"
+before=$(cat "$one"); FLEET_RECORD=$rec2 sh "$tool" apply multi >/dev/null 2>&1
+[ "$(cat "$one")" = "$before" ] && ok "a second apply changes no directory file" || bad "dir idempotent" "$(cat "$one")"
+out=$(FLEET_RECORD=$rec2 sh "$tool" validate 2>&1); rc=$?
+{ [ $rc = 1 ] && printf '%s' "$out" | grep -q 'escapes:greedy: key permissions'; } \
+  && ok "validate with no file checks every directory's file too" || bad "dir validate all" "rc=$rc $out"
+
 [ "$fails" = 0 ] && { echo PASS; exit 0; }
 echo "FAILED: $fails"; exit 1

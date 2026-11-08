@@ -340,6 +340,28 @@ Run it in the layer's commit gate. `apply` validates, then merges each file into
 The layer runs `apply` through its trigger (below); a sandboxed session cannot, because the sandbox
 protects these files.
 
+**A session started in a subdirectory of a repository** (several long-running sessions sharing one
+repository, each in its own directory) needs its settings in a different file. Claude Code
+(v2.1.211 and later) reads `.claude/settings.local.json` at the repository ROOT for a session
+started anywhere in the repository, and `.claude/settings.json` only from the session's starting
+directory. So the entry maps each such directory, relative to the project's `path`, to its own file
+under the same rules:
+
+```yaml
+claudeDirSettings:
+  seats/review: claude/projects/<project>-review.json
+```
+
+`apply` merges each into `<directory>/.claude/settings.json` by the same rule. Each file is the
+directory's complete declaration: the tool shares nothing between directories, so a grant every
+directory needs is written in each file. Because `settings.json` is a name git commits by default,
+the hosting repository must ignore `<directory>/.claude/settings.json`; the tool refuses one git
+tracks. It also refuses a directory that is absolute, is the root (`.`), has a `.` or `..` segment,
+or resolves outside the repository through a symlink, and skips one not on this machine. The root's
+`claudeLocalSettings` file still reaches every subdirectory session, because Claude Code reads it
+there; a layer that wants each directory to get only its own file keeps the root's grants to what
+every session in the repository may hold.
+
 ## Spelling (Neovim)
 
 nvim's spell files are `~/.config/nvim/spell/private.utf-8.add` (the domain's words) and
@@ -359,7 +381,7 @@ applied and nothing downstream moves. `overlay-doctor` (Tier T) checks each row 
 | `Devel/mani.yaml.tmpl` (and `dot_dotlocal/worktrunk.toml`) | `run_onchange_after_generate-worktrunk-config.sh.tmpl`, hashing both | `overlay-skeleton/` | required |
 | `dot_dotlocal/claude/executable_settings-declared` | `run_onchange_after_merge-claude-settings.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
 | the same fragment, declaring plugins | `run_onchange_after_install-claude-plugins.sh.tmpl`, calling the base's `install-claude-plugins` | `overlay-skeleton/opt-in/` | opt-in |
-| `Devel/mani.yaml.tmpl`, declaring `claudeLocalSettings:`, and the files it points at | `run_onchange_after_apply-project-claude-settings.sh.tmpl`, hashing the manifest and every project file, and calling the base's `claude-project-settings` | `overlay-skeleton/opt-in/` | opt-in |
+| `Devel/mani.yaml.tmpl`, declaring `claudeLocalSettings:` or `claudeDirSettings:`, and the files they point at | `run_onchange_after_apply-project-claude-settings.sh.tmpl`, hashing the manifest and every project file, and calling the base's `claude-project-settings` | `overlay-skeleton/opt-in/` | opt-in |
 | `dot_dotlocal/skill-externals.yaml` | `run_onchange_after_sync-skill-externals.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
 | `tests/run-all.sh` (and, to scope the gate to the staged paths, `tests/select-suites.sh` with its `tests/coverage.map`) | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
 
@@ -375,7 +397,7 @@ a layer's trigger is a few lines that say where its inputs are.
 | `setup/overlay-doctor` | from the base checkout, after changing either layer | required private pieces present and filled, the trigger for every input the layer ships (Tier T), every private file has a recorded reason, no file owned by both layers, the manifest's schema |
 | `setup/overlay-doctor --machine` | on a machine | git, tools and Claude Code on that machine |
 | `fleet-decl --check` | after editing the manifest | the manifest's declarations |
-| `claude-project-settings validate`, then `check` | before committing a project settings file, then after an apply | `validate`: the files obey the closed rules above; `check`: the live `.claude/settings.local.json` of each declaring project matches its file (exit 1 on drift) |
+| `claude-project-settings validate`, then `check` | before committing a project settings file, then after an apply | `validate`: the files obey the closed rules above; `check`: the live `.claude/settings.local.json` of each declaring project, and `<directory>/.claude/settings.json` of each declared directory, matches its file (exit 1 on drift) |
 | `fleet-repo check` | after editing the manifest or changing a clone | each repository on disk matches its manifest entry's layout (exit 1 on drift) |
 | `claude-trust-check` | on a new machine, before launching background sessions | which manifest directories still need Claude Code's workspace-trust prompt accepted (exit 3: state unknown) |
 | `hook-doctor check` | after configuring the guard | each configured git hook is live, and the guard refuses a planted marker |

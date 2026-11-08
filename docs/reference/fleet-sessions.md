@@ -319,8 +319,10 @@ the check's place for it and no hold can exist yet.
 
 The hub adds its handoffs repository (`"~/Devel/coordination"`) if that is not its working
 directory; a fleet that passes files adds `"~/.local/state/fleet-exchange"`. User settings
-(`~/.claude/settings.json`) cover every session; a project's `.claude/settings.local.json` covers one.
-A private layer declares them in its settings fragment or per project with `claudeLocalSettings`
+(`~/.claude/settings.json`) cover every session; a project's `.claude/settings.local.json` covers one,
+including every session started in a subdirectory of it, and a subdirectory's own
+`.claude/settings.json` covers a session started there. A private layer declares them in its settings
+fragment, per project with `claudeLocalSettings`, or per directory with `claudeDirSettings`
 ([`private-layer.md`](private-layer.md)); a declared array replaces the live one, so list every
 entry. On a machine without one, edit the file by hand. Managed settings outrank both, and if they
 refuse the entry, the canonicals there cannot stage and the human runs `stage` for them.

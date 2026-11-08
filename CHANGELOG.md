@@ -34,6 +34,29 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `claude-project-settings` writes settings for sessions started in a subdirectory: `claudeDirSettings` — ACTION
+
+- A manifest entry may now map directories inside its repository to settings files:
+  `claudeDirSettings: {<directory>: <file>}`, the directory relative to the entry's `path`, the file
+  under the same closed rules as `claudeLocalSettings`. `apply` merges each into
+  `<directory>/.claude/settings.json` by the same rule (declared keys win, an array replaces the live
+  one), because Claude Code (v2.1.211 and later) reads `settings.local.json` only at the repository
+  root and `settings.json` only from the session's starting directory. Each file is that
+  directory's complete declaration; nothing is shared or inherited by the tool, so a grant every
+  directory needs is written in each. A directory that is absolute, `.`, holds a `.` or `..` segment,
+  or resolves outside the repository is refused, as is a `settings.json` git tracks. `fleet-decl`
+  gains `--entry-map <project> <key>`, and `--check` accepts `claudeDirSettings` and reports
+  `[claudeDirSettings-value]` for a malformed one. A manifest using only `claudeLocalSettings` sees
+  no change.
+- **ACTION, for a layer with a session started in a subdirectory of a repository:** declare
+  `claudeDirSettings` on the repository's entry, one file per directory under
+  `dot_dotlocal/claude/projects/`, listing every grant that directory's session needs. Make the
+  hosting repository ignore each `<directory>/.claude/settings.json` (the tool refuses a tracked
+  one). The opt-in trigger already hashes every file in that directory; `overlay-doctor` now also
+  requires the trigger for a manifest that declares only `claudeDirSettings`. Note that the root's
+  `.claude/settings.local.json`, from `claudeLocalSettings` or from approvals Claude Code saves,
+  still applies to every session in the repository, subdirectories included.
+
 ### `fleet-slot` goes first come, first served until a director is declared
 
 - The director seat is standard, and `director-canonical` stays the default of `request-any`,

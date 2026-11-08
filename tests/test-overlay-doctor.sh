@@ -90,6 +90,8 @@ mk "$tmp/ov"; echo 'skill_externals: []' > "$tmp/ov/dot_dotlocal/skill-externals
 tcase "T8 a skill-externals list without its trigger is missing" 1 'MISSING .*sync-skill-externals'
 mk "$tmp/ov"; mkdir -p "$tmp/ov/tests"; echo '#!/bin/sh' > "$tmp/ov/tests/run-all.sh"
 tcase "T9 a test suite without a gate is advised, not failed (opt-in: no custom hooks on some machines)" 0 'NOTE .*install-test-gate'
+mk "$tmp/ov"; printf 'projects:\n  x:\n    path: x\n    claudeDirSettings:\n      sub: claude/projects/x-sub.json\n' > "$tmp/ov/Devel/mani.yaml.tmpl"
+tcase "T10 a manifest declaring only directory settings without the project-settings trigger is missing" 1 'MISSING .*apply-project-claude-settings'
 
 # --- Tier P: every overlay file carries a reason to be private, or is reported as a candidate to move
 # to the base. ADVISORY: it never changes the exit code, so an overlay written before the list existed

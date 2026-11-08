@@ -1,11 +1,13 @@
 #!/bin/sh
 # claude-project-settings -- write each fleet project's declared Claude Code settings into that
-# project's .claude/settings.local.json, after checking them against what may be declared at all.
+# project's .claude/settings.local.json, and each declared directory's into that directory's
+# .claude/settings.json, after checking them against what may be declared at all.
 #
-#   claude-project-settings apply [<project>]     validate, then write every declaring project
+#   claude-project-settings apply [<project>]     validate, then write every declaring project and
+#                                                 its declared directories
 #   claude-project-settings check [<project>]     report drift; write nothing
 #   claude-project-settings validate [<file>...]  check files against the rules; with no file,
-#                                                 every declared project's file
+#                                                 every file the record points at
 #
 #   exit 0  done / no drift / valid
 #   exit 1  a project could not be written (an invalid declaration, an unparseable live file), or
@@ -46,9 +48,27 @@
 # A layer's commit gate should run `validate`, so a bad file is refused when it is committed, not
 # when it is applied.
 #
-# WHY settings.local.json AND NOT settings.json. The local file is machine-local and gitignored;
-# settings.json is committed and travels with every clone, the wrong place for a path on one
-# machine.
+# WHY settings.local.json AND NOT settings.json, at the repository root. The local file is
+# machine-local and gitignored; settings.json is committed and travels with every clone, the wrong
+# place for a path on one machine.
+#
+# DIRECTORIES: SESSIONS STARTED INSIDE A REPOSITORY. One repository may host several long-running
+# sessions, each started in its own subdirectory. Claude Code (v2.1.211 and later) reads
+# .claude/settings.local.json at the REPOSITORY ROOT even for a session started in a subdirectory,
+# and .claude/settings.json only from the session's starting directory. So a subdirectory's own
+# settings can only be its .claude/settings.json, and the entry maps each directory, relative to the
+# project's path, to a file of the same shape and rules:
+#
+#     claudeDirSettings:
+#       seats/review: claude/projects/notes-review.json
+#
+# Each file is that directory's complete declaration: nothing is shared between directories or
+# inherited from the root's file by this tool, so a grant every directory needs is written in each.
+# A directory key that is absolute, is the root (`.`, which is claudeLocalSettings), has a `.` or
+# `..` segment or a doubled slash, or resolves through a symlink to outside the repository is
+# refused, as is a .claude that is a symlink. A directory not on this machine is skipped. Because
+# the file is settings.json, a name git commits by default, the hosting repository must ignore it;
+# a settings.json that git TRACKS is refused, never written, so a machine's paths are not committed.
 #
 # THE MERGE RULE, the same as the user-level file's (dot_claude/modify_settings.json): the declared
 # keys win, merged deeply; every other key in the live file is kept, because Claude Code writes
@@ -162,30 +182,41 @@ check_file() {  # $1 file, $2 label; warns for each violation, returns 1 if any
 resolve() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$SROOT" "$1" ;; esac; }
 
 KEY=claudeLocalSettings
+DKEY=claudeDirSettings
 need_record() {
   command -v fleet-decl >/dev/null 2>&1 || die2 "fleet-decl is not installed (it ships with the public dotfiles base)"
   RECORD=${FLEET_RECORD:-$HOME/Devel/mani.yaml}
   ROOT=${FLEET_DEVEL_ROOT:-$(dirname "$RECORD")}
   FLEET_RECORD=$RECORD; FLEET_DEVEL_ROOT=$ROOT; export FLEET_RECORD FLEET_DEVEL_ROOT
 }
-# Sets PROJECTS. Not called in a command substitution: its die2 must end the script, not a subshell.
+unreadable() { die2 "the fleet record $RECORD could not be read (fleet-decl exit $1)"; }
+# Sets PROJECTS: every project declaring either key, each once, in the record's order. Not called in
+# a command substitution: its die2 must end the script, not a subshell.
 load_projects() {
-  PROJECTS=$(fleet-decl --projects-with "$KEY"); _rc=$?
-  case $_rc in
-    0) ;;
-    1) PROJECTS="" ;;
-    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $_rc)" ;;
-  esac
+  _a=$(fleet-decl --projects-with "$KEY"); _rc=$?
+  case $_rc in 0) ;; 1) _a="" ;; *) unreadable "$_rc" ;; esac
+  _b=$(fleet-decl --projects-with "$DKEY"); _rc=$?
+  case $_rc in 0) ;; 1) _b="" ;; *) unreadable "$_rc" ;; esac
+  PROJECTS=$(printf '%s\n%s\n' "$_a" "$_b" | awk 'NF && !seen[$0]++')
 }
-pointer() {  # $1 project -> sets SRC to the resolved file, or empty with a warning. Not in a subshell.
+# Sets SRC to the project's root file, or empty when it declares none. Not in a subshell.
+pointer() {
   SRC=""
   _p=$(fleet-decl --entry "$1" "$KEY"); _rc=$?
-  case $_rc in
-    0) SRC=$(resolve "$_p") ;;
-    1) warn "$1: declares no $KEY" ;;
-    *) die2 "the fleet record $RECORD could not be read (fleet-decl exit $_rc)" ;;
-  esac
+  case $_rc in 0) SRC=$(resolve "$_p") ;; 1) ;; *) unreadable "$_rc" ;; esac
 }
+# Sets DIRS to the project's <directory><TAB><file> lines, or empty when it declares none.
+dir_pointers() {
+  DMALFORMED=""
+  DIRS=$(fleet-decl --entry-map "$1" "$DKEY"); _rc=$?
+  case $_rc in 0) ;; 1) DIRS="" ;; *) unreadable "$_rc" ;; esac
+  # Declared but read as no pairs: anything but an empty map is malformed, and is said, not ignored.
+  if [ -z "$DIRS" ] && _v=$(fleet-decl --entry "$1" "$DKEY") && [ "$_v" != "{}" ]; then
+    warn "$1: $DKEY must be a map of <directory>: <settings file>; nothing written for it"
+    DMALFORMED=1
+  fi
+}
+TAB=$(printf '\t')
 
 if [ "$cmd" = validate ]; then
   if [ $# -gt 0 ]; then
@@ -195,49 +226,101 @@ if [ "$cmd" = validate ]; then
     for p in $PROJECTS; do
       pointer "$p"
       [ -z "$SRC" ] || check_file "$SRC" "$p" || :
+      dir_pointers "$p"
+      [ -n "$DIRS" ] || continue
+      while IFS=$TAB read -r d s; do
+        check_file "$(resolve "$s")" "$p:${d%/}" </dev/null || :
+      done <<EOF
+$DIRS
+EOF
     done
   fi
   [ "$problems" -eq 0 ] && exit 0
   exit 1
 fi
 
+# merge_into <label> <declaration file> <directory> <file name>: merge the validated declaration into
+# <directory>/.claude/<file name> by THE MERGE RULE, or report the drift under `check`.
+merge_into() {
+  _decl=$(cat "$2"); _file=$3/.claude/$4
+  if [ -s "$_file" ]; then
+    jq -e . "$_file" >/dev/null 2>&1 || { warn "$1: $_file is not valid JSON; left alone"; return; }
+    _live=$(cat "$_file")
+  else
+    _live='{}'
+  fi
+  _merged=$(jq -n --argjson live "$_live" --argjson decl "$_decl" '$live * $decl') \
+    || { warn "$1: could not merge into $_file"; return; }
+  if [ "$(printf '%s' "$_live" | jq -S -c .)" = "$(printf '%s' "$_merged" | jq -S -c .)" ]; then
+    say "$1: current"; return
+  fi
+  if [ "$cmd" = check ]; then
+    say "$1: $_file differs from the declaration"; drift=$((drift + 1)); return
+  fi
+  mkdir -p "$3/.claude" || { warn "$1: cannot create $3/.claude"; return; }
+  _tmpf=$(mktemp "$3/.claude/.$4.XXXXXX") || { warn "$1: cannot write in $3/.claude"; return; }
+  if printf '%s\n' "$_merged" | jq . > "$_tmpf" && mv -f "$_tmpf" "$_file"; then
+    say "$1: written"
+  else
+    rm -f "$_tmpf"; warn "$1: could not write $_file"
+  fi
+}
+
+# write_dir <project> <repository directory> <declared directory> <declaration pointer>. The
+# directory must stay inside the repository, textually and once symlinks are resolved, and its
+# settings.json must not be a file git tracks (see DIRECTORIES above).
+write_dir() {
+  _d=$3
+  while :; do case "$_d" in */) _d=${_d%/} ;; *) break ;; esac; done
+  _l="$1:$_d"
+  case "$_d" in
+    ""|.) warn "$_l: the repository root is declared with $KEY, not $DKEY; not written"; return ;;
+  esac
+  case "/$_d/" in
+    //*|*//*|*/./*|*/../*|*"$TAB"*)
+      warn "$_l: a $DKEY key must be a relative path inside the repository, with no . or .. segment or doubled slash; not written"; return ;;
+  esac
+  _src=$(resolve "$4")
+  check_file "$_src" "$_l" || { warn "$_l: not written"; return; }
+  _sd=$2/$_d
+  if [ ! -d "$_sd" ]; then say "$_l: $_sd is not on this machine; skipped"; return; fi
+  _rp=$(cd -P -- "$2" && pwd -P); _sp=$(cd -P -- "$_sd" && pwd -P)
+  case "$_sp" in
+    "$_rp"/*) ;;
+    *) warn "$_l: $_sd resolves outside the repository ($_sp); not written"; return ;;
+  esac
+  if [ -L "$_sd/.claude" ]; then warn "$_l: $_sd/.claude is a symlink; not written"; return; fi
+  if git -C "$_sd" ls-files --error-unmatch -- .claude/settings.json >/dev/null 2>&1; then
+    warn "$_l: $_sd/.claude/settings.json is tracked by git; not written"; return
+  fi
+  merge_into "$_l" "$_src" "$_sd" settings.json
+}
+
 need_record
 if [ -n "${1:-}" ]; then projects=$1; else load_projects; projects=$PROJECTS; fi
 
 for p in $projects; do
   pointer "$p"; src=$SRC
-  [ -n "$src" ] || continue
-  check_file "$src" "$p" || { warn "$p: not written"; continue; }
-  decl=$(cat "$src")
+  dir_pointers "$p"
+  if [ -z "$src" ] && [ -z "$DIRS" ]; then
+    [ -n "$DMALFORMED" ] || warn "$p: declares no $KEY or $DKEY"
+    continue
+  fi
+  rootok=""
+  if [ -n "$src" ]; then
+    if check_file "$src" "$p"; then rootok=1; else warn "$p: not written"; fi
+  fi
   path=$(fleet-decl --entry "$p" path) || { warn "$p: declares no path"; continue; }
   case "$path" in /*) dir=$path ;; *) dir=$ROOT/$path ;; esac
   if [ ! -d "$dir" ]; then say "$p: $dir is not on this machine; skipped"; continue; fi
 
-  file=$dir/.claude/settings.local.json
-  if [ -s "$file" ]; then
-    jq -e . "$file" >/dev/null 2>&1 || { warn "$p: $file is not valid JSON; left alone"; continue; }
-    live=$(cat "$file")
-  else
-    live='{}'
-  fi
-  merged=$(jq -n --argjson live "$live" --argjson decl "$decl" '$live * $decl') \
-    || { warn "$p: could not merge into $file"; continue; }
-  if [ "$(printf '%s' "$live" | jq -S -c .)" = "$(printf '%s' "$merged" | jq -S -c .)" ]; then
-    say "$p: current"
-    continue
-  fi
-  if [ "$cmd" = check ]; then
-    say "$p: $file differs from the declaration"
-    drift=$((drift + 1))
-    continue
-  fi
-  mkdir -p "$dir/.claude" || { warn "$p: cannot create $dir/.claude"; continue; }
-  tmpf=$(mktemp "$dir/.claude/.settings.local.json.XXXXXX") || { warn "$p: cannot write in $dir/.claude"; continue; }
-  if printf '%s\n' "$merged" | jq . > "$tmpf" && mv -f "$tmpf" "$file"; then
-    say "$p: written"
-  else
-    rm -f "$tmpf"; warn "$p: could not write $file"
-  fi
+  [ -z "$rootok" ] || merge_into "$p" "$src" "$dir" settings.local.json
+  [ -n "$DIRS" ] || continue
+  while IFS=$TAB read -r d s; do
+    write_dir "$p" "$dir" "$d" "$s" </dev/null
+  done <<EOF
+$DIRS
+EOF
 done
 
 [ "$problems" -eq 0 ] && [ "$drift" -eq 0 ] && exit 0

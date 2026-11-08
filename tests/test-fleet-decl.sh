@@ -457,6 +457,40 @@ out=$(EL --entry-list alpha worktrees 'name|x' 2>&1); rc=$?
 out=$(EL --entry-list alpha 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "--entry-list: a missing key argument is a usage error, exit 2" || bad "--entry-list usage" "rc=$rc"
 
+# --- --entry-map: the pairs of a map under a project, <key><TAB><value> one per line, for a tool
+# whose declaration is keyed by something other than an identifier (a directory path, which a dotted
+# key path cannot address).
+cat > "$TMP/map.yaml" <<'YAML'
+projects:
+  alpha:
+    scope: internal/alpha
+    leakPolicy: private
+    tags: [work]
+    dirs:
+      seats/one: one.json
+      "seats/two words": two.json
+  beta:
+    scope: internal/beta
+    leakPolicy: private
+    dirs: {}
+YAML
+EM() { FLEET_RECORD="$TMP/map.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" "$@"; }
+out=$(EM --entry-map alpha dirs 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "$(printf 'seats/one\tone.json\nseats/two words\ttwo.json')" ] \
+  && ok "--entry-map: one <key><TAB><value> line per pair, keys that are paths kept whole" || bad "--entry-map pairs" "rc=$rc out=$out"
+out=$(EM --entry-map beta dirs 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-map: an empty map is exit 1, empty stdout" || bad "--entry-map empty" "rc=$rc out=$out"
+out=$(EM --entry-map alpha tags 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-map: a sequence is not a map, exit 1" || bad "--entry-map sequence" "rc=$rc out=$out"
+out=$(EM --entry-map alpha nosuch 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--entry-map: an absent key is exit 1, empty stdout" || bad "--entry-map absent" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-map alpha dirs 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-map: an unreadable record is exit 2" || bad "--entry-map unreadable" "rc=$rc"
+out=$(EM --entry-map 'alpha"x' dirs 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-map: a project name that could escape the query is refused" || bad "--entry-map injection" "rc=$rc"
+out=$(EM --entry-map alpha 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--entry-map: a missing key argument is a usage error, exit 2" || bad "--entry-map usage" "rc=$rc"
+
 # --- --check on the container declaration. `container:` says how a bare container is cloned and
 # kept (fleet-repo reads it), and `containerDefaults:` is the fleet-wide default. A value the cloner
 # does not understand must be refused where every caller passes through, as for worktrunk above, and
@@ -472,7 +506,8 @@ for good in '    container:
       branches: default' '    container:
       branches: [main, develop, release/1.0]
       filter: blob:none' '    container:
-      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true' '    claudeLocalSettings: claude/projects/alpha.json'; do
+      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true' '    claudeLocalSettings: claude/projects/alpha.json' '    claudeDirSettings:
+      seats/one: claude/projects/alpha-one.json'; do
   out=$(cont_check "$good"); rc=$?
   [ "$rc" -eq 0 ] && ok "--check accepts a container block: $(printf '%s' "$good" | tr -s ' \n' ' ')" || bad "--check container valid" "rc=$rc $out :: $good"
 done
@@ -505,6 +540,10 @@ a snake-case claudeTrust|    claude_trust: false|-|[unknown-key] alpha: claude_t
 a capitalized claudeTrust|    ClaudeTrust: false|-|[unknown-key] alpha: ClaudeTrust
 a lower-case claudeLocalSettings|    claudelocalsettings: x.json|-|[unknown-key] alpha: claudelocalsettings
 a near-miss of claudeLocalSettings|    claudeLocalSetting: x.json|-|[unknown-key] alpha: claudeLocalSetting
+a near-miss of claudeDirSettings|    claudeDirSetting:\n      seats/one: x.json|-|[unknown-key] alpha: claudeDirSetting
+claudeDirSettings that is not a map|    claudeDirSettings: x.json|-|[claudeDirSettings-value] alpha: claudeDirSettings must be a map
+a claudeDirSettings value that is not a file name|    claudeDirSettings:\n      seats/one: [x.json]|-|[claudeDirSettings-value] alpha: claudeDirSettings.seats/one
+an empty claudeDirSettings value|    claudeDirSettings:\n      seats/one: ""|-|[claudeDirSettings-value] alpha: claudeDirSettings.seats/one
 a quoted claudeTrust false|    claudeTrust: "false"|-|[claudeTrust-value] alpha: claudeTrust
 claudeTrust: no, a string in YAML 1.2|    claudeTrust: no|-|[claudeTrust-value] alpha: claudeTrust
 CASES
