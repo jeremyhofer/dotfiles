@@ -79,9 +79,9 @@ judgment after measurement, never the audit's, so each one carries its reason:
   why = "..."                   by directory prefix, so dotfiles inside it count
 
 WHAT IT CANNOT SEE.
-  * node_modules and .git are not watched (external dependencies reach the hash through the
-    lockfile, and a tool cache under node_modules is invisible here), nor is anything outside the
-    workspace: $TMPDIR, the home directory, a sibling checkout.
+  * node_modules, .git and .worktrees (nested checkouts) are not watched (external dependencies
+    reach the hash through the lockfile, and a tool cache under node_modules is invisible here), nor
+    is anything outside the workspace: $TMPDIR, the home directory, a sibling checkout.
   * A file that does not exist yet but would be read if it did (a new spec a glob would pick up):
     only reads of files present during the run are seen. Directory listings are not judged.
   * A read through a path only some configurations take is seen only for the configuration run.
@@ -178,6 +178,17 @@ class Graph:
     noop: str | None  # a project:target whose executor is nx:noop, the control
 
 
+def task_graph(tg, projects, noop):
+    """A Graph from the `tasks` object of `nx run-many --graph=<file>`. Each dependency edge is an
+    object in Nx 24 (`{"id": ..., "waitFor"?: ..., "inputs"?: ...}`) and an id string in Nx 23; both
+    are read as the id."""
+    tasks = {tid: Task(id=tid, project=t["target"]["project"], target=t["target"]["target"],
+                       outputs=list(t.get("outputs") or []), cache=bool(t.get("cache")))
+             for tid, t in tg["tasks"].items()}
+    deps = {k: [d if isinstance(d, str) else d["id"] for d in v] for k, v in tg["dependencies"].items()}
+    return Graph(projects, tasks, deps, noop)
+
+
 @dataclass
 class Inputs:
     files: set
@@ -255,11 +266,7 @@ class Nx:
         tfile = self.scratch / "taskgraph.json"
         self._to_file(self.scratch / "taskgraph.log", "run-many", "-t", ",".join(sorted(cached_names)),
                       f"--graph={tfile}")
-        tg = self._json(tfile, "the task graph")["tasks"]
-        tasks = {tid: Task(id=tid, project=t["target"]["project"], target=t["target"]["target"],
-                           outputs=list(t.get("outputs") or []), cache=bool(t.get("cache")))
-                 for tid, t in tg["tasks"].items()}
-        return Graph(projects, tasks, {k: list(v) for k, v in tg["dependencies"].items()}, noop)
+        return task_graph(self._json(tfile, "the task graph")["tasks"], projects, noop)
 
     def inputs(self, key: str) -> Inputs:
         if key not in self._inputs:
@@ -408,10 +415,11 @@ def load_register(root: Path) -> Register:
 # ---- the trace -----------------------------------------------------------------------------------
 
 WATCH_ARGS = ["-m", "-r", "-e", "close_nowrite,close_write,create,moved_to,moved_from,delete",
-              "--exclude", r"(^|/)(node_modules|\.git)(/|$)", "--format", "%e\t%w%f"]
-# inotifywait's --exclude stops it descending into node_modules and .git but still reports their
-# direct entries; .nx is Nx's own state. All three are dropped from what is judged.
-UNJUDGED = re.compile(r"^(\.nx|node_modules|\.git)(/|$)")
+              "--exclude", r"(^|/)(node_modules|\.git|\.worktrees)(/|$)", "--format", "%e\t%w%f"]
+# inotifywait's --exclude stops it descending into node_modules, .git and .worktrees (other
+# checkouts, whose sessions may be working during a run) but still reports their direct entries;
+# .nx is Nx's own state. All four are dropped from what is judged.
+UNJUDGED = re.compile(r"^(\.nx|node_modules|\.git|\.worktrees)(/|$)")
 WRITE_KINDS = {"CLOSE_WRITE", "CREATE", "MOVED_TO", "MOVED_FROM", "DELETE"}
 
 # Files Nx itself opens while it walks the workspace, which it does again before a run whenever
@@ -481,7 +489,7 @@ def traced(root: Path, scratch: Path, name: str, run, drain: float) -> Trace:
 def count_dirs(root: Path) -> int:
     n = 0
     for _, dirs, _ in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".worktrees")]
         n += 1
     return n
 
@@ -526,7 +534,7 @@ def output_paths(root: Path, output: str) -> list[str]:
     base = root.joinpath(*lit) if lit else root
     found = []
     for dirpath, dirs, files in os.walk(base):
-        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".worktrees")]
         rel = Path(dirpath).relative_to(root).as_posix()
         prefix = "" if rel == "." else f"{rel}/"
         found += [f"{prefix}{n}" for n in [*dirs, *files] if glob_match(f"{prefix}{n}", output)]
@@ -833,7 +841,8 @@ def _audit(root, nx, scratch, requested, static_only, drain, out):
             s = summary.get(t.id, {})
             gaps = len(findings.get(t.id, []))
             partial = f" (exited {s['status']}: a partial trace)" if s and s["status"] != 0 else ""
-            print(f"{'GAP ' if gaps else 'ok  '} {t.id}{partial} "
+            label = "FAILED" if partial else ("GAP " if gaps else "ok  ")
+            print(f"{label} {t.id}{partial} "
                   + " ".join(f"{k}={v}" for k, v in s.get("counts", {}).items()), file=out)
 
     report = scratch / "report"
@@ -858,6 +867,12 @@ def _audit(root, nx, scratch, requested, static_only, drain, out):
             print(f"  {key}\n      " + "\n      ".join(paths[:4]) + more, file=out)
     print(f"\nverify-task-io: {total} gap(s) across {len(findings)} of {len(selected)} target(s). "
           f"Traces and per-target Nx logs: {scratch} (delete it when read).", file=out)
+    # A target that failed left a partial trace: the run is untrustworthy, whatever else it found.
+    failed = [tid for tid, x in summary.items() if x and x.get("status")]
+    if failed:
+        print(f"\nverify-task-io: {len(failed)} target(s) failed, so their traces are partial and this "
+              "run proves nothing about them: " + " ".join(failed), file=out)
+        return Result(EXIT_UNTRUSTED, dict(findings), summary)
     return Result(EXIT_GAPS if total else 0, dict(findings), summary)
 
 
@@ -905,7 +920,11 @@ def main(argv=None):
         return EXIT_PLATFORM
     scratch = Path(tempfile.mkdtemp(prefix="verify-task-io-",
                                     dir=os.environ.get("TMPDIR") or tempfile.gettempdir()))
-    return audit(root, Nx(root, scratch), scratch, args.targets, args.static).code
+    try:
+        return audit(root, Nx(root, scratch), scratch, args.targets, args.static).code
+    finally:
+        # The private Nx cache is every target's outputs again; the logs beside it stay for diagnosis.
+        shutil.rmtree(scratch / "nx-cache", ignore_errors=True)
 
 
 if __name__ == "__main__":

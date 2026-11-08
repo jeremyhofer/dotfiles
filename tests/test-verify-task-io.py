@@ -215,6 +215,38 @@ def test_clean_target_exits_zero(tmp_path):
 
 
 @needs_inotify
+def test_a_failed_target_makes_the_run_untrustworthy_not_ok(tmp_path):
+    # A target that exits non-zero leaves a partial trace (its dependencies unbuilt, say): reading its
+    # line as "ok" would bless a measurement that never finished (keystone, 2026-11-08).
+    root = tmp_path / "ws"
+    root.mkdir()
+    make_workspace(root)
+    import io
+    out = io.StringIO()
+    r = vti.audit(root, single_nx(root, "cat libs/a/src/main.txt > /dev/null; exit 1"),
+                  tmp_path / "s", requested=[], static_only=False, drain=DRAIN, out=out, err=out)
+    text = out.getvalue()
+    assert r.code == vti.EXIT_UNTRUSTED, text
+    assert "FAILED a:build" in text and "ok   a:build" not in text, text
+
+
+@needs_inotify
+def test_nested_worktrees_are_not_watched(tmp_path):
+    # A checkout holding other sessions' worktrees under .worktrees/: their activity during a run
+    # must not read as this target's writes.
+    root = tmp_path / "ws"
+    root.mkdir()
+    make_workspace(root)
+    import io
+    out = io.StringIO()
+    r = vti.audit(root, single_nx(root, "cat libs/a/src/main.txt > /dev/null; mkdir -p dist/a; "
+                                        "echo a > dist/a/o; mkdir -p .worktrees/other; "
+                                        "echo x > .worktrees/other/f"),
+                  tmp_path / "s", requested=[], static_only=False, drain=DRAIN, out=out, err=out)
+    assert r.code == 0 and not r.findings, out.getvalue()
+
+
+@needs_inotify
 def test_register_accepts_a_read_and_reports_a_stale_entry(tmp_path):
     root = tmp_path / "ws"
     root.mkdir()
@@ -250,6 +282,20 @@ def test_static_reports_an_eagerly_hashed_dependency_output(tmp_path):
     assert paths(r, "d:test", "EAGER-HASHED-DEPENDENCY-OUTPUT") == {"dist/b/out.txt"}, out.getvalue()
     assert nx.ran == []  # static mode executes nothing
     assert r.code == 1
+
+
+def test_task_graph_dependencies_accept_nx24_edge_objects_and_nx23_ids():
+    # Nx 24 writes each task-graph edge as an object ({"id": ..., "waitFor"?, "inputs"?}); Nx 23 wrote
+    # the id string. Read either; an object read as an id crashed the first live run (2026-11-08), and
+    # the TypeScript original silently found no dependencies at all.
+    tg = {"tasks": {"a:t": {"target": {"project": "a", "target": "t"}, "outputs": [], "cache": True},
+                    "b:t": {"target": {"project": "b", "target": "t"}, "outputs": ["dist/b"], "cache": True},
+                    "c:t": {"target": {"project": "c", "target": "t"}, "outputs": [], "cache": True}},
+          "dependencies": {"a:t": [{"id": "b:t"}, {"id": "c:t", "waitFor": "ready"}],
+                           "b:t": ["c:t"], "c:t": []}}
+    g = vti.task_graph(tg, projects=[], noop=None)
+    assert g.dependencies == {"a:t": ["b:t", "c:t"], "b:t": ["c:t"], "c:t": []}
+    assert set(g.tasks) == {"a:t", "b:t", "c:t"} and g.tasks["b:t"].outputs == ["dist/b"]
 
 
 def test_unknown_target_is_a_usage_error(tmp_path):
