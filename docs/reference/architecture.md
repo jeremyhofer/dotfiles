@@ -85,8 +85,10 @@ means picking one of these four, so a domain's layer always knows where to look.
    worktrunk's configuration when its inputs change; verify the pinned skill.
 
 `run_onchange_install-git-hooks.sh.tmpl` also writes this source repository's own `.git/hooks`.
-The pre-commit hook runs the test suites, and the pre-push hook is a floor against pushing a private
-key or the private layer's address.
+The pre-commit hook runs the suites that read a staged path (`tests/select-suites.sh`, from the map
+in `tests/coverage.map`), and the pre-push hook is a floor against pushing a private key or the
+private layer's address. Every suite runs before an apply: the generated chezmoi config carries a
+`hooks.apply.pre` that runs `tests/pre-apply.sh`, and a failing suite aborts the apply.
 
 The private layer is applied separately, with `chezmoi-overlay apply`. When a change moves a file
 from one layer to the other, the `CHANGELOG.md` entry says which to apply first.
@@ -173,7 +175,8 @@ stays on `PATH`.
 
 | Check | When | Covers |
 | --- | --- | --- |
-| `tests/run-all.sh` | every commit here, unless only documentation changed | each tool, script and generated file |
+| `tests/select-suites.sh --run` | every commit here, unless only documentation changed | the suites that read a staged path (`tests/coverage.map`); every suite when a staged path is in the shared core or claimed by none |
+| `tests/pre-apply.sh` | every `chezmoi apply` of the base, before anything is written | every suite (`tests/run-all.sh`); a failure aborts the apply; skipped, saying so, while the suites' tools are missing |
 | `secret-scan`, `leak-guard` | every commit and push, in every repository | plaintext secrets; a domain's private terms |
 | `setup/overlay-doctor` | after pulling or changing either layer | the private layer's required pieces, its reasons to be private, both layers owning one file, the manifest's schema; `--machine` assesses git, tools and Claude Code |
 | `hook-doctor` | on entering a worktree, once a day | whether each configured hook is live there |
@@ -183,13 +186,13 @@ stays on `PATH`.
 
 ```mermaid
 flowchart LR
-  edit["Edit the source"] --> commit["Commit<br/>tests, secret scan,<br/>leak guard"]
+  edit["Edit the source"] --> commit["Commit<br/>selected suites, secret scan,<br/>leak guard"]
   commit --> log{"Must an adopted<br/>machine act?"}
   log -- yes --> entry["CHANGELOG entry,<br/>ACTION if a private<br/>layer must change"]
   log -- no --> push
   entry --> push["Push"]
   push --> pull["Each machine pulls,<br/>reads the changelog"]
-  pull --> apply["chezmoi-overlay apply<br/>chezmoi apply"]
+  pull --> apply["chezmoi-overlay apply<br/>chezmoi apply<br/>(every suite first)"]
   apply --> doctor["overlay-doctor<br/>hook-doctor"]
 ```
 

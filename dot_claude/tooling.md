@@ -58,7 +58,7 @@ typed edges) · `nvim-healthdump` · `portability-lint` (fails GNU-only shell sp
 `claude-dispatch-hook` (Claude Code hook: refuses a subagent dispatch that names no model, giving the tiers to choose from; forks and `--exempt` types pass; wired by a private layer) ·
 `claude-worklog-hook` (Claude Code hook: appends to a local worklog every subagent dispatch, a work note each subagent writes at hand-back (a report without one is refused, twice at most), and what started each turn of a session, never prompt or report text beyond the note; wired by a private layer) ·
 `claude-worktree-hook` (Claude Code hooks: refuses a session's raw `git worktree add`/`move` with the `wt` command to use and warns on a raw `remove`, refuses EnterWorktree where sessions work in place (`worktree.bgIsolation` none), warns at dispatch about commits on no remote) ·
-`install-claude-plugins` (installs the Claude Code plugins a private layer's settings fragment declares; opt-in, run from that layer's trigger) · `install-test-gate` (installs a test-suite commit gate into a chezmoi source repo, refusing a pre-commit it did not write; opt-in) ·
+`install-claude-plugins` (installs the Claude Code plugins a private layer's settings fragment declares; opt-in, run from that layer's trigger) · `install-test-gate` (installs a test-suite commit gate into a chezmoi source repo, refusing a pre-commit it did not write; a repo that ships `tests/select-suites.sh` gets only the suites its staged paths select; opt-in) ·
 `wt-config-gen` (generates worktrunk's user config from `base.toml`, an optional private fragment, and each repo's `worktrunk:` block in the manifest).
 
 **Assumed third-party:** `chezmoi` (two instances) · `wt` (worktree lifecycle; `wt switch --create`

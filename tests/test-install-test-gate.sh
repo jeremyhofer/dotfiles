@@ -95,5 +95,30 @@ echo x >> "$tmp/s/bin/other"; git -C "$tmp/s" add bin/other
 PATH="/usr/bin:/bin" git -C "$tmp/s" commit -qm nohelper > "$tmp/out" 2>&1; rc=$?
 check "no git-staged-run on PATH: refused, never run on the working tree" '[ "$rc" != 0 ] && grep -q "git-staged-run is not installed" "$tmp/out"'
 
+# A repository that ships tests/select-suites.sh: the hook hands it the staged paths (deletions too)
+# and runs nothing else; run-all.sh here always fails, so calling it directly would refuse.
+mkrepo "$tmp/sel" 1
+cat > "$tmp/sel/tests/select-suites.sh" <<'EOF'
+#!/bin/sh
+[ "$1" = --run ] || exit 97
+cat > "$SEL_LOG"
+echo "select-suites: stand-in selector"
+exit "$(cat "$SEL_RC" 2>/dev/null || echo 0)"
+EOF
+echo gone > "$tmp/sel/bin/old"; echo keep > "$tmp/sel/bin/tool"; git -C "$tmp/sel" add -A; git -C "$tmp/sel" commit -qm sel --no-verify
+sh "$tool" "$tmp/sel" --label sel --skip-var SKIP_SEL > /dev/null 2>&1
+export SEL_LOG="$tmp/sel.log" SEL_RC="$tmp/sel.rc"; echo 0 > "$SEL_RC"
+git -C "$tmp/sel" rm -q bin/old
+commit_one "$tmp/sel" bin/tool; rc=$?
+check "with a selector: its pass lets the commit through, run-all.sh is not run directly" '[ "$rc" = 0 ] && ! grep -q suite-ran "$tmp/out"'
+check "with a selector: it gets the staged paths, a deleted one included" 'grep -qx bin/tool "$SEL_LOG" && grep -qx bin/old "$SEL_LOG"'
+check "with a selector: its one-line summary is shown" 'grep -q "select-suites: stand-in selector" "$tmp/out"'
+echo 1 > "$SEL_RC"
+commit_one "$tmp/sel" bin/tool; rc=$?
+check "with a selector: its failure refuses the commit and names how to re-run" '[ "$rc" != 0 ] && grep -q "a selected suite failed" "$tmp/out" && grep -q "select-suites.sh --run" "$tmp/out"'
+git -C "$tmp/sel" reset -q; : > "$SEL_LOG"
+commit_one "$tmp/sel" docs/page.md; rc=$?
+check "with a selector: a documentation-only commit still skips everything" '[ "$rc" = 0 ] && [ ! -s "$SEL_LOG" ]'
+
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]
