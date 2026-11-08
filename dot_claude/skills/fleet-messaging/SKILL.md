@@ -9,6 +9,7 @@ Terms used below:
 - **Canonical:** a long-lived named session that owns one project (or one asset) and its queue. Whoever holds the name holds the role.
 - **Peer:** another canonical.
 - **Hub:** the one canonical that coordinates across projects. It may be absent; some setups have none.
+- **Tier-0 writer:** the one session allowed to edit the always-on knowledge base. Often the hub, but a domain may give it to another seat; the domain half names it.
 - **The human:** the person who decides. Only they can approve.
 
 ## 0. Which mode are you in?
@@ -45,7 +46,7 @@ Decide this first. The usual answer is no.
 | Question, action or result for the human about **your own project only** | Nobody. Ask the human in your own session |
 | Question for the human with **cross-project implications**, or a solution spanning several repositories | The hub, which consolidates and asks once |
 | A finding affecting **more than one project**: a shared tool, the machine, a fleet-wide trap | The hub |
-| A proposed always-on knowledge-base change | The hub, as the envelope in skill `kb-tier0-writes` |
+| A proposed always-on knowledge-base change | The Tier-0 writer (the hub, unless the domain names another seat), as the envelope in skill `kb-tier0-writes` |
 | Something you need from **one other project**, where its canonical can act without the human | That canonical directly. The hub adds nothing to a two-party exchange |
 | A handoff to place, or a successor to brief | The park/handoff and takeover procedures your setup provides |
 
@@ -64,7 +65,7 @@ Decide this first. The usual answer is no.
 ### Passing files between sessions
 
 A session's temp directory goes away when that session ends, so a `$TMPDIR` path handed to a peer can vanish before it is read. By file kind:
-- **A reusable tool:** propose it to the hub as a shared tool; one passed around through scratch is a standard nobody owns.
+- **A reusable tool:** propose it as a shared tool to whoever owns the shared tooling (the hub, unless the domain half names another seat); one passed around through scratch is a standard nobody owns.
 - **Small text** (a brief, a list, a short log excerpt): inline in the message.
 - **A larger one-off artifact:** a directory outside session scratch that persists long enough, per the domain half if one exists. Treat it as a hand-off, never a home; delete it once the receiver confirms and let the owner commit anything still needed.
 
@@ -85,4 +86,4 @@ When the hub relays a cross-project question it asks the human once, carries at 
 
 ---
 
-If `~/.dotlocal/skills/fleet-messaging.md` exists, read it: it is this domain's half (the hub's name and the roster, where cross-project items go in practice, the handoff directory and its aging, and the dated incidents behind the rules). If it does not, the generic content above is the whole picture.
+If `~/.dotlocal/skills/fleet-messaging.md` exists, read it: it is this domain's half (the hub's name, any seat it splits off, and the roster, where cross-project items go in practice, the handoff directory and its aging, and the dated incidents behind the rules). If it does not, the generic content above is the whole picture.

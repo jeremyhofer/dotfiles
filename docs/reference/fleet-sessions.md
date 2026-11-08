@@ -15,9 +15,11 @@ without cross-session messaging).
 - **Fleet record:** the repository manifest (`~/Devel/mani.yaml`, read through `fleet-decl`) whose
   `canonical*` keys declare each canonical ([`fleet-manifest.md`](fleet-manifest.md)). A canonical
   exists because the record declares it, and runs on a machine because the record names that machine.
-- **Hub:** the one canonical that can write the handoffs repository and runs `place` (below). A setup
-  with a single canonical can make it its own hub; a setup can also have none, and then the human
-  places.
+- **Hub:** on this page, the one canonical that can write the handoffs repository and runs `place`
+  (below), named by the `hub` config key. A setup with a single canonical can make it its own hub; a
+  setup can also have none, and then the human places. In most setups it is also the canonical that
+  coordinates across projects (skill `fleet-messaging`'s hub); a domain may give the two to
+  different seats, and then this page's hub is the placing one.
 - **The human:** the person who decides, approves, and runs the verbs that start and stop sessions.
 - **Handoff:** a dated markdown file that tells a cold successor session what it needs to continue.
   Each handoff names the one it replaces on a `Supersedes` line, so the handoffs form a chain.

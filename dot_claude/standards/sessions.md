@@ -44,7 +44,10 @@ Where a domain runs long-lived named sessions ("canonicals"), they are declared 
 (the repository manifest), which is what the tools read. Hold no copy of the list in always-on
 context or memory: resolve it when you need it. `fleet-canonicals list` prints every canonical,
 what it owns and where it runs; `fleet-canonicals status` shows which of this machine's are live. The
-domain's own fragment names its hub, the canonical that coordinates across projects.
+domain's own fragment names its hub, the canonical that coordinates across projects. **A domain
+may split what the hub does:** coordination and the one consolidated ask to the user are the hub's
+by definition, while the Tier-0 writes (below) and placing handoffs can sit with another seat. Where
+they are split, the domain's fragment names each seat, and "the hub" means the coordinating one.
 
 **Only cross-project items go through the hub.** A question or report for the user that has
 implications beyond one project, or needs a solution coordinated across projects, goes to the hub,
@@ -63,7 +66,7 @@ a superseded session: **invoke skill `canonical-takeover`.** Model tier policy i
 
 Where a domain keeps its always-on ("Tier-0") rules in a knowledge base:
 
-**Tier-0 is single-writer: only the session the domain names (usually its hub) writes it.** Reads
+**Tier-0 is single-writer: only the session the domain names (often its hub) writes it.** Reads
 are safe from anywhere. Every other session, canonical or delegate, **proposes** a change and never
 edits a Tier-0 file itself.
 

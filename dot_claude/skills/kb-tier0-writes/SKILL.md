@@ -5,7 +5,7 @@ description: Use when proposing, authoring or adjudicating a change to an always
 
 # Tier-0 knowledge-base writes
 
-**Tier-0** is the small set of rules every session loads at startup. It is a knowledge base of topic files plus generated outputs. The **writer** is the one session (usually a coordinating hub) allowed to edit it. This skill is the procedure; where a domain half exists (last section) it names the writer and the repository.
+**Tier-0** is the small set of rules every session loads at startup. It is a knowledge base of topic files plus generated outputs. The **writer** is the one session allowed to edit it: often the coordinating hub, though a domain may give the writes to another seat. This skill is the procedure; where a domain half exists (last section) it names the writer and the repository.
 
 ### Rule
 

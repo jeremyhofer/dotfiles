@@ -11,8 +11,10 @@ Terms used below:
   is the role: whoever holds it inherits the project and anything queued to it. Canonicals are
   declared in the fleet record (a `mani.yaml` read by `fleet-decl`) and launched by
   `fleet-canonicals`; skill `canonical-takeover` covers the launch side.
-- **Hub:** a canonical that coordinates across projects and, in most setups, owns the repository
-  handoffs are committed to. A setup may have none.
+- **Hub:** in this skill, the canonical that places handoffs: it can write the repository handoffs
+  are committed to, and the `hub` key of `fleet-canonicals`' config names it. In most setups it is
+  also the canonical that coordinates across projects (skill `fleet-messaging`'s hub); a domain that
+  gives the two to different seats names the placing one in its half. A setup may have none.
 - **Handoff:** a dated markdown file that tells a cold successor session what it needs to continue.
 - **Pointer:** the per-canonical record of which handoff the next launch reads.
   `fleet-canonicals handoff <name>` prints it; `--set <path>` records it.
