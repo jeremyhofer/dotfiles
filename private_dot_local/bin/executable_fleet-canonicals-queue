@@ -97,6 +97,8 @@ AUDIT = STATE / "requests-audit.jsonl"
 CONFIG = Path(os.environ.get("FLEET_CANONICALS_CONFIG") or
               Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fleet-canonicals" / "config")
 TRANSCRIPTS = Path(os.environ.get("FLEET_TRANSCRIPT_DIR") or HOME / ".claude" / "projects")
+PID_RECORDS = Path(os.environ.get("FLEET_PID_RECORD_DIR") or HOME / ".claude" / "sessions")
+PROC = Path(os.environ.get("FLEET_PROC_ROOT") or "/proc")
 USAGE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "claude-usage"
 HERE = Path(__file__).resolve().parent
 
@@ -598,6 +600,67 @@ def transcript_turn_ended(session_id: str) -> bool | None:
     return None
 
 
+def pid_alive(pid: int, proc_start: str) -> bool:
+    """Is this pid a running process, and the same one the record was written for? On Linux the
+    record's procStart is compared with field 22 of /proc/<pid>/stat (the start time in clock
+    ticks since boot), so a reused pid or a record left from an earlier boot reads as dead. Where
+    /proc is absent (macOS) only existence is checked, so a reused pid reads as alive: a false
+    refusal, the safe direction."""
+    stat = PROC / str(pid) / "stat"
+    if PROC.is_dir():
+        try:
+            fields = stat.read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            return False
+        # fields[0] is field 3 (state); field 22 is therefore fields[19].
+        return not proc_start or (len(fields) > 19 and fields[19] == str(proc_start))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def live_pid_records(name: str) -> list[str]:
+    """The pid records under ~/.claude/sessions that name this canonical and whose process is
+    alive. These are Claude Code's own per-process files (undocumented, read as the transcripts
+    are: a field missing or renamed finds nothing, which is today's behavior without this check)."""
+    found = []
+    try:
+        files = sorted(PID_RECORDS.glob("*.json"))
+    except OSError:
+        return found
+    for f in files:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or d.get("name") != name or not isinstance(d.get("pid"), int):
+            continue
+        if pid_alive(d["pid"], str(d.get("procStart") or "")):
+            found.append(f"pid {d['pid']} ({f})")
+    return found
+
+
+def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
+    # Measured 2026-11-08: a canonical resumed after the supervisor's idle stop ran, idle, while
+    # the sessions list had its job as `done` and left it out of the live listing. Every verb
+    # here trusts that listing -- `up` would start a second session under the name, `resume`
+    # would respawn a running one, and the working check below passes a session it cannot see --
+    # so when the listing has no live row but a live process holds the name, refuse.
+    live = ctx.live()
+    if live is None or newest_row(live, req["name"]) is not None:
+        return None
+    holders = live_pid_records(req["name"])
+    if not holders:
+        return None
+    return (f"'{req['name']}' has no live row in the sessions list, but a live process holds the "
+            f"name: {holders[0]}. The list cannot be trusted for it, so nothing is done; its "
+            "operator decides, from a terminal")
+
+
 def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
     if req["verb"] not in STOPPING + ("resume",):
         return None
@@ -635,6 +698,7 @@ CHECKS = [
     ("usage", check_usage),
     ("trust", check_trust),
     ("keep-alive", check_keepalive),
+    ("live-process", check_live_process),
     ("working", check_working),
 ]
 

@@ -72,7 +72,9 @@ export FLEET_RECORD="$T/rec.yaml" FLEET_DEVEL_ROOT="$T" FLEET_ROOT="$T"
 export FLEET_STATE="$T/state" FLEET_TMPROOT_PREFIX="$T/tmproots" FLEET_HANDOFFS_SEARCH="$T"
 export FLEET_TRANSCRIPT_DIR="$T/transcripts" XDG_RUNTIME_DIR="$T/run"
 export FLEET_CANONICALS_CONFIG="$T/config" FLEET_RESPAWN_WAIT=4
-mkdir -p "$T/state" "$T/tmproots" "$T/transcripts/p" "$T/run/claude-usage"
+# Claude Code's per-process records and /proc are fixtures too, so the real ones are never read.
+export FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc"
+mkdir -p "$T/state" "$T/tmproots" "$T/transcripts/p" "$T/run/claude-usage" "$T/pids" "$T/proc"
 Q="$T/state/requests"
 # The suite itself may run inside a session; its id must not make the fixtures' requester.
 unset CLAUDE_CODE_SESSION_ID
@@ -117,6 +119,17 @@ reset() {
   rm -rf "$Q" "$T/state/requests-audit.jsonl"; : > "$CLAUDE_LOG"; : > "$T/config"
   print '[]' > "$T/agents.json"; rm -f "$T/run/claude-usage/"*(N)
   print 0 > "$T/trust.rc"; : > "$T/trust.names"
+  rm -rf "$T/pids" "$T/proc"; mkdir -p "$T/pids" "$T/proc"
+}
+# pid_record PID NAME PROCSTART -- a Claude Code per-process record naming a canonical
+pid_record() {
+  jq -n --argjson p "$1" --arg n "$2" --arg s "$3" '{pid:$p, sessionId:"s", kind:"bg", name:$n, procStart:$s, status:"idle"}' \
+    > "$T/pids/$1.json"
+}
+# proc_alive PID STARTTIME -- a /proc/<pid>/stat whose field 22 is STARTTIME
+proc_alive() {
+  mkdir -p "$T/proc/$1"
+  print "$1 (claude) S 1 1 1 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 $2 1000 100" > "$T/proc/$1/stat"
 }
 # plant ID VERB NAME REQUESTER [AGE] -- write a request file directly, as a sandboxed writer could,
 # bypassing every check `request` makes, so only the runner stands between it and the verb.
@@ -405,6 +418,31 @@ reset; export FLEET_AGENTS_JSON_CMD=false
 plant r-w5 down alpha-canonical alpha-canonical
 serve >/dev/null; expect r-w5 refused working "an unreadable sessions list refuses a stop (fail closed)"
 export FLEET_AGENTS_JSON_CMD="jq -c map(select(.live)) $T/agents.json"
+
+# live-process: a live process holds the name while the sessions list has no live row for it
+reset
+pid_record 4242 alpha-canonical 777; proc_alive 4242 777
+plant r-lp1 up alpha-canonical alpha-canonical
+serve >/dev/null; expect r-lp1 refused live-process "up is refused while a live process holds the name the list omits"
+[[ "$(result r-lp1 detail)" == *"pid 4242"* && ! -s "$CLAUDE_LOG" ]] && ok "the refusal names the pid and nothing was launched" \
+  || bad "detail '$(result r-lp1 detail)', claude: $(cat "$CLAUDE_LOG")"
+reset; stopped_row eeee5555 alpha-canonical
+pid_record 4242 alpha-canonical 777; proc_alive 4242 777
+plant r-lp2 resume alpha-canonical alpha-canonical
+serve >/dev/null; expect r-lp2 refused live-process "resume is refused while a live process holds the name"
+reset; pid_record 4242 alpha-canonical 777; proc_alive 4242 999
+plant r-lp3 up alpha-canonical alpha-canonical
+serve >/dev/null; expect r-lp3 done "" "a reused pid (start time differs) does not refuse up"
+reset; pid_record 4242 alpha-canonical 777
+plant r-lp4 up alpha-canonical alpha-canonical
+serve >/dev/null; expect r-lp4 done "" "a record whose pid is gone does not refuse up"
+reset; pid_record 4242 beta-canonical 777; proc_alive 4242 777
+plant r-lp5 up alpha-canonical alpha-canonical
+serve >/dev/null; expect r-lp5 done "" "a live process under another name does not refuse up"
+reset; live_row cccc3333 alpha-canonical idle s-alpha; transcript s-alpha ended
+pid_record 4242 alpha-canonical 777; proc_alive 4242 777
+plant r-lp6 down alpha-canonical alpha-canonical
+serve >/dev/null; expect r-lp6 done "" "a live process the list does show is left to the working check"
 
 # resume: claude respawn on the newest stopped session; never on a live one
 reset

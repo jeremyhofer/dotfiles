@@ -159,16 +159,19 @@ and runs the plain verb, so the pre-flight and the handoff gate still apply. The
   read, such as a terminal, and cannot contradict it.
 - **Some names are never touched.** A canonical on `never-touch` (by default the director seat) is
   refused at `request` for every verb: its lifecycle is the human's.
-- **It will not stop work in flight.** `down` and `refresh` are refused while the target's listed
-  state is working or its last transcript turn has not ended, so a park's own request waits for its
-  turn to end; resubmit if it went stale (ten minutes).
+- **It will not stop work in flight.** A `down` or `refresh` of a session whose listed state is
+  working, or whose last transcript turn has not ended, stays queued (its result file says
+  `waiting`) and is served once the turn ends, so a park's own request waits for it; after ten
+  minutes it is refused as stale, and you resubmit.
 - **No escape hatches.** `--force` and `--stub` are refused; a handoff the gate refuses is fixed by
   parking properly, or by the human from a terminal.
 - **`resume`** runs `claude respawn` on the canonical's last session, for a session that stopped
   without parking; `up` starts a fresh one from its handoff.
 - Also refused: a second request for a canonical already queued, more than three actions per
   canonical (ten for the fleet) an hour, a starting verb at 85% of the 7-day window unless exempt,
-  `up` or `resume` in an untrusted workspace, and anything while `requests/PAUSED` exists.
+  `up` or `resume` in an untrusted workspace, any verb for a name a live process holds while the
+  sessions list shows no live row for it (check `live-process`: the list cannot be trusted for that
+  canonical, so the human acts), and anything while `requests/PAUSED` exists.
 
 **Never open a stale row to find out whether it is live.** Opening a listed row resumes that session,
 which re-registers it under the canonical name with a rewritten start time: it then looks like a

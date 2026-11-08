@@ -241,13 +241,15 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     The requester is the calling session's name when it can be read, else --as.
   serve-requests    serve the queue once, outside every sandbox (a systemd user timer or a
                     LaunchAgent runs it every minute). Refuses a request that is stale (10 min),
-                    for a canonical with another request queued or running, for a session that
-                    is working, from a canonical acting on another (unless the requester is on
-                    request-any), a self-refresh (unless allow-self-refresh), over the rate limits
-                    (3 per canonical, 10 for the fleet, per hour), while requests/PAUSED exists,
-                    up/refresh/resume at 85% of the 7-day window (unless exempt), and up/resume
-                    in an untrusted workspace; otherwise runs the verb above (resume: `claude
-                    respawn` on its last session). A result file per request and a line in
+                    for a canonical with another request queued or running, from a canonical
+                    acting on another (unless the requester is on request-any), a self-refresh
+                    (unless allow-self-refresh), over the rate limits (3 per canonical, 10 for
+                    the fleet, per hour), while requests/PAUSED exists, up/refresh/resume at 85%
+                    of the 7-day window (unless exempt), up/resume in an untrusted workspace,
+                    and any verb for a name a live process holds that the sessions list omits.
+                    A stop of a session that is working waits, queued, until it is idle or
+                    stale. Otherwise runs the verb above (resume: `claude respawn` on its last
+                    session). A result file per request and a line in
                     $FLEET_STATE/requests-audit.jsonl; no notification.
 
   The usage cache is ${XDG_RUNTIME_DIR:-/tmp}/claude-usage/<session>.json, one per session, with

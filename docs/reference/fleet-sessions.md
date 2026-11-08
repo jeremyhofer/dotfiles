@@ -51,7 +51,7 @@ live pointer. `place` refuses a handoff whose predecessor cannot be found.
 | `$FLEET_STATE/stub-handoffs/YYYY-MM-DD-HHMMSS-<name>-stub.md` | `down`/`refresh --stub` | a generated "nothing to inherit" handoff; never placed | no |
 | `$FLEET_STATE/requests/<id>.request.json` | `request` (written to a temp file, then renamed) | a queued lifecycle request: `id`, `time` (epoch seconds), `verb`, `name`, `reason`, `requester` | no |
 | `$FLEET_STATE/requests/<id>.running.json`, `<id>.served.json` | `serve-requests` | the same request, while its verb runs and once it is done with; removed after seven days | no |
-| `$FLEET_STATE/requests/<id>.result.json` | `serve-requests` | the outcome (`done`, `failed` or `refused`), the check that refused it, the verb's output; removed after seven days | no |
+| `$FLEET_STATE/requests/<id>.result.json` | `serve-requests` | the outcome (`done`, `failed` or `refused`), the check that refused it, the verb's output; or `waiting`, with the time the wait began, while a request for a working session stays queued; removed after seven days | no |
 | `$FLEET_STATE/requests/PAUSED` | the human | while it exists, the runner refuses every request | no |
 | `$FLEET_STATE/requests-audit.jsonl` | `serve-requests` | one line per served request; the rate limits are counted from it. Outside `requests/`, so a grant to write the queue is not one to rewrite its history | no |
 | `$FLEET_STATE/<name>.tmproot` | each launch | the path of that launch's scratch root | no |
@@ -256,9 +256,21 @@ No notification is sent. The runner refuses, in this order, a request that:
   not checked);
 - is `up` or `resume` where `claude-trust-check` reports the canonical's project untrusted, or
   cannot read the trust state;
-- is `down` or `refresh` while the session is working: its listed state is not in
-  `request-idle-states`, its transcript's last turn has not ended, or either cannot be read; or is
-  `resume` while the session is running.
+- names a canonical with no live row in `claude agents --json` while a live process holds the name:
+  a Claude Code pid record under `~/.claude/sessions/` names it and its pid is running (on Linux,
+  the same process, by the record's `procStart` against `/proc/<pid>/stat`). Measured 2026-11-08:
+  a canonical resumed after the supervisor's idle stop ran idle while the listing had its job as
+  `done`, so `up` would have started a second session and `resume` respawned a running one;
+- is `down` or `refresh` while the session's listing or transcript cannot be read; or is `resume`
+  while the session is running.
+
+**A request for a working session waits** rather than being refused: when the only check that
+fails is that the session's listed state is not in `request-idle-states` or its transcript's last
+turn has not ended, the request stays queued, its result file says `waiting`, and each pass checks
+it again from the start. It is served once the session is idle, or refused as stale at
+`request-max-age`, naming the wait. A waiting pass writes no audit line, so it does not count
+against the rate limits. This is what lets a session request its own refresh: it is working when
+it writes the request, and the runner serves a new request within seconds.
 
 A keep-alive, which would hold a canonical up against an idle stop, is not built; the runner has
 the check's place for it and no hold can exist yet.
