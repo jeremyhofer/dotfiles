@@ -60,6 +60,20 @@ a change in a file the input list must cover before trusting a narrowed list.)
 contribute to one file, each writes a fragment and a third task joins them. Two writers make the
 cached output depend on run order, which is a correctness bug the cache hides.
 
+**A committed file that a cached task writes is that task's output, never another target's plain
+input.** A plain file input is hashed when the task graph is built, before the writer runs, so a
+reader's key can describe the file's previous content. Leave the file out of the reader's plain
+globs and depend on the writer, so `dependentTasksOutputFiles` hashes it after the write (measured
+2026-11-08 on a generated `_redirects` file: `verify-task-io --static` found 22 such gaps with the
+file left in a plain glob, 18 without it, the same 18 that predated the change).
+
+**But an exclusion from a SHARED named input reaches every target naming that set.** A target that
+names the set and does not depend on the writer silently stops hashing the file, and the static
+tracer cannot see it, since that target has no dependency to compare against (the same change left
+eight post-build gates with the file in no cache key). So run `nx show target inputs <target>
+--check <file>` for every target that names the set, not only the tracer's findings, and give the
+targets that read the file without its writer a set that still lists it.
+
 **A repeated identical edit times the cache, not the work.** A timing scenario that writes the same
 text each sample replays the first sample's result from the second on (3.6 to 3.9 s against a real
 101 s). Vary the edit per sample.

@@ -31,6 +31,9 @@ configuration (git config; nothing is committed):
   land.gate     the gate command, run by the shell in the repository root (required)
   land.branch   the integration branch (default: main)
   land.merge    ff (default: fast-forward) or no-ff (a merge commit; its tree must equal HEAD's)
+Inside a Claude Code sandbox .git/config is read-only, so `git config land.gate ...` fails there:
+set the keys once from a terminal, or for one command with GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n>
+and GIT_CONFIG_VALUE_<n>, which git (and so land) reads like any other config.
 
 `merge` lands only when the working tree is clean, HEAD's tree has a recorded pass, and the
 integration branch is an ancestor of HEAD (otherwise rebase onto it and run `land check` again).
