@@ -689,7 +689,14 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
         return f"'{req['name']}' is running (id {row.get('id')}); there is nothing to resume"
     state = str(row.get("state") or "")
     if state not in as_list(ctx.cfg["request-idle-states"]):
-        return Wait(f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}' "
+        # The agent-view docs pair `blocked` with a waitingFor (a permission prompt, input, a sandbox
+        # request, a dialog); a `blocked` with none matches no documented case (measured 2026-11-08 on
+        # a parked, idle canonical). It still refuses, since an unknown state is not an idle one, but
+        # the reason says so, for whoever reads the result.
+        why = f" waiting for {row['waitingFor']}" if row.get("waitingFor") else ""
+        if state == "blocked" and not row.get("waitingFor"):
+            why = " with no waitingFor, which matches no documented blocked state"
+        return Wait(f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}'{why} "
                     f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
     ended = transcript_turn_ended(str(row.get("sessionId") or ""))
     if ended is None:

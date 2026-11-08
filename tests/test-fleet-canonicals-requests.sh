@@ -420,6 +420,13 @@ plant r-w5 down alpha-canonical alpha-canonical
 serve >/dev/null; expect r-w5 refused working "an unreadable sessions list refuses a stop (fail closed)"
 export FLEET_AGENTS_JSON_CMD="jq -c map(select(.live)) $T/agents.json"
 
+# a `blocked` row with no waitingFor still waits, and the reason names the anomaly
+reset; live_row bl000001 alpha-canonical blocked s-bl; transcript s-bl ended
+plant r-bl down alpha-canonical alpha-canonical
+serve >/dev/null; expect r-bl waiting working "a blocked session's stop waits"
+[[ "$(result r-bl detail)" == *"no waitingFor"* ]] && ok "the reason names a blocked state with no waitingFor" \
+  || bad "blocked detail: $(result r-bl detail)"
+
 # live-process: a live process holds the name while the sessions list has no live row for it
 reset
 pid_record 4242 alpha-canonical 777; proc_alive 4242 777
