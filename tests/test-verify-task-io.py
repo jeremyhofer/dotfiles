@@ -350,5 +350,18 @@ def test_glob_match(path, pattern, expected):
     assert vti.glob_match(path, pattern) is expected
 
 
+@pytest.mark.parametrize("path,expected", [
+    ("nx.json", True),
+    ("package-lock.json", True),
+    ("pnpm-lock.yaml", True),
+    ("yarn.lock", True),
+    ("libs/a/package-lock.json", False),
+    ("src/lock.json", False),
+])
+def test_nx_config_counts_the_root_lockfile_as_nx_own(path, expected):
+    # Nx reads the root lockfile on every graph build, so its control count may vary like nx.json's.
+    assert bool(vti.NX_CONFIG.match(path)) is expected
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

@@ -77,6 +77,9 @@ judgment after measurement, never the audit's, so each one carries its reason:
   [[tool_state]]                a directory a tool keeps its own cache in, which no target needs to
   dir = ".angular"              declare because losing it on a cache hit costs only speed; matched
   why = "..."                   by directory prefix, so dotfiles inside it count
+A Python target traced after its environment was built reads `.venv/` and `__pycache__/` bytecode.
+Both derive from declared inputs (the lockfile, the sources), so the repair is an `accepted` read
+entry saying so, not a new input (financial-management, 2026-11-08).
 
 WHAT IT CANNOT SEE.
   * node_modules, .git and .worktrees (nested checkouts) are not watched (external dependencies
@@ -91,6 +94,9 @@ WHAT IT CANNOT SEE.
     tooling) is outside what it can see.
   * A task that reads a file Nx's own walker also reads (an ignore file) is never attributed it, so a
     tool that honors a nested ignore file is masked.
+  * The first trace of a target that CREATES an ignored directory carrying its own .gitignore
+    (Hypothesis's `.hypothesis/`) can fail on a control that drifts; trace again once the
+    directory exists (financial-management, 2026-11-08).
   * Other processes on the machine writing into the workspace during a run (an editor, a second
     session, a file watcher) are attributed to the measured target: run it on a quiet checkout.
   * The inotify watch limit is per user, shared with every other watcher; the tool checks the
@@ -426,7 +432,12 @@ WRITE_KINDS = {"CLOSE_WRITE", "CREATE", "MOVED_TO", "MOVED_FROM", "DELETE"}
 # the tree changed since the last walk: every ignore file, to decide what the file map contains.
 NX_OWN_READS = ["**/.gitignore", "**/.nxignore"]
 # Nx's own configuration files, whose control read count may vary by one between identical runs.
-NX_CONFIG = re.compile(r"^(nx\.json|.*project\.json|.*package\.json|.*tsconfig[\w.]*\.json)$")
+# The root lockfile is one: Nx's js plugin reads it on every project-graph build, cache hit or not
+# (nx 24.0.2, dist/src/plugins/js/index.js, internalCreateNodes), and a consumer's three controls
+# disagreed on package-lock.json (2026-11-08). A task's single extra read of it is therefore not
+# attributable either, so a target that reads the lockfile must declare it.
+NX_CONFIG = re.compile(r"^(nx\.json|.*project\.json|.*package\.json|.*tsconfig[\w.]*\.json"
+                       r"|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$")
 
 
 @dataclass
