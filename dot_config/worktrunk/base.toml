@@ -42,6 +42,20 @@
 # and tools that walk the tree (prettier, eslint, rg, nx) must honor that ignore or carry their own.
 worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.worktrees/{{ branch | sanitize }}{% endif %}"
 
+# ---------------------------------------------------------------------------
+# Finishing a branch: the remotes too
+# ---------------------------------------------------------------------------
+# `wt done <branch>` removes the worktree (and the local branch, when worktrunk's own tests find it
+# integrated), then deletes the branch from each remote whose own tip is integrated into the
+# default branch (git-branch-gone, which refuses everything else). It takes a branch name only.
+# A NAMED STEP, NEVER A REMOVE HOOK: each remote deletion is a command a person or a guardrail can
+# see, and a refusal prints here rather than in a background hook's log.
+# The alias is for a person at a terminal. An agent runs `wt remove <branch>` and then
+# `git-branch-gone <branch> --delete` as two commands, so a permission rule naming
+# git-branch-gone matches the deletion itself rather than a wrapper around it.
+[aliases]
+done = "wt remove {{ args }} && git-branch-gone {{ args }} --delete"
+
 # Pin the JSON output schema. Without this, every `wt config show` prints a migration advisory
 # warning that a future release changes the default.
 [list]

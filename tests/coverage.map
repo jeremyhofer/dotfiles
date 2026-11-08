@@ -98,6 +98,7 @@ test-leak-guard.sh                  private_dot_local/bin/executable_leak-guard 
 test-lint-tasknames.sh              private_dot_local/bin/executable_lint-tasknames dot_claude/skills/naming-build-tasks/SKILL.md
 test-loop-time.py                   private_dot_local/bin/executable_loop-time private_dot_local/bin/executable_fleet-slot
 test-fleet-slot.py                  private_dot_local/bin/executable_fleet-slot
+test-git-branch-gone.py             private_dot_local/bin/executable_git-branch-gone
 test-machine-snapshot.sh            private_dot_local/bin/executable_machine-snapshot
 test-machine-snapshot-darwin.sh     private_dot_local/bin/executable_machine-snapshot
 test-memory-doctor.sh               private_dot_local/bin/executable_memory-doctor

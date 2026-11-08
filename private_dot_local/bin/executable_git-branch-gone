@@ -1,0 +1,177 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""git-branch-gone -- delete a merged branch from every remote that has it, and only a merged one.
+
+Removing a worktree, or deleting a branch locally, leaves the branch on every remote it was pushed
+to, where it reads as live work to anyone who lists branches. This deletes it there, one remote at
+a time, after proving that THAT REMOTE's tip of the branch is already in the integration branch.
+The local branch is not consulted: a remote can hold a commit the local branch never had, and that
+commit would be lost.
+
+Integrated means any one of:
+  ancestor   the tip is an ancestor of the integration branch (a merge, fast-forward or rebase
+             that kept the commits)
+  cherry     `git cherry` finds no patch of the tip missing from the integration branch (the
+             commits were cherry-picked or rebased onto it)
+  merge-tree merging the tip into the integration branch changes nothing (`git merge-tree
+             --write-tree` yields the integration branch's own tree), which covers a squash merge
+Anything else is refused, whatever the branch's age or name. A branch kept on purpose (an
+experiment arm, a declined option) is never integrated, so it stays.
+
+It is a named step on purpose, never a hook: each deletion is a command a person or a guardrail can
+see, and its refusal is printed rather than written to a log nobody reads.
+Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+
+EXIT_REFUSED = 1
+EXIT_USAGE = 2
+PROTECTED = {"main", "master", "devel", "develop", "HEAD"}
+TMP_NS = "refs/git-branch-gone"
+
+EPILOG = """\
+usage:
+  git-branch-gone <branch>            say, per remote, whether it would be deleted (changes nothing)
+  git-branch-gone <branch> --delete   delete it from each remote whose tip is integrated, then
+                                      confirm with ls-remote that it is gone
+
+The integration branch, fetched from --base-remote (default origin), is --into, else the clone's
+worktrunk default branch (git config worktrunk.default-branch, which a clone integrating into a
+branch other than the remote's default sets), else the remote's own default branch. Refused
+outright: main, master, devel, develop, the integration branch, the remote's default branch and
+the repository's land.branch.
+
+exit status: 0 nothing refused (deleted, would delete, or no remote has it); 1 a remote's tip is
+not integrated, a deletion did not take, or the branch is protected; 2 usage, or a remote or git
+could not be read.
+"""
+
+
+class Usage(Exception):
+    pass
+
+
+def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    if check and p.returncode != 0:
+        raise Usage(f"git {' '.join(args)} failed: {(p.stderr or p.stdout).strip()}")
+    return p
+
+
+def remote_tip(remote: str, branch: str) -> str | None:
+    """The remote's own tip of the branch, by asking it (a tracking ref can be stale)."""
+    out = git("ls-remote", "--heads", remote, f"refs/heads/{branch}").stdout.split()
+    return out[0] if out else None
+
+
+def default_branch(remote: str) -> str:
+    out = git("ls-remote", "--symref", remote, "HEAD").stdout
+    for line in out.splitlines():
+        if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+            return line[len("ref: refs/heads/"):-len("\tHEAD")]
+    raise Usage(f"{remote} reports no default branch; name the integration branch with --into")
+
+
+def fetch(remote: str, branch: str, ref: str) -> str:
+    git("fetch", "-q", "--no-tags", remote, f"+refs/heads/{branch}:{ref}")
+    return git("rev-parse", ref).stdout.strip()
+
+
+def integrated(tip: str, target: str) -> str | None:
+    """Which test shows the tip is in the target, or None."""
+    if git("merge-base", "--is-ancestor", tip, target, check=False).returncode == 0:
+        return "ancestor"
+    cherry = git("cherry", target, tip, check=False)
+    if cherry.returncode == 0 and not any(l.startswith("+") for l in cherry.stdout.splitlines()):
+        return "cherry"
+    mt = git("merge-tree", "--write-tree", target, tip, check=False)
+    if mt.returncode == 0:
+        tree = mt.stdout.split("\n", 1)[0].strip()
+        if tree and tree == git("rev-parse", f"{target}^{{tree}}").stdout.strip():
+            return "merge-tree"
+    return None
+
+
+def remotes_by_url() -> list[str]:
+    """Each remote once per distinct push URL: a fan-out remote with the same URL as another is
+    the same branch, and deleting it twice would read as a failure."""
+    seen: dict[str, str] = {}
+    for name in git("remote").stdout.split():
+        url = git("remote", "get-url", "--push", name, check=False).stdout.strip() or name
+        seen.setdefault(url, name)
+    return list(seen.values())
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="git-branch-gone", epilog=EPILOG,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 description="Delete a merged branch from every remote that has it.")
+    ap.add_argument("branch")
+    ap.add_argument("--delete", action="store_true", help="delete; without it, report only")
+    ap.add_argument("--base-remote", default="origin", help="whose default branch is the integration branch")
+    ap.add_argument("--into", help="the integration branch, instead of --base-remote's default")
+    a = ap.parse_args(argv)
+    branch = a.branch.removeprefix("refs/heads/")
+    try:
+        git("rev-parse", "--git-dir")
+        remote_default = default_branch(a.base_remote)
+        wt_default = git("config", "--get", "worktrunk.default-branch", check=False).stdout.strip()
+        into = a.into or wt_default or remote_default
+        land = git("config", "--get", "land.branch", check=False).stdout.strip()
+        if branch in PROTECTED | {into, remote_default} | ({land} if land else set()):
+            print(f"git-branch-gone: refused: '{branch}' is protected (an integration branch); "
+                  "it is never deleted here", file=sys.stderr)
+            return EXIT_REFUSED
+        target_ref = f"{TMP_NS}/into"
+        target = fetch(a.base_remote, into, target_ref)
+        refused = 0
+        found = 0
+        for remote in remotes_by_url():
+            tip = remote_tip(remote, branch)
+            if tip is None:
+                continue
+            found += 1
+            fetched = fetch(remote, branch, f"{TMP_NS}/tip")
+            if fetched != tip:
+                print(f"{remote}: refused: the branch moved while it was read ({tip[:12]} then "
+                      f"{fetched[:12]}); run again", file=sys.stderr)
+                refused += 1
+                continue
+            how = integrated(tip, target)
+            if how is None:
+                print(f"{remote}: refused: {branch} at {tip[:12]} is not in {a.base_remote}/{into} "
+                      f"({target[:12]}): it has work the integration branch does not", file=sys.stderr)
+                refused += 1
+                continue
+            if not a.delete:
+                print(f"{remote}: would delete {branch} at {tip[:12]} (integrated: {how}); "
+                      "pass --delete to delete it")
+                continue
+            p = git("push", "-q", remote, "--delete", branch, check=False)
+            if p.returncode != 0 or remote_tip(remote, branch) is not None:
+                print(f"{remote}: refused: the deletion did not take: "
+                      f"{(p.stderr or p.stdout).strip() or 'the branch is still listed'}", file=sys.stderr)
+                refused += 1
+                continue
+            print(f"{remote}: deleted {branch} (was {tip[:12]}, integrated: {how}); ls-remote "
+                  "confirms it is gone")
+        if not found:
+            print(f"git-branch-gone: no remote has {branch}; nothing to do")
+        return EXIT_REFUSED if refused else 0
+    except Usage as e:
+        print(f"git-branch-gone: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    finally:
+        for ref in (f"{TMP_NS}/into", f"{TMP_NS}/tip"):
+            git("update-ref", "-d", ref, check=False)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
