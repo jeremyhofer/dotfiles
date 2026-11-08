@@ -366,11 +366,37 @@ live_row cccc3333 gamma-canonical done s-gamma; transcript s-gamma ended
 plant r-w1 down alpha-canonical alpha-canonical; plant r-w2 refresh beta-canonical director-canonical
 plant r-w3 down gamma-canonical gamma-canonical
 serve >/dev/null
-expect r-w1 refused working "down is refused while the listing reports the session working"
-expect r-w2 refused working "refresh is refused while the transcript's last turn has not ended"
+expect r-w1 waiting working "down waits while the listing reports the session working"
+expect r-w2 waiting working "refresh waits while the transcript's last turn has not ended"
+[[ -f "$Q/r-w1.request.json" && -f "$Q/r-w2.request.json" && ! -f "$Q/r-w1.served.json" ]] \
+  && ok "a waiting request stays queued" || bad "waiting requests consumed: $(ls "$Q")"
 expect r-w3 done "" "down of an idle session whose turn ended runs"
 [[ "$(cat "$CLAUDE_LOG")" == *"rm cccc3333"* && "$(cat "$CLAUDE_LOG")" != *aaaa1111* && "$(cat "$CLAUDE_LOG")" != *bbbb2222* ]] \
   && ok "only the idle session's row was removed" || bad "claude calls: $(cat "$CLAUDE_LOG")"
+# a waiting request is served once the session is idle, and waiting writes no audit line
+since=$(result r-w2 since)
+[[ ! -s "$T/state/requests-audit.jsonl" ]] || ! jq -e 'select(.outcome == "waiting")' "$T/state/requests-audit.jsonl" >/dev/null 2>&1 \
+  && ok "waiting is not in the audit log" || bad "audit: $(cat "$T/state/requests-audit.jsonl")"
+sleep 1; serve >/dev/null
+[[ "$(result r-w2 since)" == "$since" && -n "$since" ]] && ok "a second waiting pass keeps when the wait began" \
+  || bad "since moved: '$since' -> '$(result r-w2 since)'"
+transcript s-beta ended; serve >/dev/null
+expect r-w2 done "" "a waiting refresh is served once the transcript's turn has ended"
+expect r-w1 waiting working "a request for a session still working keeps waiting"
+jq --arg i aaaa1111 'map(if .id == $i then .state = "idle" else . end)' "$T/agents.json" > "$T/agents.n" && mv "$T/agents.n" "$T/agents.json"
+serve >/dev/null; expect r-w1 done "" "a waiting down is served once the listing reports the session idle"
+[[ $(jq -s 'map(select(.id == "r-w1")) | length' "$T/state/requests-audit.jsonl") == 1 ]] \
+  && ok "a request that waited gets one audit line, when it is served" || bad "audit: $(cat "$T/state/requests-audit.jsonl")"
+# a waiting request that outlives request-max-age is refused as stale, naming the wait
+reset
+print "allow-self-refresh = true" > "$T/config"
+live_row ffff6666 alpha-canonical working s-alpha; transcript s-alpha ended
+plant r-w6 refresh alpha-canonical alpha-canonical 590
+serve >/dev/null; expect r-w6 waiting working "a self-refresh while working waits"
+plant r-w6 refresh alpha-canonical alpha-canonical 700
+serve >/dev/null; expect r-w6 refused age "a waiting request past request-max-age is refused stale"
+[[ "$(result r-w6 detail)" == *"had waited since"*"is working"* && ! -f "$Q/r-w6.request.json" ]] \
+  && ok "the stale refusal names the wait and consumes the request" || bad "stale detail: $(result r-w6 detail)"
 reset
 live_row dddd4444 alpha-canonical done s-missing
 plant r-w4 down alpha-canonical alpha-canonical

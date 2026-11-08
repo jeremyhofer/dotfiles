@@ -29,12 +29,20 @@ FILES, all under $FLEET_STATE (default $XDG_STATE_HOME/fleet-canonicals):
   requests/<id>.running.json   claimed by a runner; its verb is executing
   requests/<id>.served.json    done with, whatever the outcome
   requests/<id>.result.json    the outcome: done, failed or refused, the check that refused it, the
-                               verb's output
+                               verb's output; or `waiting` while the request stays queued (below)
   requests/PAUSED              while it exists, every request is refused
   requests-audit.jsonl         one line per served request, appended. Outside requests/ so that a
                                grant to write the queue is not also a grant to rewrite the history
                                the rate limits are counted from.
 Served requests and their results older than seven days are removed by the runner.
+
+A REQUEST FOR A BUSY SESSION WAITS. When the only thing refusing a request is that the session it
+would stop is working, the request is left queued and its result file says `waiting`; each pass
+checks it again from the start, so it is served once the session is idle, or refused as stale at
+request-max-age. Without this a session could never have itself refreshed: it is working, by
+construction, at the moment it writes the request, and the runner serves a new request within
+seconds. A waiting pass writes no audit line, so waiting never counts against the rate limits.
+Only a positive reading of work waits; a listing or transcript that cannot be read refuses at once.
 """
 from __future__ import annotations
 
@@ -348,7 +356,11 @@ def cmd_request(argv: list[str]) -> int:
 # ---- the checks ------------------------------------------------------------------------------
 # Each takes the request and the pass context and returns None to pass, or the reason it refuses.
 # They run in this order and the first refusal is the one recorded, so the cheap and certain ones
-# come first and the ones that read the live session list come last.
+# come first and the ones that read the live session list come last. A reason returned as a Wait
+# leaves the request queued for the next pass instead of consuming it.
+
+class Wait(str):
+    """A refusal that may clear by itself: the request stays queued and is checked again."""
 
 class Pass:
     """What one serve-requests pass reads once and shares across its requests."""
@@ -418,7 +430,12 @@ def check_age(req: dict, ctx: Pass, path: Path) -> str | None:
     limit = as_int(ctx.cfg, "request-max-age")
     age = ctx.t - req["time"]
     if age > limit:
-        return f"stale: written {age}s ago, more than request-max-age ({limit}s)"
+        why = f"stale: written {age}s ago, more than request-max-age ({limit}s)"
+        prior = read_request(QUEUE / f"{req['id']}.result.json") or {}
+        if prior.get("outcome") == "waiting":
+            why += (f"; it had waited since {stamp(int(prior.get('since') or 0))} because "
+                    f"{prior.get('detail')}")
+        return why
     if age < -60:
         return f"its time is {-age}s in the future"
     return None
@@ -594,13 +611,13 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
         return f"'{req['name']}' is running (id {row.get('id')}); there is nothing to resume"
     state = str(row.get("state") or "")
     if state not in as_list(ctx.cfg["request-idle-states"]):
-        return (f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}' "
-                f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
+        return Wait(f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}' "
+                    f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
     ended = transcript_turn_ended(str(row.get("sessionId") or ""))
     if ended is None:
         return f"'{req['name']}''s transcript cannot be read, so work in flight cannot be ruled out"
     if not ended:
-        return f"'{req['name']}' is working: its transcript's last turn has not ended"
+        return Wait(f"'{req['name']}' is working: its transcript's last turn has not ended")
     return None
 
 
@@ -690,6 +707,9 @@ def serve_one(path: Path, ctx: Pass) -> None:
             if why:
                 check, detail = cname, why
                 break
+    if isinstance(detail, Wait):
+        wait_one(rid, req, check, detail)
+        return
     served = QUEUE / f"{rid}.served.json"
     if check:
         os.replace(path, served)
@@ -710,6 +730,20 @@ def serve_one(path: Path, ctx: Pass) -> None:
     ctx.audit.append(entry)
     who = f"{req.get('verb')} {req.get('name')} (from {req.get('requester')})"
     print(f"{outcome:<8} {who}" + (f" -- {check}: {detail}" if check else ""), flush=True)
+
+
+def wait_one(rid: str, req: dict, check: str, detail: str) -> None:
+    """Leave the request queued and say so in its result file, keeping when the wait began."""
+    prior = read_request(QUEUE / f"{rid}.result.json") or {}
+    since = prior.get("since") if prior.get("outcome") == "waiting" else None
+    t = now()
+    write_atomic(QUEUE / f"{rid}.result.json",
+                 {"id": rid, "at": t, "verb": req.get("verb"), "name": req.get("name"),
+                  "requester": req.get("requester"), "reason": req.get("reason"),
+                  "outcome": "waiting", "check": check, "detail": str(detail),
+                  "since": since or t})
+    who = f"{req.get('verb')} {req.get('name')} (from {req.get('requester')})"
+    print(f"{'waiting':<8} {who} -- {check}: {detail}; left queued", flush=True)
 
 
 def prune(t: int) -> None:
