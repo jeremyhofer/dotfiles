@@ -924,6 +924,49 @@ def test_report_summarizes_per_group(tmp_path, capsys):
     assert "demo" in out and "50%" in out and "2.00" in out
 
 
+def test_report_excludes_failed_runs_from_the_timings_and_says_so(tmp_path, capsys):
+    # A failed run measures a gate that stopped early, not the loop: averaged in, it drags the
+    # median toward the failure's time (russ's first L3 baseline, 2026-11-07, failed on unchanged
+    # code). A planted run is meant to fail, so its failure is the result and still counts.
+    res = tmp_path / "r.jsonl"
+    rows = [_rec("a", "warm", w, w, sample=i) for i, w in enumerate([10.0, 12.0])]
+    bad = _rec("a", "warm", 1.0, 1.0, sample=2)
+    bad["exit_code"] = 1
+    rows.append(bad)
+    plant = _rec("a", "scenario:x", 3.0, 3.0, step="plant")
+    plant.update(exit_code=1, caught=True)
+    rows.append(plant)
+    res.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    assert run_main("report", "--results", res, "--json") == 0
+    data = json.loads(capsys.readouterr().out)
+    warm = next(g for g in data if g["mode"] == "warm")
+    assert (warm["samples"], warm["failed"], warm["wall_median"], warm["wall_min"]) == (2, 1, 11.0, 10.0)
+    planted = next(g for g in data if g["step"] == "plant")
+    assert (planted["samples"], planted["failed"], planted["wall_median"]) == (1, 0, 3.0)
+    assert run_main("report", "--results", res) == 0
+    assert "1 failed, excluded" in capsys.readouterr().out
+
+
+def test_run_refuses_before_timing_anything_when_the_results_file_cannot_be_written(
+        decl_path, tmp_path, capsys):
+    # An agent sandbox cannot write the default under ~/.local/state. Found only at the first
+    # append, that costs the whole first sample: for keystone's cold gate, twenty minutes.
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    marker = tmp_path / "ran"
+    p = write_decl(tmp_path, decl_path.parent / "proj",
+                   f'[[loop]]\nid = "x"\ncommand = "touch {marker}"\n')
+    try:
+        rc = run_main("run", p, "x", "--samples", "1", "--max-load", "9999",
+                      "--results", ro / "sub" / "r.jsonl")
+    finally:
+        ro.chmod(0o700)
+    assert rc == 2
+    assert not marker.exists()
+    assert "LOOP_TIME_RESULTS" in capsys.readouterr().err
+
+
 def test_report_on_missing_file_is_an_error(tmp_path, capsys):
     assert run_main("report", "--results", tmp_path / "none.jsonl") == 2
 

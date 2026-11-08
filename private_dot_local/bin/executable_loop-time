@@ -23,6 +23,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -819,13 +820,17 @@ def summarize(recs):
         key = (r.get("project"), r.get("loop"), r.get("mode"), r.get("step"))
         groups.setdefault(key, []).append(r)
     out = []
-    for (project, loop, mode, step), rs in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+    for (project, loop, mode, step), every in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        # A failed run times a gate that stopped early, not the loop, so it is counted and left out of
+        # the timings. A planted run is meant to fail: there the failure is the result.
+        rs = every if step == "plant" else [r for r in every if r.get("exit_code", 0) == 0]
         walls = [r["wall_seconds"] for r in rs if isinstance(r.get("wall_seconds"), (int, float))]
         cpus = [r["cpu_seconds"] for r in rs if isinstance(r.get("cpu_seconds"), (int, float))]
         tasks = sum(len(r["nx"]["tasks"]) for r in rs if r.get("nx"))
         hits = sum(len(r["nx"]["cache_hits"]) for r in rs if r.get("nx"))
         plants = [r for r in rs if r.get("step") == "plant"]
         out.append({"project": project, "loop": loop, "mode": mode, "step": step, "samples": len(rs),
+                    "failed": len(every) - len(rs),
                     "wall_median": statistics.median(walls) if walls else None,
                     "wall_min": min(walls) if walls else None, "wall_max": max(walls) if walls else None,
                     "cpu_median": statistics.median(cpus) if cpus else None,
@@ -857,6 +862,8 @@ def cmd_report(args):
         note = []
         if g["caught"] is False:
             note.append("BLIND")
+        if g["failed"]:
+            note.append(f"{g['failed']} failed, excluded")
         if g["under_load"]:
             note.append(f"{g['under_load']} under load")
         rows.append((str(g["project"]), str(g["loop"]), label, str(g["samples"]), f(g["wall_median"]),
@@ -947,6 +954,21 @@ def cmd_run(args):
         return EXIT_INVALID
     max_load = args.max_load if args.max_load is not None else (os.cpu_count() or 2) / 2
     results = Path(args.results) if args.results else default_results()
+    # Checked before the first sample, not at its first append: an agent sandbox cannot write the
+    # default under ~/.local/state, and finding that out after a twenty-minute gate loses the gate.
+    # The probe leaves nothing behind, so a run refused later creates no results file.
+    try:
+        results.parent.mkdir(parents=True, exist_ok=True)
+        if results.exists():
+            with open(results, "a"):
+                pass
+        else:
+            tempfile.TemporaryFile(dir=results.parent).close()
+    except OSError as e:
+        print(f"loop-time: cannot write results at {results} ({e.strerror}); nothing was run. "
+              "Name a writable file with --results or LOOP_TIME_RESULTS "
+              "(inside an agent sandbox, under ~/.cache).", file=sys.stderr)
+        return EXIT_INVALID
     _install_signal_handlers()
     try:
         s = run_loop(d, loop, mode, args.samples, results, max_load, args.force, args.load_wait)
