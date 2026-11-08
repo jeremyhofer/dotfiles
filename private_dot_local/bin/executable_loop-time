@@ -84,7 +84,8 @@ resetting the user's real one. Each record lists the env key names that were set
 the timing slot: before the run and before each sample, `fleet-slot check` asks whether another
 session holds this machine's timing slot. If one does, run refuses (exit 6), because a sample timed
 in someone else's slot measures their work as well as this loop. --ignore-slot measures anyway and
-each record says so; --slot-holder names the holder to check as (default: the calling session).
+each record says so; --slot-holder names the holder to check as (default: the calling session, as
+fleet-slot names it: the status line's usage file, else $FLEET_SLOT_AS, else the agents listing).
 Every record carries `slot`: its state (free, own, other, error, or unchecked when fleet-slot is not
 installed), the holder's name, and whether it was overridden.
 
@@ -465,8 +466,9 @@ def slot_check(holder, ignore):
     except (OSError, subprocess.TimeoutExpired) as e:
         rc, msg = 2, str(e)
     if rc == 0:
-        mine = msg.startswith("held by")
-        return {"state": "own" if mine else "free", "holder": holder if mine else None, "override": False}
+        mine = re.match(r"held by (\S+)", msg)
+        return {"state": "own" if mine else "free", "holder": mine.group(1) if mine else None,
+                "override": False}
     m = re.match(r"held by (\S+)", msg)
     other = m.group(1) if rc == 1 and m else None
     if ignore:

@@ -81,6 +81,42 @@ def test_check_reads_the_calling_session_and_treats_an_unnamed_caller_as_another
     assert anon.returncode == 1 and "could not be read" in anon.stdout
 
 
+def test_check_names_the_caller_from_the_agents_listing_when_there_is_no_usage_file(isolated):
+    granted("alpha")
+    listing = json.dumps([{"sessionId": "sid-9", "name": "alpha"}])
+    env = {"CLAUDE_CODE_SESSION_ID": "sid-9", "FLEET_AGENTS_JSON_CMD": f"echo {listing}"}
+    r = slot("check", env=env)
+    assert r.returncode == 0 and "(you)" in r.stdout, r.stdout
+    other = json.dumps([{"sessionId": "sid-9", "name": "beta"}])
+    r = slot("check", env={**env, "FLEET_AGENTS_JSON_CMD": f"echo {other}"})
+    assert r.returncode == 1 and "could not be read" not in r.stdout
+
+
+def test_check_does_not_run_the_listing_when_the_slot_is_free(isolated):
+    marker = isolated / "listing-ran"
+    env = {"CLAUDE_CODE_SESSION_ID": "sid-9", "FLEET_AGENTS_JSON_CMD": f"touch {marker}"}
+    assert slot("check", env=env).returncode == 0
+    assert not marker.exists()
+
+
+def test_fleet_slot_as_names_the_caller_where_nothing_else_can(isolated):
+    granted("alpha")
+    r = slot("check", env={"FLEET_SLOT_AS": "alpha"})
+    assert r.returncode == 0 and "(you)" in r.stdout, r.stdout
+    assert slot("check", env={"FLEET_SLOT_AS": "beta"}).returncode == 1
+    # a change made as that name records it, and --as may not contradict it
+    r = slot("release", "alpha", env={"FLEET_SLOT_AS": "alpha"})
+    assert r.returncode == 0, r.stderr
+    assert slot("request", "beta", "--minutes", "5", "--what", "x", "--as", "gamma",
+                env={"FLEET_SLOT_AS": "beta"}).returncode == 1
+
+
+def test_the_usage_file_wins_over_fleet_slot_as(isolated):
+    granted("alpha")
+    env = {**inside(isolated, "alpha"), "FLEET_SLOT_AS": "beta"}
+    assert slot("check", env=env).returncode == 0
+
+
 # ---- grant -----------------------------------------------------------------------------------
 
 def test_a_non_arbiter_grant_is_refused_and_changes_nothing(isolated):

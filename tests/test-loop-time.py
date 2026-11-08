@@ -1096,6 +1096,15 @@ def test_run_is_refused_while_another_session_holds_the_slot_and_nothing_runs(de
     assert not (tmp_path / "prep.log").exists()   # not even the cold_prep ran
 
 
+def test_fleet_slot_as_in_the_environment_names_the_caller_end_to_end(decl_path, tmp_path, slot, monkeypatch):
+    grant(slot, "me")
+    monkeypatch.setenv("FLEET_SLOT_AS", "me")
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "check", "--mode", "cold", "--samples", "1", "--results", res,
+                    "--max-load", "9999") == 0
+    assert records(res)[0]["slot"] == {"state": "own", "holder": "me", "override": False}
+
+
 def test_run_proceeds_after_release_and_records_the_slot_free(decl_path, tmp_path, slot):
     grant(slot, "other-session")
     slot("release", "other-session", "--as", "other-session")

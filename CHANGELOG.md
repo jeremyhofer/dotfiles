@@ -34,6 +34,17 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `fleet-slot` names its caller without the status line
+
+- `fleet-slot check` (no holder) read the calling session only from the status line's usage file,
+  so on a machine where the status line is not allowed it treated a held slot as someone else's, and
+  `loop-time run` then refused even the holder. It now falls back to `FLEET_SLOT_AS` (set it in the
+  session's environment to name the session), then to the agents listing, which it asks only when
+  the slot is held. `loop-time`'s records now carry the holder's name for an `own` slot found this
+  way. A holder named by argument (`fleet-slot check NAME`, `loop-time run --slot-holder NAME`) works
+  as before. Nothing to change; a launch may set `FLEET_SLOT_AS` per session where the listing is
+  unavailable.
+
 ### The settings fragment may ensure allow rules: `ensureAllow`
 
 - `~/.claude/settings.json`'s `modify_` script reads a new fragment key, `"ensureAllow": [rule, ...]`.

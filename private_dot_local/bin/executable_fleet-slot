@@ -21,7 +21,8 @@ ONE SLOT PER MACHINE. The state is local. A session on another machine has its o
 THE TRUST IS COOPERATIVE. Anyone who can write the state directory can write the slot, and the tool
 cannot authenticate who ran it. A command records who it is from, checked as far as it can be: inside
 a named session the name is read from the session itself and `--as` may not contradict it; outside
-one, `--as` is required. Every change is appended to the history, so a change outside the rules is
+one, `--as` is required. Where no status line runs (so no usage file), set FLEET_SLOT_AS=<name> in the
+session's environment to name it; the agents listing is used when that is unset too. Every change is appended to the history, so a change outside the rules is
 visible afterwards.
 
 FILES, under $FLEET_SLOT_STATE (default: the fleet state directory's slot/, that is
@@ -59,8 +60,9 @@ usage: fleet-slot <command> [arguments]
               last slots; the machine's load
   check [<holder>]
               exit 0 when <holder> has the slot or nobody does, 1 when someone else does.
-              Without <holder>, the calling session's name; when that cannot be read, any held
-              slot is someone else's
+              Without <holder>, the calling session's name (the status line's usage
+              file, else $FLEET_SLOT_AS, else the agents listing, asked only when the slot is
+              held); when that cannot be read, any held slot is someone else's
 
 configuration: the key `slot-arbiter` (a list, default director-canonical) in the fleet-canonicals
 config file ($FLEET_CANONICALS_CONFIG, else $XDG_CONFIG_HOME/fleet-canonicals/config).
@@ -149,18 +151,20 @@ def usage_dir() -> Path:
 def session_name(listing: bool) -> str | None:
     """The name of the session this runs inside: Claude Code exports CLAUDE_CODE_SESSION_ID into a
     session's shell, and the status-line usage recorder writes <runtime dir>/claude-usage/<id>.json
-    carrying session_name. When `listing`, the agents listing is the fallback (slower, and inside a
-    sandbox it may be unreadable); `check` does without it, since it runs on every commit."""
+    carrying session_name. Where no status line runs, $FLEET_SLOT_AS names the caller. When `listing`,
+    the agents listing is the last fallback (slower, and inside a sandbox it may be unreadable);
+    `check` asks for it only once the slot turns out to be held, since it runs on every commit."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    if not sid:
-        return None
-    try:
-        name = json.loads((usage_dir() / f"{sid}.json").read_text(encoding="utf-8")).get("session_name")
-        if name:
-            return str(name)
-    except (OSError, ValueError, AttributeError):
-        pass
-    if not listing:
+    if sid:
+        try:
+            name = json.loads((usage_dir() / f"{sid}.json").read_text(encoding="utf-8")).get("session_name")
+            if name:
+                return str(name)
+        except (OSError, ValueError, AttributeError):
+            pass
+    if os.environ.get("FLEET_SLOT_AS"):
+        return os.environ["FLEET_SLOT_AS"]
+    if not sid or not listing:
         return None
     cmd = (os.environ.get("FLEET_AGENTS_JSON_ALL_CMD") or os.environ.get("FLEET_AGENTS_JSON_CMD") or
            "claude agents --json --all").split()
@@ -481,6 +485,8 @@ def cmd_check(argv: list[str]) -> int:
     if not h:
         print("free")
         return 0
+    if not holder:
+        holder = session_name(listing=True)
     if holder and h["name"] == holder:
         print(f"held by {holder} (you)")
         return 0
