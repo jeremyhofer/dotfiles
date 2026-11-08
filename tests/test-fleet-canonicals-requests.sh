@@ -86,6 +86,7 @@ export FLEET_AGENTS_JSON_CMD="cat $T/agents.json" CLAUDE_LOG="$T/claude.log" AGE
 cat > "$T/bin/claude-stub" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$CLAUDE_LOG"
+printf '%s\n' "$PATH" > "$CLAUDE_LOG.path"
 case "$1" in
   respawn) jq --arg i "$2" 'map(if .id == $i then .state = "working" | .live = true else . end)' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS" ;;
   rm)      jq --arg i "$2" 'map(select(.id != $i))' "$AGENTS" > "$AGENTS.n" && mv "$AGENTS.n" "$AGENTS" ;;
@@ -443,6 +444,12 @@ reset; live_row cccc3333 alpha-canonical idle s-alpha; transcript s-alpha ended
 pid_record 4242 alpha-canonical 777; proc_alive 4242 777
 plant r-lp6 down alpha-canonical alpha-canonical
 serve >/dev/null; expect r-lp6 done "" "a live process the list does show is left to the working check"
+
+# what the runner starts gets the runner's caller's PATH, without uv's environment for the queue
+reset; plant r-env up alpha-canonical alpha-canonical
+serve >/dev/null; expect r-env done "" "up runs (the PATH case's control)"
+[ "$(cat "$CLAUDE_LOG.path")" = "$PATH" ] && ok "a launch inherits exactly the caller's PATH, not the queue's uv environment" \
+  || bad "a launch's PATH differs from the caller's: $(cat "$CLAUDE_LOG.path")"
 
 # resume: claude respawn on the newest stopped session; never on a live one
 reset

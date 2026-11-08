@@ -156,10 +156,25 @@ def as_int(cfg: dict[str, str], key: str) -> int:
         raise
 
 
+def child_env() -> dict[str, str]:
+    """This environment without what `uv run --script` added for this file: uv puts the script's
+    own environment's bin first on PATH, and everything the runner starts inherits it, a launched
+    canonical session included, whose python3 then became uv's (measured 2026-11-08: a session the
+    runner refreshed had uv's environment first on PATH, which a suite's machine report showed)."""
+    env = dict(os.environ)
+    own_bin = os.path.realpath(os.path.dirname(sys.executable))
+    parts = [d for d in env.get("PATH", "").split(os.pathsep)
+             if d and os.path.realpath(d) != own_bin]
+    env["PATH"] = os.pathsep.join(parts)
+    if env.get("VIRTUAL_ENV") and os.path.realpath(env["VIRTUAL_ENV"]) == os.path.realpath(sys.prefix):
+        del env["VIRTUAL_ENV"]
+    return env
+
+
 def run(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                           stderr=subprocess.STDOUT, text=True, timeout=timeout, env=child_env())
         return p.returncode, p.stdout
     except FileNotFoundError:
         return 127, f"not found: {cmd[0]}"
