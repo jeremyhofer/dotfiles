@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import os
+import shutil
 import subprocess
 import sys
 
@@ -23,7 +24,8 @@ EXIT_GATE_FAILED = 3
 
 EPILOG = """\
 commands:
-  check     refuse a dirty tree, run the gate, and on success record HEAD's tree as passed
+  check     refuse a dirty tree, run the gate, and on success record HEAD's tree as passed;
+            warns, never refuses, when another session holds the timing slot (fleet-slot)
   merge     move the integration branch onto HEAD (the default when no command is given)
   status    say whether HEAD's tree has a recorded pass and what `merge` would do
 
@@ -130,9 +132,27 @@ def require_clean(repo):
                       "HEAD's tree. Commit them (or ignore or remove them), then run again.")
 
 
+def warn_if_slot_taken():
+    """Say so when another session holds this machine's timing slot (fleet-slot): the gate is heavy
+    work, and running it then slows that session's run. A warning only, never a refusal, since a
+    land check is not a measurement. Silent when fleet-slot is not installed or cannot answer.
+    $LAND_SLOT_CMD replaces the command, for tests."""
+    cmd = os.environ.get("LAND_SLOT_CMD", "").split() or (["fleet-slot"] if shutil.which("fleet-slot") else [])
+    if not cmd:
+        return
+    try:
+        p = subprocess.run([*cmd, "check"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if p.returncode == 1:
+        print(f"land: warning: the timing slot is {p.stdout.strip()}; the gate runs anyway, but it "
+              "competes with that session's work (fleet-slot status)", file=sys.stderr)
+
+
 def cmd_check(repo):
     repo.need_gate()
     require_clean(repo)
+    warn_if_slot_taken()
     tree = repo.tree()
     print(f"land: running the gate on tree {tree[:12]}: {repo.gate}", flush=True)
     code = subprocess.run(repo.gate, shell=True, cwd=repo.root).returncode

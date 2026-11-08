@@ -1,0 +1,520 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""fleet-slot -- the timing slot: who may run heavy work on this machine now, and who is waiting.
+
+WHY. Several long-running sessions share one machine. A timed measurement, or a suite heavy enough
+to skew one, taken while another session is doing the same, measures the contention rather than the
+work. So heavy work takes turns: a session asks for the slot, an arbiter grants it, the holder
+releases it when done. Run by message, that queue lives in one session's context, where no other
+session can read it and nothing records it. This tool keeps it in a file every session can read.
+
+WHAT IT DOES NOT DO. It decides nothing and sends nothing. The order in which waiting sessions are
+granted is the arbiter's call, and telling a session "go" is the arbiter's message; the tool records
+and shows both. A slot is never released automatically: a holder past its expected end is shown as
+overdue, because a slot that expires silently would let the next run start under the one still going.
+
+ONE SLOT PER MACHINE. The state is local. A session on another machine has its own slot.
+
+THE TRUST IS COOPERATIVE. Anyone who can write the state directory can write the slot, and the tool
+cannot authenticate who ran it. A command records who it is from, checked as far as it can be: inside
+a named session the name is read from the session itself and `--as` may not contradict it; outside
+one, `--as` is required. Every change is appended to the history, so a change outside the rules is
+visible afterwards.
+
+FILES, under $FLEET_SLOT_STATE (default: the fleet state directory's slot/, that is
+$FLEET_STATE/slot, else $XDG_STATE_HOME/fleet-canonicals/slot, else ~/.local/state/fleet-canonicals/slot):
+  slot.json      the holder and the queue, rewritten atomically under the lock
+  history.jsonl  one line per change, appended, never rewritten
+  lock           the flock every command takes
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+USAGE = """\
+usage: fleet-slot <command> [arguments]
+
+  request <holder> --minutes N --what TEXT [--as NAME]
+              join the queue (or update your entry); one entry per holder
+  grant <holder> [--minutes N --what TEXT] [--as NAME]
+              give the slot to <holder>; arbiters only. A holder that is queued keeps its
+              minutes and what unless given; one that is not needs both
+  release <holder> [--as NAME]
+              end <holder>'s slot (the holder or an arbiter), recording how long it ran; or
+              withdraw <holder>'s queued request
+  status [--json] [--recent N]
+              the holder, since when, its expected end and how far overdue; the queue; the
+              last slots; the machine's load
+  check [<holder>]
+              exit 0 when <holder> has the slot or nobody does, 1 when someone else does.
+              Without <holder>, the calling session's name; when that cannot be read, any held
+              slot is someone else's
+
+configuration: the key `slot-arbiter` (a list, default director-canonical) in the fleet-canonicals
+config file ($FLEET_CANONICALS_CONFIG, else $XDG_CONFIG_HOME/fleet-canonicals/config).
+
+exit status: 0 done; 1 refused, or (check) another holder has the slot; 2 usage, configuration or
+an unreadable state file.
+"""
+
+DEFAULTS = {"slot-arbiter": "director-canonical"}
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+EXIT_REFUSED = 1
+EXIT_USAGE = 2
+
+HOME = Path.home()
+
+
+def state_dir() -> Path:
+    if os.environ.get("FLEET_SLOT_STATE"):
+        return Path(os.environ["FLEET_SLOT_STATE"])
+    fleet = os.environ.get("FLEET_STATE") or str(
+        Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state") / "fleet-canonicals")
+    return Path(fleet) / "slot"
+
+
+def config_path() -> Path:
+    return Path(os.environ.get("FLEET_CANONICALS_CONFIG") or
+                Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fleet-canonicals" / "config")
+
+
+class Refused(Exception):
+    pass
+
+
+class Usage(Exception):
+    pass
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def iso(t: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def clock(t: int) -> str:
+    return time.strftime("%H:%M", time.localtime(t))
+
+
+def mins(seconds: int) -> int:
+    return max(0, round(seconds / 60))
+
+
+# ---- configuration ---------------------------------------------------------------------------
+
+def config() -> dict[str, str]:
+    """`key = value` lines, `#` comments, the last repeat wins: the file `fleet-canonicals` reads."""
+    values = dict(DEFAULTS)
+    try:
+        lines = config_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        values[k.strip()] = v.strip()
+    return values
+
+
+def as_list(v: str) -> list[str]:
+    return [x for x in re.split(r"[\s,]+", v) if x]
+
+
+def arbiters() -> list[str]:
+    return as_list(config()["slot-arbiter"])
+
+
+# ---- who is asking ---------------------------------------------------------------------------
+
+def usage_dir() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "claude-usage"
+
+
+def session_name(listing: bool) -> str | None:
+    """The name of the session this runs inside: Claude Code exports CLAUDE_CODE_SESSION_ID into a
+    session's shell, and the status-line usage recorder writes <runtime dir>/claude-usage/<id>.json
+    carrying session_name. When `listing`, the agents listing is the fallback (slower, and inside a
+    sandbox it may be unreadable); `check` does without it, since it runs on every commit."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return None
+    try:
+        name = json.loads((usage_dir() / f"{sid}.json").read_text(encoding="utf-8")).get("session_name")
+        if name:
+            return str(name)
+    except (OSError, ValueError, AttributeError):
+        pass
+    if not listing:
+        return None
+    cmd = (os.environ.get("FLEET_AGENTS_JSON_ALL_CMD") or os.environ.get("FLEET_AGENTS_JSON_CMD") or
+           "claude agents --json --all").split()
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout
+        rows = json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("sessionId") == sid and r.get("name"):
+            return str(r["name"])
+    return None
+
+
+def actor(claimed: str) -> str:
+    derived = session_name(listing=True)
+    if derived and claimed and claimed != derived:
+        raise Refused(f"this is running inside '{derived}', so it is from '{derived}', not "
+                      f"'{claimed}'. Drop --as, or ask '{claimed}' to run it.")
+    who = derived or claimed
+    if not who:
+        raise Refused("cannot tell who is asking: this is not running inside a named session, so say "
+                      "who with --as <name>. Every change records who made it.")
+    return who
+
+
+# ---- state -----------------------------------------------------------------------------------
+
+@contextmanager
+def locked(write: bool):
+    d = state_dir()
+    if write:
+        d.mkdir(parents=True, exist_ok=True)
+    lock = d / "lock"
+    if not write and not lock.exists():
+        yield d
+        return
+    with open(lock, "a" if write else "r") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+        try:
+            yield d
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def load(d: Path) -> dict:
+    p = d / "slot.json"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"holder": None, "queue": []}
+    except OSError as e:
+        raise Usage(f"cannot read {p}: {e.strerror}")
+    try:
+        st = json.loads(text)
+        if not isinstance(st, dict) or not isinstance(st.get("queue", []), list):
+            raise ValueError("not a slot state")
+    except ValueError as e:
+        raise Usage(f"{p} is not a readable slot state ({e}); fix or remove it by hand, after reading "
+                    "the last lines of history.jsonl beside it")
+    st.setdefault("holder", None)
+    st.setdefault("queue", [])
+    return st
+
+
+def save(d: Path, st: dict) -> None:
+    p = d / "slot.json"
+    tmp = p.with_name(f".tmp-slot-{secrets.token_hex(4)}")
+    tmp.write_text(json.dumps(st, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def append_history(d: Path, event: dict) -> None:
+    with open(d / "history.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event) + "\n")
+
+
+def read_history(d: Path) -> list[dict]:
+    try:
+        lines = (d / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+# ---- arguments -------------------------------------------------------------------------------
+
+def parse(argv: list[str], flags: dict[str, bool]) -> tuple[list[str], dict[str, str | bool]]:
+    """Positionals and options. `flags` maps each accepted option to whether it takes a value."""
+    pos: list[str] = []
+    opts: dict[str, str | bool] = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(USAGE, end="")
+            sys.exit(0)
+        if a.startswith("--"):
+            if a not in flags:
+                raise Usage(f"unknown option '{a}'")
+            if flags[a]:
+                if i + 1 >= len(argv) or not argv[i + 1].strip():
+                    raise Usage(f"{a} needs a value")
+                opts[a] = argv[i + 1].strip()
+                i += 2
+            else:
+                opts[a] = True
+                i += 1
+            continue
+        pos.append(a)
+        i += 1
+    return pos, opts
+
+
+def one_name(pos: list[str], verb: str) -> str:
+    if len(pos) != 1:
+        raise Usage(f"{verb}: name exactly one holder")
+    name = pos[0]
+    if not NAME_RE.match(name):
+        raise Usage(f"{verb}: '{name}' is not a holder name (letters, digits, '.', '_', '-')")
+    return name
+
+
+def minutes_opt(opts: dict, verb: str) -> int | None:
+    if "--minutes" not in opts:
+        return None
+    try:
+        m = int(str(opts["--minutes"]))
+    except ValueError:
+        raise Usage(f"{verb}: --minutes must be a whole number")
+    if m < 1:
+        raise Usage(f"{verb}: --minutes must be at least 1")
+    return m
+
+
+# ---- commands --------------------------------------------------------------------------------
+
+def cmd_request(argv: list[str]) -> int:
+    pos, opts = parse(argv, {"--minutes": True, "--what": True, "--as": True})
+    holder = one_name(pos, "request")
+    m = minutes_opt(opts, "request")
+    what = str(opts.get("--what", ""))
+    if m is None or not what:
+        raise Usage("request: --minutes and --what are both required; they are what the queue shows")
+    who = actor(str(opts.get("--as", "")))
+    if who != holder and who not in arbiters():
+        raise Refused(f"'{who}' asked for the slot for '{holder}': a session requests only for itself "
+                      f"(slot-arbiter: {', '.join(arbiters()) or 'none'})")
+    with locked(write=True) as d:
+        st = load(d)
+        h = st["holder"]
+        if h and h["name"] == holder:
+            raise Refused(f"'{holder}' already holds the slot (since {clock(h['since'])}); release it "
+                          "when done, then request again for another turn")
+        t = now()
+        for e in st["queue"]:
+            if e["name"] == holder:
+                e.update({"minutes": m, "what": what, "by": who, "updated": t})
+                event = "update"
+                break
+        else:
+            st["queue"].append({"name": holder, "at": t, "minutes": m, "what": what, "by": who})
+            event = "request"
+        save(d, st)
+        append_history(d, {"at": iso(t), "t": t, "event": event, "holder": holder, "by": who,
+                           "minutes": m, "what": what})
+        place = [e["name"] for e in st["queue"]].index(holder) + 1
+    print(f"{'updated' if event == 'update' else 'queued'}  {holder}, {m} min: {what}")
+    print(f"        place {place} of {len(st['queue'])}; an arbiter grants the slot "
+          f"({', '.join(arbiters()) or 'none configured'}), and its message is the go")
+    return 0
+
+
+def cmd_grant(argv: list[str]) -> int:
+    pos, opts = parse(argv, {"--minutes": True, "--what": True, "--as": True})
+    holder = one_name(pos, "grant")
+    m = minutes_opt(opts, "grant")
+    who = actor(str(opts.get("--as", "")))
+    if who not in arbiters():
+        raise Refused(f"'{who}' is not an arbiter; only {', '.join(arbiters()) or 'nobody'} may grant "
+                      "the slot (config key slot-arbiter)")
+    with locked(write=True) as d:
+        st = load(d)
+        h = st["holder"]
+        if h:
+            raise Refused(f"'{h['name']}' holds the slot (since {clock(h['since'])}, {h['what']}); it "
+                          f"is released first: fleet-slot release {h['name']}")
+        queued = next((e for e in st["queue"] if e["name"] == holder), None)
+        minutes = m if m is not None else (queued or {}).get("minutes")
+        what = str(opts.get("--what") or (queued or {}).get("what") or "")
+        if not minutes or not what:
+            raise Usage(f"grant: '{holder}' is not queued, so give --minutes and --what")
+        t = now()
+        st["queue"] = [e for e in st["queue"] if e["name"] != holder]
+        st["holder"] = {"name": holder, "since": t, "minutes": int(minutes), "what": what,
+                        "granted_by": who}
+        save(d, st)
+        append_history(d, {"at": iso(t), "t": t, "event": "grant", "holder": holder, "by": who,
+                           "minutes": int(minutes), "what": what})
+    print(f"granted {holder} the slot at {clock(t)} for {minutes} min: {what}")
+    print("        the tool sends nothing: tell the holder it may go")
+    return 0
+
+
+def cmd_release(argv: list[str]) -> int:
+    pos, opts = parse(argv, {"--as": True})
+    holder = one_name(pos, "release")
+    who = actor(str(opts.get("--as", "")))
+    if who != holder and who not in arbiters():
+        raise Refused(f"'{who}' may not release '{holder}': the holder or an arbiter does "
+                      f"(slot-arbiter: {', '.join(arbiters()) or 'none'})")
+    with locked(write=True) as d:
+        st = load(d)
+        t = now()
+        h = st["holder"]
+        if h and h["name"] == holder:
+            held = t - int(h["since"])
+            st["holder"] = None
+            save(d, st)
+            append_history(d, {"at": iso(t), "t": t, "event": "release", "holder": holder, "by": who,
+                               "since": h["since"], "minutes": h["minutes"], "what": h["what"],
+                               "held_seconds": held})
+            over = mins(held) - int(h["minutes"])
+            note = f", {over} min over" if over > 0 else ""
+            print(f"released {holder}: held {mins(held)} of {h['minutes']} min{note}")
+            if st["queue"]:
+                print(f"         queued: {', '.join(e['name'] for e in st['queue'])}; the arbiter "
+                      "chooses who goes next")
+            return 0
+        if any(e["name"] == holder for e in st["queue"]):
+            st["queue"] = [e for e in st["queue"] if e["name"] != holder]
+            save(d, st)
+            append_history(d, {"at": iso(t), "t": t, "event": "withdraw", "holder": holder, "by": who})
+            print(f"withdrew {holder}'s queued request")
+            return 0
+    raise Refused(f"'{holder}' neither holds the slot nor is queued for it")
+
+
+def loadavg() -> dict:
+    try:
+        one, five, _ = os.getloadavg()
+    except OSError:
+        one = five = None
+    return {"load1": one, "load5": five, "cpus": os.cpu_count()}
+
+
+def snapshot(recent: int) -> dict:
+    with locked(write=False) as d:
+        st = load(d)
+        hist = read_history(d)
+    t = now()
+    h = st["holder"]
+    out: dict = {"now": iso(t), "holder": None, "queue": [], "recent": [], "load": loadavg(),
+                 "state_dir": str(state_dir())}
+    if h:
+        end = int(h["since"]) + 60 * int(h["minutes"])
+        out["holder"] = {**h, "since_iso": iso(int(h["since"])), "expected_end": iso(end),
+                         "held_minutes": mins(t - int(h["since"])),
+                         "overdue_minutes": mins(t - end) if t > end else 0}
+    for e in st["queue"]:
+        out["queue"].append({**e, "waiting_minutes": mins(t - int(e["at"]))})
+    rel = [e for e in hist if e.get("event") == "release"]
+    out["recent"] = rel[-recent:] if recent > 0 else []
+    return out
+
+
+def cmd_status(argv: list[str]) -> int:
+    pos, opts = parse(argv, {"--json": False, "--recent": True})
+    if pos:
+        raise Usage("status takes no holder")
+    try:
+        recent = int(str(opts.get("--recent", "5")))
+    except ValueError:
+        raise Usage("status: --recent must be a whole number")
+    s = snapshot(recent)
+    if opts.get("--json"):
+        print(json.dumps(s, indent=2))
+        return 0
+    h = s["holder"]
+    if h:
+        late = f", OVERDUE by {h['overdue_minutes']} min" if h["overdue_minutes"] else ""
+        print(f"slot     held by {h['name']} since {clock(int(h['since']))} ({h['held_minutes']} min of "
+              f"{h['minutes']}, expected end {clock(int(h['since']) + 60 * int(h['minutes']))}{late})")
+        print(f"         {h['what']}  (granted by {h['granted_by']})")
+    else:
+        print("slot     free")
+    if s["queue"]:
+        for i, e in enumerate(s["queue"], 1):
+            print(f"{'queue' if i == 1 else '':8} {i}. {e['name']}, {e['minutes']} min: {e['what']}  "
+                  f"(asked {clock(int(e['at']))}, waiting {e['waiting_minutes']} min)")
+    else:
+        print("queue    empty")
+    for i, e in enumerate(reversed(s["recent"])):
+        start = int(e["since"])
+        print(f"{'recent' if i == 0 else '':8} {e['holder']} "
+              f"{clock(start)}-{clock(start + int(e['held_seconds']))}, {mins(int(e['held_seconds']))} "
+              f"of {e['minutes']} min: {e['what']}")
+    ld = s["load"]
+    if ld["load1"] is not None:
+        print(f"load     {ld['load1']:.2f} (1 min), {ld['load5']:.2f} (5 min), {ld['cpus']} CPUs")
+    return 0
+
+
+def cmd_check(argv: list[str]) -> int:
+    pos, _ = parse(argv, {})
+    if len(pos) > 1:
+        raise Usage("check: at most one holder")
+    holder = pos[0] if pos else session_name(listing=False)
+    with locked(write=False) as d:
+        st = load(d)
+    h = st["holder"]
+    if not h:
+        print("free")
+        return 0
+    if holder and h["name"] == holder:
+        print(f"held by {holder} (you)")
+        return 0
+    end = int(h["since"]) + 60 * int(h["minutes"])
+    late = f", overdue {mins(now() - end)} min" if now() > end else ""
+    print(f"held by {h['name']} since {clock(int(h['since']))} for {h['minutes']} min{late}: {h['what']}"
+          + ("" if holder else " (the caller's name could not be read)"))
+    return EXIT_REFUSED
+
+
+COMMANDS = {"request": cmd_request, "grant": cmd_grant, "release": cmd_release,
+            "status": cmd_status, "check": cmd_check}
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(USAGE, end="")
+        return 0 if argv else EXIT_USAGE
+    cmd = COMMANDS.get(argv[0])
+    try:
+        if cmd is None:
+            raise Usage(f"unknown command '{argv[0]}'")
+        return cmd(argv[1:])
+    except Usage as e:
+        print(f"fleet-slot: {e}\n\n{USAGE}" if "unknown" in str(e) else f"fleet-slot: {e}",
+              file=sys.stderr)
+        return EXIT_USAGE
+    except Refused as e:
+        print(f"fleet-slot: refused: {e}", file=sys.stderr)
+        return EXIT_REFUSED
+    except OSError as e:
+        print(f"fleet-slot: {e}", file=sys.stderr)
+        return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

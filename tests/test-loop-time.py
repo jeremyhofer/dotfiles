@@ -45,6 +45,9 @@ def isolated_git(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.invalid")
     monkeypatch.delenv("LOOP_TIME_RESULTS", raising=False)
     monkeypatch.setenv("LOOP_TIME_SCRATCH", str(tmp_path_factory.mktemp("scratchbase")))
+    # Never the machine's real timing slot: `true check` answers "free". The slot tests below
+    # point it at the real fleet-slot with a private state directory.
+    monkeypatch.setenv("LOOP_TIME_SLOT_CMD", "true")
 
 
 def git(root, *args):
@@ -1055,6 +1058,93 @@ def test_caller_env_drops_only_the_tools_own_bin_directory(monkeypatch):
     monkeypatch.setattr(lt.sys, "prefix", "/usr")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     assert lt.caller_env()["PATH"] == "/usr/bin:/bin"
+
+
+# ---- the timing slot ---------------------------------------------------------------------
+
+SLOT_TOOL = HERE.parent / "private_dot_local" / "bin" / "executable_fleet-slot"
+
+
+@pytest.fixture
+def slot(monkeypatch, tmp_path):
+    """The real fleet-slot, its state under tmp_path, run outside any named session."""
+    monkeypatch.setenv("FLEET_SLOT_STATE", str(tmp_path / "slot"))
+    monkeypatch.setenv("FLEET_CANONICALS_CONFIG", str(tmp_path / "no-config"))
+    monkeypatch.setenv("FLEET_AGENTS_JSON_CMD", "echo []")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    cmd = f"{sys.executable} {SLOT_TOOL}"
+    monkeypatch.setenv("LOOP_TIME_SLOT_CMD", cmd)
+
+    def fs(*args):
+        r = subprocess.run([sys.executable, str(SLOT_TOOL), *args], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+    fs.cmd = cmd
+    return fs
+
+
+def grant(fs, holder):
+    fs("grant", holder, "--minutes", "5", "--what", "timed run", "--as", "director-canonical")
+
+
+def test_run_is_refused_while_another_session_holds_the_slot_and_nothing_runs(decl_path, tmp_path, slot):
+    grant(slot, "other-session")
+    res = tmp_path / "r.jsonl"
+    rc = run_main("run", decl_path, "check", "--mode", "cold", "--samples", "1", "--results", res,
+                  "--max-load", "9999")
+    assert rc == lt.EXIT_SLOT == 6
+    assert not res.exists()
+    assert not (tmp_path / "prep.log").exists()   # not even the cold_prep ran
+
+
+def test_run_proceeds_after_release_and_records_the_slot_free(decl_path, tmp_path, slot):
+    grant(slot, "other-session")
+    slot("release", "other-session", "--as", "other-session")
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "check", "--samples", "1", "--results", res, "--max-load", "9999") == 0
+    assert records(res)[0]["slot"] == {"state": "free", "holder": None, "override": False}
+
+
+def test_run_proceeds_in_its_own_slot(decl_path, tmp_path, slot):
+    grant(slot, "me")
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "check", "--samples", "1", "--results", res, "--max-load", "9999",
+                    "--slot-holder", "me") == 0
+    assert records(res)[0]["slot"] == {"state": "own", "holder": "me", "override": False}
+
+
+def test_ignore_slot_measures_and_every_record_says_it_was_overridden(decl_path, tmp_path, slot):
+    grant(slot, "other-session")
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "check", "--samples", "2", "--results", res, "--max-load", "9999",
+                    "--ignore-slot") == 0
+    for r in records(res):
+        assert r["slot"] == {"state": "other", "holder": "other-session", "override": True}
+
+
+def test_a_slot_granted_to_another_mid_run_stops_the_next_sample(tmp_path, project, slot):
+    p = write_decl(tmp_path, project, f"""
+        [[loop]]
+        id = "grab"
+        command = "{slot.cmd} grant other-session --minutes 5 --what x --as director-canonical"
+        """)
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", p, "grab", "--samples", "3", "--results", res, "--max-load", "9999") == 6
+    recs = records(res)
+    assert len(recs) == 1 and recs[0]["slot"]["state"] == "free"
+
+
+def test_a_failing_slot_check_refuses_unless_ignored(decl_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("LOOP_TIME_SLOT_CMD", "sh -c 'echo broken >&2; exit 2'")
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999") == 6
+    assert run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999",
+                    "--ignore-slot") == 0
+    assert records(res)[0]["slot"] == {"state": "error", "holder": None, "override": True}
+
+
+def test_without_fleet_slot_the_record_says_unchecked(monkeypatch):
+    monkeypatch.setattr(lt, "slot_command", lambda: None)
+    assert lt.slot_check(None, False) == {"state": "unchecked", "holder": None, "override": False}
 
 
 if __name__ == "__main__":

@@ -34,6 +34,25 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `fleet-slot`: the timing slot in a file every session can read; `loop-time run` refuses while another session holds it
+
+- New tool `~/.local/bin/fleet-slot`. Sessions sharing a machine take turns at heavy work: `request`
+  joins the queue, an arbiter `grant`s the slot, the holder `release`s it; `status` shows the holder,
+  how far overdue (a slot is never released automatically), the queue and the last slots; `check`
+  says whether the slot is free or yours. It decides and sends nothing. State is under the fleet
+  state directory (`~/.local/state/fleet-canonicals/slot/` by default), which sessions that use
+  `fleet-canonicals request` can already write.
+- **`loop-time run` now refuses (exit 6) while another session holds the slot**, before anything
+  runs and before each sample, and every record carries a `slot` field. `--ignore-slot` measures
+  anyway and the records say so. On a machine where nobody uses the slot it is always free, so
+  nothing changes there.
+- `land check` and the commit gate `install-test-gate` writes warn, never refuse, when another
+  session holds the slot. A gate already installed picks the warning up when it is regenerated (the
+  base's own on apply; a layer's when its installer runs again).
+- **ACTION**, only where sessions take turns: name who may grant with `slot-arbiter = <names>` in
+  `~/.config/fleet-canonicals/config` (default `director-canonical`). Someone granting from a
+  terminal, outside any named session, passes `--as <name>`, and that name must be on the list.
+
 ### A push to the publish remote runs `setup/publish-check` first
 
 - The base now tracks `.githooks/pre-push`, which the fleet's `run-repo-gates` hook runs. A push to

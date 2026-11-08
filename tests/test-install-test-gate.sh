@@ -120,5 +120,20 @@ git -C "$tmp/sel" reset -q; : > "$SEL_LOG"
 commit_one "$tmp/sel" docs/page.md; rc=$?
 check "with a selector: a documentation-only commit still skips everything" '[ "$rc" = 0 ] && [ ! -s "$SEL_LOG" ]'
 
+# The timing slot (fleet-slot, stubbed on PATH): another holder draws a warning, never a refusal.
+mkrepo "$tmp/slot" 0
+sh "$tool" "$tmp/slot" --label s --skip-var SKIP_S > /dev/null 2>&1
+printf '#!/bin/sh\necho "held by other-session since 13:00 for 20 min: timed run"\nexit 1\n' > "$tmp/bin/fleet-slot"
+chmod +x "$tmp/bin/fleet-slot"
+commit_one "$tmp/slot" bin/tool; rc=$?
+check "slot held by another session: the commit goes through, warned with the holder's name" '[ "$rc" = 0 ] && grep -q "warning: the timing slot is held by other-session" "$tmp/out"'
+printf '#!/bin/sh\necho free\nexit 0\n' > "$tmp/bin/fleet-slot"
+commit_one "$tmp/slot" bin/tool; rc=$?
+check "slot free: no warning" '[ "$rc" = 0 ] && ! grep -q "timing slot" "$tmp/out"'
+printf '#!/bin/sh\necho broken >&2\nexit 2\n' > "$tmp/bin/fleet-slot"
+commit_one "$tmp/slot" bin/tool; rc=$?
+check "fleet-slot failing: no warning, and the commit is not refused" '[ "$rc" = 0 ] && ! grep -q "timing slot" "$tmp/out"'
+rm -f "$tmp/bin/fleet-slot"
+
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]

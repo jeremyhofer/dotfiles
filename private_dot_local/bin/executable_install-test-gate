@@ -29,6 +29,8 @@
 # for the run and puts them back, so a commit passes or fails on the code it contains. Without that
 # helper (it ships with this base) the gate refuses rather than judge the working tree.
 #
+# IT WARNS WHEN ANOTHER SESSION HOLDS THE TIMING SLOT (fleet-slot check exits 1), and runs anyway.
+#
 # The base's own source repository gets its gate from this tool too (run_onchange_install-git-hooks),
 # so the one hook it generates, and the rule above, serve both.
 #
@@ -95,6 +97,16 @@ if [ -z "$staged_run" ]; then
   printf '  or commit with %s=1.
 ' "$GATE_SKIP_VAR" >&2
   exit 1
+fi
+# Heavy work on a shared machine takes turns through the timing slot (fleet-slot). The suites run
+# whoever holds it, so this only warns: a commit is not a measurement, and refusing one would block
+# every session behind a slot left held.
+if command -v fleet-slot >/dev/null 2>&1; then
+  slot_rc=0
+  slot_msg=$(fleet-slot check 2>/dev/null) || slot_rc=$?
+  if [ "$slot_rc" -eq 1 ]; then
+    printf '%s pre-commit: warning: the timing slot is %s; the suites run anyway (fleet-slot status)\n' "$GATE_LABEL" "$slot_msg" >&2
+  fi
 fi
 # A repository that ships tests/select-suites.sh runs only the suites its staged paths select (that
 # script's header has the rules, including why the fail-safe is every suite); one without it runs

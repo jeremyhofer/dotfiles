@@ -35,6 +35,7 @@ EXIT_INVALID = 2
 EXIT_BLIND = 3
 EXIT_LOAD = 4
 EXIT_RESTORE = 5
+EXIT_SLOT = 6
 
 EPILOG = """\
 modes (run --mode):
@@ -80,8 +81,16 @@ cold = "fresh-scratch" empties {scratch} before each cold sample, and refuses to
 anything outside that scratch root. Point a shared cache at {scratch} to start it empty without
 resetting the user's real one. Each record lists the env key names that were set, never values.
 
+the timing slot: before the run and before each sample, `fleet-slot check` asks whether another
+session holds this machine's timing slot. If one does, run refuses (exit 6), because a sample timed
+in someone else's slot measures their work as well as this loop. --ignore-slot measures anyway and
+each record says so; --slot-holder names the holder to check as (default: the calling session).
+Every record carries `slot`: its state (free, own, other, error, or unchecked when fleet-slot is not
+installed), the holder's name, and whether it was overridden.
+
 exit status: 0 ok; 1 a loop exited non-zero; 2 invalid declaration or arguments; 3 a scenario was
-blind; 4 refused under load; 5 a file could not be restored.
+blind; 4 refused under load; 5 a file could not be restored; 6 refused: another session holds the
+timing slot.
 results: ~/.local/state/loop-time/results.jsonl, or $LOOP_TIME_RESULTS, or --results.
 """
 
@@ -95,6 +104,10 @@ class DeclError(Exception):
 
 
 class LoadError(Exception):
+    pass
+
+
+class SlotError(Exception):
     pass
 
 
@@ -424,6 +437,48 @@ def wait_for_load(max_load, force, getload=read_loadavg, sleep=time.sleep, wait=
         waited += interval
 
 
+# ---- timing slot -------------------------------------------------------------------------
+
+def slot_command():
+    """fleet-slot: $LOOP_TIME_SLOT_CMD, else beside this file (a source tree names it
+    executable_fleet-slot), else on PATH; None when it is nowhere."""
+    if os.environ.get("LOOP_TIME_SLOT_CMD"):
+        return shlex.split(os.environ["LOOP_TIME_SLOT_CMD"])
+    here = Path(__file__).resolve().parent
+    for cand in (here / "fleet-slot", here / "executable_fleet-slot"):
+        if cand.is_file():
+            return [str(cand)]
+    found = shutil.which("fleet-slot")
+    return [found] if found else None
+
+
+def slot_check(holder, ignore):
+    """The slot field for a record. Raises SlotError when another holder has the slot, or the check
+    itself failed, unless the caller passed --ignore-slot."""
+    cmd = slot_command()
+    if cmd is None:
+        return {"state": "unchecked", "holder": None, "override": False}
+    try:
+        p = subprocess.run([*cmd, "check", *([holder] if holder else [])], capture_output=True,
+                           text=True, timeout=60, env=caller_env())
+        rc, msg = p.returncode, (p.stdout.strip() or p.stderr.strip())
+    except (OSError, subprocess.TimeoutExpired) as e:
+        rc, msg = 2, str(e)
+    if rc == 0:
+        mine = msg.startswith("held by")
+        return {"state": "own" if mine else "free", "holder": holder if mine else None, "override": False}
+    m = re.match(r"held by (\S+)", msg)
+    other = m.group(1) if rc == 1 and m else None
+    if ignore:
+        return {"state": "other" if rc == 1 else "error", "holder": other, "override": True}
+    if rc == 1:
+        raise SlotError(f"another session holds the timing slot ({msg}); a sample timed now measures "
+                        "its work too. Wait until `fleet-slot status` shows the slot free or yours, or "
+                        "pass --ignore-slot to measure anyway (each record says it was overridden)")
+    raise SlotError(f"`fleet-slot check` failed (exit {rc}: {msg}), so whether the slot is free is "
+                    "unknown; fix that, or pass --ignore-slot")
+
+
 # ---- nx output ---------------------------------------------------------------------------
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -683,8 +738,9 @@ def empty_scratch(scratch, base):
 
 
 class Session:
-    def __init__(self, decl, results, max_load, force, wait=120):
+    def __init__(self, decl, results, max_load, force, wait=120, slot_holder=None, ignore_slot=False):
         self.decl, self.results, self.max_load, self.force, self.wait = decl, Path(results), max_load, force, wait
+        self.slot_holder, self.ignore_slot = slot_holder, ignore_slot
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         self.head, self.dirty = git_state(decl.root)
         self.versions = {c: run_quiet(c, decl.root)[1] for c in decl.versions}
@@ -720,6 +776,7 @@ class Session:
             print(f"loop-time: WARNING: {failure}", file=sys.stderr)
 
     def sample(self, loop, mode, sample, step=None, scenario=None, caught_if_failing=False):
+        slot = slot_check(self.slot_holder, self.ignore_slot)
         under = wait_for_load(self.max_load, self.force, wait=self.wait)
         self.counter += 1
         outp = self.results.parent / "output" / (
@@ -740,7 +797,7 @@ class Session:
                "scenario": scenario, "sample": sample, "exit_code": rc,
                "wall_seconds": round(wall, 4), "cpu_seconds": round(cpu, 4),
                "git_head": self.head, "tree_dirty": self.dirty, "start": start, "end": end,
-               "under_load": under, "versions": self.versions, "runner": loop.runner,
+               "under_load": under, "slot": slot, "versions": self.versions, "runner": loop.runner,
                "env_keys": env_keys, "output": str(outp)}
         if caught_if_failing:
             rec["caught"] = rc != 0
@@ -764,8 +821,9 @@ class Session:
                 raise RuntimeError(f"cold_prep failed (exit {rc}) for loop '{loop.id}': {line}")
 
 
-def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
-    s = Session(decl, results, max_load, force, wait)
+def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120, slot_holder=None,
+             ignore_slot=False):
+    s = Session(decl, results, max_load, force, wait, slot_holder, ignore_slot)
     scenarios = decl.scenarios_for(loop.id)
     if mode.startswith("scenario:"):
         scenarios = [decl.scenario(mode.split(":", 1)[1])]
@@ -993,9 +1051,20 @@ def cmd_run(args):
               "Name a writable file with --results or LOOP_TIME_RESULTS "
               "(inside an agent sandbox, under ~/.cache).", file=sys.stderr)
         return EXIT_INVALID
+    # Checked once before anything runs (a cold_prep or a scenario edit included), then again before
+    # each sample, since the slot can change hands during a long run.
+    try:
+        slot_check(args.slot_holder, args.ignore_slot)
+    except SlotError as e:
+        print(f"loop-time: refused: {e}; nothing was run", file=sys.stderr)
+        return EXIT_SLOT
     _install_signal_handlers()
     try:
-        s = run_loop(d, loop, mode, args.samples, results, max_load, args.force, args.load_wait)
+        s = run_loop(d, loop, mode, args.samples, results, max_load, args.force, args.load_wait,
+                     args.slot_holder, args.ignore_slot)
+    except SlotError as e:
+        print(f"loop-time: refused mid-run: {e}; the samples before it were recorded", file=sys.stderr)
+        return EXIT_SLOT
     except DeclError as e:
         _print_problems(e)
         return EXIT_INVALID
@@ -1039,6 +1108,10 @@ def build_parser():
                    help="refuse a sample while the 1-minute load average exceeds this (default: half the CPUs)")
     r.add_argument("--load-wait", type=int, default=120, help="seconds to wait for the load to fall (default 120)")
     r.add_argument("--force", action="store_true", help="measure anyway above --max-load; marks under_load")
+    r.add_argument("--ignore-slot", action="store_true",
+                   help="measure while another session holds the timing slot; each record says so")
+    r.add_argument("--slot-holder", default=None,
+                   help="the slot holder to check as (default: the calling session's name)")
     rp = sub.add_parser("report", help="summarize a results file")
     rp.add_argument("--results")
     rp.add_argument("--json", action="store_true")

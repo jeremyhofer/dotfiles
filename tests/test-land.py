@@ -25,6 +25,8 @@ def isolated_git(monkeypatch):
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@example.invalid")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.invalid")
+    # Never the machine's real timing slot: `true check` answers "free".
+    monkeypatch.setenv("LAND_SLOT_CMD", "true")
 
 
 def git(root, *args):
@@ -153,6 +155,32 @@ def test_failed_gate_records_nothing_and_landing_refused(repo):
     assert r.returncode != 0
     assert git(main, "rev-parse", "main") == before
     assert "no recorded pass" in land(feat, "status").stdout
+
+
+def slot_stub(tmp_path, rc, text):
+    p = tmp_path / "fleet-slot-stub"
+    p.write_text(f"#!/bin/sh\necho '{text}'\nexit {rc}\n")
+    p.chmod(0o755)
+    return str(p)
+
+
+def test_check_warns_but_passes_when_another_session_holds_the_slot(repo, tmp_path, monkeypatch):
+    main, feat = repo
+    monkeypatch.setenv("LAND_SLOT_CMD", slot_stub(tmp_path, 1, "held by other-session since 13:00"))
+    commit(feat, "a.txt")
+    r = land(feat, "check")
+    assert r.returncode == 0, r.stderr
+    assert "warning: the timing slot is held by other-session" in r.stderr
+    assert land(feat).returncode == 0
+
+
+def test_check_is_silent_when_the_slot_is_free_or_the_check_fails(repo, tmp_path, monkeypatch):
+    main, feat = repo
+    commit(feat, "a.txt")
+    for rc, text in ((0, "free"), (2, "broken")):
+        monkeypatch.setenv("LAND_SLOT_CMD", slot_stub(tmp_path, rc, text))
+        r = land(feat, "check")
+        assert r.returncode == 0 and "timing slot" not in r.stderr
 
 
 def test_passing_after_failure_then_lands(repo):
