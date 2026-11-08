@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Tests for skill-externals-sync: privately declared skills, installed from git at a pinned tag.
 # Everything runs against local repositories and a temporary HOME; no network.
 set -u

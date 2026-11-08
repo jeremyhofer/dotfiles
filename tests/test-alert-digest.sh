@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-alert-digest.sh -- contract tests for alert-digest, against stand-in ntfy-inbox and hc-status
 # commands put first on PATH. Each stand-in prints what the files under $w/say/ hold and exits with
 # the status they name, and logs its arguments, so a test sets the world and reads the digest.

@@ -1,11 +1,11 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb lint` fails loud (exit 1, per-file `path: reason` on stderr) on:
 #   (a) missing required frontmatter / invalid enums
 #   (b) an edge target (related/depends-on/supersedes) that resolves to no record `name`
 #   (c) a `[[` wikilink in the body (prose must be self-contained)
 #   (d) a duplicate `name`
 #   (e) a `sensitivity: restricted` record not under an encrypted (.age) path
-# and exits 0 on a clean KB. Run directly: `sh tests/test-kb-lint.sh`.
+# and exits 0 on a clean KB. Run directly: `bash tests/test-kb-lint.sh`.
 set -eu
 # sedi EXPR FILE -- in-place edit, portably. Deliberately NOT the GNU in-place flag: on
 # BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file

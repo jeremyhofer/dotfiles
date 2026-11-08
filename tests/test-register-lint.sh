@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Tests for register-lint. Every case PLANTS a defect and asserts the tool reports it, or
 # plants the near-miss and asserts it does not.
 #

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `image-bump latest` -- is a newer release out than the pin, from the release host's API.
 #
 # The release hosts are one tiny stdlib HTTP server bound to 127.0.0.1 (both hosts' base URLs

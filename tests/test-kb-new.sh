@@ -1,9 +1,9 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb new <type> <slug>` scaffolds a record with complete, valid frontmatter
 # (correct-by-construction): all schema keys present, name == slug, type set, `updated`
 # stamped from KB_DATE (injected for determinism). Invalid type -> exit 2; existing slug
 # -> non-zero. A `<root>/.templates/<type>.md` override, if present, is honored.
-# Run directly: `sh tests/test-kb-new.sh`.
+# Run directly: `bash tests/test-kb-new.sh`.
 set -eu
 # macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
 # path containing "//". Harmless for file I/O and fatal the moment such a path is compared

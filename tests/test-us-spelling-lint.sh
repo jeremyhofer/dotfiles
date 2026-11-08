@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Tests for us-spelling-lint. Every case PLANTS a British spelling and asserts it is reported,
 # or plants the near-miss and asserts it is not. The near-misses carry as much weight as the
 # defects: a gate that fires on a quotation, a code span or a general typo gets switched off.

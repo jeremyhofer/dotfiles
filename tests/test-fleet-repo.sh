@@ -189,12 +189,14 @@ check "branches: default: only the default branch is fetched" '[ "$rc_fdef" = 0 
 check "branches: default: the default branch is still checked out with an upstream" '[ "$(git -C fdef/main branch --show-current)" = main ] && [ "$(upstream fdef/main)" = origin/main ]'
 check "branches: [list]: the default plus the listed branches, nothing else" '[ "$rc_flist" = 0 ] && [ "$(rrefs flist)" = "develop main release/1" ]'
 check "branches: [list]: only the default is a local branch" '[ "$(lrefs flist)" = main ]'
-check "case-differing branches: the declared one arrives, its case twin does not" '[ "$(rrefs fcase)" = "feature/b main" ] && ! git --git-dir=fcase/.git rev-parse -q --verify refs/remotes/origin/Feature/B >/dev/null'
+# The twin is looked for by listing, never by rev-parse: on a case-insensitive file system (macOS)
+# rev-parse of Feature/B finds the loose ref file feature/b and reports it present.
+check "case-differing branches: the declared one arrives, its case twin does not" '[ "$(rrefs fcase)" = "feature/b main" ] && ! git --git-dir=fcase/.git for-each-ref --format="%(refname)" refs/remotes/origin | grep -qx refs/remotes/origin/Feature/B'
 check "case-differing branches: undeclared, neither of the pair is fetched (default)" '! git --git-dir=fdef/.git rev-parse -q --verify refs/remotes/origin/Feature/B >/dev/null && ! git --git-dir=fdef/.git rev-parse -q --verify refs/remotes/origin/feature/b >/dev/null'
 check "worktrees: a branch named there is fetched although branches is default" '[ "$rc_fwt" = 0 ] && [ "$(rrefs fwt)" = "develop main topic/x" ]'
 check "worktrees: each gets a worktree at its declared path, relative to path:" '[ "$(git -C fwt/topic-x branch --show-current)" = topic/x ] && [ "$(git -C fwt/develop branch --show-current)" = develop ]'
 check "worktrees: each has an upstream" '[ "$(upstream fwt/topic-x)" = origin/topic/x ] && [ "$(upstream fwt/develop)" = origin/develop ]'
-check "worktrees: they share the container's .git" '[ "$(cd fwt/topic-x && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd fwt && pwd)/.git" ]'
+check "worktrees: they share the container's .git" '[ "$(cd fwt/topic-x && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd fwt && pwd -P)/.git" ]'
 FR clone fwt > "$TMP/out" 2>&1; rc=$?
 check "worktrees: a re-run is idempotent" '[ "$rc" = 0 ] && grep -q "already present" "$TMP/out"'
 git -C fwt/topic-x branch --unset-upstream; rm -rf fwt/develop; git -C fwt worktree prune
@@ -609,7 +611,7 @@ check "standard: branch: develop is honored where the remote's default is main" 
   '[ "$rc" = 0 ] && [ "$(git -C dom/sdev branch --show-current)" = develop ] && [ "$(upstream dom/sdev)" = origin/develop ]'
 FR clone swt > "$TMP/out" 2>&1; rc=$?
 check "standard: a declared worktree is NESTED at <path>/.worktrees/<name>, on its branch, with an upstream, sharing <path>/.git" \
-  '[ "$rc" = 0 ] && [ "$(git -C dom/swt/.worktrees/feature branch --show-current)" = feature ] && [ "$(upstream dom/swt/.worktrees/feature)" = origin/feature ] && [ "$(cd dom/swt/.worktrees/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd dom/swt && pwd)/.git" ] && [ ! -e dom/.worktrees ]'
+  '[ "$rc" = 0 ] && [ "$(git -C dom/swt/.worktrees/feature branch --show-current)" = feature ] && [ "$(upstream dom/swt/.worktrees/feature)" = origin/feature ] && [ "$(cd dom/swt/.worktrees/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd dom/swt && pwd -P)/.git" ] && [ ! -e dom/.worktrees ]'
 
 # The checkout is whatever its owner left it on: a re-run reports a branch that differs from the
 # declaration and never switches it, because a switch could carry or strand someone's work.

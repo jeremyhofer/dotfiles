@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb link <A> --<edge> <B>` writes ONE forward edge into A's frontmatter, validates
 # that B exists, is idempotent (no duplicate edge), extends a list with a second target,
-# and never touches B (reverse is generated, not authored). Run: `sh tests/test-kb-link.sh`.
+# and never touches B (reverse is generated, not authored). Run: `bash tests/test-kb-link.sh`.
 set -eu
 # macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
 # path containing "//". Harmless for file I/O and fatal the moment such a path is compared

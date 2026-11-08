@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-ntfy-inbox.sh -- contract tests for ntfy-inbox against a local stub of ntfy's JSON stream.
 #
 # The stub (stub-ntfy-server.py) replays a scripted list of connections, each streaming `open`,

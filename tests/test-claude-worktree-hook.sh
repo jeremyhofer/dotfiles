@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-claude-worktree-hook.sh -- contract tests for the Claude Code hooks that keep a session's
 # worktree operations on worktrunk and keep a session that works in place out of EnterWorktree.
 #

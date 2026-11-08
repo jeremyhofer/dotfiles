@@ -1,8 +1,8 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: KB-root resolution precedence (via the `kb debug-root` seam):
 #   --kb-root flag  >  KB_ROOT env  >  ~/.config/kb/config.toml  >  discovery (cwd upward).
 # Discovery matches a `kb.toml` file OR a `.kb/` dir marker; the resolved root is the
-# directory holding the marker. Run directly: `sh tests/test-kb-root.sh`.
+# directory holding the marker. Run directly: `bash tests/test-kb-root.sh`.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 KB="$here/../private_dot_local/bin/executable_kb"

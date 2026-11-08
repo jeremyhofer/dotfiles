@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb install-hooks` wires a repo-local pre-commit that runs `kb lint` AND both
 # derived-output freshness checks (`project --check`, `index --check`) against the
 # ACTUAL KB root (resolved + embedded at install time, so it works even when the KB is
@@ -11,7 +11,7 @@
 #     a freshness gate that bricks a fresh KB would just get uninstalled),
 #   - but once a KB DOES publish an index, a stale one must block the commit.
 # The test isolates from any ambient global core.hooksPath by pinning the repo's own hooks
-# dir. Run: `sh tests/test-kb-precommit.sh`.
+# dir. Run: `bash tests/test-kb-precommit.sh`.
 set -eu
 # macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
 # path containing "//". Harmless for file I/O and fatal the moment such a path is compared

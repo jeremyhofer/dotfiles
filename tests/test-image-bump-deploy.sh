@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `image-bump deploy` -- preconditions, export, keep, install, checks, rollback.
 #
 # `podman` is a stub first on PATH: it logs its argv to a file and answers `inspect`, `image

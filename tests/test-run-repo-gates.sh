@@ -32,6 +32,9 @@ bad() { printf '  FAIL  %s\n     %s\n' "$1" "$2"; fails=$((fails+1)); }
 mkdir -p "$tmp/srcbin"
 [ -f "$base/private_dot_local/bin/executable_fleet-decl" ] || { bad "fleet-decl source" "missing under $base"; exit 1; }
 ln -sf "$base/private_dot_local/bin/executable_fleet-decl" "$tmp/srcbin/fleet-decl"
+# fleet-decl reads the record with yq. A case below cuts PATH to the system directories plus this
+# one; yq is in /usr/bin on Linux but not on macOS (Homebrew), so it is linked here too.
+command -v yq >/dev/null 2>&1 && ln -sf "$(command -v yq)" "$tmp/srcbin/yq"
 PATH="$tmp/srcbin:$PATH"; export PATH
 
 # --- fixtures: a manifest and the repositories it names ------------------------------------------

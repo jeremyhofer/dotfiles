@@ -45,15 +45,17 @@ find . -printf '%p\n'
 timeout 5 sleep 1
 d=$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")
 n="$(refs | wc -l)"
+f() { :; }
+X=1 f
 SH
 lint "$d/dirty.sh" >"$d/out" 2>&1 && { echo "FAIL: dirty fixture should exit 1"; exit 1; }
 n=$(grep -c ':[0-9]*: \[' "$d/out" || true)
-[ "$n" -eq 12 ] || { echo "FAIL: expected 12 findings, got $n"; cat "$d/out"; exit 1; }
+[ "$n" -eq 13 ] || { echo "FAIL: expected 13 findings, got $n"; cat "$d/out"; exit 1; }
 for r in sed-in-place sed-bracket-tab sed-newline-replacement stat-c date-d base64-w grep-P \
-         realpath-m find-printf timeout tmpdir-slash wc-l-quoted; do
+         realpath-m find-printf timeout tmpdir-slash wc-l-quoted sh-prefix-function; do
   grep -q "\[$r\]" "$d/out" || { echo "FAIL: rule '$r' did not fire"; exit 1; }
 done
-echo "ok:   all 12 rules fire, one finding each"
+echo "ok:   all 13 rules fire, one finding each"
 
 # REGRESSION: short flags CLUSTER. Requiring the flag to be its own token was a false NEGATIVE
 # that let a real macOS fail-open through undetected -- a homoglyph guard used `grep -qP`, the
@@ -72,8 +74,16 @@ printf '%s\n' "$a" | xargs -r echo
 t=${TMPDIR:-/tmp}; t=${t%/}; d=$(mktemp -d "$t/x.XXXXXX")
 n=$(refs | wc -l)
 awk 'BEGIN{ if (x ~ /[ \t]/) print }'
+sed -i.bak 's/a/b/' f && rm -f f.bak
+g() { :; }
+( X=1 g )
+y=$(X=1 g)
+X=1 env | grep X
 SH
 lint "$d/clean.sh" >"$d/out" 2>&1 || { echo "FAIL: clean fixture flagged:"; cat "$d/out"; exit 1; }
+printf '#!/usr/bin/env bash\nf() { :; }\nX=1 f\n' > "$d/bash-prefix.sh"
+lint "$d/bash-prefix.sh" >"$d/out" 2>&1 || { echo "FAIL: a prefixed function call in a bash script flagged:"; cat "$d/out"; exit 1; }
+echo "ok:   sed -i.bak, a subshell-scoped or external prefix, and bash scripts are NOT flagged"
 echo "ok:   correct code produces no findings"
 echo "ok:   readlink -f and xargs -r are NOT flagged (both work on modern macOS)"
 echo "ok:   awk with [ \\t] is NOT flagged (awk handles the escape; only sed/grep do not)"
@@ -85,6 +95,7 @@ file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 fmt_epoch()  { date -d "@$1" "+$2" 2>/dev/null || date -r "$1" "+$2" 2>/dev/null; }
 b64()        { base64 -w0 "$1" 2>/dev/null || base64 "$1" 2>/dev/null; }
 pgrep_re()   { grep -P "$1" "$2" 2>/dev/null || grep -E "$1" "$2"; }
+ago()        { date -d "-$1 days" +%F 2>/dev/null || date -v-"$1"d +%F; }
 SH
 lint "$d/idioms.sh" >"$d/out" 2>&1 || { echo "FAIL: two-spelling idioms flagged:"; cat "$d/out"; exit 1; }
 echo "ok:   same-line two-spelling idioms are exempt"
@@ -131,12 +142,14 @@ printf '#!/bin/sh\n# stat -c %%Y f\n' > "$d/comment.sh"
 lint "$d/comment.sh" >/dev/null 2>&1 || { echo "FAIL: a commented-out GNU-ism was flagged"; exit 1; }
 echo "ok:   commented-out code is not flagged"
 
-# ---------- the base's own shipped tools are clean of ERRORS ----------
+# ---------- the base's own shipped tools, and its suites, are clean of ERRORS ----------
 # Warnings are not gated yet: the ${TMPDIR:-/tmp} idiom is still present in many files and is
-# latent rather than broken. Errors are gated, because every one of them is a real break.
-lint --errors-only "$here/../private_dot_local/bin" "$here/../setup" >"$d/out" 2>&1 \
-  || { echo "FAIL: the base's own shipped tools have portability ERRORS:"; cat "$d/out"; exit 1; }
-echo "ok:   the base's shipped tools are free of portability errors"
+# latent rather than broken. Errors are gated, because every one of them is a real break. The
+# suites are gated too: on 2026-11-08 twelve of them failed on macOS, never seen by a commit gate
+# that runs on Linux, and the spellings behind most of them are rules here.
+lint --errors-only "$here/../private_dot_local/bin" "$here/../setup" "$here" >"$d/out" 2>&1 \
+  || { echo "FAIL: the base's own tools or suites have portability ERRORS:"; cat "$d/out"; exit 1; }
+echo "ok:   the base's shipped tools and its suites are free of portability errors"
 
 # ---------- empty-array-nounset: the rule's precision IS the rule ----------
 # bash 3.2 (still /bin/bash on macOS) aborts on "${arr[@]}" when arr is EMPTY and `set -u` is on;

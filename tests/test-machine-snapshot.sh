@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-machine-snapshot.sh — contract tests for machine-snapshot.
 #
 # /proc is faked through MACHINE_SNAPSHOT_PROC and the clock through MACHINE_SNAPSHOT_NOW, so each

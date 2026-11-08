@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-claude-usage-report.sh -- contract tests for claude-usage-report.
 #
 # Builds fixture transcripts in a temp tree (CLAUDE_PROJECTS_DIR) and asserts exact figures. The

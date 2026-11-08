@@ -1,8 +1,8 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb rename <A> <C>` renames the file + `name` and rewrites EVERY inbound forward
 # edge A->C across the KB (no dangling), and `kb retire <A>` sets status:retired and
 # removes inbound edges, reporting affected files. Both keep the KB lint-clean and
-# regenerate the index. Run: `sh tests/test-kb-rename.sh`.
+# regenerate the index. Run: `bash tests/test-kb-rename.sh`.
 set -eu
 # macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
 # path containing "//". Harmless for file I/O and fatal the moment such a path is compared

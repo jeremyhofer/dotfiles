@@ -122,6 +122,25 @@ def unguarded_empty_array(text, m):
     return re.search(r"\$\{#" + v + r"\[[@*]\]\}", text) is None
 
 
+def sh_function_prefix(text, m):
+    """True when `VAR=value name` calls a function this file defines, in a file run by sh.
+
+    POSIX leaves unspecified whether an assignment prefixed to a FUNCTION call outlives the call.
+    bash in POSIX mode up to 5.1 keeps it, and macOS's /bin/sh is bash 3.2 in POSIX mode, so
+    `CLAUDE_PROJECT_DIR=x run ...` there leaves CLAUDE_PROJECT_DIR set for every later line. dash
+    and bash 5.2+ restore it, so the same script passes on Linux. Measured 2026-11-08: five test
+    suites passed on Linux and failed on macOS from exactly this. bash outside POSIX mode and zsh
+    restore it on both, so only an sh-run file is flagged, and only for a name it defines as a
+    function (an external command's prefix is always scoped to it). The pattern starts a match
+    only where the call runs in the CURRENT shell (a line's start, `;`, `&&`, `||`, `{`): inside
+    `( )`, `$( )` or a pipeline the call runs in a subshell, so nothing can outlive it."""
+    first = text.split("\n", 1)[0]
+    if not re.match(r"#!\s*(?:/usr/bin/env\s+)?(?:/bin/|/usr/bin/)?(?:sh|dash)\b", first):
+        return False
+    name = re.escape(m.group(2))
+    return re.search(r"^\s*(?:function\s+)?" + name + r"\s*\(\)", text, re.M) is not None
+
+
 RULES = [
     (
         "empty-array-nounset", ERROR,
@@ -140,11 +159,12 @@ RULES = [
     ),
     (
         "sed-in-place", ERROR,
-        re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*i\b"),
-        "There is NO portable spelling of sed's in-place flag. GNU takes `-i` with no "
+        re.compile(r"(?<![\w-])sed\s+(?:-[A-Za-z-]+\s+)*(?:-[A-Za-z]*i(?=\s|$)|--in-place\b)"),
+        "There is NO portable spelling of a BARE in-place flag. GNU takes `-i` with no "
         "argument; BSD requires a backup suffix, so `sed -i 's/a/b/' f` consumes the "
         "EXPRESSION as the suffix and then treats f as the script -- silently destructive. "
-        "`sed -i ''` is the mirror image: it breaks on GNU.",
+        "`sed -i ''` is the mirror image: it breaks on GNU. A suffix ATTACHED to the flag "
+        "(`sed -i.bak`) means the same on both, so it is not flagged; `--in-place` is GNU-only.",
         "Write to a temp file and move it: sed 'EXPR' f > f.tmp && mv f.tmp f",
         None,
     ),
@@ -188,7 +208,7 @@ RULES = [
         "Formatting an epoch: date -d @N +FMT || date -r N +FMT. Parsing a string: enumerate "
         "formats with date -j -f, MOST SPECIFIC FIRST (BSD date accepts a prefix and will "
         "return the wrong instant successfully).",
-        re.compile(r"date\s+-[rj]\b"),   # the two-spelling idiom is the FIX, never a finding
+        re.compile(r"date\s+-[rjv]"),   # the two-spelling idiom (BSD -r, -j -f, -v adjust) is the FIX
     ),
     (
         "base64-w", ERROR,
@@ -221,6 +241,18 @@ RULES = [
         "Normalize lexically in shell (split on / and collapse . and ..), then resolve symlinks for "
         "the deepest EXISTING ancestor with cd + pwd -P. Do not rely on the || fallback.",
         None,
+    ),
+    (
+        "sh-prefix-function", ERROR,
+        re.compile(r"(?:^|;|&&|\|\||\{)\s*((?:[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()\"'])*\s+)+)"
+                   r"([A-Za-z_]\w*)\b"),
+        "In a script run by sh, an assignment prefixed to a call of a function the file defines "
+        "(`X=1 f`) may outlive the call: POSIX leaves it unspecified, macOS's /bin/sh (bash 3.2, "
+        "POSIX mode) keeps it, and dash and bash 5.2+ do not. So X stays set for every later line "
+        "on the Mac only, and the script behaves differently there with no error.",
+        "Run the file under bash (#!/usr/bin/env bash), which scopes the assignment to the call "
+        "on both, or scope it yourself: ( X=1 f ), when f sets nothing the caller reads.",
+        None, sh_function_prefix,
     ),
     (
         "timeout", WARN,

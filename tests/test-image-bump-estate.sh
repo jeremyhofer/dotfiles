@@ -18,7 +18,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 BIN=${IMAGE_BUMP_BIN:-$here/../private_dot_local/bin/executable_image-bump}
 PY=$(command -v "${PYTHON:-python3}") || { echo "FAIL: python3 is required"; exit 1; }
 [ -f "$BIN" ] || { echo "FAIL: no image-bump at $BIN"; exit 1; }
-for c in gpg gpgv; do command -v $c >/dev/null 2>&1 || { echo "FAIL: $c is required"; exit 1; }; done
+# Required on Linux, where every fleet machine has them. On macOS they are an optional install, so a
+# Mac without them SKIPs, visibly, rather than failing a suite set that has nothing else wrong.
+for c in gpg gpgv; do
+  command -v $c >/dev/null 2>&1 && continue
+  [ "$(uname -s)" = Darwin ] && { echo "SKIP: $c is not installed (brew install gnupg to run this suite)"; exit 0; }
+  echo "FAIL: $c is required"; exit 1
+done
 
 t=${TMPDIR:-/tmp}; t=${t%/}
 w=$(mktemp -d "$t/image-bump-estate.XXXXXX") || exit 1

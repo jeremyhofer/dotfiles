@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-git-ai-coauthor.sh — contract tests for the co-author trailer hook.
 #
 # Every case makes a REAL commit through git's configured-hook machinery, wired exactly as

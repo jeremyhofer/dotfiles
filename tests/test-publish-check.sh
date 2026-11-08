@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test setup/publish-check: every FAIL case is a MANUFACTURED defect in a scratch repository, and
 # each is paired with a mutation.
 #

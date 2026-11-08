@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-hc-status.sh -- contract tests for hc-status against a local stub of the Healthchecks API.
 #
 # The stub (stub-hc-server.py) serves canned list-checks responses shaped from the API docs, one per

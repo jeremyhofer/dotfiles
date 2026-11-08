@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Tests for `register`. It only READS, so the failures worth planting are wrong answers rather
 # than missed defects: a filter that returns the wrong set, a count that disagrees with the
 # store, a non-entry document counted as an entry, an index that breaks on a pipe in a title.

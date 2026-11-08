@@ -1,8 +1,8 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb project` reads the KB's Tier-0 records (tier:0 AND status:active) and emits the
 # harness-agnostic active-context artifacts — AGENTS.md base, a Claude @AGENTS.md import stub,
 # and GEMINI.md (inlined) — into a --out dir (default a staging dir under index/). Output is
-# deterministic/idempotent; --check guards drift without writing. Run: `sh tests/test-kb-project.sh`.
+# deterministic/idempotent; --check guards drift without writing. Run: `bash tests/test-kb-project.sh`.
 set -eu
 # sedi EXPR FILE -- in-place edit, portably. Deliberately NOT the GNU in-place flag: on
 # BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file

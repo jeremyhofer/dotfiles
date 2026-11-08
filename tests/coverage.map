@@ -27,7 +27,7 @@ core run_onchange_install-git-hooks.sh.tmpl
 # --- whole-tree checks -------------------------------------------------------------------------
 tree test-shell-parse.sh        setup/** tests/*.sh private_dot_local/bin/**
 tree test-python39-syntax.sh    private_dot_local/bin/**
-tree test-portability-lint.sh   private_dot_local/bin/** setup/**
+tree test-portability-lint.sh   private_dot_local/bin/** setup/** tests/*.sh
 tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
 tree test-select-suites.sh      **

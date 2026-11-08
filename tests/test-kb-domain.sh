@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: the `domain` dimension (domain and tier are orthogonal record dimensions).
 #   (a) `kb new` scaffolds `domain: universal` by default.
 #   (b) `kb lint` requires `domain` and validates it is `universal` or a configured
@@ -6,7 +6,7 @@
 #   (c) `kb project` selection is `tier` AND `domain`: bare = tier-0 universal;
 #       `--domain <slug>` = that domain's tier-1 slice, written inside the KB (or --out),
 #       and never into a repository root, even one a config names.
-# Run directly: `sh tests/test-kb-domain.sh`.
+# Run directly: `bash tests/test-kb-domain.sh`.
 set -eu
 # sedi EXPR FILE -- in-place edit, portably. Deliberately NOT the GNU in-place flag: on
 # BSD/macOS that form consumes the EXPRESSION as the backup suffix and then treats the file

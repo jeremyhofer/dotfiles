@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test: `kb index` regenerates <root>/index/sources-of-truth.md (name -> owning file) and
 # <root>/index/backlinks.md (every reverse edge, generated from the forward edges). Output
-# is deterministic (sorted, byte-stable across runs). Run: `sh tests/test-kb-index.sh`.
+# is deterministic (sorted, byte-stable across runs). Run: `bash tests/test-kb-index.sh`.
 set -eu
 # macOS sets TMPDIR WITH a trailing slash, so a naive "$_TMP/x.XXXXXX" yields a
 # path containing "//". Harmless for file I/O and fatal the moment such a path is compared
