@@ -29,9 +29,11 @@
 # including subagent-start and stop, which touch nothing destructive on their own:
 #   - CLAUDE_CODE_TMPDIR must be set, non-empty, name a directory that already exists, and
 #     canonicalize (cd + pwd -P, which resolves symlinks and eats any ..) to a path whose
-#     basename matches c-* and whose parent is *exactly* /tmp. Anything else -> exit 0, untouched.
-#     That single check also rejects a symlink escaping /tmp: canonicalization follows it, and
-#     the resolved path then fails the parent-is-/tmp test.
+#     basename matches c-* and whose parent is *exactly* /tmp, itself canonicalized (on macOS
+#     /tmp is a symlink to /private/tmp, so a literal "/tmp" never matches a resolved path and the
+#     hook would never act there). Anything else -> exit 0, untouched. That single check also
+#     rejects a symlink escaping /tmp: canonicalization follows it, and the resolved path then
+#     fails the parent-is-/tmp test.
 #   - Never follow symlinks while walking the tree: `find` without -L only classifies what it
 #     lstats, so a symlinked file is never -type f and a symlinked directory is never descended
 #     into; `rm -rf` on a directory likewise unlinks a symlink member rather than recursing
@@ -94,7 +96,8 @@ root=$(cd "$raw_root" 2>/dev/null && pwd -P) || exit 0
 [ -n "$root" ] || exit 0
 
 parent=$(dirname -- "$root")
-[ "$parent" = "/tmp" ] || exit 0
+tmp_real=$(cd /tmp 2>/dev/null && pwd -P) || exit 0
+[ -n "$tmp_real" ] && [ "$parent" = "$tmp_real" ] || exit 0
 
 base=$(basename -- "$root")
 case "$base" in

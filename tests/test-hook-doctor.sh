@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Test hook-doctor: every acceptance criterion is a MANUFACTURED defect.
 #
 # WHY EACH ONE EXISTS. A coverage tool that cannot be made to report a hole is indistinguishable
@@ -22,6 +22,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 base=$(cd "$here/.." && pwd)
 doctor="$base/private_dot_local/bin/executable_hook-doctor"
 tmp=$(mktemp -d "$_TMP/test-hook-doctor.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+# Resolved, because git and the tool report resolved paths and this suite compares against them:
+# on macOS $TMPDIR is under /var, a symlink to /private/var.
+tmp=$(cd "$tmp" && pwd -P)
 fails=0
 
 ok()   { printf '  ok    %s\n' "$1"; }
@@ -76,7 +79,7 @@ run() { # <global config> <args...> -> output, then " rc=<n>". RUNHOME and OVR_M
     HOOK_DOCTOR_MANIFEST="$tmp/mani.yaml" HOOK_DOCTOR_DEVEL_ROOT="$devel" \
     FLEET_RECORD="$tmp/mani.yaml" FLEET_DEVEL_ROOT="$devel" \
     HOOK_DOCTOR_CHEZMOI_SRC=/nonexistent HOOK_DOCTOR_OVERLAY_SRC=/nonexistent \
-    sh "$doctor" "$@" 2>&1; printf ' rc=%s' "$?"
+    bash "$doctor" "$@" 2>&1; printf ' rc=%s' "$?"
 }
 newrepo() { # <path under $devel> -> a repo with one commit
   d="$devel/$1"; mkdir -p "$d"; git_q init -q "$d"
@@ -148,7 +151,7 @@ rm -f "$k/.git/hooks/commit-msg"
 # The leak-guard refuses to classify a repo when the fleet record is unusable: fail-closed.
 printf 'projects: [unclosed\n' > "$tmp/unusable.yaml"
 p8=$(HOME="$fh" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 FLEET_RECORD="$tmp/unusable.yaml" \
-     FLEET_DEVEL_ROOT="$devel" sh "$doctor" check --path "$k" 2>&1; printf ' rc=%s' "$?")
+     FLEET_DEVEL_ROOT="$devel" bash "$doctor" check --path "$k" 2>&1; printf ' rc=%s' "$?")
 want "P8 guard refusing clean input -> BLOCKED" "BLOCKED" "$p8"
 lacks "P8 not reported DARK" "DARK" "$p8"
 
@@ -194,14 +197,14 @@ d1a=$(run "$tmp/gcfg" list); manifest work/k; d1b=$(run "$tmp/gcfg" list)
 n2=$(printf '%s' "$d1a" | grep -c 'mani.yaml:' || true); n1=$(printf '%s' "$d1b" | grep -c 'mani.yaml:' || true)
 [ "$n1" -lt "$n2" ] && ok "D1 removing a project shrinks the denominator ($n2 -> $n1)" || bad "D1 denominator did not shrink" "$n2 -> $n1"
 d1c=$(HOME="$fh" HOOK_DOCTOR_MANIFEST="$tmp/nonexistent.yaml" HOOK_DOCTOR_CHEZMOI_SRC=/nonexistent \
-      HOOK_DOCTOR_OVERLAY_SRC=/nonexistent sh "$doctor" list 2>&1; printf ' rc=%s' "$?")
+      HOOK_DOCTOR_OVERLAY_SRC=/nonexistent bash "$doctor" list 2>&1; printf ' rc=%s' "$?")
 want "D1 unreadable manifest exits 2" " rc=2" "$d1c"
 
 # D2: a worktree reachable both from the manifest and from the tool's own additions (the chezmoi
 # sources) is listed once.
 d2=$(HOME="$fh" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 HOOK_DOCTOR_MANIFEST="$tmp/mani.yaml" \
      HOOK_DOCTOR_DEVEL_ROOT="$devel" FLEET_RECORD="$tmp/mani.yaml" FLEET_DEVEL_ROOT="$devel" \
-     HOOK_DOCTOR_CHEZMOI_SRC="$k" HOOK_DOCTOR_OVERLAY_SRC=/nonexistent sh "$doctor" list 2>&1)
+     HOOK_DOCTOR_CHEZMOI_SRC="$k" HOOK_DOCTOR_OVERLAY_SRC=/nonexistent bash "$doctor" list 2>&1)
 [ "$(printf '%s\n' "$d2" | grep -c "^  $k ")" = 1 ] && ok "D2 a worktree from two sources is listed once" || bad "D2 listed once" "$(printf '%s' "$d2" | grep "$k" | tr '\n' '|')"
 
 # --- B1: a bare CONTAINER root is SKIP, never a verdict ------------------------------------------
@@ -230,7 +233,7 @@ for shape in new old; do
   printf 'projects:\n  enum:\n    path: enum-%s/main\n' "$shape" > "$tmp/mani-enum.yaml"
   le=$(HOME="$fh" GIT_CONFIG_GLOBAL="$tmp/gcfg" GIT_CONFIG_NOSYSTEM=1 HOOK_DOCTOR_MANIFEST="$tmp/mani-enum.yaml" \
        HOOK_DOCTOR_DEVEL_ROOT="$tmp" FLEET_RECORD="$tmp/mani-enum.yaml" FLEET_DEVEL_ROOT="$tmp" \
-       HOOK_DOCTOR_CHEZMOI_SRC=/nonexistent HOOK_DOCTOR_OVERLAY_SRC=/nonexistent sh "$doctor" list 2>&1)
+       HOOK_DOCTOR_CHEZMOI_SRC=/nonexistent HOOK_DOCTOR_OVERLAY_SRC=/nonexistent bash "$doctor" list 2>&1)
   [ "$(printf '%s\n' "$le" | grep -c "^  $cc/main ")" = 1 ] && [ "$(printf '%s\n' "$le" | grep -c "^  $listed_as ")" = 0 ] \
     && ok "B2 $shape shape: the worktree is listed, the bare repository is not" \
     || bad "B2 $shape shape enumeration" "$(printf '%s' "$le" | tr '\n' '|' | cut -c1-300)"
@@ -406,6 +409,10 @@ chmod +x "$w/.husky/_/pre-commit"
 n5=$(run "$tmp/gcfg" check)
 lacks "N5 core.hooksPath=.husky/_ with an executable pre-commit -> WIRED natively" "GATES-UNWIRED" "$n5"
 lacks "N5 check --path agrees" "GATES-UNWIRED" "$(run "$tmp/gcfg" check --path "$w")"
+# The same worktree named through a symlink (as macOS's /var and /tmp always are): git answers with
+# resolved paths, so an unresolved --path once read the native wiring as GATES-UNWIRED.
+ln -s "$w" "$tmp/w-link"
+lacks "N5 check --path through a symlink agrees" "GATES-UNWIRED" "$(run "$tmp/gcfg" check --path "$tmp/w-link")"
 # a hooks directory that is NOT the tracked gates' own does not count
 git_q -C "$w" config core.hooksPath .other; mkdir -p "$w/.other"; printf '#!/bin/sh\nexit 0\n' > "$w/.other/pre-commit"; chmod +x "$w/.other/pre-commit"
 want "N5 an unrelated hooks directory is not the gates' -> GATES-UNWIRED" "GATES-UNWIRED" "$(run "$tmp/gcfg" check)"

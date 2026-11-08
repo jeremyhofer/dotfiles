@@ -503,6 +503,11 @@ EOF
 cmd_check_path() {
   local d=$1 v det lhp
   [ -d "$d" ] || die "no such directory: $d" 2
+  # Canonicalize, as the full check's paths already are (git worktree list prints resolved paths):
+  # git answers hooks and git-dir questions with resolved paths, so a --path reached through a
+  # symlink (macOS's /var and /tmp are both symlinks into /private) would compare unequal to them
+  # and read a natively wired repository as GATES-UNWIRED.
+  d=$(cd "$d" && pwd -P) || die "cannot resolve directory: $1" 2
   if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
     [ "$QUIET" = 1 ] && return 0
     say "hook-doctor: $d is not a git repository"; return 0

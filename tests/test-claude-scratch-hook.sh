@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # test-claude-scratch-hook.sh — contract tests for the scratch-cleanup lifecycle hooks.
 #
 # The hook DELETES DIRECTORIES, so most of what is worth testing here is refusal: that it stays
@@ -110,7 +110,7 @@ eq "outside /tmp: sentinel file survives session-end" "$([ -f "$outside/sentinel
 # deleted. Uses a second fixture so the first one's assertions above stay untouched by the plant.
 outside2=$(mktemp -d "$TESTROOT/c-test-outside2.XXXXXX")
 : > "$outside2/sentinel"
-broken=$(broken_copy '/\[ "\$parent" = "\/tmp" \] || exit 0/d')
+broken=$(broken_copy '/\[ "\$parent" = "\$tmp_real" \] || exit 0/d')
 CLAUDE_CODE_TMPDIR="$outside2" runhook "$broken" session-end "" "" >/dev/null 2>&1
 if [ ! -e "$outside2" ]; then
   ok "plant: removing the /tmp-parent guard lets session-end delete a directory outside /tmp"
