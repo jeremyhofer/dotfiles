@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### On macOS, `claude-scratch-hook` now acts
+
+- It required a session's scratch root to sit directly under the literal `/tmp`, after resolving
+  symlinks; macOS resolves `/tmp` to `/private/tmp`, so on a Mac it never removed or measured
+  anything. It now compares against `/tmp` resolved the same way, so a Mac's session scratch roots
+  (`/tmp/c-*`) are measured and removed at session end as on Linux. Nothing to change in a private
+  layer.
+
 ### `DOTFILES_SKIP_PRE_APPLY=1` skips the pre-apply suite run, loudly
 
 - For the apply a suite depends on (a tool or configuration only that apply deploys), where the run
@@ -48,13 +56,16 @@ Entries are newest first.
   request for a canonical already queued. The requester is the calling session's name where it can
   be read, else `--as`.
 - `fleet-canonicals serve-requests` serves the queue once, outside every sandbox: it refuses a stale
-  request (ten minutes), one for a canonical with another queued or running, a stop of a session
-  that is working, a request for another canonical from a requester not on `request-any`, a
+  request (ten minutes), one for a canonical with another queued or running, any verb for a name a
+  live process holds while the sessions list shows no live row for it, a request for another
+  canonical from a requester not on `request-any`, a
   self-refresh unless `allow-self-refresh = true`, more than three actions per canonical or ten for
   the fleet an hour, everything while `requests/PAUSED` exists, `up`, `refresh` and `resume` at 85%
   of the 7-day window unless exempt, and `up` and `resume` in an untrusted workspace; otherwise it
-  runs the plain verb (`resume`: `claude respawn` on the last session). A result file per request,
-  a line in `~/.local/state/fleet-canonicals/requests-audit.jsonl`, no notification.
+  runs the plain verb (`resume`: `claude respawn` on the last session). A stop of a session that is
+  working is not refused but waits, queued with a `waiting` result, until the session is idle or the
+  request is stale. A result file per request, a line in
+  `~/.local/state/fleet-canonicals/requests-audit.jsonl` (none while waiting), no notification.
 - New configuration keys in `~/.config/fleet-canonicals/config`, each with a default, listed in
   `fleet-canonicals --help` and `docs/reference/fleet-sessions.md`. A private layer that wants a
   person to request for any canonical adds that name to `request-any`.
