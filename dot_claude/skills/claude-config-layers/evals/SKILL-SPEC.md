@@ -40,7 +40,8 @@ screen without the skill measures that context too.
 that knows the real paths from its instructions. The real dotfiles sources and state files are
 mounted read-only for the trial instead, and a session that stops at that wall is read by hand.
 
-**Not measured yet:** §6 (a setting that does not take effect) and §5b (`CLAUDE.md` discovery).
+**Not measured yet:** §5a (the shared root `settings.local.json`), §5b (`CLAUDE.md` discovery) and
+§6 (a setting that does not take effect).
 
 ## Should-fire situations
 

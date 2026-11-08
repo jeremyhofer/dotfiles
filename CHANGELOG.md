@@ -61,9 +61,14 @@ this follows. The private-layer steps happen in that layer's repository, before 
      `canonicalMachines`), the director among them.
    - For a repository hosting sessions started in its subdirectories: `claudeDirSettings` on its
      entry, one complete file per directory, and the repository ignoring each
-     `<directory>/.claude/settings.json`. Keep the root's `claudeLocalSettings` to what every
-     session in that repository may hold, since Claude Code applies the root's
-     `settings.local.json` to all of them (2026-11-08, `claudeDirSettings`, ACTION).
+     `<directory>/.claude/settings.json`. A directory session's grants go only in its own file.
+     Claude Code reads the root's `.claude/settings.local.json` for every session in the
+     repository and saves there an approval from any of them, so keep the root's
+     `claudeLocalSettings` to what every session may have. `claude-project-settings check` (step 6)
+     reports each permission rule in that root file, and any leftover
+     `<directory>/.claude/settings.local.json`, as drift to remove (2026-11-08, `claudeDirSettings`,
+     ACTION, and "`claude-project-settings check` reports permission rules in a shared root file",
+     ACTION).
    - Optionally, `ensureAllow` in the settings fragment for rules every machine should allow
      (2026-11-08, `ensureAllow`).
    - A clone whose integration branch is not its remote's default:
@@ -84,13 +89,34 @@ this follows. The private-layer steps happen in that layer's repository, before 
    caller").
 6. **Confirm:** `sh ~/.local/share/chezmoi/setup/overlay-doctor`, then `context-footprint` (the
    global context grew by about 50 KB on 2026-11-06), then `claude-context-probe` and
-   `claude-context-probe --fleet` from an ordinary terminal.
+   `claude-context-probe --fleet` from an ordinary terminal, then, where the manifest declares
+   project settings, `claude-project-settings check`, resolving each rule it reports (step 2).
 
 New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-time`,
 `verify-task-io` (Linux only), `bing-webmaster`, `git-branch-gone` with the worktrunk alias
 `wt done`, and skill `working-with-nx`. `fleet-canonicals status` has a fourth verdict,
 `LIVE-UNLISTED`. A push to the publish remote is gated only in a clone that sets
 `dotfiles.publishRemote`.
+
+### `claude-project-settings check` reports permission rules in a shared root file — ACTION
+
+- Claude Code's rule, the same on every machine (v2.1.211 and later): a repository root's
+  `.claude/settings.local.json` is read by every session in the repository, wherever it started, and
+  a "Yes, and don't ask again" approval from any of them is saved there. In a repository whose
+  sessions start in subdirectories, one session's approval therefore reaches all of them unseen.
+- For a project that declares `claudeDirSettings`, `check` now reports, as drift (exit 1), each
+  permission rule (`permissions.allow`, `.ask`, `.deny` entries) in the root's live
+  `settings.local.json`, naming it, and each `<directory>/.claude/settings.local.json` in a declared
+  directory: a file from before v2.1.211 that Claude Code still reads for a session started there.
+  `apply` is unchanged and removes nothing. Permission rules cannot be declared through the tool, by
+  design, so the resolution is to remove the rule from the root file. A project without
+  `claudeDirSettings` sees no change. The header (`--help`), skill `claude-config-layers` (§5a),
+  `docs/reference/private-layer.md` and `docs/reference/fleet-sessions.md` state the two-file rule.
+- **ACTION, for a layer with `claudeDirSettings`:** keep the root's `claudeLocalSettings` to what
+  every session in the repository may have, with each directory's grants in its own file. Run
+  `claude-project-settings check` after the apply, remove each permission rule it reports from the
+  root's `settings.local.json`, and move a leftover directory `settings.local.json`'s sandbox grants
+  into that directory's declared file before deleting it.
 
 ### `fleet-canonicals serve-requests --loop`: the request runner as a long-lived process
 

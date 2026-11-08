@@ -266,5 +266,67 @@ out=$(FLEET_RECORD=$rec2 sh "$tool" validate 2>&1); rc=$?
 { [ $rc = 1 ] && printf '%s' "$out" | grep -q 'escapes:greedy: key permissions'; } \
   && ok "validate with no file checks every directory's file too" || bad "dir validate all" "rc=$rc $out"
 
+echo "== the root's settings.local.json, shared by every session in a repository with directories"
+# Claude Code reads and writes the root's .claude/settings.local.json for every session in the
+# repository, so an approval one session saves there applies to all of them. In a project that
+# declares claudeDirSettings, `check` reports each permission rule found there as drift.
+rec3="$root/mani-shared.yaml"
+cat > "$rec3" <<'YAML'
+projects:
+  seated:
+    path: work/seated
+    claudeLocalSettings: claude/projects/seated.json
+    claudeDirSettings:
+      seats/s1: claude/projects/seated-s1.json
+  seatsonly:
+    path: work/seatsonly
+    claudeDirSettings:
+      seats/s1: claude/projects/seated-s1.json
+  solo:
+    path: work/solo
+    claudeLocalSettings: claude/projects/seated.json
+YAML
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/r"]}}}\n' > "$P/seated.json"
+printf '{"sandbox":{"filesystem":{"allowWrite":["~/s1"]}}}\n' > "$P/seated-s1.json"
+for d in seated seatsonly solo; do mkdir -p "$root/work/$d/seats/s1"; done
+FLEET_RECORD=$rec3 sh "$tool" apply > "$tmp/out" 2>&1 || bad "shared: fixture apply" "$(cat "$tmp/out")"
+grant() {  # <project>: an approval saved by a session, as Claude Code writes it
+  mkdir -p "$root/work/$1/.claude"; f="$root/work/$1/.claude/settings.local.json"
+  [ -s "$f" ] || printf '{}\n' > "$f"
+  jq '.permissions.allow = ["Bash(make:*)"] | .permissions.ask = ["Bash(git push:*)"] | .permissions.deny = []' "$f" > "$f.new" && mv "$f.new" "$f"
+}
+grant seated; grant seatsonly; grant solo
+cp "$root/work/seated/.claude/settings.local.json" "$tmp/seated.before"
+
+FLEET_RECORD=$rec3 sh "$tool" check seated > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 1 ] && grep -F 'seated: ' "$tmp/out" | grep -F 'permissions.allow' | grep -qF 'Bash(make:*)' \
+  && grep -F 'seated: ' "$tmp/out" | grep -F 'permissions.ask' | grep -qF 'Bash(git push:*)'; } \
+  && ok "a permission rule in the shared root file of a project with directories is reported, exit 1" \
+  || bad "shared: rule reported" "rc=$rc $(cat "$tmp/out")"
+grep -qF 'remove it' "$tmp/out" && ok "the report says what to do" || bad "shared: what to do" "$(cat "$tmp/out")"
+cmp -s "$tmp/seated.before" "$root/work/seated/.claude/settings.local.json" \
+  && ok "check leaves the shared root file as it is" || bad "shared: check wrote" "$(cat "$root/work/seated/.claude/settings.local.json")"
+FLEET_RECORD=$rec3 sh "$tool" check seatsonly > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 1 ] && grep -F 'seatsonly: ' "$tmp/out" | grep -qF 'Bash(make:*)'; } \
+  && ok "a project with directories and no root declaration: its root file's rules are reported too" \
+  || bad "shared: dirs only" "rc=$rc $(cat "$tmp/out")"
+FLEET_RECORD=$rec3 sh "$tool" check solo > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 0 ] && ! grep -qF 'Bash(make:*)' "$tmp/out"; } \
+  && ok "the same rule in a project without directories is not reported, exit 0" \
+  || bad "shared: no directories" "rc=$rc $(cat "$tmp/out")"
+FLEET_RECORD=$rec3 sh "$tool" apply seated > "$tmp/out" 2>&1
+[ "$(jq -c .permissions.allow "$root/work/seated/.claude/settings.local.json")" = '["Bash(make:*)"]' ] \
+  && ok "apply removes no rule from the shared root file" || bad "shared: apply pruned" "$(cat "$root/work/seated/.claude/settings.local.json")"
+
+f="$root/work/seated/.claude/settings.local.json"; jq 'del(.permissions)' "$f" > "$f.new" && mv "$f.new" "$f"
+printf '{"permissions":{"allow":["Bash(x:*)"]}}\n' > "$root/work/seated/seats/s1/.claude/settings.local.json"
+FLEET_RECORD=$rec3 sh "$tool" check seated > "$tmp/out" 2>&1; rc=$?
+{ [ $rc = 1 ] && grep -F 'seated:seats/s1: ' "$tmp/out" | grep -qF 'settings.local.json'; } \
+  && ok "a leftover settings.local.json in a declared directory is reported, exit 1" \
+  || bad "shared: leftover directory file" "rc=$rc $(cat "$tmp/out")"
+rm -f "$root/work/seated/seats/s1/.claude/settings.local.json"
+FLEET_RECORD=$rec3 sh "$tool" check seated > "$tmp/out" 2>&1; rc=$?
+[ $rc = 0 ] && ok "once resolved, check is clean, exit 0" || bad "shared: resolved" "rc=$rc $(cat "$tmp/out")"
+
 [ "$fails" = 0 ] && { echo PASS; exit 0; }
 echo "FAILED: $fails"; exit 1

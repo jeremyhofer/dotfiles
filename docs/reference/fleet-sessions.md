@@ -324,7 +324,11 @@ including every session started in a subdirectory of it, and a subdirectory's ow
 `.claude/settings.json` covers a session started there. A private layer declares them in its settings
 fragment, per project with `claudeLocalSettings`, or per directory with `claudeDirSettings`
 ([`private-layer.md`](private-layer.md)); a declared array replaces the live one, so list every
-entry. On a machine without one, edit the file by hand. Managed settings outrank both, and if they
+entry. Where several canonicals start in subdirectories of one repository, the root's
+`settings.local.json` is shared by all of them, and Claude Code saves there an approval from any of
+them: put each session's entries in its own directory's file, keep the root's to what every session
+may have, and run `claude-project-settings check`, which reports a permission rule saved there as
+drift (skill `claude-config-layers`, §5a). On a machine without one, edit the file by hand. Managed settings outrank both, and if they
 refuse the entry, the canonicals there cannot stage and the human runs `stage` for them.
 
 If the handoffs repository signs its commits and the sandbox blocks Unix sockets, the hub's `place`

@@ -1,6 +1,6 @@
 ---
 name: claude-config-layers
-description: Use when changing ANY Claude Code setting, permission, hook, plugin toggle or model default — deciding which of the four layers a setting belongs in, adding a permission, wiring a hook, or making a preference apply on every machine. Also fires on the failure signatures: a setting that will not stick or silently reverts, a preference that works on one machine and not another, a background/agent session coming up on the wrong model, or a settings file that was overwritten instead of merged, a background session that will not start until the workspace trust prompt is accepted, or any thought of editing `~/.claude.json`; and whenever a tool call is refused — `Read-only file system`, a `<sandbox_violations>` block, "Permission to use … has been denied", a `PreToolUse` hook error, or auto mode declining a command. Covers the precedence order, the never-blind-overwrite rule, why the user settings file is only PARTIALLY managed, and which layer a refusal came from and what may be done about it.
+description: Use when changing ANY Claude Code setting, permission, hook, plugin toggle or model default — deciding which of the four layers a setting belongs in, adding a permission, wiring a hook, or making a preference apply on every machine. Also fires on the failure signatures: a setting that will not stick or silently reverts, a preference that works on one machine and not another, a background/agent session coming up on the wrong model, or a settings file that was overwritten instead of merged, a background session that will not start until the workspace trust prompt is accepted, settings for a session started in a subdirectory of a repository, or any thought of editing `~/.claude.json`; and whenever a tool call is refused — `Read-only file system`, a `<sandbox_violations>` block, "Permission to use … has been denied", a `PreToolUse` hook error, or auto mode declining a command. Covers the precedence order, the never-blind-overwrite rule, why the user settings file is only PARTIALLY managed, why a repository root's `settings.local.json` is shared by every session in the repository, and which layer a refusal came from and what may be done about it.
 ---
 
 # Claude Code config: four layers, and which one a thing belongs in
@@ -11,7 +11,7 @@ description: Use when changing ANY Claude Code setting, permission, hook, plugin
 | --- | --- | --- |
 | **Managed** (root) | `/etc/claude-code/managed-settings.json` | machine-wide **enforcement**: safety hooks, the enforced model default. Root-owned, so a session cannot quietly change it. |
 | **CLI flag** | `--model`, `--settings` | one session, deliberately different. Does **not** write anything back. |
-| **Project local** | `<repo>/.claude/settings.local.json` | per-machine, gitignored. Accreting permission grants live here. |
+| **Project local** | `<repo>/.claude/settings.local.json` | per-machine, gitignored. Accreting permission grants live here. Read by every session in the repository, including one started in a subdirectory (§5a). |
 | **Project shared** | `<repo>/.claude/settings.json` | committed, structural, project-wide. Reviewable declarations of intent. |
 | **User** | `~/.claude/settings.json` | personal preferences across all projects. |
 
@@ -111,6 +111,35 @@ unrecognized model**, so exit status is not a usable check. The rejection appear
 Widening what a repo's settings *permit* is a change to what every future session may do there.
 Treat it as needing explicit, fresh agreement for that specific edit — not inferred from an adjacent
 instruction like "try again".
+
+## 5a. Sessions started in a subdirectory: the root's local file is SHARED
+
+When several sessions run in one repository, each started in its own subdirectory, each reads two
+project files. This is Claude Code's rule (v2.1.211 and later), the same on every machine:
+
+| File | Read by | Claude Code writes it |
+| --- | --- | --- |
+| `<repo root>/.claude/settings.local.json` | **every** session in the repository, wherever it started | yes: a "Yes, and don't ask again" approval from **any** session is saved here as a rule |
+| `<starting directory>/.claude/settings.json` | only a session started in that directory | no |
+| `<starting directory>/.claude/settings.local.json` | a session started there, when a file from before v2.1.211 is left over | no |
+
+So an approval one session saves lands in the root's local file and from then on applies to every
+session in the repository, with nothing announcing it. Hence:
+
+- **A subdirectory session's own grants go only in `<directory>/.claude/settings.json`**, which the
+  repository must gitignore (git commits that name by default). Never in the root's local file.
+- **The root's local file holds only what every session in the repository may have.**
+- **Where a private layer manages these with `claude-project-settings`** (`claudeDirSettings` per
+  directory, `claudeLocalSettings` for the root), `claude-project-settings check` reports, as
+  drift, every permission rule (`permissions.allow`, `.ask`, `.deny`) found in the root's local file,
+  and any leftover `<directory>/.claude/settings.local.json`. To resolve: remove the rule from the
+  root's local file, and move a leftover file's sandbox grants into the directory's declared file,
+  then delete it. Permission rules cannot be declared through the tool, by design, and `apply`
+  never removes one: removal is the person's edit. A rule a session keeps needing is the person's
+  call; there is no declared home for it.
+
+A repository whose only session starts at its root has one reader of that file, and none of this
+applies.
 
 ## 5b. `CLAUDE.md` discovery walks to the filesystem root; the other layers do not
 

@@ -357,10 +357,19 @@ directory's complete declaration: the tool shares nothing between directories, s
 directory needs is written in each file. Because `settings.json` is a name git commits by default,
 the hosting repository must ignore `<directory>/.claude/settings.json`; the tool refuses one git
 tracks. It also refuses a directory that is absolute, is the root (`.`), has a `.` or `..` segment,
-or resolves outside the repository through a symlink, and skips one not on this machine. The root's
-`claudeLocalSettings` file still reaches every subdirectory session, because Claude Code reads it
-there; a layer that wants each directory to get only its own file keeps the root's grants to what
-every session in the repository may hold.
+or resolves outside the repository through a symlink, and skips one not on this machine.
+
+**The root's `settings.local.json` is shared.** Claude Code reads it for every session in the
+repository and saves there a "Yes, and don't ask again" approval from any of them, so a rule one
+session saves applies to all. This is Claude Code's rule, the same on every machine. So a
+directory's grants go only in its own declared file, and the root's `claudeLocalSettings` holds only
+what every session in the repository may have. In a project that declares `claudeDirSettings`,
+`check` reports as drift every permission rule in the root's live `settings.local.json`, and any
+`<directory>/.claude/settings.local.json` left over from before v2.1.211 (Claude Code still reads
+one). Resolve the first by removing the rule from that file: permission rules cannot be declared
+through the tool, and `apply` never removes one. Resolve the second by moving its sandbox grants into
+the directory's declared file and deleting it. Skill `claude-config-layers` (§5a) has the file
+table.
 
 ## Spelling (Neovim)
 
@@ -397,7 +406,7 @@ a layer's trigger is a few lines that say where its inputs are.
 | `setup/overlay-doctor` | from the base checkout, after changing either layer | required private pieces present and filled, the trigger for every input the layer ships (Tier T), every private file has a recorded reason, no file owned by both layers, the manifest's schema |
 | `setup/overlay-doctor --machine` | on a machine | git, tools and Claude Code on that machine |
 | `fleet-decl --check` | after editing the manifest | the manifest's declarations |
-| `claude-project-settings validate`, then `check` | before committing a project settings file, then after an apply | `validate`: the files obey the closed rules above; `check`: the live `.claude/settings.local.json` of each declaring project, and `<directory>/.claude/settings.json` of each declared directory, matches its file (exit 1 on drift) |
+| `claude-project-settings validate`, then `check` | before committing a project settings file, then after an apply | `validate`: the files obey the closed rules above; `check`: the live `.claude/settings.local.json` of each declaring project, and `<directory>/.claude/settings.json` of each declared directory, matches its file, and, in a project with directories, the root file holds no permission rule and no directory holds a leftover `settings.local.json` (exit 1 on drift) |
 | `fleet-repo check` | after editing the manifest or changing a clone | each repository on disk matches its manifest entry's layout (exit 1 on drift) |
 | `claude-trust-check` | on a new machine, before launching background sessions | which manifest directories still need Claude Code's workspace-trust prompt accepted (exit 3: state unknown) |
 | `hook-doctor check` | after configuring the guard | each configured git hook is live, and the guard refuses a planted marker |

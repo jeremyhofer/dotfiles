@@ -5,7 +5,10 @@
 #
 #   claude-project-settings apply [<project>]     validate, then write every declaring project and
 #                                                 its declared directories
-#   claude-project-settings check [<project>]     report drift; write nothing
+#   claude-project-settings check [<project>]     report drift, and in a project with directories
+#                                                 every permission rule in the shared root file
+#                                                 and every leftover directory settings.local.json;
+#                                                 write nothing
 #   claude-project-settings validate [<file>...]  check files against the rules; with no file,
 #                                                 every file the record points at
 #
@@ -53,11 +56,14 @@
 # place for a path on one machine.
 #
 # DIRECTORIES: SESSIONS STARTED INSIDE A REPOSITORY. One repository may host several long-running
-# sessions, each started in its own subdirectory. Claude Code (v2.1.211 and later) reads
-# .claude/settings.local.json at the REPOSITORY ROOT even for a session started in a subdirectory,
-# and .claude/settings.json only from the session's starting directory. So a subdirectory's own
-# settings can only be its .claude/settings.json, and the entry maps each directory, relative to the
-# project's path, to a file of the same shape and rules:
+# sessions, each started in its own subdirectory. Claude Code's rule, the same on every machine
+# (v2.1.211 and later), is two files per session:
+#   - <repository root>/.claude/settings.local.json is read by EVERY session in the repository,
+#     wherever it started, and is where Claude Code saves a "Yes, and don't ask again" approval from
+#     any of them, so a rule one session saves there applies to all of them;
+#   - <starting directory>/.claude/settings.json is read only by a session started there.
+# So a subdirectory's own settings can only be its .claude/settings.json, and the entry maps each
+# directory, relative to the project's path, to a file of the same shape and rules:
 #
 #     claudeDirSettings:
 #       seats/review: claude/projects/notes-review.json
@@ -69,6 +75,17 @@
 # refused, as is a .claude that is a symlink. A directory not on this machine is skipped. Because
 # the file is settings.json, a name git commits by default, the hosting repository must ignore it;
 # a settings.json that git TRACKS is refused, never written, so a machine's paths are not committed.
+#
+# THE SHARED ROOT FILE, in a project that declares claudeDirSettings. A directory's grants go only in
+# its own declared file; the root's claudeLocalSettings holds only what every session in the
+# repository may have. `check` reports, as drift, each permission rule (permissions.allow, .ask and
+# .deny entries) in the root's live settings.local.json: such a rule is an approval one session
+# saved, now applying to every session, and nothing declared it. Permission rules cannot be declared
+# through this tool (WHAT MAY BE DECLARED), so the resolution is to remove the rule from that file;
+# `apply` never removes one, because that stays a person's decision. `check` also reports a
+# settings.local.json in a declared directory: Claude Code still reads one left in a session's
+# starting directory from before v2.1.211, unseen beside the directory's declared file. A project
+# without claudeDirSettings has one session's worth of root file, and none of this applies to it.
 #
 # THE MERGE RULE, the same as the user-level file's (dot_claude/modify_settings.json): the declared
 # keys win, merged deeply; every other key in the live file is kept, because Claude Code writes
@@ -294,6 +311,32 @@ write_dir() {
     warn "$_l: $_sd/.claude/settings.json is tracked by git; not written"; return
   fi
   merge_into "$_l" "$_src" "$_sd" settings.json
+  if [ "$cmd" = check ] && [ -e "$_sd/.claude/settings.local.json" ]; then
+    say "$_l: $_sd/.claude/settings.local.json is left over: Claude Code still reads it for a session started there, beside the declared settings.json; move any sandbox grant it should keep into $_src, then delete it"
+    drift=$((drift + 1))
+  fi
+}
+
+# shared_rules <project> <repository directory> <root declaration, or empty>: under `check`, in a
+# project with directories, report each permission rule in the root's settings.local.json (THE
+# SHARED ROOT FILE). An unparseable file is merge_into's to report when the root is declared.
+shared_rules() {
+  _f=$2/.claude/settings.local.json
+  [ -s "$_f" ] || return 0
+  if ! _rules=$(jq -r '(.permissions // {}) as $p | if ($p | type) != "object" then empty else
+        ["allow","ask","deny"][] as $l | ($p[$l] // []) | (if type == "array" then .[] else . end)
+        | "\($l)\t\(if type == "string" then . else tojson end)" end' "$_f" 2>/dev/null); then
+    [ -n "$3" ] || warn "$1: $_f is not valid JSON; its permission rules were not checked"
+    return
+  fi
+  [ -n "$_rules" ] || return 0
+  while IFS=$TAB read -r _k _r; do
+    say "$1: $_f: permissions.$_k rule $_r applies to every session in the repository"
+    drift=$((drift + 1))
+  done <<EOF
+$_rules
+EOF
+  say "$1: a rule one session saved there reaches every session started anywhere in the repository; remove it from $_f (permission rules cannot be declared through claude-project-settings, by design)"
 }
 
 need_record
@@ -316,6 +359,7 @@ for p in $projects; do
 
   [ -z "$rootok" ] || merge_into "$p" "$src" "$dir" settings.local.json
   [ -n "$DIRS" ] || continue
+  [ "$cmd" != check ] || shared_rules "$p" "$dir" "$src"
   while IFS=$TAB read -r d s; do
     write_dir "$p" "$dir" "$d" "$s" </dev/null
   done <<EOF
