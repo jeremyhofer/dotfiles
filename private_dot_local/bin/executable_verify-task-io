@@ -77,6 +77,12 @@ judgment after measurement, never the audit's, so each one carries its reason:
   [[tool_state]]                a directory a tool keeps its own cache in, which no target needs to
   dir = ".angular"              declare because losing it on a cache hit costs only speed; matched
   why = "..."                   by directory prefix, so dotfiles inside it count
+Any target that runs Node or npx reads the root package.json (module type, binary resolution) and npx
+the lockfile. Nx hashes what they carry that a task depends on (dependency versions through the
+lockfile's external nodes, each target's own definition), so the fleet's repair is an `accepted` read
+entry for each, every target, rather than a shared input that re-runs every task on any edit; the
+`why` names what stays unhashed, package.json's type/imports/exports fields, after whose edit the
+full gate runs with the cache skipped. A target whose subject is one of those files declares it.
 A Python target traced after its environment was built reads `.venv/` and `__pycache__/` bytecode.
 Both derive from declared inputs (the lockfile, the sources), so the repair is an `accepted` read
 entry saying so, not a new input (financial-management, 2026-11-08).
@@ -94,6 +100,15 @@ WHAT IT CANNOT SEE.
     tooling) is outside what it can see.
   * A task that reads a file Nx's own walker also reads (an ignore file) is never attributed it, so a
     tool that honors a nested ignore file is masked.
+  * A target that judges a file some step outside its dependencies rewrites (a post-build step that
+    edits the build's output in place and is deliberately not a dependency) fails here, reported
+    partial: each target runs after its dependencies are rebuilt, which undoes the step. That is not
+    a tracer gap but the graph's: one file has two writers, and the judging target's cache key
+    misses the step too. Fix the graph (the step becomes part of the writer, or a dependency with
+    its own output). Prebuilding by hand and tracing the targets alone measures a state Nx itself
+    cannot reproduce (a consumer project, 2026-11-08).
+  * Linux only (REQUIREMENTS): a lane whose baselines exist only on another OS (screenshots rendered
+    on macOS) cannot be traced here at all.
   * The first trace of a target that CREATES an ignored directory carrying its own .gitignore
     (Hypothesis's `.hypothesis/`) fails on a control that drifts, in a fresh worktree every time:
     run the target once before tracing, so the directory exists (financial-management,
@@ -437,6 +452,7 @@ NX_OWN_READS = ["**/.gitignore", "**/.nxignore"]
 # (nx 24.0.2, dist/src/plugins/js/index.js, internalCreateNodes), and a consumer's three controls
 # disagreed on package-lock.json (2026-11-08). A task's single extra read of it is therefore not
 # attributable either, so a target that reads the lockfile must declare it.
+ROOT_LOCKFILE = re.compile(r"^(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$")
 NX_CONFIG = re.compile(r"^(nx\.json|.*project\.json|.*package\.json|.*tsconfig[\w.]*\.json"
                        r"|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$")
 
@@ -798,11 +814,21 @@ def _audit(root, nx, scratch, requested, static_only, drain, out):
                   file=out)
 
         after = trace("control-after", graph.noop)
-        drift = [f"{p}: {n}, against at most {control_opens[p]}" for p, n in sorted(after.opens.items())
-                 if n > control_opens[p] and p not in noisy]
+        risen = [(p, n) for p, n in sorted(after.opens.items()) if n > control_opens[p] and p not in noisy]
+        # One exception, the root lockfile: Nx's js plugin reads it on every graph build, and a rise in
+        # its count can only make a task look as if it read the lockfile when it did not, never hide a
+        # read, so it is noted, not refused (measured 2026-11-08: 101 reads in each of three controls,
+        # 103 after). Kept to the lockfile on purpose: this is the check that the measurement stayed
+        # stable, so every other drifting path, nx.json included, still refuses until measured.
+        own = [(p, n) for p, n in risen if ROOT_LOCKFILE.match(p)]
+        drift = [f"{p}: {n}, against at most {control_opens[p]}" for p, n in risen if (p, n) not in own]
         if drift:
             raise MeasurementError("the control drifted during the audit; attribution is suspect:\n  "
                                    + "\n  ".join(drift))
+        if own:
+            print("note: the closing control read the root lockfile more than the first three ("
+                  + ", ".join(f"{p} {n} > {control_opens[p]}" for p, n in own)
+                  + "); a task's reads of them may be over-reported, never hidden", file=out)
 
     # An undeclared write into the source tree (a path git does not ignore) is always a gap: a cache
     # hit does not reproduce it. An ignored one matters only if something reads it, since a cache hit

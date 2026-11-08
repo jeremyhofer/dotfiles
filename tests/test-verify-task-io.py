@@ -214,6 +214,47 @@ def test_clean_target_exits_zero(tmp_path):
     assert r.code == 0 and not r.findings, out.getvalue()
 
 
+class DriftingNx(FakeNx):
+    """The closing control (`control-after`) reads one file more than the first three did."""
+
+    def __init__(self, *a, drift_file, **k):
+        super().__init__(*a, **k)
+        self.drift_file = drift_file
+
+    def run(self, task_id, name):
+        if name == "control-after":
+            (self.root / self.drift_file).read_text()
+        return super().run(task_id, name)
+
+
+def _drift_audit(tmp_path, drift_file):
+    import io
+    root = tmp_path / "ws"
+    root.mkdir()
+    make_workspace(root)
+    (root / "package-lock.json").write_text("{}\n")
+    base = single_nx(root, "cat libs/a/src/main.txt > /dev/null; mkdir -p dist/a; echo a > dist/a/o")
+    nx = DriftingNx(root, base.tasks, base.deps, base._inputs, base.commands, base.projects,
+                    drift_file=drift_file)
+    out = io.StringIO()
+    r = vti.audit(root, nx, tmp_path / "s", requested=[], static_only=False, drain=DRAIN,
+                  out=out, err=out)
+    return r, out.getvalue()
+
+
+@needs_inotify
+def test_closing_control_drift_in_the_root_lockfile_is_noted_not_refused(tmp_path):
+    r, text = _drift_audit(tmp_path, "package-lock.json")
+    assert r.code == 0, text
+    assert "note: the closing control read the root lockfile" in text and "package-lock.json" in text, text
+
+
+@needs_inotify
+def test_closing_control_drift_elsewhere_still_refuses(tmp_path):
+    r, text = _drift_audit(tmp_path, "libs/a/secret.txt")
+    assert r.code == vti.EXIT_UNTRUSTED and "drifted during the audit" in text, text
+
+
 @needs_inotify
 def test_a_failed_target_makes_the_run_untrustworthy_not_ok(tmp_path):
     # A target that exits non-zero leaves a partial trace (its dependencies unbuilt, say): reading its
