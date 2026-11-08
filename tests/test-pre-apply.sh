@@ -115,6 +115,12 @@ lrun RUNALL_RC=0 PRE_APPLY_OS=Darwin
 lrun RUNALL_RC=0 PRE_APPLY_OS=Darwin
 { [ -e "$PA_MARK" ] && ! grep -q ' Darwin ' "$ledger"; } && ok "macOS, not yet gating, records nothing and always runs" || bad "macOS records nothing" "ran=$([ -e "$PA_MARK" ] && echo yes) $(grep Darwin "$ledger")"
 
+echo "== DOTFILES_SKIP_PRE_APPLY=1 skips, loudly, for an apply the suites themselves depend on"
+run "$tmp/bin" RUNALL_RC=1 PRE_APPLY_OS=Linux DOTFILES_SKIP_PRE_APPLY=1
+[ "$rc" -eq 0 ] && ok "exit 0 with the skip set" || bad "exit 0 with the skip set" "rc=$rc"
+grep -q "SKIPPED by DOTFILES_SKIP_PRE_APPLY" "$tmp/err" && ok "says it was skipped, and by what" || bad "names the skip" "$(cat "$tmp/err")"
+[ ! -e "$PA_MARK" ] && ok "runs no suite when skipped" || bad "runs no suite when skipped" "the runner ran"
+
 echo "== .chezmoi.toml.tmpl renders the hook"
 if command -v chezmoi >/dev/null 2>&1; then
   printf '[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n' > "$tmp/old.toml"

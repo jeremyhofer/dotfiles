@@ -34,6 +34,12 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `DOTFILES_SKIP_PRE_APPLY=1` skips the pre-apply suite run, loudly
+
+- For the apply a suite depends on (a tool or configuration only that apply deploys), where the run
+  could not pass first: `DOTFILES_SKIP_PRE_APPLY=1 chezmoi apply`. It prints that it skipped; the
+  next apply runs every suite again. Nothing to change in a private layer.
+
 ### `fleet-canonicals request` and `serve-requests`: a sandboxed session asks for a lifecycle action, a runner outside the sandbox checks and runs it
 
 - `fleet-canonicals request <up|down|refresh|resume> <name> --reason <text> [--as <requester>]`

@@ -36,6 +36,14 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 
+# DOTFILES_SKIP_PRE_APPLY=1 skips the run, loudly, for the apply a suite itself depends on: a
+# suite that needs a tool or configuration only this apply deploys cannot pass before it, and
+# without this the machine could not take the change that fixes it. The next apply runs again.
+if [ "${DOTFILES_SKIP_PRE_APPLY:-}" = 1 ]; then
+  printf 'dotfiles pre-apply: SKIPPED by DOTFILES_SKIP_PRE_APPLY=1; the apply goes ahead untested.\n' >&2
+  exit 0
+fi
+
 missing=""
 for tool in git python3 uv jq yq gitleaks wt; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
