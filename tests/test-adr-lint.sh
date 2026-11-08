@@ -60,11 +60,11 @@ assert_lacks "a valid record is clean" "[" "$(run "$r")"
 python3 "$lint" "$r" --quiet >/dev/null 2>&1 && ok "valid record exits 0" || bad "valid record exits 0"
 
 # --- schema
-r="$tmp/nodate"; bullet "$r" 0001 Accepted; sed -i '/Date:/d' "$r/0001-a-decision.md"
+r="$tmp/nodate"; bullet "$r" 0001 Accepted; sed '/Date:/d' "$r/0001-a-decision.md" > "$r/x" && mv "$r/x" "$r/0001-a-decision.md"
 assert_has "a missing header field is reported" "[schema]" "$(run "$r")"
-r="$tmp/noh1"; bullet "$r" 0001 Accepted; sed -i '1d' "$r/0001-a-decision.md"
+r="$tmp/noh1"; bullet "$r" 0001 Accepted; sed '1d' "$r/0001-a-decision.md" > "$r/x" && mv "$r/x" "$r/0001-a-decision.md"
 assert_has "a missing H1 is reported" "[schema]" "$(run "$r")"
-r="$tmp/frontnostatus"; front "$r" 0001 Accepted; sed -i '/^status:/d' "$r/ABC-ADR-0001-a-decision.md"
+r="$tmp/frontnostatus"; front "$r" 0001 Accepted; sed '/^status:/d' "$r/ABC-ADR-0001-a-decision.md" > "$r/x" && mv "$r/x" "$r/ABC-ADR-0001-a-decision.md"
 assert_lacks "a frontmatter doc with no status is not read as a record at all" "[schema]" "$(run "$r")"
 
 # --- id integrity and filename

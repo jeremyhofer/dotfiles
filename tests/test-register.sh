@@ -129,7 +129,7 @@ fentry ABC-0002 active docs/initiatives/ABC-0002-beta/ "" "Nothing."
 fentry ABC-0003 active "" "" "No folder."
 fentry ABC-0004 standing "" "cadence: weekly" "A standing one."
 fentry ABC-0005 standing "" "cadence: annual" "Another standing one."
-sed -i 's/^verified: .*/verified: 2026-01-01/' "$gr/ABC-0004-slug.md"
+sed 's/^verified: .*/verified: 2026-01-01/' "$gr/ABC-0004-slug.md" > "$gr/x" && mv "$gr/x" "$gr/ABC-0004-slug.md"
 fdoc docs/initiatives/ABC-0001-alpha/README.md
 echo "Files: specs/2026-01-01-a.md. Decision: ABC-ADR-0005 and docs/adr/0006-x.md; also docs/plans/2026-01-01-shared.md." >> "$g/docs/initiatives/ABC-0001-alpha/README.md"
 fdoc docs/initiatives/ABC-0001-alpha/specs/2026-01-01-a.md
