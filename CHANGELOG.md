@@ -34,6 +34,13 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### The settings fragment may ensure allow rules: `ensureAllow`
+
+- `~/.claude/settings.json`'s `modify_` script reads a new fragment key, `"ensureAllow": [rule, ...]`.
+  Each rule missing from `permissions.allow` is appended and nothing is removed, so the grants the
+  app accretes survive; `permissions.allow` itself is still never declared. A private layer that
+  wants a rule on every machine lists it there. Nothing to change otherwise.
+
 ### The request queue refreshes a stopped session still listed `blocked`, once it parked
 
 - After an idle stop, a session whose last turn asked its human something stays in the live

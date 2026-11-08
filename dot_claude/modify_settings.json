@@ -33,6 +33,12 @@
 #   * "permissions.allow" -- an ARRAY that the app accretes as permissions are granted. jq's
 #                           object-merge REPLACES arrays wholesale rather than unioning them, so
 #                           declaring it would silently discard every grant since it was declared.
+#                           A rule the domain wants on every machine goes in the fragment's
+#                           "ensureAllow" list instead (below).
+#
+# ENSURED ALLOW RULES. The fragment may print "ensureAllow": [rule, ...]. Each rule missing from
+# permissions.allow is appended; nothing is removed or reordered, so every grant the app accreted
+# survives. Removing a rule from the list does not remove it from a live file: delete it there too.
 #
 # ARRAY SEMANTICS, which a fragment must know: every declared array REPLACES the live one. That is
 # right for arrays the app never writes (sandbox paths, deny rules, hook lists): the source is
@@ -105,18 +111,19 @@ EOF
 )
 
 frag_path=${CLAUDE_SETTINGS_FRAGMENT:-"$HOME/.dotlocal/claude/settings-declared"}
-domain='{}'; retired='[]'
+domain='{}'; retired='[]'; ensure='[]'
 if [ -f "$frag_path" ]; then
   if out=$(bash "$frag_path" 2>/dev/null) \
      && printf '%s' "$out" | jq -e '(type == "object") and ((.declared // {}) | type == "object")' >/dev/null 2>&1; then
     domain=$(printf '%s' "$out" | jq -c '.declared // {}')
     retired=$(printf '%s' "$out" | jq -c '[.retiredHooks // [] | .[] | strings]')
+    ensure=$(printf '%s' "$out" | jq -c '[.ensureAllow // [] | .[] | strings]')
   else
     printf 'modify_settings.json: settings fragment %s failed or did not print a JSON object; applying the base block only\n' "$frag_path" >&2
   fi
 fi
 
-printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" '
+printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" --argjson ensure "$ensure" '
   ($base.hooks // {}) as $bh | ($domain.hooks // {}) as $dh
   | (. * ($base | del(.hooks)) * ($domain | del(.hooks)))
   | if (($bh | length) + ($dh | length)) > 0 then
@@ -128,4 +135,7 @@ printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --
       .hooks |= (with_entries(
         .value |= map(select(any(.hooks[]?; (.command // "") as $c | any($retired[]; . as $r | $c | contains($r))) | not)))
       | with_entries(select(.value | length > 0)))
+    else . end
+  | if ($ensure | length) > 0 then
+      .permissions.allow = reduce $ensure[] as $r ((.permissions.allow // []); if index([$r]) then . else . + [$r] end)
     else . end'

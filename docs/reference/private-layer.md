@@ -163,6 +163,9 @@ Rules the merge imposes:
 - **Never declare `permissions.allow`** (the app appends to it as permissions are granted; declaring
   it would discard them) **or `model`** (an enforced default belongs in the machine's managed
   settings).
+- **`ensureAllow`** lists permission rules every machine of the domain should allow. Each one
+  missing from `permissions.allow` is appended; nothing there is removed or reordered, so the
+  app's own grants survive. Dropping a rule from the list does not remove it from a live file.
 - **Hook lists are joined, then replace the live list.** For every hook event that the base or the
   fragment declares (the base declares `PreToolUse` and `SubagentStart`), the two lists are joined,
   base first with a duplicate entry kept once, and the result REPLACES that event's list in

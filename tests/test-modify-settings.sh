@@ -111,6 +111,21 @@ printf '#!/usr/bin/env bash\ncat <<JSON\n{"declared": {"hooks": {"SubagentStart"
 out=$(run '' "$dup_frag")
 [ "$(printf '%s' "$out" | jq '[.hooks.SubagentStart[]?] | length')" = "1" ] || { echo "FAIL: an entry declared by both layers must appear once"; fail=1; }
 
+# G) ensureAllow: each rule missing from permissions.allow is appended; every live grant survives,
+#    in order, and a rule already present is not duplicated
+ens_frag="$TMP/ens-frag"
+printf '#!/usr/bin/env bash\ncat <<JSON\n{"declared": {}, "ensureAllow": ["Bash(tool-a:*)", "Bash(ls:*)"]}\nJSON\n' > "$ens_frag"
+live='{"permissions":{"allow":["Bash(ls:*)","Bash(cat:*)"],"deny":["Bash(rm:*)"]}}'
+out=$(run "$live" "$ens_frag")
+[ "$(printf '%s' "$out" | jq -c '.permissions.allow')" = '["Bash(ls:*)","Bash(cat:*)","Bash(tool-a:*)"]' ] \
+  || { echo "FAIL: ensureAllow must append only missing rules and keep live ones in order (got: $(printf '%s' "$out" | jq -c '.permissions.allow'))"; fail=1; }
+[ "$(val "$out" '.permissions.deny[0]')" = "Bash(rm:*)" ] || { echo "FAIL: ensureAllow must not touch deny"; fail=1; }
+out=$(run '' "$ens_frag")
+[ "$(printf '%s' "$out" | jq -c '.permissions.allow')" = '["Bash(tool-a:*)","Bash(ls:*)"]' ] \
+  || { echo "FAIL: ensureAllow on a fresh machine must create the list"; fail=1; }
+again=$(run "$out" "$ens_frag")
+[ "$(printf '%s' "$again" | jq -S -c .)" = "$(printf '%s' "$out" | jq -S -c .)" ] || { echo "FAIL: ensureAllow applied twice must change nothing"; fail=1; }
+
 # F) no jq on PATH: byte-identical passthrough
 nojq="$TMP/nojq"; mkdir -p "$nojq"
 for t in bash cat printf; do p=$(command -v "$t") && ln -s "$p" "$nojq/$t"; done
