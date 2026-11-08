@@ -72,6 +72,9 @@ before relying on them.
   package as a whole is uncovered.
 - **pytest with xdist** (`-n`) needs pytest-cov's own xdist support to combine worker data; check
   the reported total matches a serial run once.
+- **Two coverage runs in one checkout collide** on its `.coverage` data files and under-report
+  (measured 2026-11-08: a module at 100% read 86% while another run shared the checkout). Run them
+  one at a time, or give each its own `COVERAGE_FILE`.
 
 ## 6. A browser lane in several engines enforces coverage on a Chromium-only run
 
