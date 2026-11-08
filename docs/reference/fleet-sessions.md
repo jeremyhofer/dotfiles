@@ -45,10 +45,15 @@ live pointer. `place` refuses a handoff whose predecessor cannot be found.
 
 | Path | Written by | Holds | Backed up |
 | --- | --- | --- | --- |
-| `~/.config/fleet-canonicals/config` | the private layer | the five settings below | with the private layer |
+| `~/.config/fleet-canonicals/config` | the private layer | the five settings below, and the request queue's keys | with the private layer |
 | `$FLEET_STATE/<name>.handoff` | `handoff --set`, `stage`, `place`, `--stub` | the pointer: the handoff's absolute path, then `# set-at <epoch seconds>` | no |
 | `$FLEET_STATE/handoff-staging/YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) | `stage` | staged handoffs; `place` removes one only when its content is in a commit of the placed copy and no pointer names it | no |
 | `$FLEET_STATE/stub-handoffs/YYYY-MM-DD-HHMMSS-<name>-stub.md` | `down`/`refresh --stub` | a generated "nothing to inherit" handoff; never placed | no |
+| `$FLEET_STATE/requests/<id>.request.json` | `request` (written to a temp file, then renamed) | a queued lifecycle request: `id`, `time` (epoch seconds), `verb`, `name`, `reason`, `requester` | no |
+| `$FLEET_STATE/requests/<id>.running.json`, `<id>.served.json` | `serve-requests` | the same request, while its verb runs and once it is done with; removed after seven days | no |
+| `$FLEET_STATE/requests/<id>.result.json` | `serve-requests` | the outcome (`done`, `failed` or `refused`), the check that refused it, the verb's output; removed after seven days | no |
+| `$FLEET_STATE/requests/PAUSED` | the human | while it exists, the runner refuses every request | no |
+| `$FLEET_STATE/requests-audit.jsonl` | `serve-requests` | one line per served request; the rate limits are counted from it. Outside `requests/`, so a grant to write the queue is not one to rewrite its history | no |
 | `$FLEET_STATE/<name>.tmproot` | each launch | the path of that launch's scratch root | no |
 | `/tmp/c-<short>-XXXXXX` (`$FLEET_TMPROOT_PREFIX`) | each launch | the session's scratch root, passed as `CLAUDE_CODE_TMPDIR`; the session's `$TMPDIR` is `<root>/claude-<uid>`. `<short>` is the name without `-canonical`, cut to 8 characters, because a longer root is silently replaced by the shared default | no |
 | the `handoffs` directory | the hub, `place` | committed handoffs | with its repository |
@@ -65,6 +70,21 @@ The settings in the config file, each overridable by an environment variable for
 | `hub` | `FLEET_HUB` | the session that places; `stage` names it in its output | not named |
 | `place-commit` | `FLEET_PLACE_COMMIT` | `true`: `place` commits the files it placed, and only those, in the repository holding `handoffs`; it never pushes | `false`: copies only |
 | `stage-check` | `FLEET_STAGE_CHECK` | an executable `stage` runs as `<check> <draft>` before staging; non-zero refuses the draft and prints the check's output. Point it at a script that runs the handoffs repository's blocking commit gates on the draft, so a draft that `place`'s commit would refuse is refused while its author can fix it. One that is not an executable file refuses every `stage` | no check |
+
+The request queue's keys (no variable overrides them; names are space- or comma-separated, and a
+key set to nothing is an empty list, not the default):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `request-max-age` | `600` | seconds after which a queued request is refused as stale |
+| `request-limit-canonical` | `3` | lifecycle actions (run, whether they succeeded or failed) per canonical in a rolling hour |
+| `request-limit-fleet` | `10` | the same, for every canonical together |
+| `request-usage-threshold` | `85` | the 7-day usage percent at which `up`, `refresh` and `resume` are refused |
+| `request-usage-exempt` | none | canonicals that may still be started above the threshold |
+| `request-any` | `director-canonical` | requesters who may request any canonical's action; everyone else, only their own |
+| `never-touch` | `director-canonical` | canonicals the queue never acts on, for any verb, whoever asks; refused at `request` too |
+| `allow-self-refresh` | `false` | `true` lets a canonical request its own `refresh` (see "Requesting a lifecycle action") |
+| `request-idle-states` | `done,idle,waiting` | the `claude agents --json` states that do not count as working; any other state refuses a stop |
 
 ## The handoff lifecycle
 
@@ -177,7 +197,8 @@ moves one, the entry moves with it.
 granted; a sandboxed `up` once failed with `EROFS` there. Stopping a session signals another
 session's process, which a sandboxed shell may not be able to see. So `up`, `refresh`, `down`,
 `dedupe`, `resume`, `resume-at` and `clean` run from a plain terminal or from a session that runs the
-command outside its sandbox; do not grant `~/.claude` to make them fit. `status`, `list`, `handoff`,
+command outside its sandbox; do not grant `~/.claude` to make them fit. A session inside its
+sandbox requests `up`, `down`, `refresh` or `resume` through the queue instead (below). `status`, `list`, `handoff`,
 `stage` and `place` run inside it.
 
 **Inside a sandbox, the list of live sessions can be wrong, and every session verb trusts it.** The
@@ -200,6 +221,47 @@ read from the tool's logic (none of these was run on that machine):
 
 So the verbs in the paragraph above stay the human's, run from a terminal, and a session's own
 `status` is a hint, never a finding: where it disagrees with the terminal, the terminal is right.
+
+### Requesting a lifecycle action
+
+**A session requests `up`, `down`, `refresh` or `resume` instead of running it.**
+`fleet-canonicals request <verb> <name> --reason <text>` writes one file into
+`$FLEET_STATE/requests/`, which a canonical can already write (the table above); it runs nothing.
+`fleet-canonicals serve-requests`, started every minute outside every sandbox by a systemd user
+timer (Linux) or a LaunchAgent (macOS), reads the queue and runs the plain verb, so the verb's own
+pre-flight and handoff gate still apply, and a request is served within about two minutes. It reads
+the sessions list from outside the sandbox, where the list is reliable. `resume` runs `claude
+respawn` on the canonical's last session, the documented restart of a stopped one.
+
+The runner cannot tell who wrote a file; a request records who it claims to be from (the calling
+session's name, read from `CLAUDE_CODE_SESSION_ID` and the status-line usage file, else `--as`), so
+the checks bound what any request can do, and every outcome is in a result file and the audit log.
+No notification is sent. The runner refuses, in this order, a request that:
+
+- is malformed, names a verb other than the four, or carries an option such as `--force` or
+  `--stub`;
+- arrives while `requests/PAUSED` exists, or is older than `request-max-age`;
+- names a canonical on `never-touch`, or one the fleet record does not declare for this machine;
+- names a canonical other than its requester, from a requester not on `request-any`;
+- asks a canonical's own `refresh`, unless `allow-self-refresh = true`. A session that runs
+  `refresh` on itself is killed at the stop, and the harness crash-respawns the same session with
+  `--resume`, reporting OK and refreshed nothing (measured 2026-08-29). Whether a runner outside the
+  session wins that race is unmeasured; the key is how the measurement is run on purpose;
+- shares its canonical with an older request in the same pass or one marked running (a runner that
+  died mid-verb leaves one; remove it by hand);
+- would exceed `request-limit-canonical` or `request-limit-fleet` in the past hour;
+- is `up`, `refresh` or `resume` while the highest current `seven_day_pct` in
+  `$XDG_RUNTIME_DIR/claude-usage/*.json` is at or above `request-usage-threshold` and the canonical
+  is not exempt (a file whose `seven_day_resets_at` has passed is skipped; with no files, usage is
+  not checked);
+- is `up` or `resume` where `claude-trust-check` reports the canonical's project untrusted, or
+  cannot read the trust state;
+- is `down` or `refresh` while the session is working: its listed state is not in
+  `request-idle-states`, its transcript's last turn has not ended, or either cannot be read; or is
+  `resume` while the session is running.
+
+A keep-alive, which would hold a canonical up against an idle stop, is not built; the runner has
+the check's place for it and no hold can exist yet.
 
 **Where the entries go.** In a settings file, as `~/...` paths:
 
@@ -278,6 +340,24 @@ earlier one.
    and exits 0; a `FAILED <name> launch exited <n>` line is the launch itself failing, often a
    sandboxed `up` (see "Sandbox and permissions"). Check: `fleet-canonicals status`
    shows `OK (<id>, started <time>)` for each, and each session's first reply confirms takeover.
+10. **Optionally, enable the request runner** ("Requesting a lifecycle action"), from a terminal; it
+    needs `uv` on `PATH`. Its requests directory is inside `~/.local/state/fleet-canonicals`, which
+    step 4 granted; a machine that granted only part of that directory adds
+    `~/.local/state/fleet-canonicals/requests`. Its canonicals must be declared in a fleet record
+    for this machine (step 2): the runner acts on nothing else. Then:
+    - Linux: `systemctl --user enable --now fleet-canonicals-requests.timer`. Check:
+      `systemctl --user list-timers fleet-canonicals-requests.timer` shows a next run within a
+      minute, and `journalctl --user -u fleet-canonicals-requests.service` shows a pass.
+    - macOS: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist`.
+      Check: `launchctl print gui/$(id -u)/local.dotfiles.fleet-canonicals-requests` shows
+      `run interval = 60 seconds`; its output goes to `~/Library/Logs/fleet-canonicals-requests.log`.
+
+    Then prove a refusal from inside a session: `fleet-canonicals request up <a name declared for
+    another machine> --reason probe --as <name>` must exit 1 naming the machine, and a request for
+    a canonical that is running and working must come back refused with check `working` in its
+    result file. Pause the runner with `touch ~/.local/state/fleet-canonicals/requests/PAUSED`;
+    disable it with `systemctl --user disable --now fleet-canonicals-requests.timer` or `launchctl
+    bootout gui/$(id -u)/local.dotfiles.fleet-canonicals-requests`.
 
 ### Where hooks or messaging are absent
 

@@ -1,6 +1,6 @@
 ---
 name: canonical-takeover
-description: Use when taking over, launching, relaunching, refreshing, resuming or closing a canonical session — running `fleet-canonicals up`/`down` (or `start`/`stop`)/`refresh`/`resume`/`dedupe`/`status`/`list`, declaring or changing a canonical in the fleet record (`canonical`, `canonicalLaunchModel`, `canonicalLaunchDir`, `canonicalIdentity`, `canonicalMachines`), choosing a canonical's model, or when a canonical name resolves to the wrong session, a stale duplicate row appears in the agents view, a canonical is missing on a machine that should run it, or a session comes up on an unexpected model. Covers how a launch is composed from the record, why the model is declared rather than inherited, how a launch resolves its handoff through a pointer, the handoff freshness gate on `down` and `refresh`, the verify-the-name-landed step, and why opening a stale row silently resumes it.
+description: Use when taking over, launching, relaunching, refreshing, resuming or closing a canonical session — running `fleet-canonicals up`/`down` (or `start`/`stop`)/`refresh`/`resume`/`dedupe`/`status`/`list`, requesting one of those from inside a sandbox (`fleet-canonicals request`, the `serve-requests` runner, a refused request's result file), declaring or changing a canonical in the fleet record (`canonical`, `canonicalLaunchModel`, `canonicalLaunchDir`, `canonicalIdentity`, `canonicalMachines`), choosing a canonical's model, or when a canonical name resolves to the wrong session, a stale duplicate row appears in the agents view, a canonical is missing on a machine that should run it, or a session comes up on an unexpected model. Covers how a launch is composed from the record, why the model is declared rather than inherited, how a launch resolves its handoff through a pointer, the handoff freshness gate on `down` and `refresh`, the request queue's checks and who may request what, the verify-the-name-landed step, and why opening a stale row silently resumes it.
 ---
 
 # Canonical takeover, launch and lifecycle
@@ -83,10 +83,15 @@ one. Prefer an alias (`opus`, `sonnet`, a context-qualified form such as `opus[1
    stops the outgoing session, verifies between the halves that its row really went away, then
    launches. That check is what prevents the stale duplicate row a bare launch leaves behind. A name that is not running is simply launched.
 
+   **From inside a sandbox, request it instead** (below, "Requesting from a sandbox"), where the
+   machine runs the request runner: the runner is such a terminal, outside every sandbox.
+
    **It refuses inside the target session.** Run there, it would die at the stop, the relaunch
    would never run, and the harness would respawn the killed worker with `--resume`: the same
    session back, start time rewritten, reporting OK, having refreshed nothing. So the outgoing
-   canonical cannot refresh itself.
+   canonical cannot refresh itself. A request for its own refresh is refused too, until the domain
+   sets `allow-self-refresh = true` after measuring that the runner's refresh replaces the session
+   rather than racing the harness's crash-respawn.
 3. **Names resolve newest-wins**, so the new session takes over the address and inherits anything
    queued to it.
 4. **The new session verifies it holds the name before acting under it**: `ListAgents` where
@@ -116,7 +121,8 @@ are opposites; give at most one:
 
 ## Other lifecycle verbs
 
-**These are the human's, run from a terminal; a session names the command and does not run it.**
+**These are the human's, run from a terminal; a session names the command and does not run it,
+or, for `up`, `down`, `refresh` and `resume`, requests it** (next section).
 Each acts on the list of live sessions, and inside a session's sandbox that list can be wrong: on a
 machine whose sandbox could not reach the session service, every other session read as stopped, so
 `up` would duplicate them and `clean` would remove their scratch roots (the base's
@@ -132,6 +138,37 @@ machine whose sandbox could not reach the session service, every other session r
 - The scratch directories each launch creates are removed by `down`, `refresh` and `dedupe`; where
   no cleanup hook runs, `fleet-canonicals clean` sweeps the ones whose session is gone (run
   `--dry-run` first; it keeps anything it cannot prove orphaned).
+
+## Requesting from a sandbox
+
+Where the machine's owner has enabled the request runner (the base's
+`docs/reference/fleet-sessions.md`, "Requesting a lifecycle action"), a session asks for a lifecycle
+action instead of running it:
+
+```sh
+fleet-canonicals request <up|down|refresh|resume> <name> --reason '<why, for the audit log>'
+```
+
+It writes one file and runs nothing; the runner, outside every sandbox, checks it within a minute
+and runs the plain verb, so the pre-flight and the handoff gate still apply. The outcome is in
+`~/.local/state/fleet-canonicals/requests/<id>.result.json`; read it rather than assuming success.
+
+- **A canonical requests only its own actions.** A request naming another canonical is refused
+  unless the requester is on the config's `request-any` list (by default the director seat). The
+  requester is your session's name, read from the session; `--as` only names it where it cannot be
+  read, such as a terminal, and cannot contradict it.
+- **Some names are never touched.** A canonical on `never-touch` (by default the director seat) is
+  refused at `request` for every verb: its lifecycle is the human's.
+- **It will not stop work in flight.** `down` and `refresh` are refused while the target's listed
+  state is working or its last transcript turn has not ended, so a park's own request waits for its
+  turn to end; resubmit if it went stale (ten minutes).
+- **No escape hatches.** `--force` and `--stub` are refused; a handoff the gate refuses is fixed by
+  parking properly, or by the human from a terminal.
+- **`resume`** runs `claude respawn` on the canonical's last session, for a session that stopped
+  without parking; `up` starts a fresh one from its handoff.
+- Also refused: a second request for a canonical already queued, more than three actions per
+  canonical (ten for the fleet) an hour, a starting verb at 85% of the 7-day window unless exempt,
+  `up` or `resume` in an untrusted workspace, and anything while `requests/PAUSED` exists.
 
 **Never open a stale row to find out whether it is live.** Opening a listed row resumes that session,
 which re-registers it under the canonical name with a rewritten start time: it then looks like a

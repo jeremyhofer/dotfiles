@@ -142,7 +142,8 @@ sandbox that list can be wrong: on a machine whose sandbox could not reach Claud
 service, every other session read as stopped, so up would launch a duplicate of each and clean
 would remove live sessions' scratch roots. status, list and handoff are safe to run anywhere, but
 a status taken inside a session is only as good as that list; where it disagrees with a terminal,
-the terminal is right.
+the terminal is right. From inside a sandbox, `request` asks for up, down, refresh or resume
+instead, and `serve-requests`, run outside every sandbox, checks and runs it.
 
   resume <name> [--dry-run] [--fork] [--prompt TEXT]
       bring a canonical back FROM ITS OWN TRANSCRIPT, then close the row it forked from.
@@ -232,6 +233,23 @@ the terminal is right.
                     same wait, then run `up`. For when no session will be alive to wake.
                     Run it backgrounded (`fleet-canonicals resume-at &`).
 
+  request <up|down|refresh|resume> <name> --reason TEXT [--as REQUESTER]
+                    ask for a lifecycle action from INSIDE a sandbox, where the verbs above
+                    cannot run. Writes one request into $FLEET_STATE/requests/; never runs
+                    anything. Refuses --force and --stub, a name not declared for this machine,
+                    a never-touch name, and a second request for a canonical already queued.
+                    The requester is the calling session's name when it can be read, else --as.
+  serve-requests    serve the queue once, outside every sandbox (a systemd user timer or a
+                    LaunchAgent runs it every minute). Refuses a request that is stale (10 min),
+                    for a canonical with another request queued or running, for a session that
+                    is working, from a canonical acting on another (unless the requester is on
+                    request-any), a self-refresh (unless allow-self-refresh), over the rate limits
+                    (3 per canonical, 10 for the fleet, per hour), while requests/PAUSED exists,
+                    up/refresh/resume at 85% of the 7-day window (unless exempt), and up/resume
+                    in an untrusted workspace; otherwise runs the verb above (resume: `claude
+                    respawn` on its last session). A result file per request and a line in
+                    $FLEET_STATE/requests-audit.jsonl; no notification.
+
   The usage cache is ${XDG_RUNTIME_DIR:-/tmp}/claude-usage/<session>.json, one per session, with
   five_hour_resets_at and seven_day_resets_at (epoch seconds), written from the status line by a
   recorder the domain installs, if it has one. Nothing here writes it.
@@ -247,6 +265,17 @@ configuration (file, then the variable that overrides each key):
   hub = <name>               FLEET_HUB              the session that runs `place`, named by `stage`
   place-commit = true|false  FLEET_PLACE_COMMIT     commit placed files in the repository holding
                                                     the handoffs directory (default false)
+  the request queue's keys (no variable overrides them; defaults in brackets):
+  request-max-age = <secs>   [600]   a queued request older than this is refused as stale
+  request-limit-canonical = <n> [3]  lifecycle actions per canonical per rolling hour
+  request-limit-fleet = <n>  [10]    lifecycle actions for the whole fleet per rolling hour
+  request-usage-threshold = <pct> [85]  7-day usage at which up, refresh and resume are refused
+  request-usage-exempt = <names>  [none]  canonicals that may still be started above it
+  request-any = <names>      [director-canonical]  requesters who may act on any canonical
+  never-touch = <names>      [director-canonical]  canonicals the queue never acts on, any verb
+  allow-self-refresh = true|false [false]  let a canonical request its own refresh
+  request-idle-states = <states> [done,idle,waiting]  listing states that are not working
+                             (names: space- or comma-separated; an empty value is an empty list)
   stage-check = <executable> FLEET_STAGE_CHECK      run by `stage` as `<executable> <draft>` before
                                                     staging; non-zero refuses and prints its output.
                                                     Set it to the handoffs repository's commit gates,
@@ -267,7 +296,8 @@ environment:
   FLEET_AGENTS_JSON_CMD   command producing the sessions JSON (default: claude agents --json)
   FLEET_AGENTS_JSON_ALL_CMD  the same including exited sessions (default: the above --all, or
                           the above unchanged when it was overridden)
-  FLEET_CLAUDE_CMD        the claude binary, for launch, rm, attach and fork (default: claude)
+  FLEET_CLAUDE_CMD        the claude binary, for launch, rm, attach, fork and respawn (default: claude)
+  FLEET_CANONICALS_QUEUE  the request queue's script (default: fleet-canonicals-queue beside this)
   USAGE_WINDOW            5h: a 5-hour window is expected, so an empty cache is "not cached yet"
 USAGE
 }
@@ -2266,7 +2296,29 @@ cmd_resume() {
   done <<< "$rows"
 }
 
+# ---- the lifecycle request queue ------------------------------------------------
+# `request` writes a request for up, down, refresh or resume into $FLEET_STATE/requests/, which a
+# sandboxed session can write; `serve-requests`, run once a minute outside every sandbox by a
+# systemd user timer or a LaunchAgent, checks each request and runs the verb above. Both live in
+# fleet-canonicals-queue, a Python script beside this one: its checks are the queue's containment,
+# and they are easier to state and test there than in bash. The verbs it runs are these, so their
+# own pre-flights and gates still apply. See that file's header.
+exec_queue() {
+  local here q
+  here=$(cd "$(dirname "$0")" && pwd)
+  q=${FLEET_CANONICALS_QUEUE:-}
+  if [ -z "$q" ]; then
+    for q in "$here/fleet-canonicals-queue" "$here/executable_fleet-canonicals-queue" ""; do
+      [ -z "$q" ] || [ -f "$q" ] && break
+    done
+  fi
+  [ -n "$q" ] && [ -f "$q" ] || die "the request queue (fleet-canonicals-queue) is not installed beside $0"
+  command -v uv >/dev/null 2>&1 || die "uv is required for request and serve-requests (they run fleet-canonicals-queue with uv run --script)"
+  exec uv run --quiet --script "$q" "$@"
+}
+
 case "${1:-}" in
+  request|serve-requests) exec_queue "$@" ;;
   list)      shift; cmd_list "$@" ;;
   status)    shift; cmd_status "$@" ;;
   down|stop) shift; cmd_down "$@" ;;   # both spellings, deliberately: up/down and start/stop

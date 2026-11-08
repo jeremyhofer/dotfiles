@@ -34,6 +34,36 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `fleet-canonicals request` and `serve-requests`: a sandboxed session asks for a lifecycle action, a runner outside the sandbox checks and runs it
+
+- `fleet-canonicals request <up|down|refresh|resume> <name> --reason <text> [--as <requester>]`
+  writes one request into `~/.local/state/fleet-canonicals/requests/` and runs nothing. It refuses
+  `--force` and `--stub`, a name not declared for this machine, a `never-touch` name and a second
+  request for a canonical already queued. The requester is the calling session's name where it can
+  be read, else `--as`.
+- `fleet-canonicals serve-requests` serves the queue once, outside every sandbox: it refuses a stale
+  request (ten minutes), one for a canonical with another queued or running, a stop of a session
+  that is working, a request for another canonical from a requester not on `request-any`, a
+  self-refresh unless `allow-self-refresh = true`, more than three actions per canonical or ten for
+  the fleet an hour, everything while `requests/PAUSED` exists, `up`, `refresh` and `resume` at 85%
+  of the 7-day window unless exempt, and `up` and `resume` in an untrusted workspace; otherwise it
+  runs the plain verb (`resume`: `claude respawn` on the last session). A result file per request,
+  a line in `~/.local/state/fleet-canonicals/requests-audit.jsonl`, no notification.
+- New configuration keys in `~/.config/fleet-canonicals/config`, each with a default, listed in
+  `fleet-canonicals --help` and `docs/reference/fleet-sessions.md`. A private layer that wants a
+  person to request for any canonical adds that name to `request-any`.
+- The queue is `fleet-canonicals-queue`, Python run by `uv run --script`; `request` and
+  `serve-requests` need `uv` on `PATH`.
+- Two schedulers ship, neither enabled or loaded: the systemd user units
+  `fleet-canonicals-requests.service` and `.timer` (every minute), and the LaunchAgent
+  `local.dotfiles.fleet-canonicals-requests` (every 60 seconds). **ACTION, per machine that should
+  serve requests, by its owner from a terminal:** `systemctl --user enable --now
+  fleet-canonicals-requests.timer` on Linux, or `launchctl bootstrap gui/$(id -u)
+  ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist` on macOS. A machine with no
+  private layer also needs the requests directory writable from sessions (inside the
+  `~/.local/state/fleet-canonicals` grant the fleet setup already makes) and its canonicals in a
+  fleet record; `docs/reference/fleet-sessions.md`, setup step 10.
+
 ### An apply of a tree that already passed is not tested again
 
 - `tests/pre-apply.sh` records a pass as the source's HEAD tree and the OS, in

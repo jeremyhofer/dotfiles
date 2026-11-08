@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  fleet-canonicals serve-requests on macOS: one pass over the canonical lifecycle request queue
+  every 60 seconds, the launchd counterpart of the systemd user timer fleet-canonicals-requests.timer
+  on Linux (see `fleet-canonicals help`). launchd does not start a second copy while one runs.
+  NOT LOADED BY THE BASE: the machine's owner loads it once, from a terminal:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist
+  PATH is set outright: a LaunchAgent's PATH is launchd's minimal one, and the runner needs bash,
+  jq, uv and yq from Homebrew and fleet-canonicals, fleet-decl and claude from ~/.local/bin.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.dotfiles.fleet-canonicals-requests</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ .chezmoi.homeDir }}/.local/bin/fleet-canonicals</string>
+    <string>serve-requests</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartInterval</key><integer>60</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/fleet-canonicals-requests.log</string>
+  <key>StandardErrorPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/fleet-canonicals-requests.log</string>
+</dict>
+</plist>

@@ -1,0 +1,13 @@
+# Every minute, on the minute. A calendar timer does not depend on the service's last run, so a
+# pass that exits early (no queue yet) never stops the schedule; systemd does not start the
+# service again while a pass is still running, and the runner takes a lock as well. Not enabled by
+# the base; see fleet-canonicals-requests.service.
+[Unit]
+Description=Serve the canonical lifecycle request queue every minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

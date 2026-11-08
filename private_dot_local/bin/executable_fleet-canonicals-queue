@@ -1,0 +1,751 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""fleet-canonicals-queue -- the lifecycle request queue behind `fleet-canonicals request` and
+`fleet-canonicals serve-requests`. Run it through `fleet-canonicals`; it is a separate file only
+because its checks are easier to state and test in Python than in the bash the verbs are written in.
+
+WHY A QUEUE. A session inside an agent sandbox cannot start, stop or refresh a canonical itself: a
+launch writes a job directory under ~/.claude, which the sandbox cannot write, and inside the
+sandbox the live session list can read every peer as stopped, so a sandboxed `up` can launch a
+duplicate. What a sandboxed session CAN do is write a file under ~/.local/state. So it writes a
+request there (`request`), and a runner outside every sandbox, started once a minute by a systemd
+user timer or a LaunchAgent, reads the queue and runs the existing verb (`serve-requests`). The
+verb's own checks still apply -- the pre-flight that the name can be launched, the handoff
+freshness gate on `down` and `refresh`, a pointer that resolves -- and the runner adds the checks
+the verbs lack, listed in CHECKS below.
+
+THE TRUST IS COOPERATIVE. Anyone who can write the requests directory can write a request, and the
+runner cannot authenticate who wrote it: a request records who it claims to be from. The checks
+bound the harm instead. Four verbs only, never `--force` or `--stub`, only names the fleet record
+declares for this machine, never a session that is working, never more than a few actions an hour.
+Every request gets a result file and an audit line, so a request outside the rules is refused AND
+visible. Nothing here sends a notification of any kind.
+
+FILES, all under $FLEET_STATE (default $XDG_STATE_HOME/fleet-canonicals):
+  requests/<id>.request.json   a queued request, written atomically (a temp file, then a rename)
+  requests/<id>.running.json   claimed by a runner; its verb is executing
+  requests/<id>.served.json    done with, whatever the outcome
+  requests/<id>.result.json    the outcome: done, failed or refused, the check that refused it, the
+                               verb's output
+  requests/PAUSED              while it exists, every request is refused
+  requests-audit.jsonl         one line per served request, appended. Outside requests/ so that a
+                               grant to write the queue is not also a grant to rewrite the history
+                               the rate limits are counted from.
+Served requests and their results older than seven days are removed by the runner.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+VERBS = ("up", "down", "refresh", "resume")
+STOPPING = ("down", "refresh")          # verbs that end a running session
+STARTING = ("up", "refresh", "resume")  # verbs that spend usage
+REQUEST_KEYS = {"id", "time", "verb", "name", "reason", "requester"}
+RETAIN_SECONDS = 7 * 24 * 3600
+VERB_TIMEOUT = 600
+
+# The configuration keys this file reads, with their defaults. The file is the one
+# `fleet-canonicals` already reads (`key = value` lines, `#` comment lines, the last repeat wins).
+# A key that is present but empty is an explicit empty value, not the default: `never-touch =`
+# turns the never-touch list off.
+DEFAULTS = {
+    "request-max-age": "600",             # seconds before a queued request is stale
+    "request-limit-canonical": "3",       # actions per canonical per rolling hour
+    "request-limit-fleet": "10",          # actions for the whole fleet per rolling hour
+    "request-usage-threshold": "85",      # 7-day usage percent at which starting verbs stop
+    "request-usage-exempt": "",           # canonicals that may still be started above it
+    "request-any": "director-canonical",  # requesters who may act on any canonical
+    "never-touch": "director-canonical",  # canonicals the queue never acts on, for any verb
+    "allow-self-refresh": "false",        # true: a canonical may request its own refresh
+    "request-idle-states": "done,idle,waiting",  # agents-listing states that are not working
+}
+
+
+def die(msg: str, code: int = 2) -> None:
+    print(f"fleet-canonicals: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---- environment -----------------------------------------------------------------------------
+
+HOME = Path.home()
+STATE = Path(os.environ.get("FLEET_STATE") or
+             Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state") / "fleet-canonicals")
+QUEUE = STATE / "requests"
+AUDIT = STATE / "requests-audit.jsonl"
+CONFIG = Path(os.environ.get("FLEET_CANONICALS_CONFIG") or
+              Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fleet-canonicals" / "config")
+TRANSCRIPTS = Path(os.environ.get("FLEET_TRANSCRIPT_DIR") or HOME / ".claude" / "projects")
+USAGE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "claude-usage"
+HERE = Path(__file__).resolve().parent
+
+
+def sibling(name: str, env: str) -> list[str]:
+    """A companion tool: the variable, else beside this file (a source tree names it
+    executable_<name>), else on PATH."""
+    if os.environ.get(env):
+        return os.environ[env].split()
+    for cand in (HERE / name, HERE / f"executable_{name}"):
+        if cand.is_file():
+            return ["bash", str(cand)] if name == "fleet-canonicals" else [str(cand)]
+    found = shutil.which(name)
+    return [found] if found else [name]
+
+
+def claude_cmd() -> list[str]:
+    return [os.environ.get("FLEET_CLAUDE_CMD") or "claude"]
+
+
+def agents_cmds() -> tuple[list[str], list[str]]:
+    """The live listing and the one including exited sessions, overridable exactly as in
+    `fleet-canonicals`: an overridden base command answers both."""
+    base = os.environ.get("FLEET_AGENTS_JSON_CMD")
+    every = os.environ.get("FLEET_AGENTS_JSON_ALL_CMD")
+    if base:
+        return base.split(), (every or base).split()
+    return claude_cmd() + ["agents", "--json"], (every.split() if every else claude_cmd() + ["agents", "--json", "--all"])
+
+
+def config() -> dict[str, str]:
+    values = dict(DEFAULTS)
+    try:
+        lines = CONFIG.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        values[k.strip()] = v.strip()
+    return values
+
+
+def as_list(v: str) -> list[str]:
+    return [x for x in re.split(r"[\s,]+", v) if x]
+
+
+def as_int(cfg: dict[str, str], key: str) -> int:
+    try:
+        return int(cfg[key])
+    except ValueError:
+        die(f"config key {key} is not a whole number: {cfg[key]!r} (in {CONFIG})")
+        raise
+
+
+def run(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        return p.returncode, p.stdout
+    except FileNotFoundError:
+        return 127, f"not found: {cmd[0]}"
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode(errors="replace")
+        return 124, out + f"\n(killed after {timeout}s)"
+
+
+def hostname() -> str:
+    rc, out = run(["hostname"])
+    return out.strip() if rc == 0 and out.strip() else socket.gethostname()
+
+
+def decl(*args: str) -> tuple[int, str]:
+    rc, out = run(sibling("fleet-decl", "FLEET_DECL_CMD") + list(args))
+    return rc, out.strip()
+
+
+def declared_here(name: str) -> tuple[bool, str]:
+    """Is NAME a canonical the fleet record declares for this machine? The same two reads
+    `fleet-canonicals` makes: a launch directory, and this host in canonicalMachines."""
+    rc, _ = decl("--canonical", name, "canonicalLaunchDir")
+    if rc == 2:
+        return False, "the fleet record is unreadable (fleet-decl exit 2)"
+    if rc != 0:
+        return False, f"'{name}' is not a canonical the fleet record declares"
+    rc, machines = decl("--canonical-list", name, "canonicalMachines")
+    host = hostname()
+    if rc != 0 or host not in machines.splitlines():
+        return False, f"'{name}' is not declared for this machine ({host})"
+    return True, ""
+
+
+def project_of(name: str) -> str | None:
+    rc, out = decl("--values", "canonical")
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        proj, _, canon = line.partition("\t")
+        if canon == name:
+            return proj
+    return None
+
+
+def agents(all_rows: bool = False) -> list[dict] | None:
+    live, every = agents_cmds()
+    rc, out = run(every if all_rows else live)
+    if rc != 0:
+        return None
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def newest_row(rows: list[dict], name: str) -> dict | None:
+    mine = [r for r in rows if r.get("name") == name]
+    return max(mine, key=lambda r: r.get("startedAt") or 0) if mine else None
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def stamp(t: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def write_atomic(path: Path, data: dict) -> None:
+    tmp = path.with_name(f".tmp-{path.name}-{secrets.token_hex(4)}")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# ---- who is asking ---------------------------------------------------------------------------
+
+def calling_session_name() -> str | None:
+    """The canonical name of the session this runs inside, when that can be read without the
+    network: Claude Code exports CLAUDE_CODE_SESSION_ID into a session's shell, and the status-line
+    usage recorder writes $XDG_RUNTIME_DIR/claude-usage/<session id>.json carrying session_name.
+    The agents listing is the fallback; inside a sandbox it may be unreadable."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return None
+    try:
+        name = json.loads((USAGE_DIR / f"{sid}.json").read_text(encoding="utf-8")).get("session_name")
+        if name:
+            return str(name)
+    except (OSError, ValueError, AttributeError):
+        pass
+    rows = agents(all_rows=True) or []
+    for r in rows:
+        if r.get("sessionId") == sid and r.get("name"):
+            return str(r["name"])
+    return None
+
+
+# ---- the queue -------------------------------------------------------------------------------
+
+def queued() -> list[Path]:
+    return sorted(QUEUE.glob("*.request.json"))
+
+
+def running() -> list[Path]:
+    return sorted(QUEUE.glob("*.running.json"))
+
+
+def read_request(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def pending_for(name: str, exclude: Path | None = None) -> list[str]:
+    ids = []
+    for p in queued() + running():
+        if exclude is not None and p == exclude:
+            continue
+        r = read_request(p)
+        if r and r.get("name") == name:
+            ids.append(p.name)
+    return ids
+
+
+def cmd_request(argv: list[str]) -> int:
+    usage = "usage: fleet-canonicals request <up|down|refresh|resume> <name> --reason <text> [--as <requester>]"
+    pos: list[str] = []
+    reason = ""
+    claimed = ""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--reason", "--as"):
+            if i + 1 >= len(argv) or not argv[i + 1].strip():
+                die(f"request: {a} needs a value\n{usage}")
+            if a == "--reason":
+                reason = argv[i + 1].strip()
+            else:
+                claimed = argv[i + 1].strip()
+            i += 2
+            continue
+        if a in ("--force", "--stub"):
+            die(f"request: {a} is never accepted through the queue. The queue runs the plain verb, "
+                "with every check it makes; an escape hatch is the operator's, from a terminal.")
+        if a in ("-h", "--help"):
+            print(usage)
+            return 0
+        if a.startswith("-"):
+            die(f"request: unknown option '{a}'\n{usage}")
+        pos.append(a)
+        i += 1
+    if len(pos) != 2:
+        die(f"request: need a verb and one canonical name\n{usage}")
+    verb, name = pos
+    if verb not in VERBS:
+        die(f"request: '{verb}' cannot be requested; the queue accepts {', '.join(VERBS)}")
+    if not reason:
+        die(f"request: --reason is required; it is what the audit log will say this was for\n{usage}")
+    cfg = config()
+    if name in as_list(cfg["never-touch"]):
+        die(f"request: '{name}' is on the never-touch list ({CONFIG}): the queue never acts on it, "
+            "for any verb, whoever asks. Its lifecycle is its operator's, from a terminal.", 1)
+    ok, why = declared_here(name)
+    if not ok:
+        die(f"request: {why}; refusing to queue it", 1)
+    derived = calling_session_name()
+    if derived and claimed and claimed != derived:
+        die(f"request: this is running inside '{derived}', so the request is from '{derived}', "
+            f"not '{claimed}'. Drop --as, or ask '{claimed}' to request it.", 1)
+    requester = derived or claimed
+    if not requester:
+        die("request: cannot tell who is asking -- this is not running inside a named session, so "
+            "say who with --as <name>. A request records its requester, and the runner checks it.", 1)
+    QUEUE.mkdir(parents=True, exist_ok=True)
+    pend = pending_for(name)
+    if pend:
+        die(f"request: a request for '{name}' is already queued or running ({pend[0]}); the queue "
+            "holds one per canonical. Its result appears beside it.", 1)
+    t = now()
+    rid = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(t))}-{name}-{secrets.token_hex(3)}"
+    req = {"id": rid, "time": t, "verb": verb, "name": name, "reason": reason, "requester": requester}
+    path = QUEUE / f"{rid}.request.json"
+    write_atomic(path, req)
+    print(f"queued   {verb} {name} (from {requester})")
+    print(f"         {path}")
+    print(f"         the runner checks and serves it within a minute or two; the outcome will be in")
+    print(f"         {QUEUE / (rid + '.result.json')}")
+    if (QUEUE / "PAUSED").exists():
+        print(f"note     the queue is PAUSED ({QUEUE / 'PAUSED'}): the runner will refuse it")
+    return 0
+
+
+# ---- the checks ------------------------------------------------------------------------------
+# Each takes the request and the pass context and returns None to pass, or the reason it refuses.
+# They run in this order and the first refusal is the one recorded, so the cheap and certain ones
+# come first and the ones that read the live session list come last.
+
+class Pass:
+    """What one serve-requests pass reads once and shares across its requests."""
+
+    def __init__(self, cfg: dict[str, str]) -> None:
+        self.cfg = cfg
+        self.t = now()
+        self.audit = read_audit()
+        self._live: list[dict] | None | bool = False
+        self._all: list[dict] | None | bool = False
+        self._trust: tuple[int, set[str]] | None = None
+        self.snapshot = [(p, read_request(p)) for p in queued()]
+
+    def live(self) -> list[dict] | None:
+        if self._live is False:
+            self._live = agents()
+        return self._live  # type: ignore[return-value]
+
+    def every(self) -> list[dict] | None:
+        if self._all is False:
+            self._all = agents(all_rows=True)
+        return self._all  # type: ignore[return-value]
+
+    def refresh_listing(self) -> None:
+        self._live = False
+        self._all = False
+
+    def trust(self) -> tuple[int, set[str]]:
+        if self._trust is None:
+            rc, out = run(sibling("claude-trust-check", "FLEET_TRUST_CHECK_CMD") + ["--names-only"], timeout=120)
+            names = {line.strip() for line in out.splitlines()
+                     if line.strip() and not line.startswith("claude-trust-check:")}
+            self._trust = (rc, names)
+        return self._trust
+
+
+def check_shape(req: dict, ctx: Pass, path: Path) -> str | None:
+    if set(req) != REQUEST_KEYS:
+        return f"malformed: the request's fields are not exactly {sorted(REQUEST_KEYS)}"
+    for k in ("verb", "name", "reason", "requester", "id"):
+        if not isinstance(req[k], str) or not req[k].strip():
+            return f"malformed: '{k}' is not a non-empty string"
+    if not isinstance(req["time"], int):
+        return "malformed: 'time' is not an integer (epoch seconds)"
+    if path.name != f"{req['id']}.request.json":
+        return f"malformed: its id ({req['id']}) is not its file name"
+    return None
+
+
+def check_verb(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["verb"].startswith("-") or req["name"].startswith("-") or " " in req["verb"]:
+        return "--force, --stub and every other option are never accepted through the queue"
+    if req["verb"] not in VERBS:
+        return f"verb '{req['verb']}' is not one the queue accepts ({', '.join(VERBS)})"
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", req["name"]):
+        return f"name '{req['name']}' is not a plain canonical name"
+    return None
+
+
+def check_paused(req: dict, ctx: Pass, path: Path) -> str | None:
+    if (QUEUE / "PAUSED").exists():
+        return f"the queue is paused ({QUEUE / 'PAUSED'} exists)"
+    return None
+
+
+def check_age(req: dict, ctx: Pass, path: Path) -> str | None:
+    limit = as_int(ctx.cfg, "request-max-age")
+    age = ctx.t - req["time"]
+    if age > limit:
+        return f"stale: written {age}s ago, more than request-max-age ({limit}s)"
+    if age < -60:
+        return f"its time is {-age}s in the future"
+    return None
+
+
+def check_never_touch(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["name"] in as_list(ctx.cfg["never-touch"]):
+        return f"'{req['name']}' is on the never-touch list: the queue never acts on it"
+    return None
+
+
+def check_declared(req: dict, ctx: Pass, path: Path) -> str | None:
+    ok, why = declared_here(req["name"])
+    return None if ok else why
+
+
+def check_requester(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["requester"] == req["name"] or req["requester"] in as_list(ctx.cfg["request-any"]):
+        return None
+    return (f"'{req['requester']}' asked to {req['verb']} '{req['name']}': a canonical requests only "
+            f"its own lifecycle actions (request-any: {ctx.cfg['request-any'] or 'none'})")
+
+
+def check_self_refresh(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["verb"] != "refresh" or req["requester"] != req["name"]:
+        return None
+    if ctx.cfg["allow-self-refresh"].lower() == "true":
+        return None
+    # The 2026-08-29 measurement recorded beside `refresh`'s own self-refusal in fleet-canonicals:
+    # a stopped session can be crash-respawned by the harness with --resume, so the same session
+    # returns, unrefreshed, and reports OK. Whether a runner outside the session wins that race has
+    # not been measured; allow-self-refresh = true is how that measurement is run on purpose.
+    return ("a self-refresh waits for a measurement that the runner's refresh replaces the session "
+            "rather than racing the harness's crash-respawn (allow-self-refresh = true runs it)")
+
+
+def check_one_per_canonical(req: dict, ctx: Pass, path: Path) -> str | None:
+    # Against the queue as it stood when the pass began: an older request for the same canonical
+    # that this pass has already served still counts, so two requests queued together never both
+    # run. A running marker found while this runner holds the lock is a runner that died mid-verb.
+    for p in running():
+        r = read_request(p)
+        if r and r.get("name") == req["name"]:
+            return (f"another request for '{req['name']}' is marked running ({p.name}); a runner "
+                    "that died mid-verb leaves one, so inspect it and remove it by hand")
+    for p, r in ctx.snapshot:
+        if p.name < path.name and r and r.get("name") == req["name"]:
+            return f"another request for '{req['name']}' was queued first ({p.name})"
+    return None
+
+
+def check_rate(req: dict, ctx: Pass, path: Path) -> str | None:
+    hour = ctx.t - 3600
+    acted = [a for a in ctx.audit if a.get("outcome") in ("done", "failed") and a.get("at", 0) > hour]
+    mine = [a for a in acted if a.get("name") == req["name"]]
+    lc, lf = as_int(ctx.cfg, "request-limit-canonical"), as_int(ctx.cfg, "request-limit-fleet")
+    if len(mine) >= lc:
+        return f"rate: '{req['name']}' has had {len(mine)} lifecycle actions in the last hour (limit {lc})"
+    if len(acted) >= lf:
+        return f"rate: the fleet has had {len(acted)} lifecycle actions in the last hour (limit {lf})"
+    return None
+
+
+def seven_day_pct(t: int) -> tuple[float | None, str]:
+    """The highest current 7-day usage percent across this machine's per-session usage files. A
+    file whose seven_day_resets_at has passed describes a window that is over, and is skipped: the
+    files of stopped sessions are never removed."""
+    best: float | None = None
+    src = ""
+    for f in sorted(USAGE_DIR.glob("*.json")):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        pct, resets = d.get("seven_day_pct"), d.get("seven_day_resets_at")
+        if not isinstance(pct, (int, float)):
+            continue
+        if isinstance(resets, (int, float)) and resets < t:
+            continue
+        if best is None or pct > best:
+            best, src = float(pct), f.name
+    return best, src
+
+
+def check_usage(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["verb"] not in STARTING or req["name"] in as_list(ctx.cfg["request-usage-exempt"]):
+        return None
+    limit = float(as_int(ctx.cfg, "request-usage-threshold"))
+    pct, src = seven_day_pct(ctx.t)
+    if pct is not None and pct >= limit:
+        return (f"usage: the 7-day window is at {pct:g}% ({src}), at or above "
+                f"request-usage-threshold ({limit:g}%), and '{req['name']}' is not exempt")
+    return None
+
+
+def check_trust(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["verb"] not in ("up", "resume"):
+        return None
+    rc, untrusted = ctx.trust()
+    if rc == 0:
+        return None
+    if rc == 1:
+        proj = project_of(req["name"])
+        if proj is None or proj in untrusted:
+            return (f"workspace trust: claude-trust-check reports '{req['name']}'s directory untrusted; "
+                    "an unattended `claude --bg` there exits. Accept the trust prompt in an "
+                    "interactive `claude` there first")
+        return None
+    return f"workspace trust could not be read (claude-trust-check exit {rc})"
+
+
+def keepalive_holds(name: str) -> list[str]:
+    # The keep-alive verb is deferred until it is measured what keeps an idle background session
+    # from the supervisor's stop. When it is built, a hold registers itself in the requests
+    # directory and this returns the holders. Until then no hold can exist.
+    return []
+
+
+def check_keepalive(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["verb"] not in STOPPING:
+        return None
+    holders = [h for h in keepalive_holds(req["name"]) if h != req["requester"]]
+    return f"'{req['name']}' is held up by {holders[0]}" if holders else None
+
+
+def transcript_turn_ended(session_id: str) -> bool | None:
+    """True when the session's last turn ended, False when one is in progress, None when its
+    transcript cannot be read. A turn has ended when the last main-thread entry is the turn's
+    closing system line or an assistant message that stopped on end_turn; a user entry (a prompt or
+    a tool result) or an assistant tool call last means a turn is in progress."""
+    if not session_id:
+        return None
+    hits = list(TRANSCRIPTS.glob(f"*/{session_id}.jsonl")) + list(TRANSCRIPTS.glob(f"{session_id}.jsonl"))
+    if not hits:
+        return None
+    try:
+        with open(hits[0], "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 512 * 1024))
+            tail = fh.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(tail):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict) or e.get("isSidechain"):
+            continue
+        typ = e.get("type")
+        if typ == "system" and e.get("subtype") in ("turn_duration", "stop_hook_summary"):
+            return True
+        if typ == "assistant":
+            return (e.get("message") or {}).get("stop_reason") in ("end_turn", "stop_sequence")
+        if typ == "user":
+            return False
+    return None
+
+
+def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
+    if req["verb"] not in STOPPING + ("resume",):
+        return None
+    live = ctx.live()
+    if live is None:
+        return "the sessions list (claude agents --json) could not be read, so work in flight cannot be ruled out"
+    row = newest_row(live, req["name"])
+    if row is None:
+        return None
+    if req["verb"] == "resume":
+        return f"'{req['name']}' is running (id {row.get('id')}); there is nothing to resume"
+    state = str(row.get("state") or "")
+    if state not in as_list(ctx.cfg["request-idle-states"]):
+        return (f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}' "
+                f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
+    ended = transcript_turn_ended(str(row.get("sessionId") or ""))
+    if ended is None:
+        return f"'{req['name']}''s transcript cannot be read, so work in flight cannot be ruled out"
+    if not ended:
+        return f"'{req['name']}' is working: its transcript's last turn has not ended"
+    return None
+
+
+CHECKS = [
+    ("shape", check_shape),
+    ("verb", check_verb),
+    ("paused", check_paused),
+    ("age", check_age),
+    ("never-touch", check_never_touch),
+    ("declared", check_declared),
+    ("requester", check_requester),
+    ("self-refresh", check_self_refresh),
+    ("one-per-canonical", check_one_per_canonical),
+    ("rate", check_rate),
+    ("usage", check_usage),
+    ("trust", check_trust),
+    ("keep-alive", check_keepalive),
+    ("working", check_working),
+]
+
+
+# ---- serving ---------------------------------------------------------------------------------
+
+def read_audit() -> list[dict]:
+    out = []
+    try:
+        for line in AUDIT.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d, dict):
+                out.append(d)
+    except OSError:
+        pass
+    return out
+
+
+def append_audit(entry: dict) -> None:
+    with open(AUDIT, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def respawn(name: str, ctx: Pass) -> tuple[str, str]:
+    """resume: restart the canonical's newest session from its own transcript with
+    `claude respawn`, then confirm it is live again."""
+    rows = ctx.every()
+    if rows is None:
+        return "failed", "the sessions list (claude agents --json --all) could not be read"
+    row = newest_row(rows, name)
+    if row is None or not row.get("id"):
+        return "failed", f"no session is listed for '{name}', so there is nothing to resume; request `up`"
+    rid = str(row["id"])
+    rc, out = run(claude_cmd() + ["respawn", rid], timeout=120)
+    if rc != 0:
+        return "failed", f"claude respawn {rid} exited {rc}\n{out}"
+    wait = int(os.environ.get("FLEET_RESPAWN_WAIT", "30"))
+    deadline = time.time() + wait
+    while True:
+        ctx.refresh_listing()
+        live = ctx.live() or []
+        if any(r.get("id") == rid or r.get("name") == name for r in live):
+            return "done", f"claude respawn {rid}: live again\n{out}"
+        if time.time() >= deadline:
+            return "failed", f"claude respawn {rid} exited 0 but no live session appeared within {wait}s\n{out}"
+        time.sleep(2)
+
+
+def execute(req: dict, ctx: Pass) -> tuple[str, str]:
+    if req["verb"] == "resume":
+        return respawn(req["name"], ctx)
+    rc, out = run(sibling("fleet-canonicals", "FLEET_CANONICALS_BIN") + [req["verb"], req["name"]],
+                  timeout=VERB_TIMEOUT)
+    ctx.refresh_listing()
+    return ("done" if rc == 0 else "failed"), f"fleet-canonicals {req['verb']} {req['name']} exited {rc}\n{out}"
+
+
+def serve_one(path: Path, ctx: Pass) -> None:
+    rid = path.name[: -len(".request.json")]
+    req = read_request(path)
+    outcome, check, detail = "refused", "", ""
+    if req is None:
+        check, detail, req = "shape", "malformed: not a JSON object", {}
+    else:
+        for cname, fn in CHECKS:
+            why = fn(req, ctx, path)
+            if why:
+                check, detail = cname, why
+                break
+    served = QUEUE / f"{rid}.served.json"
+    if check:
+        os.replace(path, served)
+    else:
+        claimed = QUEUE / f"{rid}.running.json"
+        os.replace(path, claimed)
+        outcome, detail = execute(req, ctx)
+        os.replace(claimed, served)
+    result = {"id": rid, "at": now(), "verb": req.get("verb"), "name": req.get("name"),
+              "requester": req.get("requester"), "reason": req.get("reason"),
+              "outcome": outcome, "check": check or None}
+    result["detail" if check else "output"] = detail
+    write_atomic(QUEUE / f"{rid}.result.json", result)
+    entry = {k: result[k] for k in ("at", "id", "verb", "name", "requester", "outcome", "check")}
+    if check:
+        entry["detail"] = detail
+    append_audit(entry)
+    ctx.audit.append(entry)
+    who = f"{req.get('verb')} {req.get('name')} (from {req.get('requester')})"
+    print(f"{outcome:<8} {who}" + (f" -- {check}: {detail}" if check else ""), flush=True)
+
+
+def prune(t: int) -> None:
+    for p in list(QUEUE.glob("*.served.json")) + list(QUEUE.glob("*.result.json")):
+        try:
+            if t - p.stat().st_mtime > RETAIN_SECONDS:
+                p.unlink()
+        except OSError:
+            pass
+
+
+def cmd_serve(argv: list[str]) -> int:
+    if argv:
+        die("serve-requests: takes no arguments (it serves the whole queue once)")
+    if not QUEUE.is_dir():
+        return 0
+    lock = open(QUEUE / ".serve.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("serve-requests: another runner is serving the queue; leaving it to that one")
+        return 0
+    ctx = Pass(config())
+    for path, _ in ctx.snapshot:
+        if path.exists():
+            serve_one(path, ctx)
+    prune(now())
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or sys.argv[1] not in ("request", "serve-requests"):
+        die("usage: fleet-canonicals-queue request|serve-requests ... (run it as `fleet-canonicals`)")
+    verb, rest = sys.argv[1], sys.argv[2:]
+    return cmd_request(rest) if verb == "request" else cmd_serve(rest)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

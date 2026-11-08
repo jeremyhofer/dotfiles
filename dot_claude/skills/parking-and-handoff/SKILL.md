@@ -1,6 +1,6 @@
 ---
 name: parking-and-handoff
-description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, and the timestamp and kickoff-block shape a successor reads.
+description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, and the timestamp and kickoff-block shape a successor reads.
 ---
 
 # Parking, checkpointing and handoff
@@ -224,6 +224,15 @@ pre-flights the declared launch, stops the outgoing session, checks its row clea
 the successor. It refuses inside the target session, so the parking canonical cannot run it; the
 human does. The by-hand launch, if the tool is unavailable, is in skill `canonical-takeover`.
 
+**Or the park requests it.** Where the machine runs the request runner and the domain has enabled
+self-refresh (`allow-self-refresh = true` in `fleet-canonicals`' config, set only once a test showed
+the runner's refresh replaces the session), the park's last action, after the handoff is recorded,
+is `fleet-canonicals request refresh <own name> --reason 'parked: <handoff>'`. The runner waits for
+the turn to end, so the request cannot cut the park short, and refreshes it within a few minutes;
+the kickoff block then says so instead of asking the human. Until self-refresh is enabled the runner
+refuses that request (check `self-refresh` in its result file), and the human runs `refresh`.
+Skill `canonical-takeover`, "Requesting from a sandbox", has the rules.
+
 **(b) The prompt:** thin. Identity (which canonical this is), what to read first (the handoff,
 resolved through the pointer, plus any plan it names), and the immediate task. Nothing else. The
 launch composes this itself from the fleet record:
@@ -256,7 +265,9 @@ Closing the outgoing session is part of the handover, not tidying afterwards.
   cannot close itself as its own final act, so a park with no successor (a usage ramp-down) has
   nothing to close.
 - **How, and who:** the human runs it, from a terminal; a session names the command and does not
-  run it. `fleet-canonicals dedupe [--dry-run] [<name>]` closes every session for a name except
+  run it. A lifecycle verb on ANOTHER canonical is requested, not run, from a sandbox, and only by a
+  requester the config allows to act on others (skill `canonical-takeover`, "Requesting from a
+  sandbox"); a session may request its own `down`. `fleet-canonicals dedupe [--dry-run] [<name>]` closes every session for a name except
   the newest and never signals the session it runs inside. `fleet-canonicals down <name>` closes a
   canonical outright. Both act on the list of live sessions, which inside a session's sandbox can
   be wrong (the base's `docs/reference/fleet-sessions.md`, "Sandbox and permissions"). Both stop the process and then delete the row with `claude rm <id>`.

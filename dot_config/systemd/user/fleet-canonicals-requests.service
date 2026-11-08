@@ -1,0 +1,19 @@
+# One pass over the canonical lifecycle request queue: each request a sandboxed session wrote with
+# `fleet-canonicals request` is checked and, if every check passes, its verb is run. Run by
+# fleet-canonicals-requests.timer every minute; see `fleet-canonicals --help`.
+# Linux only: the base's .chezmoiignore skips .config/systemd on macOS, which runs the LaunchAgent
+# local.dotfiles.fleet-canonicals-requests instead.
+#
+# Not enabled by the base. The machine's owner enables the timer once, from a terminal:
+#   systemctl --user enable --now fleet-canonicals-requests.timer
+[Unit]
+Description=Serve the canonical lifecycle request queue (fleet-canonicals serve-requests)
+
+[Service]
+Type=oneshot
+# A user unit's PATH is the manager's, which lacks ~/.local/bin, where the base installs
+# fleet-canonicals and fleet-decl and where Claude Code installs `claude`.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/fleet-canonicals serve-requests
+# A refresh waits for a stopped row and a launch; this bounds a pass that hangs.
+TimeoutStartSec=15min
