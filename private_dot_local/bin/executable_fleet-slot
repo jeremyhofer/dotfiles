@@ -16,6 +16,13 @@ granted is the arbiter's call, and telling a session "go" is the arbiter's messa
 and shows both. A slot is never released automatically: a holder past its expected end is shown as
 overdue, because a slot that expires silently would let the next run start under the one still going.
 
+WITH NO ARBITER, FIRST COME, FIRST SERVED. The default arbiter is the director seat, and it counts
+only once the fleet record declares it for this machine: a new machine runs sessions before its
+record is applied, and an arbiter that does not exist would leave every request queued for good.
+With none (that, or `slot-arbiter =` set empty), a request on a free slot takes it, and a release
+passes the slot to the next in the queue; each such grant is recorded as `first-come`. A waiting
+session learns it holds the slot from `check` or `status`, since there is no arbiter to tell it.
+
 ONE SLOT PER MACHINE. The state is local. A session on another machine has its own slot.
 
 THE TRUST IS COOPERATIVE. Anyone who can write the state directory can write the slot, and the tool
@@ -38,10 +45,13 @@ import json
 import os
 import re
 import secrets
+import shutil
+import socket
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 
 USAGE = """\
@@ -64,14 +74,19 @@ usage: fleet-slot <command> [arguments]
               file, else $FLEET_SLOT_AS, else the agents listing, asked only when the slot is
               held); when that cannot be read, any held slot is someone else's
 
-configuration: the key `slot-arbiter` (a list, default director-canonical) in the fleet-canonicals
-config file ($FLEET_CANONICALS_CONFIG, else $XDG_CONFIG_HOME/fleet-canonicals/config).
+configuration: the key `slot-arbiter` (a list) in the fleet-canonicals config file
+($FLEET_CANONICALS_CONFIG, else $XDG_CONFIG_HOME/fleet-canonicals/config). A value is used as
+written; empty means no arbiter. Unset, the arbiter is director-canonical when the fleet record
+declares it for this machine (read through fleet-decl, $FLEET_DECL_CMD), else there is none. With
+no arbiter the slot goes first come, first served: a request on a free slot takes it, and a release
+passes it to the next in the queue.
 
 exit status: 0 done; 1 refused, or (check) another holder has the slot; 2 usage, configuration or
 an unreadable state file.
 """
 
-DEFAULTS = {"slot-arbiter": "director-canonical"}
+DIRECTOR = "director-canonical"   # the default arbiter, once the fleet record declares it here
+FIRST_COME = "first-come"         # `granted_by` and the history `rule` of a grant nobody made
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 EXIT_REFUSED = 1
 EXIT_USAGE = 2
@@ -120,7 +135,7 @@ def mins(seconds: int) -> int:
 
 def config() -> dict[str, str]:
     """`key = value` lines, `#` comments, the last repeat wins: the file `fleet-canonicals` reads."""
-    values = dict(DEFAULTS)
+    values: dict[str, str] = {}
     try:
         lines = config_path().read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -138,8 +153,65 @@ def as_list(v: str) -> list[str]:
     return [x for x in re.split(r"[\s,]+", v) if x]
 
 
+def decl(*args: str) -> tuple[int, str]:
+    """fleet-decl: $FLEET_DECL_CMD, else beside this file (a source tree names it
+    executable_fleet-decl), else on PATH. Not found is exit 2, as an unreadable record is."""
+    cmd = os.environ.get("FLEET_DECL_CMD", "").split()
+    if not cmd:
+        here = Path(__file__).resolve().parent
+        cand = next((c for c in (here / "fleet-decl", here / "executable_fleet-decl") if c.is_file()), None)
+        cmd = [str(cand)] if cand else [shutil.which("fleet-decl") or "fleet-decl"]
+    try:
+        r = subprocess.run(cmd + list(args), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return 2, ""
+    return r.returncode, r.stdout.strip()
+
+
+def hostname() -> str:
+    try:
+        out = subprocess.run(["hostname"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    return out or socket.gethostname()
+
+
+@cache
+def arbitration() -> tuple[list[str], str]:
+    """(the arbiters, why). An explicit `slot-arbiter` is used as written. Unset, the director seat
+    is the arbiter once the fleet record declares it for this machine; before that, nobody is.
+    An unreadable record counts as no declaration: no director can have been launched from it,
+    and assuming one would queue every request for good."""
+    cfg = config()
+    if "slot-arbiter" in cfg:
+        names = as_list(cfg["slot-arbiter"])
+        return names, "slot-arbiter" if names else "slot-arbiter is set empty"
+    rc, _ = decl("--canonical", DIRECTOR, "canonicalLaunchDir")
+    if rc == 2:
+        return [], f"slot-arbiter is unset and the fleet record is unreadable, so no {DIRECTOR} is declared"
+    if rc != 0:
+        return [], f"slot-arbiter is unset and the fleet record declares no {DIRECTOR}"
+    rc, machines = decl("--canonical-list", DIRECTOR, "canonicalMachines")
+    if rc != 0 or hostname() not in machines.splitlines():
+        return [], f"slot-arbiter is unset and the fleet record declares {DIRECTOR} for another machine"
+    return [DIRECTOR], "slot-arbiter is unset; the default, declared for this machine"
+
+
 def arbiters() -> list[str]:
-    return as_list(config()["slot-arbiter"])
+    return arbitration()[0]
+
+
+def first_come(d: Path, st: dict, who: str, t: int) -> str | None:
+    """With no arbiter, give a free slot to the head of the queue. Returns the new holder."""
+    if arbiters() or st["holder"] or not st["queue"]:
+        return None
+    e = st["queue"].pop(0)
+    st["holder"] = {"name": e["name"], "since": t, "minutes": int(e["minutes"]), "what": e["what"],
+                    "granted_by": FIRST_COME}
+    save(d, st)
+    append_history(d, {"at": iso(t), "t": t, "event": "grant", "holder": e["name"], "by": who,
+                       "rule": FIRST_COME, "minutes": int(e["minutes"]), "what": e["what"]})
+    return e["name"]
 
 
 # ---- who is asking ---------------------------------------------------------------------------
@@ -337,10 +409,20 @@ def cmd_request(argv: list[str]) -> int:
         save(d, st)
         append_history(d, {"at": iso(t), "t": t, "event": event, "holder": holder, "by": who,
                            "minutes": m, "what": what})
+        took = first_come(d, st, who, t)
+        if took == holder:
+            print(f"granted {holder} the slot at {clock(t)} for {m} min: {what}")
+            print(f"        no arbiter ({arbitration()[1]}): first come, first served, and {holder} "
+                  "holds the slot now")
+            return 0
         place = [e["name"] for e in st["queue"]].index(holder) + 1
     print(f"{'updated' if event == 'update' else 'queued'}  {holder}, {m} min: {what}")
-    print(f"        place {place} of {len(st['queue'])}; an arbiter grants the slot "
-          f"({', '.join(arbiters()) or 'none configured'}), and its message is the go")
+    if arbiters():
+        print(f"        place {place} of {len(st['queue'])}; an arbiter grants the slot "
+              f"({', '.join(arbiters())}), and its message is the go")
+    else:
+        print(f"        place {place} of {len(st['queue'])}; no arbiter, so the slot passes to the next "
+              "in line when its holder releases it: `fleet-slot check` exits 0 once it is yours")
     return 0
 
 
@@ -349,8 +431,11 @@ def cmd_grant(argv: list[str]) -> int:
     holder = one_name(pos, "grant")
     m = minutes_opt(opts, "grant")
     who = actor(str(opts.get("--as", "")))
+    if not arbiters():
+        raise Refused(f"nobody grants the slot here: there is no arbiter ({arbitration()[1]}), so it "
+                      "goes first come, first served; `fleet-slot request` takes a free slot")
     if who not in arbiters():
-        raise Refused(f"'{who}' is not an arbiter; only {', '.join(arbiters()) or 'nobody'} may grant "
+        raise Refused(f"'{who}' is not an arbiter; only {', '.join(arbiters())} may grant "
                       "the slot (config key slot-arbiter)")
     with locked(write=True) as d:
         st = load(d)
@@ -396,7 +481,10 @@ def cmd_release(argv: list[str]) -> int:
             over = mins(held) - int(h["minutes"])
             note = f", {over} min over" if over > 0 else ""
             print(f"released {holder}: held {mins(held)} of {h['minutes']} min{note}")
-            if st["queue"]:
+            nxt = first_come(d, st, who, t)
+            if nxt:
+                print(f"         no arbiter, first come: {nxt} now holds the slot")
+            elif st["queue"]:
                 print(f"         queued: {', '.join(e['name'] for e in st['queue'])}; the arbiter "
                       "chooses who goes next")
             return 0
@@ -423,8 +511,9 @@ def snapshot(recent: int) -> dict:
         hist = read_history(d)
     t = now()
     h = st["holder"]
+    names, why = arbitration()
     out: dict = {"now": iso(t), "holder": None, "queue": [], "recent": [], "load": loadavg(),
-                 "state_dir": str(state_dir())}
+                 "state_dir": str(state_dir()), "arbiters": names, "arbiters_why": why}
     if h:
         end = int(h["since"]) + 60 * int(h["minutes"])
         out["holder"] = {**h, "since_iso": iso(int(h["since"])), "expected_end": iso(end),
@@ -468,6 +557,10 @@ def cmd_status(argv: list[str]) -> int:
         print(f"{'recent' if i == 0 else '':8} {e['holder']} "
               f"{clock(start)}-{clock(start + int(e['held_seconds']))}, {mins(int(e['held_seconds']))} "
               f"of {e['minutes']} min: {e['what']}")
+    if s["arbiters"]:
+        print(f"arbiter  {', '.join(s['arbiters'])}")
+    else:
+        print(f"arbiter  none ({s['arbiters_why']}): first come, first served")
     ld = s["load"]
     if ld["load1"] is not None:
         print(f"load     {ld['load1']:.2f} (1 min), {ld['load5']:.2f} (5 min), {ld['cpus']} CPUs")

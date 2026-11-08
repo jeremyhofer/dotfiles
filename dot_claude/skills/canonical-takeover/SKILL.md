@@ -15,13 +15,18 @@ Terms used below:
   reads it; `fleet-canonicals` launches from it.
 - **Handoff and pointer:** the dated file a successor reads first, and the per-canonical record of
   which one that is. Skill `parking-and-handoff` covers writing and recording them.
-- **Hub:** a canonical that coordinates across projects; a setup may have none. **The human:** the
-  person who decides.
+- **Director:** the standard seat that coordinates across projects (skill `fleet-messaging`'s
+  hub), declared in the record like any canonical. Its name is `director-canonical` unless the
+  `fleet-canonicals` config names another in `request-any`, `never-touch` and `slot-arbiter`.
+  **The human:** the person who decides.
 
 Which canonicals exist is resolved when needed, never carried as a list that can drift:
 `fleet-canonicals list` (every declared canonical, what it owns, where it runs) and
 `fleet-canonicals status` (one line per canonical expected on this machine; exit 0 only if all are
 up). `CANONICAL_ROSTER`, when set, names a file of expected names that overrides the record's.
+`status` and `up` act only on what the record declares for this machine, so where it does not yet
+declare a director, none is reported missing or launched; once declared, it is expected like any
+canonical.
 
 ## Declaring a canonical
 
@@ -156,7 +161,8 @@ and runs the plain verb, so the pre-flight and the handoff gate still apply. The
 - **A canonical requests only its own actions.** A request naming another canonical is refused
   unless the requester is on the config's `request-any` list (by default the director seat). The
   requester is your session's name, read from the session; `--as` only names it where it cannot be
-  read, such as a terminal, and cannot contradict it.
+  read, such as a terminal, and cannot contradict it. Until a director runs, another canonical's
+  action is the human's, from a terminal.
 - **Some names are never touched.** A canonical on `never-touch` (by default the director seat) is
   refused at `request` for every verb: its lifecycle is the human's.
 - **It will not stop work in flight.** A `down` or `refresh` of a session whose listed state is

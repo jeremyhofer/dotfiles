@@ -19,8 +19,31 @@ HERE = Path(__file__).resolve().parent
 TOOL = HERE.parent / "private_dot_local" / "bin" / "executable_fleet-slot"
 
 
+# A stand-in for fleet-decl: what the fleet record says about the director seat, by STUB_DECL.
+#   here       the record declares director-canonical for this machine (every test's default)
+#   elsewhere  it declares it for another machine only
+#   none       it declares no director
+#   unreadable fleet-decl exits 2: no record, or one it cannot read
+DECL_STUB = """#!/bin/sh
+mode=${STUB_DECL:-here}
+[ "$mode" = unreadable ] && { echo 'fleet-decl: no record' >&2; exit 2; }
+[ "$2" = director-canonical ] || exit 1
+[ "$mode" = none ] && exit 1
+case "$1" in
+  --canonical) echo director ;;
+  --canonical-list) if [ "$mode" = here ]; then hostname; else echo another-host; fi ;;
+  *) exit 1 ;;
+esac
+"""
+
+
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
+    stub = tmp_path / "fleet-decl"
+    stub.write_text(DECL_STUB)
+    stub.chmod(0o755)
+    monkeypatch.setenv("FLEET_DECL_CMD", str(stub))
+    monkeypatch.setenv("STUB_DECL", "here")
     monkeypatch.setenv("FLEET_SLOT_STATE", str(tmp_path / "slot"))
     monkeypatch.setenv("FLEET_CANONICALS_CONFIG", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
@@ -236,6 +259,89 @@ def test_release_withdraws_a_queued_request(isolated):
 
 def test_release_of_a_name_neither_holding_nor_queued_is_refused(isolated):
     assert slot("release", "alpha", "--as", "alpha").returncode == 1
+
+
+# ---- no arbiter: first come, first served ----------------------------------------------------
+#
+# The default arbiter is the director seat, and a machine has none until its fleet record declares
+# one for it. With no arbiter nobody could ever grant, so the slot goes to whoever asks first.
+
+def test_with_no_director_declared_a_request_on_a_free_slot_takes_it(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "none")
+    r = slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    assert r.returncode == 0, r.stderr
+    h = state(isolated)["holder"]
+    assert h["name"] == "alpha" and h["granted_by"] == "first-come"
+    assert state(isolated)["queue"] == []
+    assert "no arbiter" in r.stdout and "holds the slot" in r.stdout
+    assert slot("check", "alpha").returncode == 0
+
+
+def test_with_no_arbiter_a_release_passes_the_slot_to_the_next_in_line(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "none")
+    for who in ("alpha", "beta", "gamma"):
+        assert slot("request", who, "--minutes", "5", "--what", who, "--as", who).returncode == 0
+    assert state(isolated)["holder"]["name"] == "alpha"
+    assert [e["name"] for e in state(isolated)["queue"]] == ["beta", "gamma"]
+    r = slot("release", "alpha", "--as", "alpha")
+    assert r.returncode == 0, r.stderr
+    assert "beta now holds the slot" in r.stdout
+    st = state(isolated)
+    assert st["holder"]["name"] == "beta" and st["holder"]["what"] == "beta"
+    assert [e["name"] for e in st["queue"]] == ["gamma"]
+    last = history(isolated)[-1]
+    assert (last["event"], last["holder"], last["rule"]) == ("grant", "beta", "first-come")
+
+
+def test_an_unreadable_fleet_record_means_no_director_and_says_so(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "unreadable")
+    r = slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    assert r.returncode == 0 and state(isolated)["holder"]["name"] == "alpha"
+    assert "unreadable" in slot("status").stdout
+
+
+def test_a_director_declared_only_for_another_machine_is_no_arbiter_here(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "elsewhere")
+    assert slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha").returncode == 0
+    assert state(isolated)["holder"]["name"] == "alpha"
+
+
+def test_an_empty_slot_arbiter_key_means_first_come(isolated):
+    (isolated / "config").write_text("slot-arbiter =\n")
+    assert slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha").returncode == 0
+    assert state(isolated)["holder"]["name"] == "alpha"
+
+
+def test_with_no_arbiter_grant_is_refused_and_names_the_rule(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "none")
+    r = slot("grant", "alpha", "--minutes", "5", "--what", "x", "--as", "director-canonical")
+    assert r.returncode == 1 and "first come" in r.stderr
+    assert not (isolated / "slot" / "slot.json").exists()
+
+
+def test_a_declared_director_is_the_default_arbiter_and_a_request_waits_for_it(isolated):
+    r = slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    assert r.returncode == 0 and state(isolated)["holder"] is None
+    assert "director-canonical" in r.stdout
+    assert slot("grant", "alpha", "--as", "director-canonical").returncode == 0
+
+
+def test_an_explicit_arbiter_list_is_used_as_written_whatever_the_record_says(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "none")
+    (isolated / "config").write_text("slot-arbiter = operator\n")
+    assert slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha").returncode == 0
+    assert state(isolated)["holder"] is None
+    assert slot("release", "alpha", "--as", "alpha").returncode == 0   # withdraws; nothing passes on
+    assert state(isolated)["holder"] is None
+
+
+def test_status_names_who_arbitrates(isolated, monkeypatch):
+    assert "arbiter  director-canonical" in slot("status").stdout
+    assert json.loads(slot("status", "--json").stdout)["arbiters"] == ["director-canonical"]
+    monkeypatch.setenv("STUB_DECL", "none")
+    out = slot("status").stdout
+    assert "arbiter  none" in out and "first come" in out
+    assert json.loads(slot("status", "--json").stdout)["arbiters"] == []
 
 
 # ---- status ----------------------------------------------------------------------------------

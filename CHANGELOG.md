@@ -34,6 +34,21 @@ Entries are newest first.
 
 ## 2026-11-08
 
+### `fleet-slot` goes first come, first served until a director is declared
+
+- The director seat is standard, and `director-canonical` stays the default of `request-any`,
+  `never-touch` and `slot-arbiter`, but no tool may wait on a director that does not exist yet.
+  `fleet-slot` now counts the default arbiter only once the fleet record declares
+  `director-canonical` for this machine. With no arbiter (that, an unreadable record, or
+  `slot-arbiter =` set empty) a request on a free slot takes it, and a release passes the slot to
+  the next in the queue; each such grant is recorded `first-come`, `grant` is refused, and `status`
+  prints an `arbiter` line saying which applies. Before, a request on such a machine stayed queued
+  for good. An explicit `slot-arbiter` is used as written, so a private layer that sets it sees no
+  change. `fleet-canonicals` and its request queue already acted only on declared canonicals; the
+  skills `parking-and-handoff`, `fleet-messaging`, `canonical-takeover` and
+  `docs/reference/fleet-sessions.md` ("Before a director runs") now say what applies until a
+  director runs. Nothing to change in a private layer.
+
 ### `fleet-slot` names its caller without the status line
 
 - `fleet-slot check` (no holder) read the calling session only from the status line's usage file,

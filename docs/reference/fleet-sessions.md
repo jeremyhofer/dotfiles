@@ -15,11 +15,16 @@ without cross-session messaging).
 - **Fleet record:** the repository manifest (`~/Devel/mani.yaml`, read through `fleet-decl`) whose
   `canonical*` keys declare each canonical ([`fleet-manifest.md`](fleet-manifest.md)). A canonical
   exists because the record declares it, and runs on a machine because the record names that machine.
+- **Director:** the standard coordinating seat, on every machine: the canonical that coordinates
+  across projects and makes the one consolidated ask to the human (skill `fleet-messaging`'s hub),
+  may request any canonical's lifecycle action, and grants the timing slot (`fleet-slot`). It is
+  declared in the fleet record like any canonical. Its name is `director-canonical`, the default of
+  the config keys `request-any`, `never-touch` and `slot-arbiter`; a domain that names it otherwise
+  sets those keys. No tool needs it running: "Before a director runs" says what applies until then.
 - **Hub:** on this page, the one canonical that can write the handoffs repository and runs `place`
-  (below), named by the `hub` config key. A setup with a single canonical can make it its own hub; a
-  setup can also have none, and then the human places. In most setups it is also the canonical that
-  coordinates across projects (skill `fleet-messaging`'s hub); a domain may give the two to
-  different seats, and then this page's hub is the placing one.
+  (below), named by the `hub` config key. Usually it is the director; a domain may give placing to
+  another seat, and then this page's hub is the placing one. With no `hub` set, or none running, the
+  human places.
 - **The human:** the person who decides, approves, and runs the verbs that start and stop sessions.
 - **Handoff:** a dated markdown file that tells a cold successor session what it needs to continue.
   Each handoff names the one it replaces on a `Supersedes` line, so the handoffs form a chain.
@@ -43,11 +48,27 @@ not a shared one. One writer also means one session commits there, and placing i
 when placement was a hand copy, one placement left two dangling `Supersedes` links, one of them on a
 live pointer. `place` refuses a handoff whose predecessor cannot be found.
 
+### Before a director runs
+
+A new machine runs sessions before its fleet record declares a director, and a declared director
+may not be up yet. No tool refuses, waits on it, launches it or reports it missing on that account:
+
+| The director's part | Until one runs |
+| --- | --- |
+| placing handoffs, where `hub` names it | canonicals stage as usual and each successor reads its staged copy; the human, or any session that can write the handoffs repository, runs `place`; `status`'s `handoff UNPLACED` lines are the reminder |
+| granting the timing slot | with `slot-arbiter` unset and no director declared for this machine, `fleet-slot` has no arbiter and goes first come, first served: a request on a free slot takes it, and a release passes the slot to the next in the queue (recorded `first-come`); a waiting session watches `fleet-slot check`. A director that is declared but not running is still the arbiter: requests queue for it, and the human starts it (`fleet-canonicals up`) or grants from a terminal with `fleet-slot grant <holder> --as <arbiter>` |
+| requesting another canonical's lifecycle action (`request-any`) | each canonical requests its own; another's is the human's, from a terminal |
+| taking cross-project asks | the session asks the human itself, marked cross-project, and writes the ask into its handoff (skill `fleet-messaging`) |
+
+`status` and `up` act only on what the record declares for this machine, so an undeclared director
+is neither reported nor launched. Once declared, it is a canonical like any other: `status` reports
+it `MISSING`, exit 1, until it is up.
+
 ## Where every file lives
 
 | Path | Written by | Holds | Backed up |
 | --- | --- | --- | --- |
-| `~/.config/fleet-canonicals/config` | the private layer | the five settings below, and the request queue's keys | with the private layer |
+| `~/.config/fleet-canonicals/config` | the private layer | the five settings below, the request queue's keys, and `fleet-slot`'s `slot-arbiter` ("Before a director runs") | with the private layer |
 | `$FLEET_STATE/<name>.handoff` | `handoff --set`, `stage`, `place`, `--stub` | the pointer: the handoff's absolute path, then `# set-at <epoch seconds>` | no |
 | `$FLEET_STATE/handoff-staging/YYYY-MM-DD-HHMM-<name>-park.md` (or `-checkpoint.md`) | `stage` | staged handoffs; `place` removes one only when its content is in a commit of the placed copy and no pointer names it | no |
 | `$FLEET_STATE/stub-handoffs/YYYY-MM-DD-HHMMSS-<name>-stub.md` | `down`/`refresh --stub` | a generated "nothing to inherit" handoff; never placed | no |
@@ -329,7 +350,7 @@ earlier one.
    # ~/.config/fleet-canonicals/config
    handoffs = ~/Devel/coordination/handoffs
    handoffs-search = ~/Devel/coordination
-   hub = coordination-canonical
+   hub = director-canonical
    place-commit = true
    # optional: the handoffs repository's gates, run on each draft at `stage`
    stage-check = ~/Devel/coordination/tools/check-handoff-draft

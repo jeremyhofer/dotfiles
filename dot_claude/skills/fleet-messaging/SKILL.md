@@ -8,7 +8,7 @@ description: Use before sending any cross-session message to another long-lived 
 Terms used below:
 - **Canonical:** a long-lived named session that owns one project (or one asset) and its queue. Whoever holds the name holds the role.
 - **Peer:** another canonical.
-- **Hub:** the one canonical that coordinates across projects. It may be absent; some setups have none.
+- **Hub:** the director, the standard seat that coordinates across projects. Every setup has one once its fleet record declares it; its name is `director-canonical` unless the domain's `fleet-canonicals` config names another in `request-any`, `never-touch` and `slot-arbiter`. Until it is declared and running, it is absent, and "Before a director runs" below applies.
 - **Tier-0 writer:** the one session allowed to edit the always-on knowledge base. Often the hub, but a domain may give it to another seat; the domain half names it.
 - **The human:** the person who decides. Only they can approve.
 
@@ -53,6 +53,10 @@ Decide this first. The usual answer is no.
 **Test for "cross-project":** would another canonical act differently, or would the human decide differently for another project, because of this? If not, it is single-project, however important.
 
 **Research inside a peer's project is asked of that project's canonical, which uses its own subagents.** Do not sweep its tree with yours: an outside sweep lacks the project's context and reads whichever worktree it lands in, which may not hold the current work. Reading one file to verify a specific claim before relying on it is still right; sweeping is what moves to the owner.
+
+### Before a director runs
+
+A new machine's sessions start before its director does. Until `ListAgents` (or `fleet-canonicals status`) shows the director, send nothing to it: a cross-project question or finding goes to the human in your own session, plainly marked cross-project, and into your handoff, as in no-messaging mode. Asks of a specific peer, and the Tier-0 writer where the domain names another seat, are unaffected.
 
 ## 3. How to send (messaging mode)
 

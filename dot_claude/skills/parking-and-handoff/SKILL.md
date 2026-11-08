@@ -12,9 +12,10 @@ Terms used below:
   declared in the fleet record (a `mani.yaml` read by `fleet-decl`) and launched by
   `fleet-canonicals`; skill `canonical-takeover` covers the launch side.
 - **Hub:** in this skill, the canonical that places handoffs: it can write the repository handoffs
-  are committed to, and the `hub` key of `fleet-canonicals`' config names it. In most setups it is
-  also the canonical that coordinates across projects (skill `fleet-messaging`'s hub); a domain that
-  gives the two to different seats names the placing one in its half. A setup may have none.
+  are committed to, and the `hub` key of `fleet-canonicals`' config names it. Usually it is the
+  director, the standard seat that coordinates across projects (skill `fleet-messaging`'s hub); a
+  domain that gives placing to another seat names it in its half. Until the hub runs, or where no
+  `hub` is set, parking is unchanged and the human places ("Where the handoff goes").
 - **Handoff:** a dated markdown file that tells a cold successor session what it needs to continue.
 - **Pointer:** the per-canonical record of which handoff the next launch reads.
   `fleet-canonicals handoff <name>` prints it; `--set <path>` records it.

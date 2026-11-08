@@ -1067,9 +1067,12 @@ SLOT_TOOL = HERE.parent / "private_dot_local" / "bin" / "executable_fleet-slot"
 
 @pytest.fixture
 def slot(monkeypatch, tmp_path):
-    """The real fleet-slot, its state under tmp_path, run outside any named session."""
+    """The real fleet-slot, its state under tmp_path, run outside any named session. The arbiter
+    is configured, so the machine's own fleet record is never read."""
     monkeypatch.setenv("FLEET_SLOT_STATE", str(tmp_path / "slot"))
-    monkeypatch.setenv("FLEET_CANONICALS_CONFIG", str(tmp_path / "no-config"))
+    (tmp_path / "slot-config").write_text("slot-arbiter = director-canonical\n")
+    monkeypatch.setenv("FLEET_CANONICALS_CONFIG", str(tmp_path / "slot-config"))
+    monkeypatch.setenv("FLEET_DECL_CMD", "false")
     monkeypatch.setenv("FLEET_AGENTS_JSON_CMD", "echo []")
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     cmd = f"{sys.executable} {SLOT_TOOL}"
