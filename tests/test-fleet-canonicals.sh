@@ -190,6 +190,13 @@ export FLEET_RECORD="$TMPROOT/rec.yaml"
 # directory. A suite whose result depends on the machine it runs on is not a suite.
 export FLEET_STATE="$TMPROOT/fcstate"
 mkdir -p "$TMPROOT/fcstate"
+# FLEET_TMPROOT_PREFIX likewise: several cases launch without setting it, and a launch makes its
+# scratch root under the prefix, so they made c-<name>-XXXXXX directories in the REAL /tmp. Inside an
+# agent sandbox /tmp is not writable, so the mktemp failed quietly and the leak check below could not
+# see it; run from a terminal (the base's pre-apply, 2026-11-08) it left nine. Cases that test the
+# prefix itself still set their own.
+export FLEET_TMPROOT_PREFIX="$TMPROOT/tmproots"
+mkdir -p "$TMPROOT/tmproots"
 
 # A launcher stub. `up` is the one verb whose real effect cannot be exercised, so it is pointed at
 # a recorder: every launch appends its full argument list, which lets the cases below assert the
