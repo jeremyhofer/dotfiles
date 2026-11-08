@@ -64,6 +64,9 @@ declaration (TOML):
   [[scenario]]  name, file (under root),
                 edit = {append = "text"} or {find = "A", replace = "B"} (first occurrence),
                 plant = {find = "A", replace = "B"} or {append = "text"}, loops = ["id", ...]
+                {sample} in a replace or append text becomes a token unique to each sample: on a
+                cached runner (Nx) an identical edit makes samples 2..n replay the first one's
+                result and time the cache, so use it there (run warns when it is missing)
 
 setup and teardown run in root around every sample of the loop in every mode (setup after any
 edit and cold_prep, teardown after the command, also when it failed or was interrupted). Their
@@ -536,6 +539,20 @@ def apply_edit(path, change):
 
 apply_plant = apply_edit
 
+SAMPLE_PLACEHOLDER = "{sample}"
+
+
+def vary(change, token):
+    """The change with `{sample}` in its written text (`replace` or `append`, never `find`) replaced
+    by `token`, so each sample writes different content. Under a persistent cache (Nx) an identical
+    edit makes every sample after the first replay the first one's result: it times the cache."""
+    return {k: (v.replace(SAMPLE_PLACEHOLDER, token) if k in ("replace", "append") else v)
+            for k, v in change.items()}
+
+
+def _varies(change):
+    return any(SAMPLE_PLACEHOLDER in str(change.get(k, "")) for k in ("replace", "append"))
+
 
 class FileGuard:
     """Snapshots files; restores them on exit however the block ends; verifies byte identity."""
@@ -755,6 +772,13 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
     if mode.startswith("scenario:") or mode == "sequence":
         check_scenario_files_clean(decl, scenarios)
     paths = {sc.name: decl.root / sc.file for sc in scenarios}
+    if samples > 1 and loop.runner == "nx" and (mode.startswith("scenario:") or mode == "sequence"):
+        for sc in scenarios:
+            if not _varies(sc.edit):
+                print(f"loop-time: WARNING: scenario '{sc.name}' writes the same edit every sample, so on "
+                      f"a cached runner samples 2..{samples} replay the first one's result and time the "
+                      f"cache, not the loop. Put {SAMPLE_PLACEHOLDER} in its edit (and plant) text.",
+                      file=sys.stderr)
     if mode in ("warm", "cold"):
         for i in range(samples):
             if mode == "cold":
@@ -766,7 +790,7 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
         path = paths[sc.name]
         with FileGuard([path]) as guard:
             for i in range(samples):
-                apply_edit(path, sc.edit)
+                apply_edit(path, vary(sc.edit, f"{s.run_id}-{i}"))
                 rec = s.sample(loop, mode, i, "edit", sc.name)
                 guard.revert()
                 if rec["exit_code"] != 0:
@@ -774,7 +798,7 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
                     print(f"loop-time: the edit run of '{loop.id}' failed (exit {rec['exit_code']}); "
                           "skipping the planted run", file=sys.stderr)
                     continue
-                apply_plant(path, sc.plant)
+                apply_plant(path, vary(sc.plant, f"{s.run_id}-{i}"))
                 rec = s.sample(loop, mode, i, "plant", sc.name, caught_if_failing=True)
                 guard.revert()
                 if not rec["caught"]:
@@ -789,7 +813,7 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120):
                 if s.sample(loop, mode, i, "cold")["exit_code"] != 0:
                     s.failed = True
                 for sc in scenarios:
-                    apply_edit(paths[sc.name], sc.edit)
+                    apply_edit(paths[sc.name], vary(sc.edit, f"{s.run_id}-{i}"))
                     if s.sample(loop, mode, i, f"edit:{sc.name}", sc.name)["exit_code"] != 0:
                         s.failed = True
                 guard.revert()

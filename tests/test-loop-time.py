@@ -500,6 +500,53 @@ def test_refuses_to_start_when_a_scenario_file_differs_from_head(decl_path, proj
     assert not res.exists()
 
 
+def test_sample_placeholder_makes_each_samples_edit_and_plant_distinct(tmp_path, project, capsys):
+    # Under a persistent cache (Nx), re-applying the identical edit makes samples 2..n replay the
+    # first sample's result: they time the cache, not the loop (keystone, 2026-11-07). `{sample}` in
+    # an edit's or a plant's text becomes a token unique to the sample.
+    log = tmp_path / "seen.log"
+    p = write_decl(tmp_path, project, f'''
+        [[loop]]
+        id = "check"
+        command = "cat lib/a.txt >> {log} && sh check.sh"
+        runner = "nx"
+        [[scenario]]
+        name = "leaf"
+        file = "lib/a.txt"
+        edit = {{ append = "touched {{sample}}" }}
+        plant = {{ find = "OK", replace = "BUG {{sample}}" }}
+        loops = ["check"]
+    ''')
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", p, "check", "--mode", "scenario:leaf", "--samples", "2", "--results", res,
+                    "--max-load", "9999") == 0
+    seen = log.read_text()
+    edits = [l for l in seen.splitlines() if l.startswith("touched")]
+    plants = [l for l in seen.splitlines() if l.startswith("BUG")]
+    assert len(edits) == 2 and len(set(edits)) == 2 and "{sample}" not in seen
+    assert len(plants) == 2 and len(set(plants)) == 2
+    assert (project / "lib" / "a.txt").read_text() == "OK\n"
+    assert "replay" not in capsys.readouterr().err
+
+
+def test_repeated_nx_scenario_without_placeholder_is_warned(tmp_path, project, capsys):
+    p = write_decl(tmp_path, project, '''
+        [[loop]]
+        id = "check"
+        command = "sh check.sh"
+        runner = "nx"
+        [[scenario]]
+        name = "leaf"
+        file = "lib/a.txt"
+        edit = { append = "touched" }
+        plant = { find = "OK", replace = "BUG" }
+        loops = ["check"]
+    ''')
+    assert run_main("run", p, "check", "--mode", "scenario:leaf", "--samples", "2", "--results",
+                    tmp_path / "r.jsonl", "--max-load", "9999") == 0
+    assert "replay" in capsys.readouterr().err
+
+
 def test_sequence_runs_cold_then_edits_and_restores(tmp_path, project):
     (project / "lib" / "b.txt").write_text("B\n")
     git(project, "add", "-A")
