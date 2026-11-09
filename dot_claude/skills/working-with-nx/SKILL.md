@@ -74,6 +74,27 @@ eight post-build gates with the file in no cache key). So run `nx show target in
 --check <file>` for every target that names the set, not only the tracer's findings, and give the
 targets that read the file without its writer a set that still lists it.
 
+**A project whose root holds only `project.json`, its source living elsewhere in the workspace,
+names its inputs as `{workspaceRoot}` paths through named inputs.** `{projectRoot}` and
+`^production` both resolve to its empty directory, so they hash nothing and the target replays
+stale. Its edges go in `implicitDependencies`, since there is no source under its root to infer them
+from (measured 2026-11-08: six Python module projects carved out of one root project).
+
+**An input list derived from what a test reaches must follow every import path the runner adds.**
+In a Python workspace that means the modules on pytest's `pythonpath` (a `scripts/` directory, for
+one): a test that reached a higher module through a script passed a check that followed only
+imports and fixtures. Reach is not the whole list either: a helper in another module's test
+directory can be reached and still sit outside the importer's inputs, and a test that reads all
+source as text depends on every module. Plant a change in each module a target should not depend
+on, and in one it should, before trusting a derived list.
+
+**Read `verify-task-io` findings against a single-target differential before adding an input.**
+In a run over several targets, every `uv run` writes `.venv/.lock`, which reports as a foreign write
+(accept it in `.verify-task-io.toml` with its reason). Inside an agent sandbox, the session's own
+harness reading the watched tree (placeholder files under `.claude/`, `.mcp.json`, an open source
+file) can surface as one target's undeclared reads, and disappears when that target is traced alone
+(both measured 2026-11-08).
+
 **A repeated identical edit times the cache, not the work.** A timing scenario that writes the same
 text each sample replays the first sample's result from the second on (3.6 to 3.9 s against a real
 101 s). Vary the edit per sample.

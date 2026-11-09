@@ -72,6 +72,12 @@ before relying on them.
   package as a whole is uncovered.
 - **pytest with xdist** (`-n`) needs pytest-cov's own xdist support to combine worker data; check
   the reported total matches a serial run once.
+- **A partial pytest run under a whole-tree `addopts`** (one module of several, measured
+  2026-11-08 with pytest-cov): a `--cov-report` given on the command line is added to the one in
+  `addopts` rather than replacing it, so the whole-tree report still prints; drop it from `addopts`
+  itself with `-o addopts=<the rest>`. And `[tool.coverage.report] fail_under` gates the partial run
+  whenever `--cov-fail-under` is not given, so the partial run passes `--cov-fail-under=0` and holds
+  its own module to the bar with `coverage report --fail-under=100` on that module's files.
 - **Two coverage runs in one checkout collide** on its `.coverage` data files and under-report
   (measured 2026-11-08: a module at 100% read 86% while another run shared the checkout). Run them
   one at a time, or give each its own `COVERAGE_FILE`.
