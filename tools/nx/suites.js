@@ -17,6 +17,12 @@
 // file inputs with a Rust glob matcher whose dialect differs, so GLOB TRANSLATION below is the
 // one place the two meet.
 //
+// SERIAL SUITES. tests/run-all.sh runs a suite marked `# run-all: serial` alone, after the others,
+// because it asserts on CPU or wall time and fails under load with no defect. The plugin reads the
+// marker the way the runner does (the exact line among the first 10) and gives that target
+// `parallelism: false`, which Nx's scheduler (tasks-schedule.js canBeScheduled, Nx 24.0.2) starts
+// only when nothing else runs and lets nothing start beside: the same "alone".
+//
 // MAP_ENV exists for tests/test-nx-suites.sh alone: it points the plugin at a scratch map so a
 // broken map can be tried without touching the real one.
 
@@ -111,6 +117,12 @@ function parseMap(mapPath, suites) {
   return { entries, hasLine };
 }
 
+const SERIAL_MARK = '# run-all: serial';
+function isSerial(root, suite) {
+  const lines = fs.readFileSync(path.join(root, 'tests', suite), 'utf8').split('\n').slice(0, 10);
+  return lines.includes(SERIAL_MARK);
+}
+
 function listSuites(root) {
   return fs
     .readdirSync(path.join(root, 'tests'), { withFileTypes: true })
@@ -154,6 +166,7 @@ function buildProjects(root) {
           executor: 'nx:run-commands',
           options: { command: 'sh tests/run-all.sh --only ' + s },
           cache: true,
+          ...(isSerial(root, s) ? { parallelism: false } : {}),
           inputs: unique.map((g) => '{workspaceRoot}/' + toNxGlob(g)).concat(RUNTIME_INPUTS.map((r) => ({ runtime: r }))),
           outputs: [],
         },

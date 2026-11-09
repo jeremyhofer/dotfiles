@@ -3,7 +3,8 @@
 # for its agreement with tests/select-suites.sh. Both read tests/coverage.map; this suite holds
 # them to the same reach, so the commit tier and the cache cannot disagree about a suite.
 #
-# Three assertions. (1) Nx lists exactly one project per suite file in tests/. (2) A DIFFERENTIAL:
+# Three assertions. (1) Nx lists exactly one project per suite file in tests/, and each suite
+# marked `# run-all: serial` gets `parallelism: false`, an unmarked one not. (2) A DIFFERENTIAL:
 # for a handful of single paths, the suites Nx says are affected equal what the shell selector
 # prints. (3) A map that cannot be trusted (a glob matching nothing, a line naming no suite, a line
 # with no globs, a glob outside the translated subset) makes the plugin fail rather than yield a
@@ -57,6 +58,26 @@ if nxq show projects; then
 else
   bad "nx show projects" "$(errs)"
 fi
+
+echo "== a serial suite runs alone under Nx too"
+# tests/run-all.sh runs a suite marked `# run-all: serial` alone; under Nx that is the target's
+# `parallelism: false`. Found here with the runner's own test, so the two cannot read the marker
+# differently. The unmarked control must NOT carry it, or a plugin that marks everything passes.
+nserial=0
+for t in "$here"/test-*.sh "$here"/test-*.py; do
+  sed -n '1,10p' "$t" | grep -qxF '# run-all: serial' || continue
+  nserial=$((nserial + 1))
+  n=suite-$(basename "$t" | sed 's|^test-||; s|\.sh$||; s|\.py$||')
+  if nxq show project "$n" --json; then
+    if grep -q '"parallelism":false' "$tmp/out"; then ok "$n is marked serial and runs alone (parallelism false)"
+    else bad "$n is marked serial but Nx may run it beside others" "no \"parallelism\":false in its project"; fi
+  else bad "nx show project $n" "$(errs)"; fi
+done
+[ "$nserial" -gt 0 ] || bad "no suite is marked serial" "the check above ran on nothing"
+if nxq show project suite-hc-status --json; then
+  if grep -q '"parallelism":false' "$tmp/out"; then bad "suite-hc-status (unmarked, the control) runs alone" "it carries \"parallelism\":false"
+  else ok "suite-hc-status (unmarked, the control) may run beside others"; fi
+else bad "nx show project suite-hc-status" "$(errs)"; fi
 
 echo "== the differential against the shell selector"
 # Chosen to cover each way a path can reach a suite: a leaf tool with one suite (plus the
