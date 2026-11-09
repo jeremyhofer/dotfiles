@@ -400,6 +400,7 @@ expect r-w2 waiting working "refresh waits while the transcript's last turn has 
 [[ -f "$Q/r-w1.request.json" && -f "$Q/r-w2.request.json" && ! -f "$Q/r-w1.served.json" ]] \
   && ok "a waiting request stays queued" || bad "waiting requests consumed: $(ls "$Q")"
 expect r-w3 done "" "down of an idle session whose turn ended runs"
+[[ "$(result r-w3 admitted)" == "listed 'done'; its last turn ended" ]] && ok "...its result names the listed state that admitted it" || bad "w3 admitted: $(result r-w3 admitted)"
 [[ "$(cat "$CLAUDE_LOG")" == *"rm cccc3333"* && "$(cat "$CLAUDE_LOG")" != *aaaa1111* && "$(cat "$CLAUDE_LOG")" != *bbbb2222* ]] \
   && ok "only the idle session's row was removed" || bad "claude calls: $(cat "$CLAUDE_LOG")"
 # a waiting request is served once the session is idle, and waiting writes no audit line
@@ -452,6 +453,7 @@ pid_for() {  # pid_for PID NAME SESSION STATUS -- a live pid record for a sessio
 reset; live_row pk000001 alpha-canonical blocked s-pk; transcript s-pk ended; pid_for 5101 alpha-canonical s-pk idle
 plant r-pk1 refresh alpha-canonical director-canonical
 serve >/dev/null; expect r-pk1 done "" "blocked with no waitingFor, idle by its own record and parked since it started, is served"
+[[ "$(result r-pk1 admitted)" == *"'blocked'"*"parked"* ]] && ok "...its result says the parked path admitted it" || bad "pk1 admitted: $(result r-pk1 admitted)"
 reset; live_row pk000002 alpha-canonical blocked s-pk; transcript s-pk ended; pid_for 5102 alpha-canonical s-pk busy
 mkdir -p "$T/jobs/pk000002"; jq -n '{state:"blocked", tempo:"blocked", needs:"Decide: footer basis"}' > "$T/jobs/pk000002/state.json"
 plant r-pk2 refresh alpha-canonical director-canonical
@@ -546,6 +548,7 @@ FAKE_PID=4999991   # above any pid_max, so a stop of it can never reach a real p
 reset; live_row wk000001 alpha-canonical working s-wk; transcript s-wk ended; pid_for $FAKE_PID alpha-canonical s-wk idle
 plant r-wk1 refresh alpha-canonical director-canonical
 serve >/dev/null; expect r-wk1 done "" "a working row with an idle pid record and an ended turn is served"
+[[ "$(result r-wk1 admitted)" == *"'working'"*"idle"*"ended"* ]] && ok "...its result says the stuck-working path admitted it" || bad "wk1 admitted: $(result r-wk1 admitted)"
 reset; live_row wk000002 alpha-canonical working s-wk; transcript s-wk ended; pid_for $FAKE_PID alpha-canonical s-wk shell
 plant r-wk2 refresh alpha-canonical director-canonical
 serve >/dev/null; expect r-wk2 waiting working "a working row whose pid record says shell waits"
@@ -577,6 +580,7 @@ done_row() {  # done_row ID NAME SESSION -- an unlisted (not live) row for a ses
 reset; done_row dn000001 alpha-canonical dn000001-sess; transcript dn000001-sess ended; pid_for $FAKE_PID alpha-canonical dn000001-sess idle
 plant r-dn1 refresh alpha-canonical director-canonical
 serve >/dev/null; expect r-dn1 done "" "a refresh of a done seat with a live, idle process is served"
+[[ "$(result r-dn1 admitted)" == *"no live row"*"idle"* ]] && ok "...its result says the unlisted-process path admitted it" || bad "dn1 admitted: $(result r-dn1 admitted)"
 [[ "$(cat "$CLAUDE_LOG")" == *"rm dn000001"* && "$(cat "$CLAUDE_LOG")" == *"--bg"* ]] \
   && ok "...the launcher removed the unlisted job and relaunched the seat" || bad "dn1 claude calls: $(cat "$CLAUDE_LOG"); $(result r-dn1 output)"
 [[ "$(sed -n '/rm dn000001/=' "$CLAUDE_LOG" | head -1)" -lt "$(sed -n '/--bg/=' "$CLAUDE_LOG" | head -1)" ]] \

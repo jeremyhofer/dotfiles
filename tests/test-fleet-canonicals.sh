@@ -1568,13 +1568,20 @@ rmfn delta >/dev/null 2>&1
     && ok "rm_tmproot refuses a recorded path that is a symlink, even to a real directory" \
     || bad "rm_tmproot followed a symlink -- its real target may have been deleted"
 
-# Case E -- a recorded root that matches the shape but never actually exists on disk: no error,
-# and the (already-meaningless) record is simply left as-is rather than crashing.
+# Case E -- a recorded root that matches the shape but is already gone from disk (the usual case:
+# the session-end scratch hook deletes it when the stop ends the session): no error, the record is
+# cleared, and the note says it was already gone rather than reading as a fault.
 printf '%s\n' "$RMPREFIX/c-epsilon-aB3xYz" > "$RMSTATE/epsilon.tmproot"
 out=$(rmfn epsilon 2>&1); rc=$?
 [[ $rc -eq 0 ]] \
     && ok "a recorded root that never existed on disk does not error" \
     || bad "rm_tmproot errored on an already-absent root (rc=$rc): $out"
+[[ ! -f "$RMSTATE/epsilon.tmproot" ]] \
+    && ok "an already-gone root's record is cleared" \
+    || bad "rm_tmproot left the record of an already-gone root behind"
+[[ "$out" == *"already gone"* && "$out" != *"leaving it alone"* ]] \
+    && ok "...and its note says already gone, not a refusal" \
+    || bad "already-gone note: $out"
 
 # ---- RED PLANT, observed by hand while authoring these cases (not left in the suite) -----------
 # A scratch copy of rm_tmproot with its guard's `[ -d "$root" ]` check deleted (so ANY recorded

@@ -686,7 +686,10 @@ def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
         # session's last turn ended. `fleet-canonicals` then treats the process as the session.
         # The same two signals as a stuck `working` row; anything else waits, so a queued request
         # never ends a turn in progress.
-        return unlisted_idle_signals(req["name"])
+        why = unlisted_idle_signals(req["name"])
+        if why is None:
+            req["_admitted"] = "no live row in the sessions list; a live process whose pid records say idle and whose last turn ended"
+        return why
     return (f"'{req['name']}' has no live row in the sessions list, but a live process holds the "
             f"name: {holders[0]}. The list cannot be trusted for it, so nothing is done; its "
             "operator decides, from a terminal")
@@ -912,6 +915,7 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
         # refused, whatever its row says.
         gone = process_gone(req["name"], str(row.get("sessionId") or ""))
         if gone is None:
+            req["_admitted"] = f"listed '{row.get('state') or 'none'}' with no process behind it"
             return None
         return (f"'{req['name']}' is running (id {row.get('id')}, listed "
                 f"'{row.get('state') or 'none'}'): {gone}; there is nothing to resume")
@@ -949,6 +953,12 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
         return f"'{req['name']}''s transcript cannot be read, so work in flight cannot be ruled out"
     if not ended:
         return Wait(f"'{req['name']}' is working: its transcript's last turn has not ended")
+    if state == "blocked":
+        req["_admitted"] = "listed 'blocked' with no waitingFor, parked since it started; its last turn ended"
+    elif state == "working":
+        req["_admitted"] = "listed 'working' with no waitingFor (a stuck row); its pid records say idle and its last turn ended"
+    else:
+        req["_admitted"] = f"listed '{state}'; its last turn ended"
     return None
 
 
@@ -1061,6 +1071,10 @@ def serve_one(path: Path, ctx: Pass) -> None:
     result = {"id": rid, "at": now(), "verb": req.get("verb"), "name": req.get("name"),
               "requester": req.get("requester"), "reason": req.get("reason"),
               "outcome": outcome, "check": check or None}
+    if not check and req.get("_admitted"):
+        # Which idle path let a stopping verb through, so a served request can be told apart from
+        # the stuck-row and unlisted-process cases afterwards; the journal names only the outcome.
+        result["admitted"] = req["_admitted"]
     result["detail" if check else "output"] = detail
     write_atomic(QUEUE / f"{rid}.result.json", result)
     entry = {k: result[k] for k in ("at", "id", "verb", "name", "requester", "outcome", "check")}

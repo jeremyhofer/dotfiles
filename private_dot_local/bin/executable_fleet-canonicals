@@ -503,8 +503,14 @@ rm_tmproot() {
   if [ -e "$root" ] && [ ! -L "$root" ] && [ -d "$root" ]; then
     rm -rf -- "$root"
     rm -f -- "$rp"
+  elif [ ! -e "$root" ] && [ ! -L "$root" ]; then
+    # The usual case on a stop or refresh: claude-scratch-hook deletes the root at SessionEnd,
+    # which the stop has just triggered. Nothing to remove; clear the record so it is not stale.
+    rm -f -- "$rp"
+    printf 'note     %-24s recorded temp root already gone (removed at session end); record cleared: %s\n' \
+      "$name" "$root" >&2
   else
-    printf 'note     %-24s recorded temp root is missing, not a directory, or a symlink; leaving it alone: %s\n' \
+    printf 'note     %-24s recorded temp root is not a directory, or is a symlink; leaving it alone: %s\n' \
       "$name" "$root" >&2
   fi
 }
