@@ -64,6 +64,24 @@ may not be up yet. No tool refuses, waits on it, launches it or reports it missi
 is neither reported nor launched. Once declared, it is a canonical like any other: `status` reports
 it `MISSING`, exit 1, until it is up.
 
+## On-demand seats
+
+A bare `up` starts every missing canonical unless the record or the config says otherwise. A seat
+that should start only when someone asks sets `canonicalAutostart: false` in its fleet-record entry
+(`docs/reference/fleet-manifest.md`); a machine that wants the opposite default sets
+`autostart-default = false` in the config (table above) and marks each critical seat
+`canonicalAutostart: true`. With neither set, every seat autostarts.
+
+- `up` with no names starts the missing seats that autostart and prints a `skipped` line for each
+  on-demand one. `up <name>...` starts the named seats whatever their key. `up --all` starts every
+  missing seat. Names together with `--all` are refused.
+- `status` prints a down on-demand seat as `off (on demand)` and counts it healthy: the exit status
+  and the health check read only `MISSING`, `DUPLICATE` and `LIVE-UNLISTED` as unhealthy. A live
+  on-demand seat is `OK`.
+- Nothing acts on seats without naming them and starts an off one: `resume-at` runs a bare `up` after
+  a usage reset and so skips it; `refresh`, `resume` and every queued request take a name. `dedupe`,
+  `down --all`, `clean` and `wait-for-reset` start nothing, so they are unchanged.
+
 ## Where every file lives
 
 | Path | Written by | Holds | Backed up |
@@ -92,6 +110,7 @@ The settings in the config file, each overridable by an environment variable for
 | `handoffs-search` | `FLEET_HANDOFFS_SEARCH` | the tree searched for a placed copy (and for a predecessor) | the `handoffs` directory |
 | `hub` | `FLEET_HUB` | the session that places; `stage` names it in its output | not named |
 | `remote-control` | `FLEET_REMOTE_CONTROL` | `true`: `up`, `refresh` and `resume --fork` launch each canonical with `--remote-control <name>`, so it is reachable from the Claude app under its name; a canonical's manifest `canonicalRemoteControl` overrides it. A queued `resume` runs `claude respawn <id>`, which takes no other argument (Claude Code 2.1.319); whether a respawned session keeps Remote Control is unmeasured | `false`: no Remote Control |
+| `autostart-default` | `FLEET_AUTOSTART_DEFAULT` | `true` or `false`: whether a bare `up` (and `resume-at`) starts a canonical whose fleet-record entry sets no `canonicalAutostart`. A value other than true or false is reported and treated as true, so a typo never keeps a critical seat down | `true`: every canonical autostarts, as before the key existed |
 | `place-commit` | `FLEET_PLACE_COMMIT` | `true`: `place` commits the files it placed, and only those, in the repository holding `handoffs`; it never pushes | `false`: copies only |
 | `stage-check` | `FLEET_STAGE_CHECK` | an executable `stage` runs as `<check> <draft>` before staging; non-zero refuses the draft and prints the check's output. Point it at a script that runs the handoffs repository's blocking commit gates on the draft, so a draft that `place`'s commit would refuse is refused while its author can fix it. One that is not an executable file refuses every `stage` | no check |
 
@@ -408,8 +427,8 @@ earlier one.
    lives) where it persists, then `fleet-canonicals handoff <name> --set <path>`. Check:
    `fleet-canonicals handoff <name>` prints that path, and `fleet-canonicals up --dry-run <name>`
    prints `would start`, not `REFUSED`.
-8. **First `status`.** Check: one `<name> MISSING` line per canonical declared for this machine, exit
-   1. A canonical with no line has a `canonicalMachines` that does not match `hostname`; exit 2
+8. **First `status`.** Check: one `<name> MISSING` line per canonical declared for this machine (a
+   canonical set not to autostart reads `off (on demand)` and does not count), exit 1. A canonical with no line has a `canonicalMachines` that does not match `hostname`; exit 2
    (`could not run: claude agents --json`) is step 1.
 9. **First `up`,** from a terminal. `fleet-canonicals up --dry-run` prints `would start <name>
    <dir> (<model>)` for each; a `REFUSED` line is an incomplete declaration or a missing handoff

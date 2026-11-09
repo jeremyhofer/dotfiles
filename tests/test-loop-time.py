@@ -781,6 +781,15 @@ def test_sample_records_env_key_names_never_values(tmp_path, project):
     assert "loop-secret-value" not in res.read_text()
 
 
+def test_default_scratch_root_is_under_agent_scratch(monkeypatch, tmp_path):
+    # The default sits in ~/.cache/agent-scratch, the base's place for scratch too big for /tmp:
+    # a session may delete there when its timing is recorded, and the tmpfiles rule ages what is
+    # left. A root elsewhere in ~/.cache left gigabytes no session could remove.
+    monkeypatch.delenv("LOOP_TIME_SCRATCH", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert lt.scratch_base() == tmp_path / ".cache" / "agent-scratch" / "loop-time"
+
+
 def test_no_env_means_empty_env_keys_and_no_scratch_dir(tmp_path, project):
     res = tmp_path / "r.jsonl"
     p = write_decl(tmp_path, project, '[[loop]]\nid="a"\ncommand="true"\n')

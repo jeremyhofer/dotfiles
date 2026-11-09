@@ -27,6 +27,15 @@
 # per line, replaces the list of EXPECTED names (status, up, dedupe, down --all) and nothing else:
 # a name on it that the record does not declare is refused at launch, not guessed.
 #
+# ON-DEMAND SEATS. Not every canonical should start on a bare `up`: some are always on, others are
+# case by case. `canonicalAutostart: true|false` in the fleet record, else the config's
+# `autostart-default` (true when unset), decides. The rule that makes it safe is that NOTHING which
+# acts on seats without naming them may start one that is off: a bare `up` skips it, and `resume-at`
+# (which runs a bare `up` after a usage reset) inherits that. Verbs that take a name (`refresh`,
+# `resume`, a named `up`) act on exactly that seat, and the request queue only ever runs a verb with
+# a name, so none of them can reach an unnamed optional seat. `dedupe`, `down --all`, `clean` and
+# `wait-for-reset` start nothing, so they are not gated.
+#
 # THE DOMAIN'S OWN VALUES -- where placed handoffs go, which session places them, whether placing
 # commits -- come from a config file the domain's private layer writes (see the CONFIGURATION block
 # of the help), each overridable by an environment variable. With no file every value is unset and
@@ -118,6 +127,40 @@ PLACE_COMMIT=$(config_value FLEET_PLACE_COMMIT place-commit)
 STAGE_CHECK=$(config_value FLEET_STAGE_CHECK stage-check)
 REMOTE_CONTROL=$(config_value FLEET_REMOTE_CONTROL remote-control)
 
+# autostart-default: whether a seat that sets no `canonicalAutostart` starts on a bare `up`. UNSET
+# MEANS TRUE, so a machine that configures nothing behaves as it always did, and a value that is
+# neither true nor false is reported and also treated as true: a typo must never become a critical
+# seat silently not starting. The report is made by the verbs that act on it (autostart_default_note),
+# not here, because this line runs for every verb including those that never read the key.
+AUTOSTART_DEFAULT=$(config_value FLEET_AUTOSTART_DEFAULT autostart-default)
+AUTOSTART_DEFAULT_BAD=""
+case "$AUTOSTART_DEFAULT" in
+  true|false) ;;
+  '') AUTOSTART_DEFAULT=true ;;
+  *) AUTOSTART_DEFAULT_BAD=$AUTOSTART_DEFAULT; AUTOSTART_DEFAULT=true ;;
+esac
+
+autostart_default_note() {
+  [ -z "$AUTOSTART_DEFAULT_BAD" ] \
+    || printf 'note     autostart-default in %s is %s, not true or false; treating it as true\n' "$FLEET_CONFIG" "$AUTOSTART_DEFAULT_BAD" >&2
+}
+
+# autostart_effective NAME -- print true or false: does a bare `up` start this seat. The seat's own
+# `canonicalAutostart` wins, then the machine's autostart-default. `fleet-decl --canonical` prints a
+# declared false (exit 0) and exits 1 for an absent key, so false is not read as absent. A seat value
+# other than true or false is reported and treated as true, for the same reason as the default.
+autostart_effective() {
+  local v
+  if v=$(fleet-decl --canonical "$1" canonicalAutostart 2>/dev/null); then
+    case "$v" in
+      true|false) printf '%s\n' "$v"; return 0 ;;
+      *) printf 'note     %-24s canonicalAutostart is %s, not true or false; treating it as true\n' "$1" "$v" >&2
+         printf 'true\n'; return 0 ;;
+    esac
+  fi
+  printf '%s\n' "$AUTOSTART_DEFAULT"
+}
+
 # remote_control_args NAME -- print `--remote-control NAME`, one word per line, when NAME launches
 # with Remote Control (its manifest `canonicalRemoteControl`, else this machine's `remote-control`
 # key); print nothing otherwise. The flag's name argument is optional, so it is always given: a bare
@@ -173,14 +216,21 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
 
   list              every canonical the fleet record declares, with what it owns and where it
                     runs; fleet-wide, so it answers "which peer handles X" from any machine
-  status            one line per expected session: OK, MISSING, DUPLICATE, or LIVE-UNLISTED (a
+  status            one line per expected session: OK, MISSING, DUPLICATE, LIVE-UNLISTED (a
                     live process holds the name though `claude agents --json` omits it, so down
-                    and refresh cannot see it either); exit 0 only if every one is OK
-  up | start [--dry-run] [name...]
+                    and refresh cannot see it either), or `off (on demand)` (down, and its
+                    autostart is false: the intended state, not a gap); exit 0 only if every
+                    one is OK or off
+  up | start [--dry-run] [--all | name...]
                     launch MISSING sessions as the fleet record declares them. With no names,
-                    every missing canonical; with names, only those. An unknown name is
-                    refused rather than treated as "no filter", and so is a name a live process
-                    holds though the sessions list omits it (a second session would start).
+                    every missing canonical that autostarts; with names, only those, whatever
+                    their autostart; --all, every missing canonical. A canonical autostarts
+                    unless its `canonicalAutostart` in the fleet record, or else the config's
+                    `autostart-default`, is false. Nothing that acts on seats without naming
+                    them (a bare `up`, `resume-at`) starts one that does not. An unknown name
+                    is refused rather than treated as "no filter", and so is a name a live
+                    process holds though the sessions list omits it (a second session would
+                    start). Names and --all together are refused.
   down | stop [--dry-run] [--stub [reason] | --force [reason]] <name>... | --all
                     stop the named canonical(s) and delete their rows (transcripts kept,
                     so they stay resumable). Names are required; --all must be explicit.
@@ -295,6 +345,11 @@ configuration (file, then the variable that overrides each key):
   handoffs-search = <dir>    FLEET_HANDOFFS_SEARCH  tree searched for a staged handoff's placed
                                                     copy (default: the handoffs directory)
   hub = <name>               FLEET_HUB              the session that runs `place`, named by `stage`
+  autostart-default = true|false FLEET_AUTOSTART_DEFAULT  whether a bare `up` starts a canonical
+                                                    that sets no `canonicalAutostart` (default
+                                                    true, so a machine that sets nothing starts
+                                                    every one; a value other than true or false
+                                                    is reported and treated as true)
   remote-control = true|false FLEET_REMOTE_CONTROL  launch, refresh and resume (--fork) with
                                                     `--remote-control <name>`, so the session is
                                                     reachable from the Claude app under its name
@@ -587,6 +642,10 @@ report_line() {
        # Not "MISSING": the word is what `up` and the health check read as absent.
        if [ -n "$holder" ]; then
          printf '%-28s LIVE-UNLISTED (%s; the sessions list omits it)\n' "$name" "$holder"
+       elif [ "$(autostart_effective "$name" 2>/dev/null)" = false ]; then
+         # An on-demand seat that is down is the intended state, not an absence. Its own word, so
+         # neither `up`'s missing-set logic nor the health check below reads it as MISSING.
+         printf '%-28s off (on demand)\n' "$name"
        else
          printf '%-28s MISSING\n' "$name"
        fi ;;
@@ -686,6 +745,7 @@ cmd_list() {
 cmd_status() {
   local json name unhealthy=0 orphan orphans=0
   json=$(agents_json)
+  autostart_default_note
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     line=$(report_line "$name" "$json")
@@ -714,11 +774,12 @@ cmd_up() {
   # stray argument silently disabled the dry run and launched for real -- `up foo --dry-run` started
   # a live canonical. For a verb whose entire job is starting long-lived sessions, a typo must not be
   # the difference between a rehearsal and a launch.
-  local wanted=""
+  local wanted="" all=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1; shift ;;
-      -*) die "up: unknown option '$1' (usage: up [--dry-run] [name...])" ;;
+      --all) all=1; shift ;;
+      -*) die "up: unknown option '$1' (usage: up [--dry-run] [--all | name...])" ;;
       *)
         # A NAME, not a filter that silently matches nothing. Resolve it now and refuse a typo:
         # treating an unrecognized word as "no filter" is how `up foo --dry-run` once launched the
@@ -729,15 +790,25 @@ cmd_up() {
         shift ;;
     esac
   done
+  [ -z "$wanted" ] || [ "$all" = "0" ] || die "up: give names or --all, not both"
   json=$(agents_json)
+  autostart_default_note
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    # With names given, consider only those; bare `up` keeps its all-missing behavior.
+    # With names given, consider only those; bare `up` considers every missing seat that autostarts.
     if [ -n "$wanted" ]; then
       case " $wanted " in *" $name "*) ;; *) continue ;; esac
     fi
     count=$(printf '%s' "$json" | jq --arg n "$name" '[.[]|select(.name==$n)]|length')
     [ "$count" = "0" ] || continue
+    # An on-demand seat is started only when named or under --all. This is the one gate every
+    # unnamed path shares: resume-at after a usage reset calls this verb bare, so it inherits it.
+    # It sits after the live-session check so a seat that is already running is never reported as
+    # skipped.
+    if [ -z "$wanted" ] && [ "$all" = "0" ] && [ "$(autostart_effective "$name")" = false ]; then
+      printf 'skipped %-24s on demand (autostart is false); name it, or use --all\n' "$name"
+      continue
+    fi
     holder=$(live_holder "$name")
     if [ -n "$holder" ]; then
       printf 'REFUSED %-24s a live process holds the name though the sessions list omits it: %s\n' "$name" "$holder" >&2
@@ -1154,7 +1225,8 @@ cmd_wait_for_reset() {
   printf 'wait-for-reset: reset passed at %s -- resume work\n' "$(date '+%H:%M %Z')"
 }
 
-# resume-at -- wait until the usage window resets, then launch whatever is missing.
+# resume-at -- wait until the usage window resets, then launch whatever is missing and autostarts.
+# A seat that is off (see ON-DEMAND SEATS) stays down: this is an unnamed path.
 #
 # THE OUT-OF-SESSION FORM: use it when nothing will be alive to wake up. Same wait as
 # wait-for-reset, followed by `up`. It installs nothing and schedules nothing; kill it and no trace

@@ -201,7 +201,7 @@ case "$subcommand" in
     thresh_bytes=$((threshold_mb * 1024 * 1024))
     if [ "$bytes" -ge "$thresh_bytes" ] 2>/dev/null; then
       mb=$(mb_of "$bytes")
-      msg="Scratch check: your session temp directory holds about ${mb} MB. Delete experiment copies and build outputs whose results are recorded; nothing meaningful may live there — it is deleted when the session ends."
+      msg="Scratch check: your session temp directory holds about ${mb} MB. Delete the experiment copies and build outputs you created whose results are recorded; nothing meaningful may live there — it is deleted when the session ends. Subagents you dispatched share this directory: while any still runs, delete only paths you made yourself, and never sweep by age or by name pattern."
       emit_context "Stop" "$msg"
     fi
     exit 0

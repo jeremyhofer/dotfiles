@@ -81,6 +81,10 @@ this follows. The private-layer steps happen in that layer's repository, before 
    on macOS a failing suite is reported and the apply goes ahead.
 4. **On a work-domain machine, after the apply:** `rm ~/.local/bin/image-bump` if it exists
    (2026-11-08, "`image-bump` deploys in the personal domain only", ACTION).
+   Where only some sessions should start on a bare `up`, set `autostart-default = false` in the
+   `fleet-canonicals` config and `canonicalAutostart: true` on each always-on seat (2026-11-08,
+   "on-demand seats"). On any machine that ran `loop-time` before, `rm -rf ~/.cache/loop-time`
+   once no timing run is going (2026-11-08, "`loop-time`'s default scratch moves").
 5. **After the apply, from a terminal, for the request runner** (2026-11-08,
    "`fleet-canonicals request` and `serve-requests`", ACTION):
    - Linux: `systemctl --user daemon-reload`, then
@@ -102,6 +106,28 @@ New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-
 `wt done`, and skill `working-with-nx`. `fleet-canonicals status` has a fourth verdict,
 `LIVE-UNLISTED`. A push to the publish remote is gated only in a clone that sets
 `dotfiles.publishRemote`.
+
+### `fleet-canonicals`: on-demand seats, `canonicalAutostart` and `autostart-default`
+
+- A canonical no longer has to start on a bare `up`. Set `canonicalAutostart: false` on its
+  fleet-record entry, or `autostart-default = false` in the `fleet-canonicals` config (default
+  `true`), and a bare `up` and `resume-at` leave it down. `up <name>` starts any seat, and the new
+  `up --all` starts every one. `status` shows a down on-demand seat as `off (on demand)`, not
+  `MISSING`, and exits 0 for it. `fleet-decl --check` refuses a `canonicalAutostart` that is not an
+  unquoted boolean. A machine that sets nothing behaves as before.
+- To make a domain opt-in: `autostart-default = false` in its config, then `canonicalAutostart: true`
+  on each seat that must always run.
+
+### `loop-time`'s default scratch moves to `~/.cache/agent-scratch/loop-time`
+
+- The old default, `~/.cache/loop-time`, was outside the one place under `~/.cache` an agent may
+  delete, so a timing run's scratch (gigabytes of an Nx cache) was left for a person. The new root is
+  deletable by the session and aged out by the scratch tmpfiles rule on Linux. `LOOP_TIME_SCRATCH`
+  still overrides it.
+- A machine that ran `loop-time` before keeps the old directory: remove `~/.cache/loop-time` by hand
+  once no timing run is going.
+- Skill `scratch-copies` and the scratch hook's stop message now say to clean only what a session
+  created while subagents it dispatched still run, never by age or name pattern.
 
 ### `image-bump` deploys in the personal domain only — ACTION on a work-domain machine
 

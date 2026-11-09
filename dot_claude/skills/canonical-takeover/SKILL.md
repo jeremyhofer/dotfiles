@@ -40,6 +40,7 @@ Each canonical's project in the record declares:
 | `canonicalLaunchModel` | the `--model` value |
 | `canonicalMachines` | the machines it runs on, each as `hostname` prints it |
 | `canonicalRemoteControl` | optional, `true` or `false`: launch with `--remote-control <name>`, overriding the machine's `remote-control` key in `fleet-canonicals`' config |
+| `canonicalAutostart` | optional, `true` or `false`: whether a bare `up` (and `resume-at`) starts it, overriding the machine's `autostart-default` key (default `true`); `up <name>` and `up --all` start it either way, and `status` shows it down as `off (on demand)` |
 
 `fleet-decl --check` reports a canonical declared incompletely. **"This machine" is the output of
 `hostname`, matched whole and case-sensitively**, not an SSH alias or a label. Run `hostname` on the

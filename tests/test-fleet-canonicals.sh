@@ -1880,6 +1880,143 @@ out=$(clfc --bogus); rc=$?
 [[ $rc -ne 0 && -d "$CLP/c-gone-LLLLLL" ]] && ok "clean refuses an unknown argument" \
     || bad "clean accepted an unknown argument (rc=$rc): $out"
 
+# ---- on-demand seats: canonicalAutostart and the autostart-default config key -----------------------
+# Not every seat should start on a bare `up`: some are always on, others case by case. A seat's
+# `canonicalAutostart` (else the machine's `autostart-default`, else true) decides whether a bare
+# `up` starts it, and nothing that acts on seats WITHOUT a name may start one that is off. Every
+# case runs against its own fixture so the suite's other records are untouched.
+AU="$TMPROOT/autostart"; mkdir -p "$AU/st"
+for _n in opt plain crit; do mkdir -p "$AU/$_n"; done
+cat > "$AU/rec.yaml" <<YAML
+projects:
+  opt:
+    scope: opt
+    canonical: auto-opt-canonical
+    canonicalIdentity: "the optional seat"
+    canonicalLaunchDir: opt
+    canonicalLaunchModel: fable
+    canonicalAutostart: false
+    canonicalMachines: [$(hostname)]
+  plain:
+    scope: plain
+    canonical: auto-plain-canonical
+    canonicalIdentity: "the seat that sets no key"
+    canonicalLaunchDir: plain
+    canonicalLaunchModel: fable
+    canonicalMachines: [$(hostname)]
+  crit:
+    scope: crit
+    canonical: auto-crit-canonical
+    canonicalIdentity: "the critical seat"
+    canonicalLaunchDir: crit
+    canonicalLaunchModel: fable
+    canonicalAutostart: true
+    canonicalMachines: [$(hostname)]
+YAML
+# The same fleet with no seat setting the key: what every machine runs today.
+yq 'del(.projects[].canonicalAutostart)' "$AU/rec.yaml" > "$AU/rec-nokeys.yaml"
+for _n in auto-opt-canonical auto-plain-canonical auto-crit-canonical; do
+  printf 'fixture handoff for %s\n' "$_n" > "$AU/st/$_n.handoff.md"
+  FLEET_ROOT="$AU" FLEET_RECORD="$AU/rec.yaml" FLEET_STATE="$AU/st" bash "$TOOL" handoff "$_n" --set "$AU/st/$_n.handoff.md" >/dev/null 2>&1
+done
+echo '[]' > "$AU/none.json"
+# Only the always-on pair is running: the optional seat is down.
+cat > "$AU/pair.json" <<'JSON'
+[{"pid":90111,"id":"pl1","cwd":"/x","kind":"background","startedAt":1000,"sessionId":"s1","name":"auto-plain-canonical","status":"idle","state":"done"},
+ {"pid":90222,"id":"cr2","cwd":"/y","kind":"background","startedAt":1000,"sessionId":"s2","name":"auto-crit-canonical","status":"idle","state":"done"}]
+JSON
+# Environment is passed with `env`, not as a prefix on this function, which a POSIX shell may keep.
+aurun() {  # aurun REC AGENTS_JSON [VAR=VALUE...] -- ARGS...
+  local rec=$1 js=$2; shift 2
+  local envs=(); while [[ "$1" != -- ]]; do envs+=("$1"); shift; done; shift
+  env "${envs[@]}" FLEET_ROOT="$AU" FLEET_RECORD="$AU/$rec" FLEET_STATE="$AU/st" \
+    FLEET_AGENTS_JSON_CMD="cat $AU/$js" bash "$TOOL" "$@" 2>&1
+}
+starts() { print -r -- "$1" | grep -Eq "^would start +$2( |\$)"; }
+
+out=$(aurun rec.yaml none.json -- up --dry-run)
+starts "$out" auto-opt-canonical && bad "a: bare up --dry-run would start a seat with canonicalAutostart: false: $out" \
+  || ok "a: bare up skips a seat with canonicalAutostart: false"
+starts "$out" auto-plain-canonical && starts "$out" auto-crit-canonical \
+  && ok "a: bare up still starts the seat with no key and the one set true" || bad "a: bare up lost an autostart seat: $out"
+
+out=$(aurun rec.yaml none.json FLEET_AUTOSTART_DEFAULT=false -- up --dry-run)
+starts "$out" auto-plain-canonical && bad "b: autostart-default false did not skip a seat with no key: $out" \
+  || ok "b: autostart-default = false skips a seat that sets no key"
+starts "$out" auto-crit-canonical && ok "b: a seat set true still starts under autostart-default = false" \
+  || bad "b: canonicalAutostart: true lost to the default: $out"
+starts "$out" auto-opt-canonical && bad "b: the false seat started under default false: $out" || ok "b: the false seat stays off under default false"
+
+# The default can come from the config file, read like the other keys.
+printf 'autostart-default = false\n' > "$AU/config"
+out=$(aurun rec.yaml none.json FLEET_CANONICALS_CONFIG="$AU/config" -- up --dry-run)
+! starts "$out" auto-plain-canonical && starts "$out" auto-crit-canonical \
+  && ok "b: autostart-default is read from the config file" || bad "b: config file key ignored: $out"
+# A seat's own key wins over a default of true as well.
+printf 'autostart-default = true\n' > "$AU/config"
+out=$(aurun rec.yaml none.json FLEET_CANONICALS_CONFIG="$AU/config" -- up --dry-run)
+! starts "$out" auto-opt-canonical && starts "$out" auto-plain-canonical \
+  && ok "b: a seat's false beats a default of true" || bad "b: seat key lost to default true: $out"
+
+out=$(aurun rec.yaml none.json -- up --dry-run auto-opt-canonical)
+starts "$out" auto-opt-canonical && ok "c: up --dry-run <name> starts an optional seat" \
+  || bad "c: naming an optional seat did not start it: $out"
+! starts "$out" auto-plain-canonical && ok "c: naming one seat starts only that seat" \
+  || bad "c: a named up started another seat: $out"
+out=$(aurun rec.yaml none.json FLEET_AUTOSTART_DEFAULT=false -- up --dry-run auto-plain-canonical)
+starts "$out" auto-plain-canonical && ok "c: a named seat starts even where the default is false" \
+  || bad "c: named seat refused by the default: $out"
+
+out=$(aurun rec.yaml none.json FLEET_AUTOSTART_DEFAULT=false -- up --all --dry-run)
+starts "$out" auto-opt-canonical && starts "$out" auto-plain-canonical && starts "$out" auto-crit-canonical \
+  && ok "d: up --all --dry-run starts every declared seat" || bad "d: up --all missed a seat: $out"
+out=$(aurun rec.yaml none.json -- up --all auto-opt-canonical --dry-run); rc=$?
+(( rc != 0 )) && ok "d: up --all with names is refused" || bad "d: up --all plus a name was accepted: $out"
+
+# (e) the verdict column
+out=$(aurun rec.yaml pair.json -- status); rc=$?
+print -r -- "$out" | grep -Eq '^auto-opt-canonical +off \(on demand\)' \
+  && ok "e: a down optional seat reads 'off (on demand)'" || bad "e: optional seat verdict: $out"
+[[ "$out" != *MISSING* ]] && (( rc == 0 )) && ok "e: an off seat is not missing: status exits 0" \
+  || bad "e: an off seat counted as unhealthy (rc=$rc): $out"
+out=$(aurun rec.yaml none.json -- status); rc=$?
+print -r -- "$out" | grep -Eq '^auto-crit-canonical +MISSING' && print -r -- "$out" | grep -Eq '^auto-plain-canonical +MISSING' && (( rc == 1 )) \
+  && ok "e: a down autostart seat is still MISSING, and status exits 1" || bad "e: autostart seat verdict (rc=$rc): $out"
+cat > "$AU/all3.json" <<'JSON'
+[{"pid":90111,"id":"op0","cwd":"/x","kind":"background","startedAt":1000,"sessionId":"s0","name":"auto-opt-canonical","status":"idle","state":"done"}]
+JSON
+out=$(aurun rec.yaml all3.json -- status)
+print -r -- "$out" | grep -Eq '^auto-opt-canonical +OK ' && ok "e: a live optional seat still reads OK" || bad "e: live optional seat: $out"
+out=$(aurun rec.yaml pair.json FLEET_AUTOSTART_DEFAULT=false -- status)
+print -r -- "$out" | grep -Eq '^auto-opt-canonical +off \(on demand\)' && ok "e: the default applies to status too (no key, default false)" \
+  || bad "e: status ignored the default: $out"
+
+# (g) today's behavior: no config and no key means every seat autostarts.
+out=$(aurun rec-nokeys.yaml none.json -- up --dry-run)
+starts "$out" auto-opt-canonical && starts "$out" auto-plain-canonical && starts "$out" auto-crit-canonical \
+  && ok "g: with no config and no key, bare up starts every seat" || bad "g: default is not today's behavior: $out"
+out=$(aurun rec-nokeys.yaml none.json -- status)
+[[ "$out" != *"off (on demand)"* ]] && ok "g: with no config and no key, nothing reads off" || bad "g: status shows an off seat: $out"
+# A value other than true or false fails toward starting, and says so.
+out=$(aurun rec-nokeys.yaml none.json FLEET_AUTOSTART_DEFAULT=maybe -- up --dry-run)
+starts "$out" auto-opt-canonical && starts "$out" auto-plain-canonical && [[ "$out" == *"autostart-default"*maybe*"not true or false"* ]] \
+  && ok "g: a bad autostart-default is reported and treated as true" || bad "g: bad default: $out"
+yq '.projects.opt.canonicalAutostart = "maybe"' "$AU/rec.yaml" > "$AU/rec-bad.yaml"
+out=$(aurun rec-bad.yaml none.json -- up --dry-run)
+starts "$out" auto-opt-canonical && [[ "$out" == *canonicalAutostart*maybe*"not true or false"* ]] \
+  && ok "g: a bad canonicalAutostart is reported and treated as true" || bad "g: bad seat key: $out"
+
+# (h) the unnamed-set path: resume-at launches whatever is missing after a usage reset. A past --at
+# makes the wait zero, so the whole path runs here; the launcher is the recording stub.
+: > "$TMPROOT_LAUNCHLOG"
+out=$("${BOUND[@]}" 30 env FLEET_ROOT="$AU" FLEET_RECORD="$AU/rec.yaml" FLEET_STATE="$AU/st" \
+      FLEET_AGENTS_JSON_CMD="cat $AU/none.json" bash "$TOOL" resume-at --at '1970-01-01 00:00:00' 2>&1); rc=$?
+_l=$(cat "$TMPROOT_LAUNCHLOG")
+[[ $rc -eq 0 && "$_l" == *"-n auto-plain-canonical "* && "$_l" == *"-n auto-crit-canonical "* ]] \
+  && ok "h: resume-at resumes the autostart seats (rc=$rc)" || bad "h: resume-at launched too little (rc=$rc): $_l / $out"
+[[ "$_l" != *"-n auto-opt-canonical "* ]] && ok "h: resume-at does not launch a seat with canonicalAutostart: false" \
+  || bad "h: resume-at launched an optional seat: $_l"
+
 # Belt-and-suspenders: this suite never writes under the real /tmp (everything above is redirected
 # via FLEET_TMPROOT_PREFIX), so no NEW c-* directory may appear there during the run. Compared
 # against a snapshot taken at the start, because live canonical sessions legitimately own roots

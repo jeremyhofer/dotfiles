@@ -76,7 +76,7 @@ exit 1. Use them for state the loop needs, such as staging a change before a com
 
 env: a loop's table overrides the declaration's; applied to setup, cold_prep, command and
 teardown. A value may contain {scratch}, a private directory per project, created on demand,
-under $LOOP_TIME_SCRATCH or ~/.cache/loop-time (then /<project>), and {root}, the checkout.
+under $LOOP_TIME_SCRATCH or ~/.cache/agent-scratch/loop-time (then /<project>), and {root}, the checkout.
 cold = "fresh-scratch" empties {scratch} before each cold sample, and refuses to remove
 anything outside that scratch root. Point a shared cache at {scratch} to start it empty without
 resetting the user's real one. Each record lists the env key names that were set, never values.
@@ -683,7 +683,10 @@ def _slug(s):
 
 def scratch_base():
     env = os.environ.get("LOOP_TIME_SCRATCH")
-    return Path(os.path.expanduser(env)) if env else Path.home() / ".cache" / "loop-time"
+    # ~/.cache/agent-scratch is the base's place for scratch too big for /tmp: a session may
+    # delete there once its timing is recorded, and its tmpfiles rule ages what is left. A root
+    # elsewhere in ~/.cache left gigabytes of Nx cache that no session was allowed to remove.
+    return Path(os.path.expanduser(env)) if env else Path.home() / ".cache" / "agent-scratch" / "loop-time"
 
 
 def scratch_dir(project):

@@ -34,6 +34,12 @@ mkdir -p "$big"
   allowed where a guard restricts `rm`; the rest of `~/.cache` is not scratch and stays protected.
 - **Never put it anywhere else under `~/.cache`**: nothing cleans an arbitrary folder there, and an
   agent may not be allowed to delete it, so the cleanup lands on a person.
+- **Clean only what you created while anything you dispatched still runs.** A session and its
+  subagents share one temp directory, so a sweep by age or by name pattern (`-mmin +30`, `vitest-*`,
+  `playwright_*profile-*`, `nx-native-file-cache-*`) deletes a running builder's live files, and its
+  next test fails far from the cause ("Failed to fetch dynamically imported module"). Clear shared
+  scratch only once every builder has stopped, and never the harness's own per-session directory.
+  When a scratch-check prompt fires mid-run, answer it with what is yours and why the rest stays.
 - On Linux, anything left is aged out after three days without a write; on macOS only the session-end
   removal and your own deletion clean it.
 

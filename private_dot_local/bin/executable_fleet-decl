@@ -183,7 +183,7 @@ case "${1:-}" in
     valid_key "$3"
     _proj=$(canonical_project "$2") || exit $?
     # No -e: it exits 1 on a `false` value as well as on a missing one, so a declared false (a
-    # canonical's canonicalRemoteControl) would read as not declared. Absence is the null below.
+    # canonical's canonicalRemoteControl or canonicalAutostart) would read as not declared. Absence is the null below.
     _out=$(yq -r ".projects.\"$_proj\".$3" "$RECORD" 2>/dev/null) || exit 1
     [ "$_out" = "null" ] && exit 1
     printf '%s\n' "$_out"
@@ -339,6 +339,7 @@ case "${1:-}" in
           scope|leakPrefix|leakPolicy|leakDisable) ;;
           canonical|canonicalIdentity|canonicalLaunchDir|canonicalLaunchModel|canonicalMachines) ;;
           canonicalRemoteControl) ;;   # read by fleet-canonicals: true or false
+          canonicalAutostart) ;;       # read by fleet-canonicals: true or false
           worktrunk) ;;
           container) ;;
           claudeTrust) ;;
@@ -376,6 +377,14 @@ case "${1:-}" in
     for p in $(yq -r '.projects | to_entries[] | select(.value | has("canonicalRemoteControl")) | .key' "$RECORD" 2>/dev/null || true); do
       if [ "$(yq -r ".projects.\"$p\".canonicalRemoteControl | tag" "$RECORD" 2>/dev/null)" != '!!bool' ]; then
         printf '[canonicalRemoteControl-value] %s: canonicalRemoteControl must be true or false, unquoted\n' "$p"; rc=1
+      fi
+    done
+    # canonicalAutostart is read by fleet-canonicals, which treats anything but a boolean as true so a
+    # typo never keeps a critical seat down; refusing a quoted or YAML 1.1 spelling here is what makes
+    # the typo visible instead of silently starting a seat the line meant to leave off.
+    for p in $(yq -r '.projects | to_entries[] | select(.value | has("canonicalAutostart")) | .key' "$RECORD" 2>/dev/null || true); do
+      if [ "$(yq -r ".projects.\"$p\".canonicalAutostart | tag" "$RECORD" 2>/dev/null)" != '!!bool' ]; then
+        printf '[canonicalAutostart-value] %s: canonicalAutostart must be true or false, unquoted\n' "$p"; rc=1
       fi
     done
     # claudeDirSettings maps a directory inside the repository to its settings file. Its keys are
