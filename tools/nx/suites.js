@@ -21,7 +21,10 @@
 // because it asserts on CPU or wall time and fails under load with no defect. The plugin reads the
 // marker the way the runner does (the exact line among the first 10) and gives that target
 // `parallelism: false`, which Nx's scheduler (tasks-schedule.js canBeScheduled, Nx 24.0.2) starts
-// only when nothing else runs and lets nothing start beside: the same "alone".
+// only when nothing else runs and lets nothing start beside: the same "alone". This is not a
+// throttle on machine load: such a suite's verdict measures CPU or wall time, so the CPU is the
+// resource it needs to itself, as another target needs a fixed port. Task concurrency stays at
+// Nx's default (no `parallel` in nx.json); a machine that wants more sets NX_PARALLEL.
 //
 // MAP_ENV exists for tests/test-nx-suites.sh alone: it points the plugin at a scratch map so a
 // broken map can be tried without touching the real one.
