@@ -88,8 +88,10 @@ means picking one of these four, so a domain's layer always knows where to look.
 `run_onchange_install-git-hooks.sh.tmpl` also writes this source repository's own `.git/hooks`.
 The pre-commit hook runs the suites that read a staged path (`tests/select-suites.sh`, from the map
 in `tests/coverage.map`), and the pre-push hook is a floor against pushing a private key or the
-private layer's address. Every suite runs before an apply: the generated chezmoi config carries a
-`hooks.apply.pre` that runs `tests/pre-apply.sh`, and a failing suite aborts the apply.
+private layer's address. The suites run around an apply: the generated chezmoi config carries a
+`hooks.apply.pre` that runs `tests/pre-apply.sh` (only the suites the change reaches; a failure aborts
+the apply) and a `hooks.apply.post` that runs `tests/post-apply.sh` (every suite, in the background;
+it alerts on a failure and records a full pass).
 
 The private layer is applied separately, with `chezmoi-overlay apply`. When a change moves a file
 from one layer to the other, the `CHANGELOG.md` entry says which to apply first.
@@ -177,7 +179,8 @@ stays on `PATH`.
 | Check | When | Covers |
 | --- | --- | --- |
 | `tests/select-suites.sh --run` | every commit here, unless only documentation changed | the suites that read a staged path (`tests/coverage.map`); every suite when a staged path is in the shared core or claimed by none |
-| `tests/pre-apply.sh` | every `chezmoi apply` of the base, before anything is written | every suite (`tests/run-all.sh`); a failure aborts the apply; skipped, saying so, while the suites' tools are missing |
+| `tests/pre-apply.sh` | every `chezmoi apply` of the base, before anything is written | the suites that read the paths differing from the last full pass (every suite when none is known); a failure aborts the apply on every OS; skipped, saying so, while the suites' tools are missing |
+| `tests/post-apply.sh` | every `chezmoi apply` of the base, after it, detached | every suite (`tests/run-all.sh`); a failure calls the machine's alert hook (`~/.config/dotfiles/alert`) and is written to `~/.local/state/dotfiles/post-apply.last`; a full pass is recorded in the ledger pre-apply reads |
 | `secret-scan`, `leak-guard` | every commit and push, in every repository | plaintext secrets; a domain's private terms |
 | `setup/overlay-doctor` | after pulling or changing either layer | the private layer's required pieces, its reasons to be private, both layers owning one file, the manifest's schema; `--machine` assesses git, tools and Claude Code |
 | `hook-doctor` | on entering a worktree, once a day | whether each configured hook is live there |

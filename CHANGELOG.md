@@ -34,6 +34,26 @@ Entries are newest first.
 
 ## 2026-11-09
 
+### One shape of apply-time testing on every OS: selected suites before, every suite after
+
+`tests/pre-apply.sh` no longer runs every suite before each apply (about 4 minutes on Linux). It
+runs only the suites `tests/select-suites.sh` selects for the paths that differ between the newest
+tree in the pass ledger (`<git common dir>/pre-apply/passed`) and the working tree, and runs every
+suite when no such tree is known. A failure aborts the apply **on every OS, macOS included**; the
+macOS report-only clause is gone, and macOS now records and skips passed trees as Linux does. A
+selected-only pass records nothing, since only a full pass proves a tree.
+
+The new `tests/post-apply.sh`, wired as `[hooks.apply.post]`, returns at once and runs every suite
+detached, one run at a time. A full pass on a clean tree is appended to the ledger; a failure calls
+the alert hook (below) and either way `~/.local/state/dotfiles/post-apply.last` holds a one-line
+result (time, tree, pass or FAIL, log path); the newest 5 logs stay beside it.
+`DOTFILES_SKIP_POST_APPLY=1` skips it.
+
+**ACTION.** Every machine runs `chezmoi init` once, so its generated config gains the post-apply
+hook. A private layer may install an executable `~/.config/dotfiles/alert`; it is run with one
+argument, a line naming the failing suites and the log. The base names no notification service, and
+without the file a failure is still recorded in the status file.
+
 ### Claude Code sessions get `NX_SOCKET_DIR`, so Nx works in a sandbox again
 
 `~/.claude/settings.json`'s `env` gains `NX_SOCKET_DIR` = `~/.nx/s` (the base's settings block, merged

@@ -1,15 +1,28 @@
 #!/bin/sh
-# pre-apply -- run every suite before `chezmoi apply` deploys this source tree; a failure aborts the
-# apply, so nothing is written to the machine.
+# pre-apply -- before `chezmoi apply` deploys this source tree, run the suites that cover what the
+# apply is about to change; a failure aborts the apply, so nothing is written to the machine.
 #
 # Run by chezmoi as the base's `hooks.apply.pre` (.chezmoi.toml.tmpl). chezmoi aborts the apply when
 # a pre hook exits non-zero (measured with chezmoi 2.74: exit 1, no target written). Also runnable
-# by hand: `sh tests/pre-apply.sh`.
+# by hand: `sh tests/pre-apply.sh`. Its partner is tests/post-apply.sh, which runs EVERY suite after
+# the apply, in the background.
 #
-# WHY HERE. The commit gate runs only the suites a commit's staged paths select
-# (tests/select-suites.sh), to keep a commit fast. Every suite still has to pass before a change
-# reaches a machine, and an apply is that moment. It judges the working tree, not the index,
-# because the working tree is what an apply deploys.
+# WHY ONLY SOME SUITES HERE. The apply waits on this script, and the whole set takes minutes. A
+# change is judged here by the suites that read the paths it touches (tests/select-suites.sh, from
+# tests/coverage.map), the same selection the commit gate makes: what the change can break stops
+# the apply, and what it cannot break does not make the apply wait. The whole set still has to
+# pass: tests/post-apply.sh runs it right after the apply, and records the pass that lets later
+# applies skip. The same shape runs on every OS, macOS included, so no machine is judged by a
+# different rule from another.
+#
+# WHAT "CHANGED" MEANS. The base is the newest tree in the pass ledger (below) for this OS that git
+# still has. The changed paths are those that differ between that tree and the WORKING tree, plus
+# untracked files, because the working tree, dirty edits included, is what an apply deploys. With no
+# usable base (no ledger, or every entry names a tree git no longer has) every suite runs: nothing
+# is known to have passed, so nothing can be left out. The same holds when git or the selector
+# fails, because the selector's own rule is "all, never none" (tests/select-suites.sh) and a failure
+# to ask must not read as "nothing to run". An empty change set, or a selection with no suite in
+# it, passes with a line saying so.
 #
 # SKIPS, loudly and with exit 0, when a tool the suites need is not installed: on a fresh machine's
 # first apply the tools arrive with or after that apply, and refusing it would leave the machine
@@ -19,20 +32,18 @@
 # The CHEZMOI_* variables chezmoi sets for a hook are removed first, so the suites run as they do at
 # commit time rather than inside chezmoi's environment.
 #
-# NOT YET GATING ON macOS. On 2026-11-08 twelve suites failed on the Mac (GNU-only spellings among
-# them, such as `sed -i` without a suffix), failures no commit gate ever saw, since commits are made
-# on Linux. Aborting every Mac apply on them would block the machine without making it safer than
-# it was, so on macOS a failure is reported in full and the apply goes ahead. Remove this once the
-# suite set passes there. PRE_APPLY_OS overrides `uname -s`, for the tests.
-#
 # A PASS IS NOT RE-EARNED. A clean source tree whose HEAD tree already passed every suite on this OS
 # is not run again: the pass is recorded as `<tree> <os> <utc time>` in <git common dir>/pre-apply/
-# passed, shared by every worktree and never committed. Recorded only when every suite passed on a
-# clean tree that is still HEAD's afterwards; a dirty tree is not HEAD's tree, so it is never skipped
-# or recorded. macOS records nothing while it is not gating.
+# passed, shared by every worktree and never committed. Only a FULL pass proves a tree, so this
+# script records one only after running every suite on a clean tree that is still HEAD's
+# afterwards; a selected-only pass proves the selected suites alone and records nothing, and a dirty
+# tree is not HEAD's tree, so it is never skipped or recorded. tests/post-apply.sh writes the same
+# ledger after its full run.
 #
-# Exit 0 every suite passed, or skipped (above), or failed on macOS (reported); 1 a suite failed on
-# Linux (the apply is aborted).
+# PRE_APPLY_OS overrides `uname -s`, for the tests.
+#
+# Exit 0 the selected suites passed, or none was selected, or skipped (above); 1 a suite failed
+# (the apply is aborted).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 
@@ -50,7 +61,7 @@ for tool in git python3 uv jq yq gitleaks wt; do
 done
 if [ -n "$missing" ]; then
   printf 'dotfiles pre-apply: suites SKIPPED, not installed:%s. The apply goes ahead untested;\n' "$missing" >&2
-  printf '  install them (the Brewfile, or the distribution packages) and the next apply runs every suite.\n' >&2
+  printf '  install them (the Brewfile, or the distribution packages) and the next apply runs the suites.\n' >&2
   exit 0
 fi
 
@@ -59,13 +70,14 @@ for v in $(env | sed -n 's/^\(CHEZMOI[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; d
 os=${PRE_APPLY_OS:-$(uname -s)}
 src=$(cd "$here/.." && pwd)
 tree=""; ledger=""
-# Only a clean tree is HEAD's tree; anything git cannot answer leaves the ledger out of it.
+# Anything git cannot answer leaves the ledger out of it: no ledger, no base, every suite runs.
+gdir=$(git -C "$src" rev-parse --git-common-dir 2>/dev/null) || gdir=""
+case $gdir in "") ;; /*) ledger="$gdir/pre-apply/passed" ;; *) ledger="$src/$gdir/pre-apply/passed" ;; esac
+# Only a clean tree is HEAD's tree.
 if [ -z "$(git -C "$src" status --porcelain 2>/dev/null)" ] && git -C "$src" rev-parse -q --verify HEAD >/dev/null 2>&1; then
   tree=$(git -C "$src" rev-parse "HEAD^{tree}" 2>/dev/null) || tree=""
-  gdir=$(git -C "$src" rev-parse --git-common-dir 2>/dev/null) || gdir=""
-  case $gdir in "") ;; /*) ledger="$gdir/pre-apply/passed" ;; *) ledger="$src/$gdir/pre-apply/passed" ;; esac
 fi
-if [ -n "$tree" ] && [ -n "$ledger" ] && [ "$os" != Darwin ] && [ -f "$ledger" ]; then
+if [ -n "$tree" ] && [ -n "$ledger" ] && [ -f "$ledger" ]; then
   when=$(grep "^$tree $os " "$ledger" | tail -n 1 | sed 's/^[^ ]* [^ ]* //')
   if [ -n "$when" ]; then
     printf 'dotfiles pre-apply: this tree already passed on %s at %s; skipped\n' "$os" "$when" >&2
@@ -73,14 +85,56 @@ if [ -n "$tree" ] && [ -n "$ledger" ] && [ "$os" != Darwin ] && [ -f "$ledger" ]
   fi
 fi
 
+# The base: the newest ledger entry for this OS whose tree git still has (a pruned or rewritten
+# history leaves entries naming trees that are gone, and a diff against one would fail). The sed
+# program reverses the lines, since `tac` is not on macOS.
+base=""
+if [ -n "$ledger" ] && [ -f "$ledger" ]; then
+  for cand in $(grep "^[0-9a-f]* $os " "$ledger" | sed 's/ .*//' | sed '1!G;h;$!d'); do
+    if git -C "$src" cat-file -e "$cand^{tree}" 2>/dev/null; then base=$cand; break; fi
+  done
+fi
+
+only=""   # the suites to run, space-separated; empty means every suite
+if [ -n "$base" ]; then
+  # Each git call is checked on its own: in a pipeline only the last command's status survives.
+  if d1=$(git -C "$src" diff --name-only --no-renames "$base" 2>/dev/null) \
+     && d2=$(git -C "$src" ls-files --others --exclude-standard 2>/dev/null); then
+    changed=$(printf '%s\n%s\n' "$d1" "$d2" | sed '/^$/d' | sort -u)
+    if [ -z "$changed" ]; then
+      printf 'dotfiles pre-apply: nothing differs from the last full pass; no suite to run.\n' >&2
+      exit 0
+    fi
+    # The selector's one summary line goes straight to stderr.
+    if sel=$(printf '%s\n' "$changed" | sh "$here/select-suites.sh"); then
+      if [ -z "$sel" ]; then
+        printf 'dotfiles pre-apply: no suite reads the changed paths; none to run before the apply.\n' >&2
+        exit 0
+      fi
+      only=$(printf '%s\n' "$sel" | tr '\n' ' ')
+    else
+      printf 'dotfiles pre-apply: the selector failed; running every suite.\n' >&2
+    fi
+  else
+    printf 'dotfiles pre-apply: git could not list the changed paths; running every suite.\n' >&2
+  fi
+fi
+
 t=${TMPDIR:-/tmp}; t=${t%/}
 log=$(mktemp "$t/dotfiles-pre-apply.XXXXXX") || { echo "dotfiles pre-apply: no temp file for the log; apply refused" >&2; exit 1; }
-printf 'dotfiles pre-apply: running every suite (tests/run-all.sh) before the apply...\n' >&2
-if sh "$here/run-all.sh" > "$log" 2>&1; then
+if [ -n "$only" ]; then
+  printf 'dotfiles pre-apply: running the suites the change reaches (%s) before the apply...\n' "${only% }" >&2
+  # shellcheck disable=SC2086 # one suite name per word
+  sh "$here/run-all.sh" --only $only > "$log" 2>&1; rc=$?
+else
+  printf 'dotfiles pre-apply: no earlier full pass to compare with; running every suite (tests/run-all.sh) before the apply...\n' >&2
+  sh "$here/run-all.sh" > "$log" 2>&1; rc=$?
+fi
+if [ "$rc" -eq 0 ]; then
   printf 'dotfiles pre-apply: %s\n' "$(tail -n 1 "$log")" >&2
   rm -f "$log"
-  # Recorded only if the tree is still clean and still the one that was run.
-  if [ -n "$tree" ] && [ -n "$ledger" ] && [ "$os" != Darwin ] \
+  # Recorded only after a FULL run, and only if the tree is still clean and still the one that ran.
+  if [ -z "$only" ] && [ -n "$tree" ] && [ -n "$ledger" ] \
      && [ -z "$(git -C "$src" status --porcelain 2>/dev/null)" ] \
      && [ "$(git -C "$src" rev-parse "HEAD^{tree}" 2>/dev/null)" = "$tree" ]; then
     mkdir -p "$(dirname "$ledger")" \
@@ -88,16 +142,10 @@ if sh "$here/run-all.sh" > "$log" 2>&1; then
   fi
   exit 0
 fi
-if [ "$os" = Darwin ]; then
-  printf '\ndotfiles pre-apply: a suite failed -- NOT gating on macOS until the suite set passes here;\n' >&2
-  printf '  the apply goes ahead. Failing suites:\n' >&2
-else
-  printf '\ndotfiles pre-apply: a suite failed -- apply ABORTED, nothing was deployed:\n' >&2
-fi
+printf '\ndotfiles pre-apply: a suite failed -- apply ABORTED, nothing was deployed:\n' >&2
 grep -E '^(FAIL|run-all:)' "$log" | sed 's/^/  /' >&2
 printf '\n  why, in full: %s\n' "$log" >&2
 for s in $(sed -n 's/^FAIL   \([^ ]*\) .*/\1/p' "$log"); do
   printf '  re-run one:   sh %s/run-all.sh --only %s\n' "$here" "$s" >&2
 done
-[ "$os" = Darwin ] && exit 0
 exit 1

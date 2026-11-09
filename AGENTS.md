@@ -14,7 +14,7 @@ No task runner; the commands are plain.
   `--only <suite>...` runs exactly those. A suite asserting on CPU time or a wall-clock bound declares
   `# run-all: serial` among its first lines and then runs alone, after the concurrent batch;
   `RUN_ALL_PROFILE=<file>` writes each suite's wall and CPU seconds (header of `tests/run-all.sh`). The pre-commit hook runs the suites the staged paths
-  select (`tests/select-suites.sh`); every suite runs before `chezmoi apply` (`tests/pre-apply.sh`).
+  select (`tests/select-suites.sh`); the suites the change reaches run before `chezmoi apply` (`tests/pre-apply.sh`) and every suite runs after it (`tests/post-apply.sh`).
   A new file needs a line in `tests/coverage.map`, or every commit runs every suite and
   `sh tests/select-suites.sh --check` refuses.
 - `chezmoi diff`, then `chezmoi apply`: deploy this source to the machine. The private layer is a

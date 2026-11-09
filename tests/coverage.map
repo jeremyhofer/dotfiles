@@ -32,9 +32,10 @@ tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
 tree test-select-suites.sh      **
 
-# --- the selector, the map and the apply-time run ----------------------------------------------
+# --- the selector, the map and the apply-time runs ---------------------------------------------
 test-select-suites.sh  tests/coverage.map
 test-pre-apply.sh      tests/pre-apply.sh .chezmoi.toml.tmpl
+test-post-apply.sh     tests/post-apply.sh .chezmoi.toml.tmpl
 
 # --- tools: private_dot_local/bin --------------------------------------------------------------
 test-adr-lint.sh                    private_dot_local/bin/executable_adr-lint

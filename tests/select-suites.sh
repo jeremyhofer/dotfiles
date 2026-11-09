@@ -1,8 +1,8 @@
 #!/bin/sh
 # select-suites -- staged paths in, suite names out: the suites in tests/ that read those paths, as
-# tests/coverage.map declares them. The commit gate runs only these, and every suite runs before
-# `chezmoi apply` (tests/pre-apply.sh), so a suite skipped at commit still runs before its change
-# reaches a machine.
+# tests/coverage.map declares them. The commit gate runs only these, and so does the apply's pre
+# hook (tests/pre-apply.sh) for the paths that differ from the last full pass; every suite runs
+# right after the apply (tests/post-apply.sh), so a suite skipped at commit still runs.
 #
 #   sh tests/select-suites.sh         < paths   print the selected suite file names, one per line
 #   sh tests/select-suites.sh --run   < paths   run them with tests/run-all.sh --only (none: exit 0)
