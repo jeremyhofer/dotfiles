@@ -90,6 +90,10 @@ now() {
   case $d in ''|*[!0-9.]*) d=$(date +%s) ;; esac
   echo "$d"
 }
+# Python's bytecode and pytest's cache go outside the checkout. Written inside it they are files
+# one suite leaves for the next to read, which a cached run cannot restore and Nx cannot hash.
+PYTHONPYCACHEPREFIX="$work/pycache"; export PYTHONPYCACHEPREFIX
+PYTEST_ADDOPTS="${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }-p no:cacheprovider"; export PYTEST_ADDOPTS
 t0=$(now)
 case "$interp" in
   uv) uv run --script "$t" > "$work/out/$name" 2>&1 < /dev/null ;;
