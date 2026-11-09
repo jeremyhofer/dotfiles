@@ -4,6 +4,7 @@
 # the status they name, and logs its arguments, so a test sets the world and reads the digest.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-alert-digest.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 TOOL="$here/../private_dot_local/bin/executable_alert-digest"
@@ -18,7 +19,7 @@ lacks() { if printf '%s\n' "$2" | grep -qF -- "$3"; then no "$1 ('$3' present)";
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required"; exit 1; }
 [ -f "$TOOL" ] || { echo "FAIL: no tool at $TOOL"; exit 1; }
 
-w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+w=$(mktemp -d "$_TMP/test-alert-digest.XXXXXX"); trap 'rm -rf "$w"' EXIT
 export HOME="$w/home" XDG_STATE_HOME="$w/state"
 mkdir -p "$HOME" "$w/bin" "$w/say"
 # The stand-ins: `ntfy-inbox show --new R` prints say/new (then empties it, as a moved cursor would);

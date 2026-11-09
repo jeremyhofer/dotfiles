@@ -13,6 +13,7 @@
 # installed on the machine running the suite.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-wt-bootstrap.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -24,7 +25,7 @@ ok()  { pass=$((pass + 1)); printf '  ok    %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf '  FAIL  %s\n' "$1"; }
 eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$3', got '$2')"; fi; }
 
-work=$(mktemp -d)
+work=$(mktemp -d "$_TMP/test-wt-bootstrap.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 n=0
 

@@ -7,6 +7,7 @@
 # sandbox and never reads the real mount table.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-claude-mask-sweep.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 TOOL="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_claude-mask-sweep"
 
@@ -24,7 +25,7 @@ if [ "$(uname -s)" != Linux ]; then
   echo "passed $pass, failed $fail"; [ "$fail" -eq 0 ]; exit
 fi
 
-w=$(mktemp -d); trap 'chmod -R u+w "$w" 2>/dev/null; rm -rf "$w"' EXIT
+w=$(mktemp -d "$_TMP/test-claude-mask-sweep.XXXXXX"); trap 'chmod -R u+w "$w" 2>/dev/null; rm -rf "$w"' EXIT
 home=$w/home; proj=$w/home/Devel/repo; proc=$w/proc
 mkdir -p "$home/.claude" "$proj/.claude" "$proj/.git" "$proc/1" "$proc/4242"
 mask() { : > "$1"; chmod 444 "$1"; }

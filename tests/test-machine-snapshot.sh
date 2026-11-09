@@ -8,6 +8,7 @@
 # must not be counted again when its parent reaps it.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-machine-snapshot.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 TOOL="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_machine-snapshot"
 
@@ -21,7 +22,7 @@ lacks() { if printf '%s\n' "$2" | grep -qF -- "$3"; then no "$1 ('$3' present)";
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required"; exit 1; }
 tick=$(python3 -c 'import os; print(os.sysconf("SC_CLK_TCK"))')
 
-w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+w=$(mktemp -d "$_TMP/test-machine-snapshot.XXXXXX"); trap 'rm -rf "$w"' EXIT
 export MACHINE_SNAPSHOT_PROC="$w/proc" MACHINE_SNAPSHOT_DIR="$w/state" HOME="$w/home"
 mkdir -p "$HOME/Devel/proj"
 

@@ -273,6 +273,17 @@ RULES = [
         None,
     ),
     (
+        "mktemp-no-template", ERROR,
+        re.compile(r"(?<![\w.$-])mktemp(?:\s+-[dqu]+)*(?:\s+-t\s+\S+)?(?:\s+-[dqu]+)*\s*(?=$|[)|;&>`])"),
+        "On macOS a bare `mktemp`, `mktemp -d` or `mktemp -t prefix` IGNORES TMPDIR and makes the "
+        "file under the per-user /var/folders directory (measured on macOS 26.7.2). A sandboxed "
+        "agent session may write only its own TMPDIR, so there the call fails outright, while on "
+        "Linux, where GNU mktemp honors TMPDIR, the same script passes.",
+        "Give an explicit template under TMPDIR: t=${TMPDIR:-/tmp}; t=${t%/}; "
+        "d=$(mktemp -d \"$t/name.XXXXXX\")",
+        None,
+    ),
+    (
         "wc-l-quoted", WARN,
         re.compile(r"\"\$\((?:[^()\"]|\([^()]*\))*\bwc -l[^)]*\)\""),
         "BSD wc PADS its output with leading spaces, so a QUOTED substitution compared as a "

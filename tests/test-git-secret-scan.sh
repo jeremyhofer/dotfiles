@@ -13,6 +13,7 @@
 # hook itself refuses every commit on a machine without gitleaks.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-git-secret-scan.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -35,14 +36,14 @@ command -v gitleaks >/dev/null 2>&1 || { no "gitleaks is on PATH (every other ca
 # a session that points XDG_CONFIG_HOME at a scratch directory for some other tool must still get
 # its commits scanned. So HOME is the stand-in here, and XDG_CONFIG_HOME deliberately points at a
 # directory holding no floor at all.
-cfg=$(mktemp -d)
+cfg=$(mktemp -d "$_TMP/test-git-secret-scan.XXXXXX")
 mkdir -p "$cfg/.config/gitleaks"
 cp "$FLOOR" "$cfg/.config/gitleaks/floor.toml"
 export HOME="$cfg" XDG_CONFIG_HOME="$cfg/scratch-xdg"
 trap 'rm -rf "$cfg"' EXIT
 
 newrepo() {
-  r=$(mktemp -d)
+  r=$(mktemp -d "$_TMP/test-git-secret-scan.XXXXXX")
   git -C "$r" init -q .
   git -C "$r" config user.name Tester
   git -C "$r" config user.email tester@example.invalid
@@ -131,7 +132,7 @@ r=$(newrepo); try "$r" a.txt "hello" >/dev/null; b=$(commits "$r")
 # A PATH holding only git: gitleaks usually lives beside everything else in a system directory, so
 # trimming PATH to the system directories would not hide it. Git runs the hook through an absolute
 # shell path, so the hook itself still starts.
-bin=$(mktemp -d); ln -s "$(command -v git)" "$bin/git"; ln -s "$(command -v sh)" "$bin/sh"
+bin=$(mktemp -d "$_TMP/test-git-secret-scan.XXXXXX"); ln -s "$(command -v git)" "$bin/git"; ln -s "$(command -v sh)" "$bin/sh"
 mkdir -p "$r/sub"; printf 'nothing secret\n' > "$r/sub/b.txt"; git -C "$r" add sub/b.txt
 out=$(PATH="$bin" "$bin/git" -C "$r" commit -q -m probe 2>&1)
 refused "gitleaks missing: the commit is refused" "$r" "$b"

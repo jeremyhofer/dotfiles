@@ -4,10 +4,11 @@
 # The refusal and the failure paths are the load-bearing cases. A capture tool that silently
 # degrades -- falls back to a global Playwright, or quietly opens a window -- is worse than one
 # that is absent, because its output still looks like evidence.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 TOOL="$here/../private_dot_local/bin/executable_ui-shot"
-d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+d=$(mktemp -d "$_TMP/test-ui-shot.XXXXXX"); trap 'rm -rf "$d"' EXIT
 pass=0
 
 st() { # st <want> <desc> -- run remaining args, compare exit status

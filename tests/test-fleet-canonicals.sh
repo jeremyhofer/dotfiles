@@ -2,6 +2,7 @@
 # run-all: serial
 # Unit test for fleet-canonicals. The live `claude agents --json` call is injected via
 # $FLEET_AGENTS_JSON_CMD so the logic is testable without live sessions.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 HERE=${0:A:h}
 # No machine-global git config, so none of its commit hooks or signing settings reach the scratch
@@ -66,7 +67,7 @@ fail=0
 ok()  { print "ok:   $1" }
 bad() { print "FAIL: $1"; fail=1 }
 
-TMPROOT=$(mktemp -d); trap 'rm -rf "$TMPROOT" "$_srcbin"' EXIT
+TMPROOT=$(mktemp -d "$_TMP/test-fleet-canonicals.XXXXXX"); trap 'rm -rf "$TMPROOT" "$_srcbin"' EXIT
 # A launch refuses a handoff outside the staging directory and the configured handoffs trees. The
 # fixtures keep their handoffs under TMPROOT, so it is every case's handoffs tree unless a case
 # sets its own.
@@ -560,11 +561,11 @@ if command -v uv >/dev/null 2>&1; then
   }
   dn_holder $DPID
   out=$(dnfc refresh delta-canonical --dry-run); rc=$?
-  [[ $rc -eq 0 && "$out" == *"job is done"* && "$out" == *"would refresh"*"delta-canonical"*"pid $DPID"*"dn000001"* && "$out" == *"would start"* ]] \
+  [[ $rc -eq 0 && "$out" == *"its job reads done or failed"* && "$out" == *"would refresh"*"delta-canonical"*"pid $DPID"*"dn000001"* && "$out" == *"would start"* ]] \
       && ok "refresh acts on a done seat whose process lives: stops that process and job, then starts" \
       || bad "refresh of a done seat with a live holder (rc=$rc): $out"
   out=$(dnfc down delta-canonical --dry-run); rc=$?
-  [[ $rc -eq 0 && "$out" == *"job is done"* && "$out" == *"would stop"*"delta-canonical"*"pid $DPID"*"dn000001"* && "$out" == *"1 target(s)"* ]] \
+  [[ $rc -eq 0 && "$out" == *"its job reads done or failed"* && "$out" == *"would stop"*"delta-canonical"*"pid $DPID"*"dn000001"* && "$out" == *"1 target(s)"* ]] \
       && ok "down acts on a done seat whose process lives" || bad "down of a done seat with a live holder (rc=$rc): $out"
   out=$(dnfc up delta-canonical --dry-run)
   [[ "$out" == *"REFUSED"*"delta-canonical"*"live process"* && "$out" != *"would start"* ]] \
@@ -1887,6 +1888,41 @@ out=$(CANONICAL_ROSTER="$CL/roster" FLEET_STATE="$CLS" FLEET_TMPROOT_PREFIX="$CL
 out=$(clfc --bogus); rc=$?
 [[ $rc -ne 0 && -d "$CLP/c-gone-LLLLLL" ]] && ok "clean refuses an unknown argument" \
     || bad "clean accepted an unknown argument (rc=$rc): $out"
+
+# A seat the live listing omits (its job reads `done` or `failed`) while its process still runs is
+# a running session: its roots are kept. Measured on a work machine: every running seat there was
+# listed `failed`, and clean removed all ten of their roots once they were ten minutes old.
+print ghost-canonical >> "$CL/roster"
+mkroot c-ghost-MMMMMM; mkroot c-ghost-NNNNNN
+jq -n '{pid:93111, sessionId:"gh000001-sess", kind:"bg", name:"ghost-canonical", procStart:"777", status:"idle"}' \
+  > "$FLEET_PID_RECORD_DIR/93111.json"
+mkdir -p "$FLEET_PROC_ROOT/93111"
+print "93111 (claude) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 777 1 1" > "$FLEET_PROC_ROOT/93111/stat"
+out=$(clfc); rc=$?
+[[ $rc -eq 0 && -d "$CLP/c-ghost-MMMMMM" && -d "$CLP/c-ghost-NNNNNN" && -f "$CLP/c-ghost-MMMMMM/claude-1000/f" ]] \
+    && ok "clean keeps the roots of a seat the listing omits while its process lives" \
+    || bad "clean removed a live, unlisted seat's roots (rc=$rc): $out"
+[[ "$out" == *"c-ghost-MMMMMM"*"live process"* ]] \
+    && ok "...and says a live process holds the name" || bad "ghost keep reason: $out"
+# Its process gone, the same roots are a gone session's and are removed.
+rm -f "$FLEET_PID_RECORD_DIR/93111.json"; rm -rf "$FLEET_PROC_ROOT/93111"
+out=$(clfc); rc=$?
+[[ $rc -eq 0 && ! -e "$CLP/c-ghost-MMMMMM" && ! -e "$CLP/c-ghost-NNNNNN" ]] \
+    && ok "with no live process behind it, an unlisted seat's roots are removed" \
+    || bad "clean kept a gone seat's roots (rc=$rc): $out"
+# Fail closed where the live-process check cannot see: inside the Linux sandbox other sessions'
+# processes are hidden, and without the queue script or uv the check cannot run at all. Either way
+# every unlisted seat would read as gone, so clean refuses and removes nothing.
+mkroot c-gone-RRRRRR
+mkdir -p "$FLEET_PROC_ROOT/1"; print bwrap > "$FLEET_PROC_ROOT/1/comm"
+out=$(clfc); rc=$?
+rm -rf "$FLEET_PROC_ROOT/1"
+[[ $rc -eq 2 && -d "$CLP/c-gone-RRRRRR" && "$out" == *"sandbox"* ]] \
+    && ok "clean refuses inside a sandbox, removing nothing" || bad "clean in a sandbox (rc=$rc): $out"
+out=$(FLEET_CANONICALS_QUEUE="$CL/no-such-queue" clfc); rc=$?
+[[ $rc -eq 2 && -d "$CLP/c-gone-RRRRRR" ]] \
+    && ok "clean refuses, removing nothing, when the live-process check cannot run" \
+    || bad "clean without the queue script (rc=$rc): $out"
 
 # ---- on-demand seats: canonicalAutostart and the autostart-default config key -----------------------
 # Not every seat should start on a bare `up`: some are always on, others case by case. A seat's

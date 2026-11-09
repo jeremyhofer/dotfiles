@@ -1002,28 +1002,40 @@ cmd_dedupe() {
 # removes those.
 #
 # WHAT A RUNNING SESSION OWNS cannot be read from it: the root reaches the session through
-# `--settings`, so it is in no process environment, and a sandboxed caller cannot see other
-# sessions' processes anyway. So ownership is decided from the two records this tool keeps -- the
-# sessions listing and the per-name root record -- and every case those cannot settle KEEPS:
+# `--settings`, so it is in no process environment. So ownership is decided from the sessions
+# listing, Claude Code's own pid records, and the per-name root record this tool keeps, and every
+# case those cannot settle KEEPS:
+#   - a running session is one the live listing shows, OR a live process whose pid record names the
+#     canonical: the listing leaves out a job whose state reads `done` or `failed` while its process
+#     still runs (measured: on one machine every running seat read `failed`, and before this check
+#     clean removed all of their roots);
 #   - no running session under the name(s) a root's shape belongs to: the root is removable;
 #   - exactly one, whose recorded root was written no later than it started: that root is its, and
 #     only that one is kept (a record written after the session started may be another launch's);
-#   - one with no usable record, or more than one (duplicates, each with a root): keep them all.
+#   - one with no usable record, or more than one (duplicates, each with a root): keep them all;
+#   - a live process the listing omits: keep them all, since its start time is in no listing row.
+# The pid-record check sees nothing inside the Linux sandbox, where other sessions' processes are
+# hidden (and /tmp is the sandbox's own), and cannot run without the queue script and uv. Either way
+# every unlisted seat would read as gone, so clean refuses rather than guess.
 # A root younger than CLEAN_MIN_AGE is kept whatever the listing says, because a launch records its
 # root and creates it BEFORE its session appears in the listing. And only an exact
 # c-<short name>-XXXXXX directory for a declared canonical is ever a candidate: not a symlink, not a
 # file, not a near-miss of the shape, and not anything a canonical this record does not declare made.
 CLEAN_MIN_AGE=600
 
-# clean_keep_for SHORT JSON NAMES -- which roots of this short name a running session may own:
-# prints `none`, `all`, or the one root path to keep.
+# clean_keep_for SHORT JSON NAMES UNLISTED -- which roots of this short name a running session may
+# own: prints `none`, `all`, `live` (a live process the listing omits holds the name), or the one
+# root path to keep. UNLISTED is the newline-separated names a live pid record holds.
 clean_keep_for() {
-  local short=$1 json=$2 names=$3 n live="" count rp root started rec_m
+  local short=$1 json=$2 names=$3 unlisted=$4 n live="" count rp root started rec_m
   while IFS= read -r n; do
     [ -n "$n" ] || continue
     [ "$(tmproot_short "$n")" = "$short" ] || continue
     count=$(printf '%s' "$json" | jq --arg n "$n" '[.[]|select(.name==$n)]|length')
-    [ "$count" = "0" ] && continue
+    if [ "$count" = "0" ]; then
+      printf '%s\n' "$unlisted" | grep -qxF -- "$n" || continue
+      count=live
+    fi
     live="$live$n:$count"$'\n'
   done <<< "$names"
   live=$(grep -v '^$' <<< "$live")
@@ -1032,6 +1044,7 @@ clean_keep_for() {
   # root of this shape, and nothing records which is whose.
   [ "$(printf '%s\n' "$live" | wc -l | tr -d '[:space:]')" = 1 ] || { printf 'all\n'; return; }
   n=${live%%:*}; count=${live##*:}
+  [ "$count" = live ] && { printf 'live\n'; return; }
   [ "$count" = 1 ] || { printf 'all\n'; return; }
   rp=$(tmproot_path "$n")
   [ -r "$rp" ] || { printf 'all\n'; return; }
@@ -1060,6 +1073,19 @@ cmd_clean() {
   names=$(all_canonical_names) || die "clean: the canonical names could not be read (fleet-decl exit $?)"
   [ -n "$names" ] || die "clean: no canonical names declared -- cannot tell this tool's roots from anything else"
   shorts=$(while IFS= read -r n; do [ -n "$n" ] && printf '%s\n' "$(tmproot_short "$n")"; done <<< "$names" | sort -u)
+  # Seats the live listing omits while their process runs (see the header above). Fail closed.
+  if [ "$(cat "${FLEET_PROC_ROOT:-/proc}/1/comm" 2>/dev/null)" = bwrap ]; then
+    printf 'clean: refusing to run inside a sandbox: other sessions'"'"' processes, and the real /tmp, are hidden\n' >&2
+    printf '  from here, so every seat the sessions list omits would read as gone. Run it from a plain terminal.\n' >&2
+    exit 2
+  fi
+  local q unlisted
+  q=$(queue_script) || { printf 'clean: fleet-canonicals-queue is not installed beside %s, so live processes the sessions list omits cannot be found; removing nothing\n' "$0" >&2; exit 2; }
+  command -v uv >/dev/null 2>&1 || { printf 'clean: uv is required to find live processes the sessions list omits; removing nothing\n' >&2; exit 2; }
+  # shellcheck disable=SC2086 # canonical names hold no whitespace; one argument each
+  unlisted=$(uv run --quiet --script "$q" live-holders $names 2>/dev/null) \
+    || { printf 'clean: the live-process check failed; removing nothing\n' >&2; exit 2; }
+  unlisted=$(printf '%s\n' "$unlisted" | cut -f 1 | sort -u)
   now=$(date +%s)
   for d in "$FLEET_TMPROOT_PREFIX"/c-*; do
     [ -e "$d" ] || [ -L "$d" ] || continue
@@ -1081,9 +1107,10 @@ cmd_clean() {
     if [ "${CLAUDE_CODE_TMPDIR:-}" = "$d" ] || case "${TMPDIR:-}/" in "$d"/*) true ;; *) false ;; esac; then
       printf 'keep     %s  (this session'"'"'s own root)\n' "$d"; continue
     fi
-    keep=$(clean_keep_for "$owner" "$json" "$names")
+    keep=$(clean_keep_for "$owner" "$json" "$names" "$unlisted")
     case "$keep" in
       all)  printf 'keep     %s  (a running session under that name may own it)\n' "$d"; continue ;;
+      live) printf 'keep     %s  (a live process holds the name, though the sessions list omits it)\n' "$d"; continue ;;
       none) ;;
       *)    if [ "$keep" = "$d" ]; then
               printf 'keep     %s  (the running session'"'"'s recorded root)\n' "$d"; continue
@@ -2018,7 +2045,7 @@ cmd_refresh() {
   rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
   gate_json=$json
 
-  # A seat whose job went `done` is left out of the live listing while its process still runs
+  # A seat whose job reads `done` or `failed` is left out of the live listing while its process still runs
   # (measured: an idle session resumed after the supervisor's idle stop). With no live row, `up`
   # would refuse because that process holds the name, and nothing else could stop it, so the
   # process is the session here: the guards below and close_one apply to its pid and job id. The
@@ -2026,7 +2053,7 @@ cmd_refresh() {
   if [ -z "$rows" ]; then
     rows=$(live_holder_ids "$name")
     if [ -n "$rows" ]; then
-      printf 'note     %-24s not in the sessions list because its job is done; its live process (pid %s) is the session\n' \
+      printf 'note     %-24s not in the sessions list (its job reads done or failed); its live process (pid %s) is the session\n' \
         "$name" "${rows%% *}"
       gate_json=$(agents_json_all)
       json=$(printf '[{"pid":%s}]' "${rows%% *}")
@@ -2197,7 +2224,7 @@ cmd_down() {
       rows=$(live_holder_ids "$name")
       if [ -n "$rows" ]; then
         unl=1
-        printf 'note     %-24s not in the sessions list because its job is done; its live process (pid %s) is the session\n' \
+        printf 'note     %-24s not in the sessions list (its job reads done or failed); its live process (pid %s) is the session\n' \
           "$name" "${rows%% *}"
       else
         [ "$all" = "1" ] || printf 'not running %-20s nothing to stop\n' "$name"
@@ -2507,7 +2534,7 @@ live_holder() {
 # live_holder_ids <name> -> "<pid> <job id>" for the live process live_holder found, or nothing. The
 # job id is the first 8 characters of the process's session id, which is what the agents view and
 # `claude rm` call a job. Needed because such a process has no row in the live listing to read them
-# from: its job went `done` and the listing leaves those out.
+# from: its job reads `done` or `failed`, and the listing leaves those out.
 live_holder_ids() {
   local q
   q=$(queue_script) || return 0

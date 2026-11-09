@@ -10,6 +10,7 @@
 # GRANULARITY: every fixture below is a VALID record with ONE planted change. A gate seen to
 # reject a wholly malformed record is not thereby known to reject one bad field in a good one,
 # and the second is the case that occurs.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,7 +22,7 @@ bad() { fail=$((fail + 1)); echo "FAIL: $1"; }
 assert_has()   { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1 (expected: $2)" ;; esac; }
 assert_lacks() { case "$3" in *"$2"*) bad "$1 (did NOT expect: $2)" ;; *) ok "$1" ;; esac; }
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "$_TMP/test-adr-lint.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 # A valid BULLET-header record. $1 dir  $2 number  $3 status  $4 header blockquote

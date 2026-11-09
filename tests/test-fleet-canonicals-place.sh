@@ -8,6 +8,7 @@
 # accept a handoff recorded after the session it is meant to describe), and the staging copy is
 # never deleted, because for some handoffs it has been the only copy that ever existed.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -uo pipefail
 # No machine-global git config, so none of its commit hooks or signing settings reach the scratch
 # repositories below.
@@ -21,7 +22,7 @@ has() { grep -q -- "$2" <<< "$1"; }
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "$_TMP/test-fleet-canonicals-place.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 # Fresh fixture per case: a repository with one committed handoff, a staging dir, a roster.

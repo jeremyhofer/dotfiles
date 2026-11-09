@@ -8,6 +8,7 @@
 #
 # Every case below is a VALID setup with ONE planted change, so a pass proves the tool noticed that
 # change and not merely that it rejected a broken fixture.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 tool="$here/../private_dot_local/bin/executable_wt-config-gen"
@@ -18,7 +19,7 @@ bad() { fail=$((fail + 1)); echo "FAIL: $1 -> $2"; }
 command -v yq >/dev/null 2>&1 || { echo "wt-config-gen tests: yq absent, cannot run"; exit 1; }
 command -v wt >/dev/null 2>&1 || { echo "wt-config-gen tests: wt absent, cannot run"; exit 1; }
 
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d "$_TMP/test-wt-config-gen.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"; cp "$decl" "$tmp/bin/fleet-decl"; chmod +x "$tmp/bin/fleet-decl"
 # `wt config show` runs `claude plugin list --json`, which contacts Anthropic's API and a telemetry
 # intake. A stub that fails keeps this suite off the network; worktrunk treats it as no plugin.

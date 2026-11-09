@@ -11,6 +11,7 @@
 # The longest-match arm exists because scopes nest, and first-match would make the answer depend
 # on the order somebody happened to write the record in.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,7 +24,7 @@ bad() { printf '  FAIL %s\n       %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 [ -x "$TOOL" ] || { printf 'fleet-decl: not executable at %s\n' "$TOOL"; exit 1; }
 command -v yq >/dev/null 2>&1 || { printf 'fleet-decl tests: yq absent, cannot run\n'; exit 1; }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "$_TMP/test-fleet-decl.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 ROOT="$TMP/Devel"; mkdir -p "$ROOT"
 REC="$TMP/rec.yaml"

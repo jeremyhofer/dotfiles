@@ -3,6 +3,7 @@
 # $CONTEXT_FOOTPRINT_HOME / _ROOT / _STATE, so the suite measures a fixture tree and never the
 # real machine -- a test that read the live ~/.claude would change its own expected numbers every
 # time a skill was added.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 HERE=${0:A:h}
 TOOL="$HERE/../private_dot_local/bin/executable_context-footprint"
@@ -12,7 +13,7 @@ fail=0
 ok()  { print "ok:   $1" }
 bad() { print "FAIL: $1"; fail=1 }
 
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d "$_TMP/test-context-footprint.XXXXXX"); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home/.claude/rules" "$T/home/.claude/skills/alpha" "$T/proj/.claude/skills"
 
 # A three-deep import chain. Transitivity is the point: a real global CLAUDE.md can be 8 KB of its

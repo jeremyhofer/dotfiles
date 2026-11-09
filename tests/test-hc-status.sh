@@ -7,6 +7,7 @@
 # Clock: HC_STATUS_NOW pins "now" to 2026-11-01T12:00:00Z and TZ is UTC, so times are exact.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-hc-status.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 TOOL="$here/../private_dot_local/bin/executable_hc-status"
@@ -22,7 +23,7 @@ lacks() { if printf '%s\n' "$2" | grep -qF -- "$3"; then no "$1 ('$3' present)";
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required"; exit 1; }
 [ -f "$TOOL" ] || { echo "FAIL: no tool at $TOOL"; exit 1; }
 
-w=$(mktemp -d); trap 'kill "${spid:-0}" 2>/dev/null; rm -rf "$w"' EXIT
+w=$(mktemp -d "$_TMP/test-hc-status.XXXXXX"); trap 'kill "${spid:-0}" 2>/dev/null; rm -rf "$w"' EXIT
 fx="$w/fx"; mkdir -p "$fx" "$w/cfg/hc-status"
 export XDG_CONFIG_HOME="$w/cfg" HOME="$w/home" TZ=UTC HC_STATUS_NOW=1793534400
 mkdir -p "$HOME"

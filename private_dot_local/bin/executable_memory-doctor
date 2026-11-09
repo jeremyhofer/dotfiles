@@ -29,6 +29,7 @@
 #
 # Deployed to Linux and darwin, so every spelling here is two-userland safe.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -uo pipefail
 
 STORES_ROOT=${MEMORY_DOCTOR_STORES:-"$HOME/.claude/projects"}
@@ -249,17 +250,20 @@ invites deleting the store."
 }
 
 # ================================================================================================
-# Register directories to read, one per line. MEMORY_DOCTOR_REGISTERS overrides; otherwise each
-# canonical's declared launch dir (`fleet-decl`, the base tool that reads mani.yaml) plus
-# `docs/register`. Declared, not globbed: a guessed path pattern misses a register silently, and
-# one project's register is keyed with a prefix a hard-coded list did not name.
+# Register directories to read, one per line. MEMORY_DOCTOR_REGISTERS overrides; otherwise the
+# repository root of each canonical's declared launch dir (`fleet-decl`, the base tool that reads
+# mani.yaml) plus `docs/register`, each listed once. Declared, not globbed: a guessed path pattern
+# misses a register silently, and one project's register is keyed with a prefix a hard-coded list
+# did not name. The root, not the launch dir, because a seat may launch in a subdirectory of its
+# repository; once, because two seats in one repository would otherwise read its register twice,
+# and every id in it would then resolve twice and refuse the run.
 register_dirs() {
   if [ -n "$REGISTERS" ]; then
     printf '%s\n' "$REGISTERS" | tr ':' '\n'
     return 0
   fi
   command -v fleet-decl >/dev/null 2>&1 || die "fleet-decl not on PATH and MEMORY_DOCTOR_REGISTERS unset -- cannot find the registers"
-  local names name dir rc
+  local names name dir root rc
   names=$(fleet-decl --canonicals); rc=$?
   # exit 2 is "the declaration record is unreadable". Read as "no canonicals", it would scan nothing
   # and report nothing stale.
@@ -267,8 +271,11 @@ register_dirs() {
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     dir=$(fleet-decl --canonical "$name" canonicalLaunchDir) || { printf '%s\n' "(no launch dir declared for $name)"; continue; }
-    printf '%s\n' "$DEVEL_ROOT/$dir/docs/register"
-  done <<< "$names"
+    # A launch dir that is not in a repository (or is missing) keeps its own path, so the read fails
+    # and names it as unread rather than vanishing.
+    root=$(git -C "$DEVEL_ROOT/$dir" rev-parse --show-toplevel 2>/dev/null) || root="$DEVEL_ROOT/$dir"
+    printf '%s\n' "$root/docs/register"
+  done <<< "$names" | awk '!seen[$0]++'
 }
 
 # "ABC-0036" and "ABC-36" are the same entry: ids were zero-padded to four digits in the 2026-09-22
@@ -281,7 +288,7 @@ cmd_stale() {
   # id -> status, from every register `register list` can read. An unreadable one is NAMED in the
   # output and the rest are still read: skipping it silently would report its repo's memories as
   # not stale when they were never checked. None readable is fatal.
-  local map reg rows unread="" read_any=0 dirs; map=$(mktemp) || die "mktemp failed"
+  local map reg rows unread="" read_any=0 dirs; map=$(mktemp "$_TMP/memory-doctor.XXXXXX") || die "mktemp failed"
   : > "$map"
   dirs=$(register_dirs) || { rm -f "$map"; exit 2; }
   while IFS= read -r reg; do
@@ -382,7 +389,7 @@ cmd_integrity() {
   # Retired paths to flag, one fixed string per line (# comments and blank lines ignored). Built
   # once, outside the store loop, so a missing file is said ONCE. A silent skip is how a check
   # stops running without anyone deciding.
-  pats=$(mktemp) || return 1
+  pats=$(mktemp "$_TMP/memory-doctor.XXXXXX") || return 1
   if [ -f "$STALE_PATHS" ]; then
     grep -v '^[[:space:]]*#' "$STALE_PATHS" | grep -v '^[[:space:]]*$' > "$pats"
   else
@@ -392,7 +399,7 @@ cmd_integrity() {
 
   # Fleet-wide filename index (<fold-key><TAB><store>), built once: a link is only ever called
   # dangling after it has failed to resolve in EVERY store, not just its own.
-  map=$(mktemp) || return 1
+  map=$(mktemp "$_TMP/memory-doctor.XXXXXX") || return 1
   while IFS= read -r d; do
     for f in "$d"/*.md; do
       [ -f "$f" ] || continue; base=$(basename "$f" .md)

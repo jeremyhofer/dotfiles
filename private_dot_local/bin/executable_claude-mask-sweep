@@ -35,6 +35,7 @@
 #
 # Linux only: the macOS sandbox (Seatbelt) creates no mask files, so elsewhere this reports that and
 # exits 0.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 PROC=${CLAUDE_MASK_SWEEP_PROC:-/proc}   # overridable for the test suite only
@@ -61,7 +62,7 @@ if [ "$(cat "$PROC/1/comm" 2>/dev/null)" = bwrap ]; then
   exit 2
 fi
 
-tmp=$(mktemp -d) || exit 2
+tmp=$(mktemp -d "$_TMP/claude-mask-sweep.XXXXXX") || exit 2
 trap 'rm -rf "$tmp"' EXIT
 
 # Every mount point of every process we can read. mountinfo field 5 is the mount point, with a space

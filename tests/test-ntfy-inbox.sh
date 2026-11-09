@@ -5,6 +5,7 @@
 # `keepalive` and `message` events and then closing or hanging. Nothing here leaves loopback.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-ntfy-inbox.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 TOOL="$here/../private_dot_local/bin/executable_ntfy-inbox"
@@ -20,7 +21,7 @@ lacks() { if printf '%s\n' "$2" | grep -qF -- "$3"; then no "$1 ('$3' present)";
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required"; exit 1; }
 [ -f "$TOOL" ] || { echo "FAIL: no tool at $TOOL"; exit 1; }
 
-w=$(mktemp -d); trap 'kill "${spid:-0}" 2>/dev/null; rm -rf "$w"' EXIT
+w=$(mktemp -d "$_TMP/test-ntfy-inbox.XXXXXX"); trap 'kill "${spid:-0}" 2>/dev/null; rm -rf "$w"' EXIT
 export HOME="$w/home" XDG_CONFIG_HOME="$w/cfg" XDG_STATE_HOME="$w/state" TZ=UTC
 export NTFY_INBOX_BACKOFF_MIN=0.05 NTFY_INBOX_BACKOFF_MAX=0.2 NTFY_INBOX_STALL=1
 mkdir -p "$HOME" "$XDG_CONFIG_HOME/ntfy-inbox"

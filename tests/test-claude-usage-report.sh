@@ -9,6 +9,7 @@
 # Clock: CLAUDE_USAGE_NOW (epoch seconds) is "now"; 2026-10-17T12:00:00Z. TZ is pinned.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-claude-usage-report.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 TOOL="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_claude-usage-report"
 
@@ -21,7 +22,7 @@ lacks() { if printf '%s\n' "$2" | grep -qF -- "$3"; then no "$1 ('$3' present)";
 
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required"; exit 1; }
 
-w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+w=$(mktemp -d "$_TMP/test-claude-usage-report.XXXXXX"); trap 'rm -rf "$w"' EXIT
 export HOME="$w/home" CLAUDE_PROJECTS_DIR="$w/projects" CLAUDE_USAGE_HISTORY="$w/history.jsonl"
 export CLAUDE_USAGE_NOW=1792238400 TZ=UTC
 mkdir -p "$HOME" "$CLAUDE_PROJECTS_DIR"

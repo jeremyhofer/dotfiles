@@ -11,6 +11,7 @@
 # because this suite is itself usually run from inside a Claude Code session.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-git-ai-coauthor.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_git-ai-coauthor"
@@ -18,7 +19,7 @@ TRAILER='Co-Authored-By: Claude <noreply@anthropic.com>'
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 # The model lookup reads Claude Code's transcripts. Point it at an empty stand-in and clear the
 # session id, so no case reads the caller's real transcripts unless it builds its own.
-CLAUDE_CONFIG_DIR=$(mktemp -d); export CLAUDE_CONFIG_DIR
+CLAUDE_CONFIG_DIR=$(mktemp -d "$_TMP/test-git-ai-coauthor.XXXXXX"); export CLAUDE_CONFIG_DIR
 unset CLAUDE_CODE_SESSION_ID
 trap 'rm -rf "$CLAUDE_CONFIG_DIR"' EXIT
 
@@ -28,7 +29,7 @@ no() { printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1 (expected '$3', got '$2')"; fi; }
 
 newrepo() {
-  r=$(mktemp -d)
+  r=$(mktemp -d "$_TMP/test-git-ai-coauthor.XXXXXX")
   git -C "$r" init -q .
   git -C "$r" config user.name Tester
   git -C "$r" config user.email tester@example.invalid

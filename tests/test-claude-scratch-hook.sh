@@ -20,6 +20,7 @@
 # actually runs -- nothing should skip.
 #
 # Run: sh ~/.local/share/chezmoi/tests/test-claude-scratch-hook.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 HOOK="$here/../private_dot_local/bin/executable_claude-scratch-hook"
@@ -32,7 +33,7 @@ no() { printf '  FAIL  %s\n' "$1"; fail=$((fail + 1)); }
 sk() { printf '  SKIP  %s -- %s\n' "$1" "$2"; skip=$((skip + 1)); }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1 (expected '$3', got '$2')"; fi; }
 
-TESTROOT=$(mktemp -d)
+TESTROOT=$(mktemp -d "$_TMP/test-claude-scratch-hook.XXXXXX")
 trap 'rm -rf "$TESTROOT" "${outside:-}" "${outside2:-}" "${target2:-}" 2>/dev/null' EXIT
 
 # macOS sets TMPDIR WITH a trailing slash, so "${TMPDIR:-/tmp}/x.XXXXXX" yields a path containing

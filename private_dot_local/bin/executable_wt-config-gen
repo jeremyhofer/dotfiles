@@ -47,6 +47,7 @@
 #
 # Environment (for tests and unusual layouts): WT_GEN_BASE, WT_GEN_FRAGMENT, WT_GEN_OUT, and
 # fleet-decl's own FLEET_RECORD / FLEET_DEVEL_ROOT.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -eu
 
 conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/worktrunk"
@@ -68,7 +69,7 @@ esac
 [ -f "$base" ] || die "no base config at $base"
 command -v wt >/dev/null 2>&1 || die "wt is not installed, so the result cannot be validated"
 
-work=$(mktemp -d) || die "cannot make a temp directory"
+work=$(mktemp -d "$_TMP/wt-config-gen.XXXXXX") || die "cannot make a temp directory"
 trap 'rm -rf "$work"' EXIT
 
 # Tables a source opens, one header per line, whitespace and trailing comments removed. `[[x]]`

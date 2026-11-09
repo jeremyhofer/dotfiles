@@ -6,6 +6,7 @@
 # The case that shaped the error handling: a wrong --root returning an empty list looks exactly
 # like a register with nothing in it. Those are different answers and only one is ever true, so
 # the tool refuses rather than printing nothing.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -17,7 +18,7 @@ bad() { fail=$((fail + 1)); echo "FAIL: $1"; }
 assert_has()   { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1 (expected: $2)" ;; esac; }
 assert_lacks() { case "$3" in *"$2"*) bad "$1 (did NOT expect: $2)" ;; *) ok "$1" ;; esac; }
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "$_TMP/test-register.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 r="$tmp/docs/register"; mkdir -p "$r/closed"
 

@@ -52,7 +52,7 @@ grep -qE 'exec "\$CHEZMOI"' "$co" \
 echo "ok:   resolves the chezmoi binary rather than trusting inherited PATH"
 
 #    ...and when it genuinely cannot find one, it must fail LOUDLY rather than return a silent 0.
-ctl="$(mktemp -d)"
+ctl="$(mktemp -d "$_TMP/test-chezmoi-overlay.XXXXXX")"
 sed 's#/opt/homebrew/bin/chezmoi /usr/local/bin/chezmoi "$HOME/.local/bin/chezmoi" /usr/bin/chezmoi#/nope/a /nope/b#' "$co" > "$ctl/co"
 mkdir -p "$ctl/emptybin"
 # Capture status WITHOUT letting `set -e` abort on the very non-zero exit being asserted.

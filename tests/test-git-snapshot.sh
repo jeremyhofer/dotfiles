@@ -6,6 +6,7 @@
 # ref was created would pass on a snapshot that captured nothing.
 #
 # Run: bash ~/.local/share/chezmoi/tests/test-git-snapshot.sh
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -uo pipefail
 # No machine-global git config, so none of its commit hooks fire in the scratch repositories.
 . "$(dirname "$0")/git-isolate.sh"
@@ -18,7 +19,7 @@ SNAP="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_git-sna
 # ambient write access to $HOME rather than on the tool: under a sandbox that does not grant that
 # path, `mkdir -p` failed, the archive was never written, and the suite reported a defect in
 # git-snapshot that did not exist.
-XDG_STATE_HOME=$(mktemp -d)
+XDG_STATE_HOME=$(mktemp -d "$_TMP/test-git-snapshot.XXXXXX")
 export XDG_STATE_HOME
 trap 'rm -rf "$XDG_STATE_HOME"' EXIT
 
@@ -28,7 +29,7 @@ no() { printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1 (expected '$3', got '$2')"; fi; }
 
 newrepo() {
-  local r; r=$(mktemp -d)
+  local r; r=$(mktemp -d "$_TMP/test-git-snapshot.XXXXXX")
   git -C "$r" init -q .
   printf 'v1\n' > "$r/a.txt"; git -C "$r" add a.txt
   git -C "$r" -c commit.gpgsign=false commit -qm init
@@ -113,7 +114,7 @@ printf 'dirty\n' > "$r/a.txt"
 GIT_SNAPSHOT_SKIP=1 bash "$SNAP" -C "$r" >/dev/null 2>&1
 eq "GIT_SNAPSHOT_SKIP=1 makes no ref" "$(nrefs "$r")" "0"
 rm -rf "$r"
-d=$(mktemp -d)
+d=$(mktemp -d "$_TMP/test-git-snapshot.XXXXXX")
 bash "$SNAP" -C "$d" >/dev/null 2>&1
 eq "outside a repo exits 0" "$?" "0"
 rm -rf "$d"

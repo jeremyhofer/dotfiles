@@ -1,6 +1,7 @@
 #!/bin/sh
 # Tests for install-claude-plugins. A stub `claude` records calls; nothing real installs. The declaration
 # is supplied through INSTALL_CLAUDE_PLUGINS_DECLARED, the same path the tool reads a fragment into.
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 here=$(cd "$(dirname "$0")" && pwd)
 script="$here/../private_dot_local/bin/executable_install-claude-plugins"
 pass=0; fail=0
@@ -12,7 +13,7 @@ DECL='{"extraKnownMarketplaces":{"cloudflare":{"source":{"source":"github","repo
 trap '[ -n "${H:-}" ] && rm -rf "$H"' EXIT
 setup() {  # $1 known marketplaces json, $2 installed plugins json, $3 stub exit code for install, $4 live settings json (default: the declaration)
   [ -n "${H:-}" ] && rm -rf "$H"
-  H=$(mktemp -d); mkdir -p "$H/.claude/plugins" "$H/bin"
+  H=$(mktemp -d "$_TMP/test-install-claude-plugins.XXXXXX"); mkdir -p "$H/.claude/plugins" "$H/bin"
   printf '%s' "$DECL" > "$H/declared.json"
   printf '%s' "${4:-$DECL}" > "$H/.claude/settings.json"
   printf '%s' "$1" > "$H/.claude/plugins/known_marketplaces.json"

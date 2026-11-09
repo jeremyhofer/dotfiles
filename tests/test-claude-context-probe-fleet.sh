@@ -16,6 +16,7 @@
 #   exited      every listed row has state "exited"
 # FAKE_PID=1 makes `agents --json` rows carry a pid, as on versions that list one.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 PROBE="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_claude-context-probe"
@@ -24,7 +25,7 @@ has() { grep -q -- "$2" <<< "$1"; }
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "$_TMP/test-claude-context-probe-fleet.XXXXXX") || exit 1
 STATE="$TMP/state"; FHOME="$TMP/home"
 cleanup_stub() { [ -f "$STATE/rows" ] && while IFS='|' read -r _ _ pid _; do kill "$pid" 2>/dev/null; done < "$STATE/rows"; rm -rf "$TMP"; }
 trap cleanup_stub EXIT

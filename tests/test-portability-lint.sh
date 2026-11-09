@@ -47,15 +47,16 @@ d=$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")
 n="$(refs | wc -l)"
 f() { :; }
 X=1 f
+w=$(mktemp -d)
 SH
 lint "$d/dirty.sh" >"$d/out" 2>&1 && { echo "FAIL: dirty fixture should exit 1"; exit 1; }
 n=$(grep -c ':[0-9]*: \[' "$d/out" || true)
-[ "$n" -eq 13 ] || { echo "FAIL: expected 13 findings, got $n"; cat "$d/out"; exit 1; }
+[ "$n" -eq 14 ] || { echo "FAIL: expected 14 findings, got $n"; cat "$d/out"; exit 1; }
 for r in sed-in-place sed-bracket-tab sed-newline-replacement stat-c date-d base64-w grep-P \
-         realpath-m find-printf timeout tmpdir-slash wc-l-quoted sh-prefix-function; do
+         realpath-m find-printf timeout tmpdir-slash wc-l-quoted sh-prefix-function mktemp-no-template; do
   grep -q "\[$r\]" "$d/out" || { echo "FAIL: rule '$r' did not fire"; exit 1; }
 done
-echo "ok:   all 13 rules fire, one finding each"
+echo "ok:   all 14 rules fire, one finding each"
 
 # REGRESSION: short flags CLUSTER. Requiring the flag to be its own token was a false NEGATIVE
 # that let a real macOS fail-open through undetected -- a homoglyph guard used `grep -qP`, the
@@ -63,6 +64,36 @@ echo "ok:   all 13 rules fire, one finding each"
 # everything on darwin. The fixture above uses `grep -qP` for exactly this reason.
 grep -q '\[grep-P\]' "$d/out" || { echo "FAIL: clustered short flag -qP not detected"; exit 1; }
 echo "ok:   REGRESSION a clustered short flag (-qP) is detected"
+
+# ---------- mktemp-no-template: every spelling that ignores TMPDIR, and none that honors it ----------
+# Measured on macOS 26.7.2: `mktemp`, `mktemp -d` and `mktemp -d -t pre` all ignore TMPDIR and make
+# the file under the per-user /var/folders directory, which a sandboxed session cannot write; only an
+# explicit template under "$TMPDIR" lands there. Each spelling is its own fixture line, so a rule
+# that caught only `-d` would be seen to miss the others.
+cat > "$d/mk.sh" <<'SH'
+#!/bin/sh
+a=$(mktemp)
+b=$(mktemp -d) || exit 1
+c=$(mktemp -d -t pre)
+e="$(mktemp -q)"
+SH
+lint "$d/mk.sh" >"$d/out" 2>&1 || true
+n=$(grep -c '\[mktemp-no-template\]' "$d/out" || true)
+[ "$n" -eq 4 ] || { echo "FAIL: expected 4 mktemp-no-template findings, got $n"; cat "$d/out"; exit 1; }
+echo "ok:   mktemp-no-template flags bare, -d, -t and -q spellings, one finding each"
+cat > "$d/mk-ok.sh" <<'SH'
+#!/bin/sh
+t=${TMPDIR:-/tmp}; t=${t%/}
+a=$(mktemp "$t/a.XXXXXX")
+b=$(mktemp -d "$t/b.XXXXXX") || exit 1
+c=$(mktemp -d "$_TMP/c.XXXXXX")
+# a fresh mktemp dir is made below
+for tool in sh mktemp rm; do :; done
+SH
+lint "$d/mk-ok.sh" >"$d/out" 2>&1 || true
+grep -q '\[mktemp-no-template\]' "$d/out" \
+  && { echo "FAIL: mktemp with an explicit template, or a word in a comment or list, was flagged"; cat "$d/out"; exit 1; }
+echo "ok:   mktemp-no-template does not flag an explicit template, a comment, or a word in a list"
 
 # ---------- correct code is silent ----------
 cat > "$d/clean.sh" <<'SH'

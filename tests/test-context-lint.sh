@@ -3,6 +3,7 @@
 # own finding and fail the run, and the near-misses (a scoped rules file, an import inside a code
 # span, a number that is a limit) must not.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 # No machine-global git config, so none of its commit hooks fire in the scratch repositories.
 . "$(dirname "$0")/git-isolate.sh"
@@ -12,7 +13,7 @@ pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "$_TMP/test-context-lint.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 good() { # <dir> -- a conforming repository

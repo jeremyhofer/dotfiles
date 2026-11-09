@@ -7,6 +7,7 @@
 # everywhere, and a hook that runs but whose context never arrives must read differently from a
 # hook that never ran.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 
 PROBE="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_claude-context-probe"
@@ -15,7 +16,7 @@ has() { grep -q -- "$2" <<< "$1"; }
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "$_TMP/test-claude-context-probe.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 # The fake answers from what a real session would plausibly see: the CLAUDE.md and AGENTS.md in its

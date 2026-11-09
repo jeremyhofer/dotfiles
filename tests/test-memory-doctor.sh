@@ -7,6 +7,7 @@
 # portfolio disappeared and `stale` could only die. The cases below assert that a KNOWN-closed item
 # is found, because a stale check that finds nothing is indistinguishable from one that read nothing.
 
+_TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -uo pipefail
 
 DOC="$(cd "$(dirname "$0")/.." && pwd)/private_dot_local/bin/executable_memory-doctor"
@@ -23,7 +24,7 @@ line_has() { local l; l=$(grep -- "$2" <<< "$1"); grep -q -- "$3" <<< "$l"; }
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "$_TMP/test-memory-doctor.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 STORES="$TMP/projects"; STORE="$STORES/-test/memory"; mkdir -p "$STORE"
@@ -109,10 +110,29 @@ case "$1" in
 esac
 EOF
 chmod +x "$STUB/fleet-decl"
+git init -q "$TMP/mod-repo"; git init -q "$TMP/key-repo"
 out=$(env -u MEMORY_DOCTOR_REGISTERS MEMORY_DOCTOR_DEVEL="$TMP" PATH="$STUB:$PATH" bash "$DOC" stale 2>&1); rc=$?
 [ "$rc" -eq 0 ] && has "$out" 'key-journal' \
   && ok "discovers the registers from each canonical's declared launch dir" \
   || bad "register discovery through fleet-decl failed" "rc=$rc: $(printf '%s' "$out" | head -2)"
+
+# A seat launched in a SUBDIRECTORY of its repository reads the register at the repository's root,
+# and two seats in one repository list its register once: read twice, every id in it would
+# resolve twice and the run would refuse ("two registers claim one id").
+mkdir -p "$TMP/mod-repo/projects/sub"
+cat > "$STUB/fleet-decl" <<'EOF2'
+#!/bin/sh
+case "$1" in
+  --canonicals) printf 'alpha-canonical\nbeta-canonical\ngamma-canonical\n' ;;
+  --canonical)  case "$2" in alpha-canonical) echo mod-repo/projects/sub ;; beta-canonical) echo key-repo ;;
+                             gamma-canonical) echo mod-repo ;; esac ;;
+  *) exit 1 ;;
+esac
+EOF2
+out=$(env -u MEMORY_DOCTOR_REGISTERS MEMORY_DOCTOR_DEVEL="$TMP" PATH="$STUB:$PATH" bash "$DOC" stale 2>&1); rc=$?
+[ "$rc" -eq 0 ] && has "$out" 'closed-journal' && ! hasi "$out" 'multiple statuses' && ! hasi "$out" 'REGISTER-UNREAD' \
+  && ok "a seat in a subdirectory reads its repository root's register, and a shared register is read once" \
+  || bad "subdirectory or shared-repository discovery failed" "rc=$rc: $(printf '%s' "$out" | head -3)"
 
 # fleet-decl exit 2 means the declaration record is unreadable. Treating that as "no canonicals"
 # would scan nothing and report nothing stale.
