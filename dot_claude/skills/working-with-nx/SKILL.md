@@ -1,6 +1,6 @@
 ---
 name: working-with-nx
-description: Use when running, configuring, profiling or timing tasks in an Nx workspace — gates with `--nxBail`, `affected`, `inputs`/`outputs`, the cache, `NX_PROFILE`, `--graph`, `parallelism`, plugins and atomized targets (`createNodes`, `@nx/playwright`, the Vitest atomizer), or Nx run inside another Nx task. Also fires on the failure signatures — "Attempted to open socket that exceeds the maximum socket length", a cache that is per checkout instead of shared, a warm run with fewer cache hits than expected, an `affected` run that skips a project whose file changed, a task graph tool that crashes or finds no dependencies, `{workspaceRoot}` refused in a command, a Playwright config Nx ignores, a one-spec run failing on coverage thresholds, a nested Nx fixture whose cache checks fail, and E403 from a registry round trip in a sandbox. Verified against Nx 24.0.2 (some points also 23.1.1); each point says where it was read, so re-check after an upgrade.
+description: Use when running, configuring, profiling or timing tasks in an Nx workspace — gates with `--nxBail`, `affected`, `inputs`/`outputs`, the cache, `NX_PROFILE`, `--graph`, `parallelism`, plugins and atomized targets (`createNodes`, `@nx/playwright`, the Vitest atomizer), or Nx run inside another Nx task. Also fires on the failure signatures — "Attempted to open socket that exceeds the maximum socket length", a cache that is per checkout instead of shared, a warm run with fewer cache hits than expected, an `affected` run that skips a project whose file changed, a task graph tool that crashes or finds no dependencies, `{workspaceRoot}` refused in a command, a Playwright config Nx ignores, a one-spec run failing on coverage thresholds, a nested Nx fixture whose cache checks fail, a task replayed green from the cache after an edit to a library it imports (a stale project graph after a tsconfig path-alias change), and E403 from a registry round trip in a sandbox. Verified against Nx 24.0.2 (some points also 23.1.1); each point says where it was read, so re-check after an upgrade.
 ---
 
 # Working with Nx
@@ -42,6 +42,26 @@ starts warm. Two things switch the sharing off without telling you:
 `~/.nx/sockets`. `NX_SOCKET_DIR` was the old fix for "Attempted to open socket that exceeds the
 maximum socket length" in deeply nested worktree paths; with a writable `~/.nx` it is not needed, so
 do not add it as a reflex.
+
+**The project graph is cached too, and it can go stale after a path-alias change.** Besides the task
+cache, Nx keeps the project graph it builds, the per-file import edges included, in the checkout's
+`.nx/workspace-data/`. Measured twice in one workspace on 2026-11-09 under Nx 24.0.2: after a change
+to the TypeScript path aliases (`paths` in `tsconfig.base.json`), the cached graph kept stale edges,
+the second time on `main` after a plain fast-forward. Two projects lost their edge to a library they
+both import. A task hash built on that graph leaves the library out, so a later edit to the library
+replays those projects' tasks green from the cache: the same silent stale replay as an undeclared
+input, with every declaration correct. It does not happen every time, and no upstream issue was found
+that matches it exactly. The fix is Nx's own command, which rebuilds the graph and leaves the shared
+task cache alone:
+
+```sh
+npx nx reset --onlyWorkspaceData
+```
+
+Until the cause is known, run it before a gate in any checkout that takes an alias change, by a
+commit or a pull, and at the start of a CI entrypoint whose working tree persists between runs. It
+costs a few seconds of graph rebuild. To see whether a checkout is affected, compare `nx graph
+--file=<out>.json` before and after the reset for an edge you know exists.
 
 ## 2. Inputs, outputs and `affected`
 
