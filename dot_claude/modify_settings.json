@@ -51,6 +51,14 @@
 # declared lists are joined, base first, an entry both declare kept once, and the join then replaces
 # the live list as any declared array does. Events only the live file has are kept.
 #
+# env.NX_SOCKET_DIR IS DECLARED for every session. Nx 24 puts its daemon and plugin-worker sockets
+# under /tmp/.nx/<uid> once that directory exists, which any unsandboxed Nx run creates, and a
+# sandboxed session cannot write /tmp: Nx then falls back to a socket under the workspace, over the
+# socket-length limit in a deep checkout, and every plugin fails to load (skill working-with-nx,
+# section 1). ~/.nx/s is short, inside the ~/.nx a sandbox must be able to write anyway for the
+# shared cache, and Nx creates it mode 0700 when it is missing. It reaches Claude Code sessions only,
+# so they never share sockets with a daemon started in a terminal, which runs outside the sandbox.
+#
 # worktree.baseRef IS NOT DECLARED: Claude Code's default ("fresh", branch from the remote's default
 # branch) is wanted, and freshness of a worktree's base is otherwise handled by worktrunk's hooks
 # (wt-fetch-base). Removing a key from this block does not remove it from a live file; a machine that
@@ -84,6 +92,9 @@ base=$(cat <<EOF
 {
   "awaySummaryEnabled": false,
   "editorMode": "vim",
+  "env": {
+    "NX_SOCKET_DIR": "${HOME}/.nx/s"
+  },
   "enableArtifact": false,
   "skipWorkflowUsageWarning": true,
   "statusLine": {

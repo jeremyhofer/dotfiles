@@ -52,9 +52,11 @@ intermittent. Measured 2026-11-09 on the workstation (by a project session, then
 fresh scratch workspace with `--verbose`). An earlier version of this skill said a writable `~/.nx`
 made `NX_SOCKET_DIR` unnecessary; that held only while `/tmp/.nx/<uid>` did not exist.
 
-So in a sandboxed session **set `NX_SOCKET_DIR` to a directory only your user can write**, for
-example `NX_SOCKET_DIR="$TMPDIR/nxs"` (create it first), until the machine's configuration sets it
-for every session. Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its sockets
+So a sandboxed session needs **`NX_SOCKET_DIR` set to a directory only its user can write**. The
+dotfiles base sets it for every Claude Code session in `~/.claude/settings.json`'s `env`, to
+`~/.nx/s` (Nx creates it, mode 0700); that holds wherever the session's sandbox can write `~/.nx`,
+which the shared cache needs anyway. Where the base's settings are not deployed, set it per command,
+for example `NX_SOCKET_DIR="$TMPDIR/nxs"`. Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its sockets
 there. `--verbose` names the directory Nx rejected and why.
 
 **The project graph is cached too, and it can go stale after a path-alias change.** Besides the task

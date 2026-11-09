@@ -32,6 +32,20 @@ Entries are newest first.
 
 ---
 
+## 2026-11-09
+
+### Claude Code sessions get `NX_SOCKET_DIR`, so Nx works in a sandbox again
+
+`~/.claude/settings.json`'s `env` gains `NX_SOCKET_DIR` = `~/.nx/s` (the base's settings block, merged
+into whatever `env` the live file and the private layer's fragment hold). Without it, once any
+unsandboxed Nx run creates `/tmp/.nx/<uid>`, a sandboxed session's Nx can no longer place its plugin
+sockets and every gate in a deep checkout fails ("Failed to load N Nx plugin(s): Attempted to open
+socket that exceeds the maximum socket length"). Skill `working-with-nx`, section 1, has the detail.
+**It helps only where the session's sandbox may write `~/.nx`**, which the shared Nx cache needs
+anyway: a private layer that does not grant `~/.nx` in `sandbox.filesystem.allowWrite` should. A
+new session has it; whether a running one picks up an `env` change without a restart is not
+measured.
+
 ## 2026-11-08
 
 ### Catching up from 2026-11-06 in one pass: every ACTION through 2026-11-08, in order
