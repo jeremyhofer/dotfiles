@@ -140,6 +140,14 @@ hits against 12). Give a relative path inside an ignored directory.
 `run-command.js`) and overwrites the inner run's per-task profile. This is how the single-invocation
 rule shows up when you measure.
 
+**Splitting one cached test target into per-layer targets moves the cost; it does not only cut
+it.** A top-layer edit gets cheaper, since only the top layer re-runs. A bottom-layer edit can get
+dearer: every layer above it re-runs, each pays the runner's own start-up (pytest, xdist, coverage),
+and with `parallelism: false` they run one after another. Measured 2026-11-08 by one Python
+workspace's gate after a one-line edit, against an adjacent control of the unsplit graph at 322 s:
+a top-layer edit 163 s, a bottom-layer edit 422 s in sequence, 292 s with four or five workers. So
+time both a top-layer and a bottom-layer edit against an adjacent control before landing a split.
+
 **Write `--graph=<file>` outside the workspace.** Inside it, a formatter's whole-repository check
 flags the file.
 
