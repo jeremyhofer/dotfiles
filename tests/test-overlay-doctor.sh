@@ -258,6 +258,20 @@ out=$(OVERLAY_SRC="$tmp/ovf" BASE_SRC="$bs" sh "$script" 2>&1) && rc=0 || rc=$?
 echo "$out" | grep -q "co-owned" || { echo "FAIL(F): no co-owned file message"; echo "$out"; exit 1; }
 echo "ok:   the same target file owned by both layers is flagged"
 
+# Case F2 — the development-only Nx workspace is never a target, in either tree. Both trees hold
+# the same node_modules/, tools/, package.json and nx.json paths; were they walked as targets, each
+# would be a co-owned file. (Walking node_modules/ was also what made this suite slow.)
+mk "$tmp/ovn"; bsn="$tmp/basen"
+for d in "$bsn" "$tmp/ovn"; do
+  mkdir -p "$d/node_modules/demo" "$d/tools/nx"
+  echo x > "$d/node_modules/demo/index.js"; echo x > "$d/tools/nx/suites.js"
+  echo '{}' > "$d/package.json"; echo '{}' > "$d/package-lock.json"; echo '{}' > "$d/nx.json"
+done
+out=$(OVERLAY_SRC="$tmp/ovn" BASE_SRC="$bsn" sh "$script" 2>&1) && rc=0 || rc=$?
+echo "$out" | grep -q "co-owned" && { echo "FAIL(F2): the Nx workspace was walked as deployed targets"; echo "$out"; exit 1; }
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL(F2): exit ${rc:-0} on trees that differ only in the Nx workspace"; echo "$out"; exit 1; }
+echo "ok:   the development-only Nx workspace is not a target in either tree"
+
 # Case G — chezmoi METADATA present in both trees is not a collision (it is never a target).
 mk "$tmp/ovg"; bs2="$tmp/baseg"; mkdir -p "$bs2"
 printf 'README.md\n' > "$bs2/.chezmoiignore"; printf 'README.md\n' > "$tmp/ovg/.chezmoiignore"

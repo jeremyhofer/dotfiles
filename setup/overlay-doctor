@@ -433,6 +433,11 @@ _totarget() {
 }
 
 # Emit "target<TAB>attrs" per managed directory in a source tree (skip VCS + non-deployed meta dirs).
+# Both walks skip what a source tree holds but never deploys: tests/, setup/ and overlay-skeleton/,
+# and the development-only Nx workspace (node_modules/, tools/, package.json, package-lock.json,
+# nx.json), each listed in .chezmoiignore. Walking node_modules/ also ran the per-file loop below
+# over thousands of files no apply ever writes.
+#
 # Same as _emit_dirs but for FILES, and skipping chezmoi METADATA (.chezmoi*), which exists in
 # both trees by design and is never a deployed target -- counting it would false-positive forever.
 _emit_files() {
@@ -442,7 +447,9 @@ _emit_files() {
       ! -name '.chezmoi*' ! -path './.chezmoi*' \
       ! -name '.chezmoitemplates' ! -path './.chezmoitemplates/*' \
       ! -path './tests' ! -path './tests/*' ! -path './setup' ! -path './setup/*' \
-      ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' -print ) \
+      ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' \
+      ! -path './node_modules' ! -path './node_modules/*' ! -path './tools' ! -path './tools/*' \
+      ! -path './package.json' ! -path './package-lock.json' ! -path './nx.json' -print ) \
   | while IFS= read -r _pp; do
       [ "$_pp" = "." ] && continue
       # chezmoi never deploys a source entry whose name starts with `.` (the repository's
@@ -458,7 +465,9 @@ _emit_dirs() {
       ! -path './.git' ! -path './.git/*' \
       ! -name '.chezmoitemplates' ! -path './.chezmoitemplates/*' \
       ! -path './tests' ! -path './tests/*' ! -path './setup' ! -path './setup/*' \
-      ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' -print ) \
+      ! -path './overlay-skeleton' ! -path './overlay-skeleton/*' \
+      ! -path './node_modules' ! -path './node_modules/*' ! -path './tools' ! -path './tools/*' \
+      ! -path './package.json' ! -path './package-lock.json' ! -path './nx.json' -print ) \
   | while IFS= read -r _pp; do
       [ "$_pp" = "." ] && continue
       # chezmoi never deploys a source entry whose name starts with `.` (the repository's

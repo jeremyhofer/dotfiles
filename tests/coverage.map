@@ -143,6 +143,7 @@ refs test-publish-check.sh          dot_claude/tooling.md docs/reference/private
 refs test-context-lint.sh           docs/README.md
 refs test-register.sh               docs/README.md
 refs test-nx-suites.sh              dot_config/sway/config setup/chezmoi-safe-apply private_dot_local/bin/executable_hc-status private_dot_local/bin/executable_git-clone-worktree private_dot_local/bin/executable_kb
+refs test-overlay-doctor.sh       tools/nx/suites.js
 refs test-skip-skills.sh            .claude/skills/tuicr-code-review
 
 # --- shipped, read by no suite -------------------------------------------------------------------
