@@ -70,7 +70,8 @@ setup/
 Some prose. Currently: `alpha`. Leave one out with `skipSkills`.
 
 ### Next'
-  put "$w" tests/run-all.sh 'exit "${RUNALL_RC:-0}"'
+  put "$w" tests/run-all.sh '[ -z "${RUNALL_OUT:-}" ] || cat "$RUNALL_OUT"
+exit "${RUNALL_RC:-0}"'
   put "$w" dot_old 'old'
   mkdir -p "$w/setup"; cp "$tool" "$w/setup/publish-check"
   cm "$w" 2026-01-01 base
@@ -82,7 +83,7 @@ Some prose. Currently: `alpha`. Leave one out with `skipSkills`.
 # run <script> [args]: run the tool in the current scenario; sets out and rc.
 run() {
   s=$1; shift
-  out=$(cd "$w" && PATH="$tmp/bin:$PATH" CL_RC="${CL_RC:-0}" RUNALL_RC="${RUNALL_RC:-0}" sh "$s" "$@" 2>&1) && rc=0 || rc=$?
+  out=$(cd "$w" && PATH="$tmp/bin:$PATH" CL_RC="${CL_RC:-0}" RUNALL_RC="${RUNALL_RC:-0}" RUNALL_OUT="${RUNALL_OUT:-}" sh "$s" "$@" 2>&1) && rc=0 || rc=$?
 }
 
 # expect <label> <rc> <substring> [args]: the real tool must exit <rc> and print <substring>.
@@ -249,6 +250,25 @@ CL_RC=1 mutant "context-lint findings" contextlint --skip-tests
 RUNALL_RC=1 expect "failing test suite" 1 "FAIL  tests"
 RUNALL_RC=1 mutant "failing test suite" tests
 RUNALL_RC=1 expect "failing suite ignored under --skip-tests" 0 "tests skipped" --skip-tests
+
+# The runner replays a failed suite's output after its FAIL header, each line prefixed with
+# seven spaces and a bar. The failing case sits ahead of 40 noise lines, so a plain tail misses it.
+{ printf 'PASS   test-a.sh\nFAIL   test-b.sh (exit 1)\n       | setup noise\n       |   FAIL  the specific case XYZ\n'
+  i=0; while [ $i -lt 40 ]; do printf '       | noise line %s\n' "$i"; i=$((i+1)); done
+  printf 'PASS   test-c.sh\n\n3 suite(s): 2 passed, 1 failed\nfailed: test-b.sh\n'; } > "$tmp/runall.out"
+RUNALL_OUT="$tmp/runall.out" RUNALL_RC=1 expect "a failing case far above the tail is shown" 1 "the specific case XYZ"
+RUNALL_OUT="$tmp/runall.out" RUNALL_RC=1 expect "the failed suite is named" 1 "FAIL   test-b.sh (exit 1)"
+RUNALL_OUT="$tmp/runall.out" RUNALL_RC=1 expect "the summary follows" 1 "3 suite(s): 2 passed, 1 failed"
+# A huge failure is bounded: 100 FAIL lines show the first 60 and count the rest.
+{ printf 'FAIL   test-big.sh (exit 1)\n'
+  i=1; while [ $i -le 100 ]; do printf '       |   FAIL  case-%s\n' "$i"; i=$((i+1)); done
+  printf '\n1 suite(s): 0 passed, 1 failed\n'; } > "$tmp/big.out"
+RUNALL_OUT="$tmp/big.out" RUNALL_RC=1 expect "a huge failure is cut and the cut is counted" 1 "40 more FAIL lines"
+RUNALL_OUT="$tmp/big.out" RUNALL_RC=1 expect "the 60th FAIL line is shown" 1 "case-60"
+case "$out" in *"case-61"*) bad "the 61st FAIL line is not shown" "case-61 was printed" ;; *) ok "the 61st FAIL line is not shown" ;; esac
+# A failed suite whose output has no FAIL line still shows its last lines.
+printf 'FAIL   test-odd.sh (exit 2)\n       | Traceback: boom\n\n1 suite(s): 0 passed, 1 failed\n' > "$tmp/odd.out"
+RUNALL_OUT="$tmp/odd.out" RUNALL_RC=1 expect "a suite with no FAIL line shows its last lines" 1 "Traceback: boom"
 
 echo "unreachable"
 mk unreach

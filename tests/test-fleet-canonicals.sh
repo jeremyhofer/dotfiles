@@ -1,4 +1,5 @@
 #!/usr/bin/env zsh
+# run-all: serial
 # Unit test for fleet-canonicals. The live `claude agents --json` call is injected via
 # $FLEET_AGENTS_JSON_CMD so the logic is testable without live sessions.
 set -u

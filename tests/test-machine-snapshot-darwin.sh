@@ -1,4 +1,5 @@
 #!/bin/sh
+# run-all: serial
 # Test: machine-snapshot on macOS, against the real kernel (it reads libproc, which cannot be faked
 # the way /proc can). Runs on a Mac only; elsewhere it says so and exits 0.
 #

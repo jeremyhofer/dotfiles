@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all: serial
 # Test leak-guard: the MECHANISM, against a fixture domain with an invented vocabulary.
 #
 # The guard's patterns, allow rules and push policy are the domain's own files under ~/.dotlocal, so

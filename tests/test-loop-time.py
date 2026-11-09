@@ -1,4 +1,5 @@
 #!/usr/bin/env -S uv run --script
+# run-all: serial
 # /// script
 # requires-python = ">=3.12"
 # dependencies = ["pytest==8.4.2"]

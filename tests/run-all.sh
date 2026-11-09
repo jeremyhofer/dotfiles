@@ -14,6 +14,22 @@
 # is replayed, whole, only when it fails; results print in suite-name order whatever the finish
 # order, so two runs of the same tree print the same lines.
 #
+# SERIAL SUITES. A suite that asserts on CPU time or on a wall-clock bound is starved by its
+# neighbors when eight suites share the machine, and then fails with no defect in the code it tests.
+# Such a suite declares it with this exact line among its first 10 lines (after the shebang):
+#
+#   # run-all: serial
+#
+# The runner finds it with `grep -qxF '# run-all: serial'` (a fixed string, the whole line), runs
+# every unmarked suite concurrently first, then each marked one alone, one at a time. A threshold is
+# never loosened to cope with load; the suite is moved off the loaded machine state instead.
+#
+# PROFILE. With RUN_ALL_PROFILE=<file> set, the runner writes one line per suite, in suite-name
+# order, as tab-separated `suite wall_s cpu_s exit`: wall-clock seconds, user plus system CPU
+# seconds of the suite's process tree (read from the shell's `times`, which counts the children
+# it waited for), and the exit code. Unset, nothing is written. Wall time has sub-second resolution
+# where `date +%s.%N` works (GNU) and whole seconds on BSD `date`.
+#
 # A suite is tests/test-*.sh (sh, bash or zsh) or tests/test-*.py whose shebang is
 # `#!/usr/bin/env -S uv run --script` (run as `uv run --script`, SKIPped when uv is missing).
 #
@@ -60,7 +76,7 @@ t=${TMPDIR:-/tmp}; t=${t%/}
 work=$(mktemp -d "$t/run-all.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT TERM HUP
-mkdir "$work/out" "$work/rc"
+mkdir "$work/out" "$work/rc" "$work/prof"
 
 # One suite: run it under the interpreter its shebang names, keep its output and exit code.
 cat > "$work/worker.sh" <<'EOF'
@@ -68,14 +84,32 @@ cat > "$work/worker.sh" <<'EOF'
 # args: <work dir> <suite path> <interpreter>
 work=$1; t=$2; interp=$3
 name=$(basename "$t")
+# Seconds since the epoch, with a fraction where `date` has %N (BSD date prints "%N" literally).
+now() {
+  d=$(date +%s.%N 2>/dev/null)
+  case $d in ''|*[!0-9.]*) d=$(date +%s) ;; esac
+  echo "$d"
+}
+t0=$(now)
 case "$interp" in
   uv) uv run --script "$t" > "$work/out/$name" 2>&1 < /dev/null ;;
   *)  "$interp" "$t" > "$work/out/$name" 2>&1 < /dev/null ;;
 esac
-echo "$?" > "$work/rc/$name"
+rc=$?
+# `times` line 2 is the CPU of this shell's waited-for children: the suite and what it ran. This
+# worker runs one suite, so nothing else is counted.
+times > "$work/prof/$name.times"
+t1=$(now)
+echo "$rc" > "$work/rc/$name"
+# Fields: wall, then user and system CPU as "XmY.ZZZs" pairs, summed to seconds.
+sed -n 2p "$work/prof/$name.times" | awk -v n="$name" -v a="$t0" -v b="$t1" -v rc="$rc" '
+  function secs(x,  p) { sub(/s$/, "", x); split(x, p, "m"); return p[1] * 60 + p[2] }
+  { cpu = secs($1) + secs($2) }
+  END { printf "%s\t%.2f\t%.2f\t%s\n", n, b - a, cpu, rc }' > "$work/prof/$name"
+rm -f "$work/prof/$name.times"
 EOF
 
-: > "$work/list"; : > "$work/names"
+: > "$work/list"; : > "$work/serial"; : > "$work/names"
 for t in "$here"/test-*.sh "$here"/test-*.py; do
   [ -f "$t" ] || continue
   name=$(basename "$t")
@@ -102,11 +136,12 @@ for t in "$here"/test-*.sh "$here"/test-*.py; do
   if ! command -v "$interp" >/dev/null 2>&1; then
     printf 'SKIP   %s (%s not installed)\n' "$name" "$interp" >&2; continue
   fi
-  printf '%s %s\n' "$t" "$interp" >> "$work/list"
+  if sed -n '1,10p' "$t" | grep -qxF '# run-all: serial'; then dest=serial; else dest=list; fi
+  printf '%s %s\n' "$t" "$interp" >> "$work/$dest"
   printf '%s\n' "$name" >> "$work/names"
 done
 
-if [ ! -s "$work/list" ]; then
+if [ ! -s "$work/list" ] && [ ! -s "$work/serial" ]; then
   if [ -n "$only" ]; then
     echo "run-all: every suite named by --only was skipped, so nothing was tested" >&2
   else
@@ -117,7 +152,17 @@ fi
 
 # xargs -P runs the workers. Its own exit status is not the verdict; each suite's rc file is.
 # Two words per input line (suite path, interpreter), so the paths must hold no blanks.
-xargs -n 2 -P "$jobs" sh "$work/worker.sh" "$work" < "$work/list"
+# GNU xargs runs the command once on empty input, so each batch is guarded by -s.
+[ ! -s "$work/list" ] || xargs -n 2 -P "$jobs" sh "$work/worker.sh" "$work" < "$work/list"
+# Marked suites run only after the concurrent batch has ended, one at a time (-P 1).
+[ ! -s "$work/serial" ] || xargs -n 2 -P 1 sh "$work/worker.sh" "$work" < "$work/serial"
+
+if [ -n "${RUN_ALL_PROFILE:-}" ]; then
+  : > "$RUN_ALL_PROFILE"
+  while IFS= read -r name; do
+    [ -f "$work/prof/$name" ] && cat "$work/prof/$name" >> "$RUN_ALL_PROFILE"
+  done < "$work/names"
+fi
 
 pass=0; fail=0; failed=""
 while IFS= read -r name; do
