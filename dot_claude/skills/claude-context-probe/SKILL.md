@@ -50,6 +50,11 @@ rejects `--mcp-config` at startup, so the probe leaves the flag off and the othe
   persists, run with `--keep` and read `out-*.err`.
 - `INVALID`: the model reported a codeword planted in a file nothing references (the negative
   control), so it was guessing or reading files. Every row from it is untrustworthy.
+- `REFUSED`: the model declined the probe prompt (a known refusal text, such as "This prompt
+  contains unsafe content and cannot be processed."), and a `REFUSED:` line above the sessions
+  quotes it. The model said nothing about its context, so the session's rows are not verdicts and a
+  re-run will not change them. A managed machine's prompt guard is the usual cause; report it rather
+  than rewording the prompt by hand, because the measuring function depends on the wording.
 
 **Instruction files.** `loaded` means the file's content reached the model at session start.
 
@@ -137,7 +142,8 @@ transcripts and temp dir (`--keep` keeps only the temp dir).
 | `model <alias>` | `claude -p --model <alias>` answered, for `haiku`, `sonnet`, `opus`, `opus[1m]` |
 | `tool <name>` | `present` or `absent` from the session's own list of tool names, for `Agent`, `Workflow`, `EnterWorktree`, `SendMessage`, `ListAgents`; `Bash` is reported present only, since `run_in_background` is a parameter of it that a name list cannot show |
 
-A `no` on `bg-launch` makes the rows that need a session `INCONCLUSIVE`. The exit status is
+A `no` on `bg-launch` makes the rows that need a session `INCONCLUSIVE`; it reads
+`no (exit N: <first line of the launch's stderr>)`, so the cause shows before anyone guesses at it. The exit status is
 non-zero unless every row before `tool` is `yes`, apart from the two informational `agents-` rows.
 
 ## What it does not test

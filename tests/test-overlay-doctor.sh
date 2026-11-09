@@ -445,29 +445,33 @@ printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'other-hook (dis
 echo "ok:   a configured hook that is switched off is listed as disabled, naming the setting"
 # ---- Tier W: workspace trust is advisory and prints names, never a path -------------------------
 # A stub claude-trust-check stands in for the real one: it answers by exit status and prints names.
-mk "$tmp/ov"; mkdir -p "$tmp/trbin"
+mk "$tmp/ov"; mkdir -p "$tmp/trbin" "$tmp/dombin"
+# The doctor reads the machine's domain from `chezmoi data`, and skips Tier W on the work domain. A
+# stand-in chezmoi that reports a non-work domain keeps cases W1-W4 from depending on the machine
+# running the suite; W5 and W6 put their own work-domain stand-in ahead of it.
+printf '#!/bin/sh\n[ "$1" = data ] && { printf "{\\"domain\\":\\"home\\"}\\n"; exit 0; }\nexit 1\n' > "$tmp/dombin/chezmoi"; chmod +x "$tmp/dombin/chezmoi"
 stub_trust() { # $1 exit status, $2 stdout
   printf '#!/bin/sh\n[ "${1:-}" = --names-only ] || exit 9\nprintf "%%s" "%s"\nexit %s\n' "$2" "$1" > "$tmp/trbin/claude-trust-check"
   chmod +x "$tmp/trbin/claude-trust-check"
 }
 stub_trust 0 ""
-out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+out=$(PATH="$tmp/trbin:$tmp/dombin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'OK .*Tier W' || { echo "FAIL(W1): all-trusted not reported"; echo "$out"; exit 1; }
 stub_trust 1 "alpha
 beta"
-out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+out=$(PATH="$tmp/trbin:$tmp/dombin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || { echo "FAIL(W2): untrusted directories changed the exit status to $rc"; echo "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q 'Tier W: 2 project(s) still need.*alpha beta' || { echo "FAIL(W2): count and names not reported"; echo "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q 'accept the trust prompt' || { echo "FAIL(W2): no fix line"; echo "$out"; exit 1; }
 stub_trust 3 ""
-out=$(PATH="$tmp/trbin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+out=$(PATH="$tmp/trbin:$tmp/dombin:$PATH" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'Tier W: workspace trust is unknown' || { echo "FAIL(W3): unknown not reported"; echo "$out"; exit 1; }
 rm -f "$tmp/trbin/claude-trust-check"
 # Absent by construction: on a machine where the base is applied the real tool is on PATH, so drop
 # every PATH directory that holds one rather than assuming the machine has none.
 notool=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/claude-trust-check" ] || printf '%s:' "$d"; done)
 notool=${notool%:}
-out=$(PATH="$notool" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
+out=$(PATH="$tmp/dombin:$notool" OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) && rc=0 || rc=$?
 printf '%s\n' "$out" | grep -q 'Tier W' && { echo "FAIL(W4): reported without the tool on PATH"; echo "$out"; exit 1; }
 # On the work domain (a stand-in chezmoi reports it) the check is skipped, saying how to run it;
 # OVERLAY_DOCTOR_TRUST=1 runs it there.

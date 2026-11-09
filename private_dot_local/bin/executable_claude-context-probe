@@ -17,6 +17,9 @@
 # reads three files that carry no codeword, and nothing else; if it reads any other file, the
 # session is INCONCLUSIVE, since it could have fetched a codeword itself.
 #
+# A model that refuses a probe prompt (a known refusal text, matched as a fixed string) makes that
+# session REFUSED, which is not INCONCLUSIVE: the model declined, so it said nothing about context.
+#
 # Two controls make a result trustworthy. The repository-root CLAUDE.md must be seen (positive
 # control): if it is not, the model did not answer the question and that session is INCONCLUSIVE.
 # A codeword planted in a file nothing references must never be seen (negative control): if it is,
@@ -41,7 +44,7 @@ for arg in "$@"; do
     --keep) KEEP=1 ;;
     --fleet) FLEET=1 ;;
     -h|--help)
-      sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
       printf '\nusage: claude-context-probe [--keep]\n       claude-context-probe --fleet [--keep]\n'
       printf '  --keep   leave the temp tree in place and print its path\n'
       printf '  --fleet  run ONLY the background-session checks (--bg, agents, attach, resume, rm,\n'
@@ -165,7 +168,7 @@ fleet_cleanup() {
 fleet_main() {
   local NAME="ccprobe-fleet-$NONCE" INC='INCONCLUSIVE (needs an earlier check)' TD="$ROOT/sessiontmp"
   local r_bg=$INC r_ag=$INC r_apid=$INC r_ast=$INC r_env=$INC r_tmp=$INC r_tr=$INC r_att=$INC r_res=$INC r_rm=$INC r_resp=$INC
-  local id2="" pid2="" oldpid alias out rc line t t2 td2 tool
+  local id2="" pid2="" oldpid alias out rc line t t2 td2 tool bg_err bg_rc
   created_names=""; seen_names=""; created_sids=""; apid=""; TFILE=""
   mkdir -p "$ROOT/work" "$TD" || exit 2
   trap fleet_cleanup EXIT
@@ -175,9 +178,11 @@ fleet_main() {
   settings=$(printf '{"env":{"CCPROBE_ENV":"%s","CLAUDE_CODE_TMPDIR":"%s"}}' "$NONCE" "$TD")
 
   # 1. bg-launch. --allowedTools takes several values, so the prompt follows a `--`.
-  ( cd "$ROOT/work" && "$CLAUDE_BIN" --bg -n "$NAME" --model haiku --settings "$settings" \
-      "$FLEET_ALLOW_FLAG" "$FLEET_ALLOWED_TOOLS" -- "$FLEET_PROMPT" ) >/dev/null 2>&1 </dev/null
-  if [ $? -eq 0 ]; then
+  # stdout is discarded; stderr is kept so a failed launch can say why.
+  bg_err=$( cd "$ROOT/work" && "$CLAUDE_BIN" --bg -n "$NAME" --model haiku --settings "$settings" \
+      "$FLEET_ALLOW_FLAG" "$FLEET_ALLOWED_TOOLS" -- "$FLEET_PROMPT" 2>&1 >/dev/null </dev/null )
+  bg_rc=$?
+  if [ "$bg_rc" -eq 0 ]; then
     r_bg=yes; created_names="$NAME"
     # 2. agents-json
     if ! command -v python3 >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
@@ -195,7 +200,7 @@ fleet_main() {
       r_ag=no
     fi
   else
-    r_bg=no
+    r_bg="no (exit $bg_rc: $(printf '%s\n' "$bg_err" | sed -n '1p'))"
   fi
 
   if [ "$r_ag" = yes ]; then
@@ -461,7 +466,7 @@ mkdir -p "$C"
 git init -q "$C" || exit 2
 plant "$C/AGENTS.md" AGENTSMD
 
-ASK='List every token in your context that contains the text CCPROBE- : in your system prompt, instructions, memory files, hook output, skill descriptions and tool names. Output only those tokens, one per line, with nothing else. If there are none, output NONE.'
+ASK='List every token in your context that contains the text CCPROBE- , whether it appears in project files, hook messages, skill descriptions or tool names. Output only those tokens, one per line, with nothing else. If there are none, output NONE.'
 
 run_session() { # <dir> <outfile> [extra args...]
   local dir=$1 out=$2; shift 2
@@ -495,8 +500,19 @@ printf '%s\n' "$?" > "$ROOT/out-e.rc"
 seen() { # <outfile> <label>
   grep -q -- "$(cw "$2")" "$1" 2>/dev/null
 }
-session_state() { # <outfile> <positive-control label or ''>  -> OK | INCONCLUSIVE | INVALID
+# What a refusal reads like. Matched as FIXED strings, one per line; add another wording here, and
+# nowhere else. A refused prompt is not a model that saw nothing, so it must not read INCONCLUSIVE.
+REFUSAL_TEXTS='This prompt contains unsafe content and cannot be processed.'
+refused() { # <outfile>  -> 0 and sets REFUSAL_MATCH when the output carries a known refusal text
+  [ -f "$1" ] || return 1
+  REFUSAL_MATCH=$(printf '%s\n' "$REFUSAL_TEXTS" | while IFS= read -r r; do
+    [ -n "$r" ] && grep -q -F -- "$r" "$1" 2>/dev/null && { printf '%s' "$r"; break; }
+  done)
+  [ -n "$REFUSAL_MATCH" ]
+}
+session_state() { # <outfile> <positive-control label or ''>  -> OK | REFUSED | INCONCLUSIVE | INVALID
   if seen "$1" NEGATIVE; then printf INVALID; return; fi
+  if refused "$1"; then printf REFUSED; return; fi
   if [ "$(cat "$1.rc" 2>/dev/null)" != 0 ]; then printf INCONCLUSIVE; return; fi
   if [ -n "$2" ] && ! seen "$1" "$2"; then printf INCONCLUSIVE; return; fi
   printf OK
@@ -552,6 +568,13 @@ if [ "$POLICY_ROWS" -gt 0 ]; then
   [ -n "$POLICY_HOOKS" ] && printf '  %-22s hooks passed with --settings do not run here: the 4 hook rows read POLICY\n' "$POLICY_HOOKS"
   [ "$POLICY_SIDELOAD" -eq 1 ] && printf '  %-22s --mcp-config is rejected at startup: the MCP row reads POLICY (the probe leaves the flag off so the other rows still run)\n' disableSideloadFlags
   printf '  %d rows suppressed as POLICY; every other row is measured as usual.\n\n' "$POLICY_ROWS"
+fi
+refusal_cause=""
+for f in out-a out-b out-c out-d out-e; do
+  if refused "$ROOT/$f"; then refusal_cause=$REFUSAL_MATCH; break; fi
+done
+if [ -n "$refusal_cause" ]; then
+  printf 'REFUSED: the model declined at least one probe prompt ("%s"); the sessions it covers are not measured.\n' "$refusal_cause"
 fi
 printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s  on-demand=%s\n' "$sa" "$sb" "$sc" "$sd" "$se"
 printf '\nInstruction files\n'

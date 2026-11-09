@@ -3,12 +3,15 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""fleet-slot -- the timing slot: who may run heavy work on this machine now, and who is waiting.
+"""fleet-slot -- the timing slot: who may run work that must not overlap on this machine now, and who is waiting.
 
 WHY. Several long-running sessions share one machine. A timed measurement, or a suite heavy enough
 to skew one, taken while another session is doing the same, measures the contention rather than the
-work. So heavy work takes turns: a session asks for the slot, an arbiter grants it, the holder
-releases it when done. Run by message, that queue lives in one session's context, where no other
+work. So that work takes turns: a session asks for the slot, an arbiter grants it, the holder
+releases it when done. Which work needs the slot is the domain's practice, not this tool's: a timed
+sample always does (`loop-time run` refuses while another session holds it); whether gates, builds
+and other heavy suites also take turns is the domain's call, and the commit gate and `land check`
+only warn about a held slot, so they never wait on it. Run by message, that queue lives in one session's context, where no other
 session can read it and nothing records it. This tool keeps it in a file every session can read.
 
 WHAT IT DOES NOT DO. It decides nothing and sends nothing. The order in which waiting sessions are

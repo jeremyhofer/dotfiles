@@ -1,5 +1,5 @@
 #!/bin/sh
-# Test the per-machine skill exclusion: a skill named in the skipSkills config value is ignored
+# Test the per-machine and per-domain exclusions in .chezmoiignore. The per-machine skill exclusion: a skill named in the skipSkills config value is ignored
 # (neither its directory nor anything under it deploys), no other skill is, an unset value ignores
 # nothing, and regenerating the config keeps the value, since a key added by hand to a generated
 # config would otherwise be lost at the next `chezmoi init`.
@@ -10,8 +10,8 @@ src=$(cd "$here/.." && pwd)
 command -v chezmoi >/dev/null 2>&1 || { echo "SKIP: chezmoi not installed"; exit 0; }
 tmp=$(mktemp -d "$_TMP/test-skip-skills.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 
-render() {  # $1 = TOML data lines for a throwaway config; renders the source's .chezmoiignore
-  printf 'sourceDir = "%s"\n[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n%s\n' "$src" "$1" > "$tmp/c.toml"
+render() {  # $1 = TOML data lines for a throwaway config, $2 = domain; renders the source's .chezmoiignore
+  printf 'sourceDir = "%s"\n[data]\n    domain = "%s"\n    overlayRepo = ""\n    dpi = "120"\n%s\n' "$src" "${2:-personal}" "$1" > "$tmp/c.toml"
   chezmoi --config "$tmp/c.toml" --source "$src" --persistent-state "$tmp/s.db" \
     execute-template < "$src/.chezmoiignore"
 }
@@ -24,6 +24,12 @@ if printf '%s\n' "$out" | grep -q '^\.claude/skills/scratch-copies'; then echo "
 
 out=$(render '')
 if printf '%s\n' "$out" | grep -q '^\.claude/skills/'; then echo "FAIL: skills ignored with skipSkills unset"; echo "$out" | grep '^\.claude/skills/'; exit 1; fi
+
+# A personal-domain tool stays off a work machine: image-bump deploys in the personal domain only.
+out=$(render '' work)
+printf '%s\n' "$out" | grep -qx '.local/bin/image-bump' || { echo "FAIL: image-bump is not ignored on the work domain"; exit 1; }
+out=$(render '' personal)
+if printf '%s\n' "$out" | grep -qx '.local/bin/image-bump'; then echo "FAIL: image-bump is ignored on the personal domain"; exit 1; fi
 
 # Regenerating the config keeps the value (and an unset value stays empty).
 printf '[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n    skipSkills = ["seo"]\n' > "$tmp/old.toml"

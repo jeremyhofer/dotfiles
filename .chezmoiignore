@@ -56,6 +56,9 @@ Library
 setup-dev-tls.sh
 # Alacritty's config is deployed in the personal domain only.
 .config/alacritty
+# image-bump moves the pinned images of self-hosted services; it is generic, so it lives in the
+# base, but it is deployed in the personal domain only.
+.local/bin/image-bump
 {{- if not (get . "machineSnapshot") }}
 # The machine-snapshot sampler records every process every 15 seconds; on a work machine it is
 # opt-in (machineSnapshot = true in the generated config), so by default neither the macOS agent and

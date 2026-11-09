@@ -24,6 +24,7 @@ trap 'rm -rf "$TMP"' EXIT
 #   leak      also report the codeword from the file nothing references
 #   silent    answer NONE
 #   fail      exit non-zero
+#   refuse    answer with a refusal message instead of tokens, and exit 0
 #   hookdrop  run the hooks but do not report their context
 #   nohooks   never run the hooks (as under a policy that blocks them)
 #   modelbash invoke the dynamic skill, then also run a shell command itself
@@ -52,6 +53,7 @@ if [ -n "${FAKE_SHAPE_LOG:-}" ] && [ "$(basename "$PWD")" = main ] && [ -e ../CL
   else echo container-other-shape >> "$FAKE_SHAPE_LOG"; fi
 fi
 [ "$mode" = fail ] && exit 3
+if [ "$mode" = refuse ]; then echo "This prompt contains unsafe content and cannot be processed."; exit 0; fi
 if [ "$mode" = silent ]; then echo NONE; exit 0; fi
 for f in CLAUDE.md AGENTS.md; do [ -f "$f" ] && grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$f"; done
 # A rules file without a paths: scope loads at session start.
@@ -93,10 +95,14 @@ EOF
 chmod +x "$TMP/claude"
 export CLAUDE_CONTEXT_PROBE_CLAUDE="$TMP/claude"
 
-run() { FAKE_MODE=$1 bash "$PROBE" 2>/dev/null; }
+# Every case reads managed settings from a fixture with no policy keys, never the machine's own
+# (/etc/claude-code, or /Library/Application Support/ClaudeCode on macOS): a managed machine's
+# hook policy would otherwise change the rows these cases assert.
+echo '{}' > "$TMP/clean-managed.json"
+run() { env CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS="$TMP/clean-managed.json" FAKE_MODE=$1 bash "$PROBE" 2>/dev/null; }
 
 printf '\n== the container fixture has the current shape ==\n'
-: > "$TMP/shape.log"; FAKE_SHAPE_LOG="$TMP/shape.log" FAKE_MODE=normal bash "$PROBE" >/dev/null 2>&1
+: > "$TMP/shape.log"; FAKE_SHAPE_LOG="$TMP/shape.log" FAKE_MODE=normal CLAUDE_CONTEXT_PROBE_MANAGED_SETTINGS="$TMP/clean-managed.json" bash "$PROBE" >/dev/null 2>&1
 grep -q container-git-is-bare-repo "$TMP/shape.log" && ! grep -q container-other-shape "$TMP/shape.log" \
   && ok "the container's .git is the bare repository, with no .bare" || bad "container fixture shape" "$(cat "$TMP/shape.log")"
 
@@ -147,6 +153,18 @@ printf '\n== a model that answers nothing ==\n'
 out=$(run silent); rc=$?
 [ "$rc" -ne 0 ] && has "$out" 'bare-container=INCONCLUSIVE' && ! has "$out" 'NOT loaded' \
   && ok "INCONCLUSIVE, never a wall of NOT loaded" || bad "silent model read as NOT loaded" "rc=$rc: $out"
+
+printf '\n== a model that refuses the prompt ==\n'
+out=$(run refuse); rc=$?
+[ "$rc" -ne 0 ] && has "$out" 'bare-container=REFUSED' && has "$out" 'plain-clone=REFUSED' && has "$out" 'agents-only=REFUSED' \
+  && ok "a refusal is REFUSED on the session, with a non-zero exit status" || bad "refusal not REFUSED" "rc=$rc: $out"
+has "$out" 'positive control) *REFUSED' && ! has "$out" 'INCONCLUSIVE' \
+  && ok "rows read REFUSED, never INCONCLUSIVE or NOT loaded" || bad "refused rows misread" "$out"
+has "$out" '^REFUSED: .*unsafe content' && ok "a one-line cause names the refusal" || bad "no cause line" "$out"
+out=$(run normal)
+! has "$out" 'REFUSED' && ok "an honest run mentions no refusal" || bad "REFUSED on an honest run" "$out"
+out=$(run silent)
+! has "$out" 'REFUSED' && has "$out" 'bare-container=INCONCLUSIVE' && ok "a silent model stays INCONCLUSIVE, not REFUSED" || bad "silent misread as refusal" "$out"
 
 printf '\n== a session that fails ==\n'
 out=$(run fail); rc=$?

@@ -259,6 +259,25 @@ has an environment variable that overrides it for one run (`fleet-canonicals --h
 is meant for a Claude Code hook the private layer declares in its settings fragment; where hooks are
 not permitted it can be run by hand.
 
+## Context budget: `~/.dotlocal/context-budget`
+
+`context-footprint` measures the always-on context a Claude Code session carries and compares it
+with a token budget. The base's default is 25000; a domain with a different target declares it in
+`~/.dotlocal/context-budget`, a fragment file like the others in this page, because the number is
+the domain's policy rather than a path or a credential (which is what `~/.config/<tool>/` holds).
+
+The file holds one positive integer of tokens. Blank lines and `#` comments are ignored.
+
+```text
+# ~/.dotlocal/context-budget
+40000
+```
+
+Precedence, highest first: the environment variable `CONTEXT_BUDGET_TOKENS` (for one run), the file,
+the default. A file that is empty, or whose first value is not a positive integer, is reported on
+stderr and the default is used; the tool does not guess. Without the file the default applies.
+Check it with `context-footprint --no-delta`: the `budget` row shows the value in force.
+
 ## Worktrees
 
 ### `~/.dotlocal/worktrunk.toml`

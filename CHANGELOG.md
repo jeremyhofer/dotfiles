@@ -64,7 +64,7 @@ this follows. The private-layer steps happen in that layer's repository, before 
      `<directory>/.claude/settings.json`. A directory session's grants go only in its own file.
      Claude Code reads the root's `.claude/settings.local.json` for every session in the
      repository and saves there an approval from any of them, so keep the root's
-     `claudeLocalSettings` to what every session may have. `claude-project-settings check` (step 6)
+     `claudeLocalSettings` to what every session may have. `claude-project-settings check` (step 7)
      reports each permission rule in that root file, and any leftover
      `<directory>/.claude/settings.local.json`, as drift to resolve: a rule a seat needs is declared
      in that seat's own file, and each is removed from the root's (2026-11-08, `claudeDirSettings`,
@@ -72,23 +72,27 @@ this follows. The private-layer steps happen in that layer's repository, before 
      ACTION, and "permission rules declarable in a directory's file").
    - Optionally, `ensureAllow` in the settings fragment for rules every machine should allow
      (2026-11-08, `ensureAllow`).
+   - Optionally, the domain's always-on context budget in `~/.dotlocal/context-budget`
+     (2026-11-08, "`context-footprint` takes a domain budget").
    - A clone whose integration branch is not its remote's default:
      `git config worktrunk.default-branch <branch>`, or `git-branch-gone` judges against the wrong
      branch and refuses (2026-11-08, `git-branch-gone`).
 3. **Apply both instances,** `chezmoi apply` then `chezmoi-overlay apply`. Every suite runs first;
    on macOS a failing suite is reported and the apply goes ahead.
-4. **After the apply, from a terminal, for the request runner** (2026-11-08,
+4. **On a work-domain machine, after the apply:** `rm ~/.local/bin/image-bump` if it exists
+   (2026-11-08, "`image-bump` deploys in the personal domain only", ACTION).
+5. **After the apply, from a terminal, for the request runner** (2026-11-08,
    "`fleet-canonicals request` and `serve-requests`", ACTION):
    - Linux: `systemctl --user daemon-reload`, then
      `systemctl --user enable --now fleet-canonicals-requests.timer` if this machine serves requests.
    - macOS: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist`.
      Where a managed profile refuses it, run `fleet-canonicals serve-requests --loop` in a tmux pane
      instead (2026-11-08, `--loop`); it stops with the pane.
-5. **Where no status line runs,** sessions cannot be named from its usage file. `fleet-slot` and
+6. **Where no status line runs,** sessions cannot be named from its usage file. `fleet-slot` and
    `loop-time` fall back to `FLEET_SLOT_AS`, then the agents listing; set `FLEET_SLOT_AS` per session
    where the listing is unreadable, or pass `--slot-holder` (2026-11-08, "`fleet-slot` names its
    caller").
-6. **Confirm:** `sh ~/.local/share/chezmoi/setup/overlay-doctor`, then `context-footprint` (the
+7. **Confirm:** `sh ~/.local/share/chezmoi/setup/overlay-doctor`, then `context-footprint` (the
    global context grew by about 50 KB on 2026-11-06), then `claude-context-probe` and
    `claude-context-probe --fleet` from an ordinary terminal, then, where the manifest declares
    project settings, `claude-project-settings check`, resolving each rule it reports (step 2).
@@ -98,6 +102,53 @@ New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-
 `wt done`, and skill `working-with-nx`. `fleet-canonicals status` has a fourth verdict,
 `LIVE-UNLISTED`. A push to the publish remote is gated only in a clone that sets
 `dotfiles.publishRemote`.
+
+### `image-bump` deploys in the personal domain only — ACTION on a work-domain machine
+
+- `.chezmoiignore` now leaves `~/.local/bin/image-bump` undeployed where `domain` is `work`. The tool
+  stays in the base, since it is generic; its suites still run from the checkout on every machine.
+- Ignoring stops future deploys only. **On a work-domain machine that already has it, remove it after
+  the apply:** `rm ~/.local/bin/image-bump`.
+- Its InRelease check now reads the signed text from `gpgv --output -` instead of a file gpgv is
+  asked to write, and a gpgv that verifies but returns no text is refused (exit 4) rather than ending
+  in a traceback. That was the `FileNotFoundError …/InRelease.text` seen with a newer GnuPG; verified
+  on GnuPG 2.4.9 only.
+
+### `fleet-canonicals`: a seat whose job went `done`, and a row stuck at `working`
+
+- `claude agents --json` leaves out a session whose job state is `done` although its process runs,
+  and a turn end sometimes writes no final state, so an idle session stays listed `working`.
+- `refresh` and `down` now act on a `done` seat with a live process: the process is treated as the
+  session, with the same self-refusal, handoff gate and worktree warning. `up` and `resume` still
+  refuse it, as before.
+- In `serve-requests`, a queued `refresh` or `down` for such a seat, and any request for a `working`
+  row with no `waitingFor`, is served only when every live pid record for the session says `idle`
+  and its transcript's last turn ended; otherwise it waits. A record saying `shell` (a background
+  shell still running) is not idle.
+- `fleet-canonicals-queue live-holders` prints the pid and session id as two more tab-separated fields.
+
+### `context-footprint` takes a domain budget; `claude-context-probe` reports REFUSED
+
+- `context-footprint` reads an optional `~/.dotlocal/context-budget`, one positive integer of tokens,
+  as the domain's budget. `CONTEXT_BUDGET_TOKENS` still wins, and the default stays 25000. A
+  malformed file is reported and the default used. A private layer may add the file; nothing breaks
+  without it (`docs/reference/private-layer.md`, "Context budget").
+- `claude-context-probe` reports a distinct `REFUSED` verdict when the model declines a probe prompt,
+  with a line quoting the refusal; its session prompt is reworded. `--fleet` shows a failed
+  `bg-launch` as `no (exit N: <first line of stderr>)`. Its suite no longer reads the machine's real
+  managed settings, which made four hook rows fail on a managed machine.
+
+### Smaller changes
+
+- `~/.claude/settings.json`: the base declares `awaySummaryEnabled: false`, so the idle recap is off
+  on every machine.
+- `claude-worktree-hook` refuses `wt remove` without `--foreground` in a session: a background removal
+  moves the worktree into worktrunk's trash and deletes it from a detached process that the end of
+  the command can kill, leaving the trash full. Empty an existing `.git/wt/trash` by deleting the whole
+  directory once no entry is a worktree `git worktree list` still names.
+- `fleet-slot`'s description says which work needs the slot is the domain's practice: a timed sample
+  always; gates and builds as the domain decides, since the commit gate and `land check` only warn.
+- `test-overlay-doctor.sh` stubs the domain for its Tier W cases, which failed on a work machine.
 
 ### `fleet-canonicals`: Remote Control at launch, `remote-control` and `canonicalRemoteControl`
 

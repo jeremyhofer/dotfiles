@@ -188,5 +188,39 @@ out=$(CONTEXT_FOOTPRINT_HOME="$T/home" CONTEXT_FOOTPRINT_ROOT="$T/proj" \
     && ok "--no-hook-probe reports the hook channel UNMEASURED, never 0" \
     || bad "--no-hook-probe reported a hook row as zero/absent: $out"
 
+# --- the budget: environment variable, then the domain's ~/.dotlocal/context-budget, then 25000 ----
+unset CONTEXT_BUDGET_TOKENS
+mkdir -p "$T/home/.dotlocal"
+budget_of() { print -r -- "$1" | awk '$1 == "budget" {print $2; exit}' }
+out=$(run --no-delta)
+[[ "$(budget_of "$out")" == 25000 ]] && ok "no domain file: the default budget, 25000" || bad "default budget wrong: $out"
+
+print '40000' > "$T/home/.dotlocal/context-budget"
+out=$(run --no-delta)
+[[ "$(budget_of "$out")" == 40000 ]] && ok "a domain's context-budget file sets the budget" || bad "domain budget not used: $out"
+
+print '# this domain keeps its always-on context small\n\n  30000  \n' > "$T/home/.dotlocal/context-budget"
+out=$(run --no-delta)
+[[ "$(budget_of "$out")" == 30000 ]] && ok "comments, blank lines and padding in the domain file are ignored" || bad "commented domain file misread: $out"
+
+out=$(CONTEXT_BUDGET_TOKENS=5000 run --no-delta)
+[[ "$(budget_of "$out")" == 5000 ]] && ok "the environment variable outranks the domain file" || bad "env did not outrank file: $out"
+
+for badval in 'lots' '0' '-5' '12k' '1 2'; do
+  print -r -- "$badval" > "$T/home/.dotlocal/context-budget"
+  out=$(run --no-delta)
+  [[ "$out" == *"context-budget"*"not a positive integer"* && "$(budget_of "$out")" == 25000 ]] \
+      && ok "malformed domain budget '$badval' is reported and the default used" \
+      || bad "malformed domain budget '$badval' not handled: $out"
+done
+: > "$T/home/.dotlocal/context-budget"
+out=$(run --no-delta)
+[[ "$out" == *"context-budget"*"no value"* && "$(budget_of "$out")" == 25000 ]] \
+    && ok "an empty domain file is reported and the default used" || bad "empty domain file not handled: $out"
+out=$(CONTEXT_BUDGET_TOKENS=5000 run --no-delta)
+[[ "$out" != *"context-budget"* ]] && ok "a malformed domain file is not read when the environment variable decides" \
+    || bad "domain file consulted despite env: $out"
+rm -f "$T/home/.dotlocal/context-budget"
+
 (( fail )) && { print "FAILURES"; exit 1 }
 print "ALL PASS"

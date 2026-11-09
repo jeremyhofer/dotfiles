@@ -169,6 +169,7 @@ row "$out" attach no && row "$out" resume-bg no && ok "an exited state is not li
 printf '\n== --bg fails ==\n'
 out=$(run bgfail); rc=$?
 [ "$rc" -ne 0 ] && row "$out" bg-launch no && ok "bg-launch no, non-zero exit" || bad "bgfail" "rc=$rc: $out"
+row "$out" bg-launch 'no (exit 1: launch failed)' && ok "bg-launch carries the exit code and the first line of stderr" || bad "bg-launch cause missing" "$out"
 for r in agents-json agents-pid agents-state settings-env tmpdir transcript attach resume-bg rm respawn; do
   row "$out" "$r" 'INCONCLUSIVE (' && ok "$r INCONCLUSIVE" || bad "$r not INCONCLUSIVE" "$out"
 done

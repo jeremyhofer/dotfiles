@@ -26,11 +26,23 @@ set -uo pipefail
 BYTES_PER_TOKEN=4
 [ -n "${CONTEXT_BYTES_PER_TOKEN:+x}" ] && BYTES_PER_TOKEN=$CONTEXT_BYTES_PER_TOKEN
 
-# Provisional, and meant to be reviewed; override with CONTEXT_BUDGET_TOKENS. A target to measure
-# against, NOT a derived capacity limit -- no measurement of where always-on context begins to
-# degrade instruction-following exists, and this number does not pretend to be one.
+# Provisional, and meant to be reviewed. A target to measure against, NOT a derived capacity limit
+# -- no measurement of where always-on context begins to degrade instruction-following exists, and
+# this number does not pretend to be one. Precedence: CONTEXT_BUDGET_TOKENS, then the domain's own
+# value in ~/.dotlocal/context-budget (one positive integer of tokens; blank lines and # comments
+# ignored), then this default. A domain value that is not usable is reported and the default kept.
 BUDGET_TOKENS=25000
-[ -n "${CONTEXT_BUDGET_TOKENS:+x}" ] && BUDGET_TOKENS=$CONTEXT_BUDGET_TOKENS
+if [ -n "${CONTEXT_BUDGET_TOKENS:+x}" ]; then
+  BUDGET_TOKENS=$CONTEXT_BUDGET_TOKENS
+elif [ -f "${CONTEXT_FOOTPRINT_HOME:-$HOME}/.dotlocal/context-budget" ]; then
+  budget_file=${CONTEXT_FOOTPRINT_HOME:-$HOME}/.dotlocal/context-budget
+  budget_val=$(sed 's/#.*//' "$budget_file" | grep -v '^[[:space:]]*$' | sed -n '1p' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  case "$budget_val" in
+    '') printf 'context-footprint: %s has no value; using the default budget %s\n' "$budget_file" "$BUDGET_TOKENS" >&2 ;;
+    *[!0-9]*|0|0[0-9]*) printf 'context-footprint: %s: "%s" is not a positive integer; using the default budget %s\n' "$budget_file" "$budget_val" "$BUDGET_TOKENS" >&2 ;;
+    *) BUDGET_TOKENS=$budget_val ;;
+  esac
+fi
 
 STATE=$HOME/.local/state/context-footprint/last.tsv
 [ -n "${CONTEXT_FOOTPRINT_STATE:+x}" ] && STATE=$CONTEXT_FOOTPRINT_STATE
@@ -50,6 +62,8 @@ while [ $# -gt 0 ]; do
     --no-hook-probe)  probe_hooks=0; shift ;;
     -h|--help)  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
                 printf '\nUsage: context-footprint [--json] [--check] [--no-delta] [--no-hook-probe]\n'
+                printf '  budget (tokens)  CONTEXT_BUDGET_TOKENS, else the one integer in\n'
+                printf '                   ~/.dotlocal/context-budget (a domain'"'"'s own target), else 25000.\n'
                 printf '  --no-hook-probe  do not execute plugin SessionStart hooks to size their\n'
                 printf '                   injected output; that row then reports UNMEASURED.\n'; exit 0 ;;
     *) die "unknown argument '$1' (see --help)" ;;

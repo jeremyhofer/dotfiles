@@ -539,6 +539,22 @@ expect "InRelease is used when Release.gpg is absent" 0 "verified the Release"
 world SIGFORM=inrelease SIGNER=evil
 go check vector 1.1.0
 expect "a clearsigned InRelease from another key is refused" 4 "is not signed by the pinned key"
+# A gpgv that reports a good signature but returns no signed text (exits 0, writes no file, prints
+# no text) is refused with a message, not a traceback from reading a file that is not there.
+mkdir -p "$w/notext"
+cat > "$w/notext/gpgv" <<STUB
+#!/bin/sh
+line="[GNUPG:] VALIDSIG $GOOD_FPR 2026-01-01 1767225600 0 4 0 1 10 01 $GOOD_FPR"
+case " \$* " in *" --status-fd 1 "*) echo "\$line" ;; *) echo "\$line" >&2 ;; esac
+exit 0
+STUB
+chmod +x "$w/notext/gpgv"
+world SIGFORM=inrelease
+oldpath=$PATH; PATH="$w/notext:$PATH"
+go check vector 1.1.0
+PATH=$oldpath
+expect "a gpgv that returns no signed text is refused" 4 "returned no signed text"
+lacks "  and not with a traceback" "Traceback" "$w/err"
 
 # --- a plain-http repository is not a pin
 world
