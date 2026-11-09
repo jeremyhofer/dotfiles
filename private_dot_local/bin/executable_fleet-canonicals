@@ -1907,7 +1907,7 @@ warn_if_worktree() {
 # `--force-self` is deliberately gone rather than left as an escape hatch.
 cmd_refresh() {
   local dry=0 stub_set=0 stub_text="" name="" json script self_pid rows pid id waited live holder
-  local force_set=0 force_text=""
+  local force_set=0 force_text="" gate_json
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1; shift ;;
@@ -1938,6 +1938,22 @@ cmd_refresh() {
 
   json=$(agents_json)
   rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
+  gate_json=$json
+
+  # A seat whose job went `done` is left out of the live listing while its process still runs
+  # (measured: an idle session resumed after the supervisor's idle stop). With no live row, `up`
+  # would refuse because that process holds the name, and nothing else could stop it, so the
+  # process is the session here: the guards below and close_one apply to its pid and job id. The
+  # gate and the worktree check read the full listing, which still has the job's row.
+  if [ -z "$rows" ]; then
+    rows=$(live_holder_ids "$name")
+    if [ -n "$rows" ]; then
+      printf 'note     %-24s not in the sessions list because its job is done; its live process (pid %s) is the session\n' \
+        "$name" "${rows%% *}"
+      gate_json=$(agents_json_all)
+      json=$(printf '[{"pid":%s}]' "${rows%% *}")
+    fi
+  fi
 
   # (2) NOT RUNNING IS NOT AN ERROR. It is the ordinary state of a canonical the morning after it
   # parked, and the old refusal ("use `up` instead") made the operator retype the whole command to
@@ -1982,8 +1998,8 @@ cmd_refresh() {
     done <<< "$rows"
   fi
 
-  handoff_gate "$name" "$json" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
-  warn_if_worktree "$name" "$json"
+  handoff_gate "$name" "$gate_json" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
+  warn_if_worktree "$name" "$gate_json"
 
   while IFS=' ' read -r pid id; do
     [ -n "$pid" ] || continue
@@ -2036,7 +2052,7 @@ cmd_refresh() {
 # rather than in a warning nobody reads. `--all` says it out loud when it is genuinely wanted.
 cmd_down() {
   local dry=0 all=0 wanted="" json self_pid targets=0 rows name pid id
-  local stub_set=0 stub_text="" holder_pid
+  local stub_set=0 stub_text="" holder_pid gate_json unl
   local force_set=0 force_text=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2079,10 +2095,17 @@ cmd_down() {
   if [ "$all" = "0" ]; then
     for name in $wanted; do
       holder_pid=$(holder_field "$json" "$name" pid)
-      [ -n "$holder_pid" ] || continue
+      gate_json=$json
+      if [ -z "$holder_pid" ]; then
+        # No live row: a process whose job went `done` is the session (see cmd_refresh).
+        holder_pid=$(live_holder_ids "$name"); holder_pid=${holder_pid%% *}
+        [ -n "$holder_pid" ] || continue
+        is_self_pid "$holder_pid" && continue
+        gate_json=$(agents_json_all)
+      fi
       if [ -n "$self_pid" ] && [ "$holder_pid" = "$self_pid" ]; then continue; fi
-      handoff_gate "$name" "$json" "$stub_set" "$stub_text" down "$force_set" "$force_text"
-      warn_if_worktree "$name" "$json"
+      handoff_gate "$name" "$gate_json" "$stub_set" "$stub_text" down "$force_set" "$force_text"
+      warn_if_worktree "$name" "$gate_json"
     done
   fi
 
@@ -2091,13 +2114,21 @@ cmd_down() {
     # Report rather than pass silently. With --all a not-running canonical is unremarkable, but a
     # NAMED one that is not running is either a typo or a wrong assumption, and a stop that prints
     # nothing is indistinguishable from one that did nothing.
+    unl=0
     if [ -z "$rows" ]; then
-      [ "$all" = "1" ] || printf 'not running %-20s nothing to stop\n' "$name"
-      continue
+      rows=$(live_holder_ids "$name")
+      if [ -n "$rows" ]; then
+        unl=1
+        printf 'note     %-24s not in the sessions list because its job is done; its live process (pid %s) is the session\n' \
+          "$name" "${rows%% *}"
+      else
+        [ "$all" = "1" ] || printf 'not running %-20s nothing to stop\n' "$name"
+        continue
+      fi
     fi
     while IFS=' ' read -r pid id; do
       [ -n "$pid" ] || continue
-      if [ -n "$self_pid" ] && [ "$pid" = "$self_pid" ]; then
+      if { [ -n "$self_pid" ] && [ "$pid" = "$self_pid" ]; } || { [ "$unl" = "1" ] && is_self_pid "$pid"; }; then
         printf 'skip     %-24s pid %s is this session\n' "$name" "$pid"
         continue
       fi
@@ -2392,7 +2423,26 @@ live_holder() {
   local q
   q=$(queue_script) || return 0
   command -v uv >/dev/null 2>&1 || return 0
-  uv run --quiet --script "$q" live-holders "$1" 2>/dev/null | head -n 1 | cut -f 2-
+  uv run --quiet --script "$q" live-holders "$1" 2>/dev/null | head -n 1 | cut -f 2
+}
+
+# live_holder_ids <name> -> "<pid> <job id>" for the live process live_holder found, or nothing. The
+# job id is the first 8 characters of the process's session id, which is what the agents view and
+# `claude rm` call a job. Needed because such a process has no row in the live listing to read them
+# from: its job went `done` and the listing leaves those out.
+live_holder_ids() {
+  local q
+  q=$(queue_script) || return 0
+  command -v uv >/dev/null 2>&1 || return 0
+  uv run --quiet --script "$q" live-holders "$1" 2>/dev/null | head -n 1 \
+    | awk -F '\t' '$3 != "" && $4 != "" { print $3, substr($4, 1, 8) }'
+}
+
+# is_self_pid <pid> -> success when this command runs inside that process. self_pid_from_json only
+# knows the pids a listing shows, so a process the live listing omits is checked through a listing
+# of just that pid.
+is_self_pid() {
+  [ "$(self_pid_from_json "[{\"pid\":$1}]")" = "$1" ]
 }
 
 case "${1:-}" in

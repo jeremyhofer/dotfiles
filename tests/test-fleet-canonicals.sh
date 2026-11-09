@@ -538,6 +538,56 @@ else
   print "SKIP: uv is not installed, so the live-holder cases cannot run the queue"
 fi
 
+# A seat whose job went `done` while its process lives: the live listing leaves it out, the full one
+# keeps it. refresh and down treat the process as the session; up still refuses it.
+if command -v uv >/dev/null 2>&1; then
+  DPID=4999991   # above any pid_max: the cases below are dry runs, and nothing could reach a real process
+  print '[]' > "$TMPROOT/dn-live.json"
+  print '[{"id":"dn000001","name":"delta-canonical","state":"done","sessionId":"dn000001-sess","cwd":"/x","kind":"background","startedAt":1000}]' > "$TMPROOT/dn-all.json"
+  mkdir -p "$TMPROOT/fcstate"
+  print "orientation" > "$TMPROOT/dn-handoff.md"
+  print "$TMPROOT/dn-handoff.md" >  "$TMPROOT/fcstate/delta-canonical.handoff"
+  print "# set-at $(date +%s)"           >> "$TMPROOT/fcstate/delta-canonical.handoff"
+  dnfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$TMPROOT/fcstate" FLEET_RECORD="$TMPROOT/rec.yaml" \
+           FLEET_AGENTS_JSON_CMD="cat $TMPROOT/dn-live.json" FLEET_AGENTS_JSON_ALL_CMD="cat $TMPROOT/dn-all.json" \
+           bash "$TOOL" "$@" 2>&1 }
+  dn_holder() {  # dn_holder PID -- a live pid record and /proc entry for the done seat's process
+    jq -n --argjson p "$1" '{pid:$p, sessionId:"dn000001-sess", kind:"bg", name:"delta-canonical", procStart:"777", status:"idle"}' \
+      > "$FLEET_PID_RECORD_DIR/$1.json"
+    mkdir -p "$FLEET_PROC_ROOT/$1"
+    print "$1 (claude) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 777 1 1" > "$FLEET_PROC_ROOT/$1/stat"
+  }
+  dn_holder $DPID
+  out=$(dnfc refresh delta-canonical --dry-run); rc=$?
+  [[ $rc -eq 0 && "$out" == *"job is done"* && "$out" == *"would refresh"*"delta-canonical"*"pid $DPID"*"dn000001"* && "$out" == *"would start"* ]] \
+      && ok "refresh acts on a done seat whose process lives: stops that process and job, then starts" \
+      || bad "refresh of a done seat with a live holder (rc=$rc): $out"
+  out=$(dnfc down delta-canonical --dry-run); rc=$?
+  [[ $rc -eq 0 && "$out" == *"job is done"* && "$out" == *"would stop"*"delta-canonical"*"pid $DPID"*"dn000001"* && "$out" == *"1 target(s)"* ]] \
+      && ok "down acts on a done seat whose process lives" || bad "down of a done seat with a live holder (rc=$rc): $out"
+  out=$(dnfc up delta-canonical --dry-run)
+  [[ "$out" == *"REFUSED"*"delta-canonical"*"live process"* && "$out" != *"would start"* ]] \
+      && ok "up still refuses a done seat whose process lives" || bad "up of a done seat with a live holder: $out"
+  # The guards stay: a holder that is this session's ancestor is never stopped, and with no
+  # handoff recorded refresh still refuses before it stops anything.
+  rm -f "$FLEET_PID_RECORD_DIR/$DPID.json"; rm -rf "$FLEET_PROC_ROOT/$DPID"
+  dn_holder $$
+  out=$(dnfc refresh delta-canonical --dry-run); rc=$?
+  [[ $rc -ne 0 && "$out" == *"running inside"* && "$out" != *"would refresh"* ]] \
+      && ok "refresh refuses a done seat whose process is the session running it" || bad "self refresh of a done seat (rc=$rc): $out"
+  out=$(dnfc down delta-canonical --dry-run)
+  [[ "$out" == *"skip"*"is this session"* && "$out" == *"0 target(s)"* ]] \
+      && ok "down skips a done seat whose process is the session running it" || bad "self down of a done seat: $out"
+  rm -f "$FLEET_PID_RECORD_DIR/$$.json"; rm -rf "$FLEET_PROC_ROOT/$$"
+  dn_holder $DPID
+  mv "$TMPROOT/fcstate/delta-canonical.handoff" "$TMPROOT/fcstate/delta-canonical.handoff.off"
+  out=$(dnfc refresh delta-canonical --dry-run); rc=$?
+  [[ $rc -ne 0 && "$out" == *"no handoff is recorded"* && "$out" != *"would refresh"* ]] \
+      && ok "refresh of a done seat still runs the handoff gate before stopping" || bad "gate skipped for a done seat (rc=$rc): $out"
+  mv "$TMPROOT/fcstate/delta-canonical.handoff.off" "$TMPROOT/fcstate/delta-canonical.handoff"
+  rm -f "$FLEET_PID_RECORD_DIR/$DPID.json"; rm -rf "$FLEET_PROC_ROOT/$DPID"
+fi
+
 # The safety property: an unrecognized name must be REFUSED, never fall through to "no filter".
 out=$(fc up delta-canonicl --dry-run); rc=$?
 [[ $rc -ne 0 && "$out" == *"not a canonical declared for this machine"* ]] \

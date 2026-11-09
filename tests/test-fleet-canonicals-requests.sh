@@ -539,6 +539,73 @@ pid_record 4242 alpha-canonical 777; proc_alive 4242 777
 plant r-lp6 down alpha-canonical alpha-canonical
 serve >/dev/null; expect r-lp6 done "" "a live process the list does show is left to the working check"
 
+# A `working` row with no waitingFor. Measured: a turn end sometimes writes no final job state, so the
+# listing says `working` for a session that is idle. It counts as idle only when the session's own pid
+# record says `idle` AND its transcript's last turn ended; either alone is not enough.
+FAKE_PID=4999991   # above any pid_max, so a stop of it can never reach a real process
+reset; live_row wk000001 alpha-canonical working s-wk; transcript s-wk ended; pid_for $FAKE_PID alpha-canonical s-wk idle
+plant r-wk1 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-wk1 done "" "a working row with an idle pid record and an ended turn is served"
+reset; live_row wk000002 alpha-canonical working s-wk; transcript s-wk ended; pid_for $FAKE_PID alpha-canonical s-wk shell
+plant r-wk2 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-wk2 waiting working "a working row whose pid record says shell waits"
+[[ "$(result r-wk2 detail)" == *"'shell'"*"not idle"* && ! -s "$CLAUDE_LOG" ]] \
+  && ok "...the reason names the pid record's status and nothing was stopped" || bad "wk2: $(result r-wk2 detail); claude: $(cat "$CLAUDE_LOG")"
+reset; live_row wk000003 alpha-canonical working s-wk; transcript s-wk working; pid_for $FAKE_PID alpha-canonical s-wk idle
+plant r-wk3 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-wk3 waiting working "a working row with an idle record but a turn that has not ended waits"
+[[ "$(result r-wk3 detail)" == *"last turn has not ended"* ]] && ok "...the reason names the transcript" || bad "wk3: $(result r-wk3 detail)"
+reset; live_row wk000004 alpha-canonical working s-wk; transcript s-wk ended
+plant r-wk4 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-wk4 waiting working "a working row with no pid record at all waits"
+reset; live_row wk000005 alpha-canonical working s-wk; transcript s-wk ended; pid_for $FAKE_PID alpha-canonical s-wk busy
+plant r-wk5 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-wk5 waiting working "a working row whose pid record says busy waits"
+reset; live_row wk000006 alpha-canonical working s-wk; transcript s-wk ended; pid_for $FAKE_PID alpha-canonical s-wk idle
+jq 'map(.waitingFor = "permission prompt")' "$T/agents.json" > "$T/agents.n" && mv "$T/agents.n" "$T/agents.json"
+plant r-wk6 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-wk6 waiting working "a working row with a waitingFor waits whatever its record says"
+
+# A seat whose job went `done` while its process lives is left out of the live listing but is in the
+# full one. refresh and down act on it when the process is idle and its turn ended; up and resume
+# still refuse it.
+done_row() {  # done_row ID NAME SESSION -- an unlisted (not live) row for a session
+  jq --arg i "$1" --arg n "$2" --arg sid "$3" \
+    '. + [{id:$i, name:$n, state:"done", sessionId:$sid, cwd:"/x", kind:"background", startedAt:1000}]' \
+    "$T/agents.json" > "$T/agents.n" && mv "$T/agents.n" "$T/agents.json"
+}
+reset; done_row dn000001 alpha-canonical dn000001-sess; transcript dn000001-sess ended; pid_for $FAKE_PID alpha-canonical dn000001-sess idle
+plant r-dn1 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-dn1 done "" "a refresh of a done seat with a live, idle process is served"
+[[ "$(cat "$CLAUDE_LOG")" == *"rm dn000001"* && "$(cat "$CLAUDE_LOG")" == *"--bg"* ]] \
+  && ok "...the launcher removed the unlisted job and relaunched the seat" || bad "dn1 claude calls: $(cat "$CLAUDE_LOG"); $(result r-dn1 output)"
+[[ "$(sed -n '/rm dn000001/=' "$CLAUDE_LOG" | head -1)" -lt "$(sed -n '/--bg/=' "$CLAUDE_LOG" | head -1)" ]] \
+  && ok "...and stopped it before launching" || bad "dn1 order: $(cat "$CLAUDE_LOG")"
+reset; done_row dn000002 alpha-canonical dn000002-sess; transcript dn000002-sess ended; pid_for $FAKE_PID alpha-canonical dn000002-sess busy
+plant r-dn2 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-dn2 waiting live-process "a refresh of a done seat whose process is busy is not served"
+[[ ! -s "$CLAUDE_LOG" ]] && ok "...and nothing was stopped" || bad "dn2 claude calls: $(cat "$CLAUDE_LOG")"
+reset; done_row dn000003 alpha-canonical dn000003-sess; transcript dn000003-sess ended; pid_for $FAKE_PID alpha-canonical dn000003-sess shell
+plant r-dn3 down alpha-canonical director-canonical
+serve >/dev/null; expect r-dn3 waiting live-process "a down of a done seat with a background shell running is not served"
+reset; done_row dn000004 alpha-canonical dn000004-sess; transcript dn000004-sess working; pid_for $FAKE_PID alpha-canonical dn000004-sess idle
+plant r-dn4 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-dn4 waiting live-process "a done seat whose record is idle but whose turn has not ended waits"
+reset; done_row dn000005 alpha-canonical dn000005-sess; pid_for $FAKE_PID alpha-canonical dn000005-sess idle
+plant r-dn5 refresh alpha-canonical director-canonical
+serve >/dev/null; expect r-dn5 refused live-process "a done seat whose transcript cannot be read is refused (fail closed)"
+reset; done_row dn000006 alpha-canonical dn000006-sess; transcript dn000006-sess ended; pid_for $FAKE_PID alpha-canonical dn000006-sess idle
+plant r-dn6 down alpha-canonical director-canonical
+serve >/dev/null; expect r-dn6 done "" "a down of a done seat with a live, idle process is served"
+[[ "$(cat "$CLAUDE_LOG")" == *"rm dn000006"* && "$(cat "$CLAUDE_LOG")" != *"--bg"* ]] \
+  && ok "...it was stopped and not relaunched" || bad "dn6 claude calls: $(cat "$CLAUDE_LOG")"
+reset; done_row dn000007 alpha-canonical dn000007-sess; transcript dn000007-sess ended; pid_for $FAKE_PID alpha-canonical dn000007-sess idle
+plant r-dn7 up alpha-canonical director-canonical
+serve >/dev/null; expect r-dn7 refused live-process "up still refuses a done seat whose process lives, idle or not"
+reset; done_row dn000008 alpha-canonical dn000008-sess; transcript dn000008-sess ended; pid_for $FAKE_PID alpha-canonical dn000008-sess idle
+plant r-dn8 resume alpha-canonical director-canonical
+serve >/dev/null; expect r-dn8 refused live-process "resume still refuses a done seat whose process lives"
+
 # what the runner starts gets the runner's caller's PATH, without uv's environment for the queue
 reset; plant r-env up alpha-canonical alpha-canonical
 serve >/dev/null; expect r-env done "" "up runs (the PATH case's control)"

@@ -641,11 +641,12 @@ def pid_alive(pid: int, proc_start: str) -> bool:
     return True
 
 
-def live_pid_records(name: str) -> list[str]:
-    """The pid records under ~/.claude/sessions that name this canonical and whose process is
-    alive. These are Claude Code's own per-process files (undocumented, read as the transcripts
-    are: a field missing or renamed finds nothing, which is today's behavior without this check)."""
-    found = []
+def live_pid_entries(name: str) -> list[tuple[int, str, str]]:
+    """(pid, session id, description) for each pid record under ~/.claude/sessions that names this
+    canonical and whose process is alive. These are Claude Code's own per-process files
+    (undocumented, read as the transcripts are: a field missing or renamed finds nothing, which is
+    today's behavior without this check). The session id is empty when the record carries none."""
+    found: list[tuple[int, str, str]] = []
     try:
         files = sorted(PID_RECORDS.glob("*.json"))
     except OSError:
@@ -658,8 +659,13 @@ def live_pid_records(name: str) -> list[str]:
         if not isinstance(d, dict) or d.get("name") != name or not isinstance(d.get("pid"), int):
             continue
         if pid_alive(d["pid"], str(d.get("procStart") or "")):
-            found.append(f"pid {d['pid']} ({f})")
+            found.append((d["pid"], str(d.get("sessionId") or ""), f"pid {d['pid']} ({f})"))
     return found
+
+
+def live_pid_records(name: str) -> list[str]:
+    """A description of each live process whose pid record names this canonical."""
+    return [desc for _pid, _sid, desc in live_pid_entries(name)]
 
 
 def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
@@ -674,9 +680,38 @@ def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
     holders = live_pid_records(req["name"])
     if not holders:
         return None
+    if req["verb"] in STOPPING:
+        # A stop or refresh may act on such a process, as the working check does on a listed row,
+        # but only when it is provably between turns: every record for the name says `idle` and the
+        # session's last turn ended. `fleet-canonicals` then treats the process as the session.
+        # The same two signals as a stuck `working` row; anything else waits, so a queued request
+        # never ends a turn in progress.
+        return unlisted_idle_signals(req["name"])
     return (f"'{req['name']}' has no live row in the sessions list, but a live process holds the "
             f"name: {holders[0]}. The list cannot be trusted for it, so nothing is done; its "
             "operator decides, from a terminal")
+
+
+def unlisted_idle_signals(name: str) -> "str | Wait | None":
+    """None when the live process behind a canonical the listing omits is idle between turns; else
+    a Wait (a signal says a turn may be running) or a refusal (a signal cannot be read)."""
+    entries = live_pid_entries(name)
+    statuses = []
+    for pid, sid, _desc in entries:
+        statuses += pid_record_statuses(name, sid) if sid else [""]
+    if not statuses or any(st != "idle" for st in statuses):
+        return Wait(f"'{name}' has no live row in the sessions list (its job is done) but a live "
+                    f"process holds the name, and its own pid record says "
+                    f"'{', '.join(statuses) or 'nothing'}', not idle")
+    for pid, sid, _desc in entries:
+        ended = transcript_turn_ended(sid)
+        if ended is None:
+            return (f"'{name}' has a live process (pid {pid}) but its transcript cannot be read, so "
+                    "work in flight cannot be ruled out")
+        if not ended:
+            return Wait(f"'{name}' has a live process (pid {pid}) with no live row; its pid record "
+                        "says idle but its transcript's last turn has not ended")
+    return None
 
 
 def pid_record_statuses(name: str, session_id: str) -> list[str]:
@@ -848,6 +883,18 @@ def parked_signals(name: str, session_id: str, placed_under: str = "") -> str | 
     return handoff_since_start(name, session_id)
 
 
+def stuck_working_signals(name: str, session_id: str) -> str | None:
+    """None when the session's own pid record says it is idle, for a `working` row with no
+    waitingFor; else which signal fails. Every live record for the session must say exactly `idle`,
+    and there must be one: with none, nothing says the turn is over."""
+    statuses = pid_record_statuses(name, session_id)
+    if not statuses:
+        return "no live pid record says the session is idle"
+    if any(st != "idle" for st in statuses):
+        return f"the session's own pid record says '{', '.join(statuses)}', not idle"
+    return None
+
+
 def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
     if req["verb"] not in STOPPING + ("resume",):
         return None
@@ -885,7 +932,16 @@ def check_working(req: dict, ctx: Pass, path: Path) -> str | None:
             needs = job_needs(str(row.get("id") or ""))
             asked = f" (its last turn asked: {needs})" if needs else ""
             why = f" with no waitingFor, so its last turn ended asking its human something{asked}, and " + (parked or "")
-        if not (state == "blocked" and not row.get("waitingFor") and parked is None):
+        stuck = None
+        if state == "working" and not row.get("waitingFor"):
+            # Measured 2026-11-08: a turn end sometimes writes no final job state, so the listing
+            # keeps saying `working` for a session that is idle (seen for over an hour). Accepted as
+            # idle only on two independent signals: its own pid record says `idle` (`shell` means a
+            # background shell still runs, `busy` a turn), and, below, the transcript's last turn ended.
+            stuck = stuck_working_signals(req["name"], str(row.get("sessionId") or ""))
+            why = " with no waitingFor, and " + (stuck or "")
+        if not ((state == "blocked" and not row.get("waitingFor") and parked is None)
+                or (state == "working" and not row.get("waitingFor") and stuck is None)):
             return Wait(f"'{req['name']}' is working: the sessions list reports state '{state or 'none'}'{why} "
                         f"(not one of request-idle-states: {ctx.cfg['request-idle-states']})")
     ended = transcript_turn_ended(str(row.get("sessionId") or ""))
@@ -1093,12 +1149,12 @@ def cmd_serve(argv: list[str]) -> int:
 
 
 def cmd_live_holders(argv: list[str]) -> int:
-    """For `fleet-canonicals up` and `status`: one `<name><TAB><holder>` line per live process whose
-    Claude Code pid record names the canonical. Prints nothing where none is found, or where the
-    processes cannot be seen (inside a sandbox, other sessions' pids are hidden)."""
+    """For `fleet-canonicals`: one `<name><TAB><holder><TAB><pid><TAB><session id>` line per live
+    process whose Claude Code pid record names the canonical. Prints nothing where none is found,
+    or where the processes cannot be seen (inside a sandbox, other sessions' pids are hidden)."""
     for name in argv:
-        for h in live_pid_records(name):
-            print(f"{name}\t{h}")
+        for pid, sid, desc in live_pid_entries(name):
+            print(f"{name}\t{desc}\t{pid}\t{sid}")
     return 0
 
 

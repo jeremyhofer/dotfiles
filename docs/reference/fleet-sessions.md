@@ -284,7 +284,11 @@ No notification is sent. The runner refuses, in this order, a request that:
   a Claude Code pid record under `~/.claude/sessions/` names it and its pid is running (on Linux,
   the same process, by the record's `procStart` against `/proc/<pid>/stat`). Measured 2026-11-08:
   a canonical resumed after the supervisor's idle stop ran idle while the listing had its job as
-  `done`, so `up` would have started a second session and `resume` respawned a running one;
+  `done`, so `up` would have started a second session and `resume` respawned a running one. `up`
+  and `resume` stay refused. A `down` or `refresh` waits instead of being refused, unless every
+  live pid record for the name says `idle` and the session's transcript shows its last turn ended;
+  then the process is treated as the session (see below), and a transcript that cannot be read
+  refuses;
 - is `down` or `refresh` while the session's listing or transcript cannot be read; or is `resume`
   while the session is running. For `resume`, running means a process: a live pid record holds the
   name, or the daemon roster lists a worker for the session, or the roster cannot be read. A
@@ -311,6 +315,20 @@ record, a roster worker, an unreadable roster, a pointer that is older than the 
 staged draft, or a real `waitingFor`. Pid records and the roster are both undocumented files.
 A change to the pid records' format would make them read as "no live process", leaving the roster
 as the only guard. A roster that cannot be read waits.
+
+**A `working` row with no `waitingFor` is treated as idle only on two signals.** A turn end
+sometimes writes no final job state, so the listing keeps saying `working` for an idle session
+(seen for over an hour). A `down` or `refresh` is served for one when every live pid record for
+its session says exactly `idle` (`shell` means a background shell still runs, `busy` a turn) and
+its transcript's last turn ended. With no record, any other status or a turn in progress, the
+request waits, and the reason says which signal failed.
+
+**A seat whose job went `done` while its process lives.** The live listing omits a `done` job
+(`claude agents --json --all` keeps it), so there is no row to stop. Run from a terminal,
+`fleet-canonicals refresh` and `down` treat the live process, found through its pid record, as
+the session: the same self-refusal, handoff gate and worktree warning apply, then the process is
+stopped and its job removed, and `refresh` launches as declared. The output carries a `note` line
+saying the seat was unlisted because its job is done.
 
 A keep-alive, which would hold a canonical up against an idle stop, is not built; the runner has
 the check's place for it and no hold can exist yet.
