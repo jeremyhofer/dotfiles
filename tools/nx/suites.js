@@ -120,6 +120,14 @@ function parseMap(mapPath, suites) {
   return { entries, hasLine };
 }
 
+// A suite whose verdict depends on something no file input can name runs every time, with its
+// reason here. test-nx-suites.sh depends on the SET of tracked files (the plugin refuses a glob
+// matching none, and the suite copies every tracked file into a scratch workspace), so adding or
+// deleting any file can change it while no claimed file's content changes.
+const UNCACHED = {
+  'test-nx-suites.sh': 'reads the set of tracked files, which no input glob names',
+};
+
 const SERIAL_MARK = '# run-all: serial';
 function isSerial(root, suite) {
   const lines = fs.readFileSync(path.join(root, 'tests', suite), 'utf8').split('\n').slice(0, 10);
@@ -168,7 +176,7 @@ function buildProjects(root) {
         test: {
           executor: 'nx:run-commands',
           options: { command: 'sh tests/run-all.sh --only ' + s },
-          cache: true,
+          cache: !(s in UNCACHED),
           ...(isSerial(root, s) ? { parallelism: false } : {}),
           inputs: unique.map((g) => '{workspaceRoot}/' + toNxGlob(g)).concat(RUNTIME_INPUTS.map((r) => ({ runtime: r }))),
           outputs: [],

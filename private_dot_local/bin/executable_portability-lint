@@ -327,7 +327,7 @@ def walk(path):
         return [path]
     found = []
     for dirpath, dirnames, filenames in os.walk(path):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", ".venv")]
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", ".venv", "__pycache__", ".pytest_cache")]
         found.extend(os.path.join(dirpath, f) for f in filenames)
     return found
 

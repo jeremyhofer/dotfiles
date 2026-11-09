@@ -66,6 +66,16 @@ if nxq show project control --json; then
   else bad "control has no nx:noop target" "$(head -c 300 "$tmp/out")"; fi
 else bad "nx show project control" "$(errs)"; fi
 
+echo "== a suite that no input can describe is not cached"
+if nxq show project suite-nx-suites --json; then
+  if grep -q '"cache":false' "$tmp/out"; then ok "suite-nx-suites runs every time (cache false)"
+  else bad "suite-nx-suites is cached" "its verdict depends on the set of tracked files"; fi
+else bad "nx show project suite-nx-suites" "$(errs)"; fi
+if nxq show project suite-hc-status --json; then
+  if grep -q '"cache":true' "$tmp/out"; then ok "suite-hc-status (the control) is cached"
+  else bad "suite-hc-status (the control) is not cached" "every other suite should be"; fi
+else bad "nx show project suite-hc-status" "$(errs)"; fi
+
 echo "== a serial suite runs alone under Nx too"
 # tests/run-all.sh runs a suite marked `# run-all: serial` alone; under Nx that is the target's
 # `parallelism: false`. Found here with the runner's own test, so the two cannot read the marker

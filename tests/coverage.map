@@ -27,7 +27,7 @@ core run_onchange_install-git-hooks.sh.tmpl
 # --- whole-tree checks -------------------------------------------------------------------------
 tree test-shell-parse.sh        setup/** tests/*.sh private_dot_local/bin/**
 tree test-python39-syntax.sh    private_dot_local/bin/**
-tree test-portability-lint.sh   private_dot_local/bin/** setup/** tests/*.sh
+tree test-portability-lint.sh   private_dot_local/bin/** setup/** tests/*.sh tests/coverage.map
 tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
 tree test-select-suites.sh      **
@@ -57,7 +57,7 @@ test-repo-hygiene.sh                private_dot_local/bin/executable_comment-lin
 test-context-footprint.sh           private_dot_local/bin/executable_context-footprint
 test-context-lint.sh                private_dot_local/bin/executable_context-lint
 test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
-test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
+test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_fleet-canonicals-queue
 test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
 test-fleet-canonicals-requests.sh   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl
 test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
@@ -120,7 +120,7 @@ test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-ba
 test-adopt-audit.sh                 setup/adopt-audit
 test-brew-inventory.sh              setup/brew-inventory
 test-check-required-brew-tools.sh   setup/check-required-brew-tools
-test-overlay-doctor.sh              setup/overlay-doctor overlay-skeleton/dot_gitignore_global.example
+test-overlay-doctor.sh              setup/overlay-doctor overlay-skeleton/dot_gitignore_global.example dot_claude/skills/** .chezmoidata.yaml .chezmoiexternal.toml.tmpl .chezmoiremove .chezmoitemplates/** private_dot_local/bin/executable_fleet-decl
 test-preserve-claude-md.sh          setup/preserve-claude-md
 test-publish-check.sh               setup/publish-check
 test-publish-pre-push.sh           .githooks/pre-push setup/publish-check
@@ -131,9 +131,9 @@ test-modify-settings.sh             dot_claude/modify_settings.json
 test-statusline-dir.sh              dot_claude/statusline-command.sh
 test-statusline-usage.sh            dot_claude/statusline-command.sh
 test-tooling-inventory.sh           dot_claude/tooling.md
-test-mani-config.sh                 dot_zshenv.tmpl
+test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map
-test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl
+test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-spell-tier-name.sh             dot_config/nvim/lua/config/spell.lua
 test-run-all.sh                     tests/run-all.sh
 
