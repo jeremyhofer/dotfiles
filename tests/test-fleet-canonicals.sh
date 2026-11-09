@@ -1001,6 +1001,39 @@ args=$(cat "$LEAK/args.log" 2>/dev/null)
     && ok "the launch prompt carries no persona line and no follow-the-file instruction" \
     || bad "launch prompt still carries the old persona or follow-it wording: $args"
 
+# ---- Remote Control: the machine's `remote-control` key, a canonical's override ------------------
+# `--remote-control` takes an OPTIONAL name, so the launch always gives one: a bare flag before the
+# prompt would take the prompt as the name. Asserted on the composed argument list.
+rcup() {  # rcup [VAR=VALUE...] -- run `up` against the LEAK fixture with a fresh launch log
+  : > "$LEAK/args.log"
+  env "$@" FLEET_ROOT="$LEAK" FLEET_RECORD="${RCREC:-$LEAK/rec.yaml}" FLEET_STATE="$LEAK/st" \
+    FLEET_CLAUDE_CMD="$LEAK/argstub" LEAKDIR="$LEAK" \
+    FLEET_AGENTS_JSON_CMD="cat $LEAK/agents.json" bash "$TOOL" up > "$LEAK/rc.out" 2>&1
+  grep -F -- '-n one-canonical ' "$LEAK/args.log" | head -n1
+}
+a=$(rcup FLEET_REMOTE_CONTROL=)
+[[ -n "$a" && "$a" != *"--remote-control"* ]] && ok "with remote-control unset, a launch carries no --remote-control" \
+    || bad "remote-control unset: $a"
+a=$(rcup FLEET_REMOTE_CONTROL=true)
+[[ "$a" == *"--bg -n one-canonical --remote-control one-canonical --model "* ]] \
+    && ok "remote-control = true: the launch carries --remote-control <its own name>, before the prompt" \
+    || bad "remote-control true: $a"
+a=$(rcup FLEET_REMOTE_CONTROL=yes)
+[[ -n "$a" && "$a" != *"--remote-control"* ]] && grep -q 'remote-control in .* is yes, not true or false' "$LEAK/rc.out" \
+    && ok "a value other than true or false launches without Remote Control, and says so" \
+    || bad "remote-control yes: $a / $(cat "$LEAK/rc.out")"
+yq '.projects.one.canonicalRemoteControl = false' "$LEAK/rec.yaml" > "$LEAK/rec-rc-off.yaml"
+yq '.projects.one.canonicalRemoteControl = true' "$LEAK/rec.yaml" > "$LEAK/rec-rc-on.yaml"
+a=$(RCREC="$LEAK/rec-rc-off.yaml" rcup FLEET_REMOTE_CONTROL=true)
+[[ -n "$a" && "$a" != *"--remote-control"* ]] && ok "a canonical's canonicalRemoteControl: false overrides the machine's true" \
+    || bad "manifest false over config true: $a"
+a=$(RCREC="$LEAK/rec-rc-on.yaml" rcup FLEET_REMOTE_CONTROL=)
+[[ "$a" == *"--remote-control one-canonical"* ]] && ok "a canonical's canonicalRemoteControl: true turns it on where the machine has it off" \
+    || bad "manifest true over config unset: $a"
+rc_fork_count=$(awk '/^cmd_resume\(\)/,/^\}/' "$TOOL" | grep -c -- '-n "\$name" ${rc_args\[@\]+"${rc_args\[@\]}"} --resume "\$uuid"')
+[[ "$rc_fork_count" -eq 2 ]] && ok "BOTH resume --fork invocations carry the Remote Control arguments" \
+    || bad "expected the Remote Control arguments on both fork invocations, found $rc_fork_count"
+
 # ---- the handoff a launch may name: inside the handoffs trees, and committed where it is in git ---
 # A launch hands its successor one file as the work to resume, so that file must be a handoff the
 # fleet's own tooling put there: in the staging directory or a configured handoffs tree, reached

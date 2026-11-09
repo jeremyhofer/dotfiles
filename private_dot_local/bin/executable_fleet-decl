@@ -182,7 +182,9 @@ case "${1:-}" in
     [ $# -eq 3 ] || { printf 'usage: fleet-decl --canonical <name> <key>\n' >&2; exit 2; }
     valid_key "$3"
     _proj=$(canonical_project "$2") || exit $?
-    _out=$(yq -e -r ".projects.\"$_proj\".$3" "$RECORD" 2>/dev/null) || exit 1
+    # No -e: it exits 1 on a `false` value as well as on a missing one, so a declared false (a
+    # canonical's canonicalRemoteControl) would read as not declared. Absence is the null below.
+    _out=$(yq -r ".projects.\"$_proj\".$3" "$RECORD" 2>/dev/null) || exit 1
     [ "$_out" = "null" ] && exit 1
     printf '%s\n' "$_out"
     exit 0 ;;
@@ -336,6 +338,7 @@ case "${1:-}" in
         case "$k" in
           scope|leakPrefix|leakPolicy|leakDisable) ;;
           canonical|canonicalIdentity|canonicalLaunchDir|canonicalLaunchModel|canonicalMachines) ;;
+          canonicalRemoteControl) ;;   # read by fleet-canonicals: true or false
           worktrunk) ;;
           container) ;;
           claudeTrust) ;;
@@ -366,6 +369,13 @@ case "${1:-}" in
     for p in $(yq -r '.projects | to_entries[] | select(.value | has("claudeTrust")) | .key' "$RECORD" 2>/dev/null || true); do
       if [ "$(yq -r ".projects.\"$p\".claudeTrust | tag" "$RECORD" 2>/dev/null)" != '!!bool' ]; then
         printf '[claudeTrust-value] %s: claudeTrust must be true or false, unquoted\n' "$p"; rc=1
+      fi
+    done
+    # canonicalRemoteControl is read by fleet-canonicals, which treats anything but true as off;
+    # refusing a quoted or YAML 1.1 spelling here is what makes a typo visible before a launch.
+    for p in $(yq -r '.projects | to_entries[] | select(.value | has("canonicalRemoteControl")) | .key' "$RECORD" 2>/dev/null || true); do
+      if [ "$(yq -r ".projects.\"$p\".canonicalRemoteControl | tag" "$RECORD" 2>/dev/null)" != '!!bool' ]; then
+        printf '[canonicalRemoteControl-value] %s: canonicalRemoteControl must be true or false, unquoted\n' "$p"; rc=1
       fi
     done
     # claudeDirSettings maps a directory inside the repository to its settings file. Its keys are

@@ -116,6 +116,25 @@ HANDOFFS_SEARCH=${HANDOFFS_SEARCH:-$HANDOFFS_DIR}
 FLEET_HUB=$(config_value FLEET_HUB hub)
 PLACE_COMMIT=$(config_value FLEET_PLACE_COMMIT place-commit)
 STAGE_CHECK=$(config_value FLEET_STAGE_CHECK stage-check)
+REMOTE_CONTROL=$(config_value FLEET_REMOTE_CONTROL remote-control)
+
+# remote_control_args NAME -- print `--remote-control NAME`, one word per line, when NAME launches
+# with Remote Control (its manifest `canonicalRemoteControl`, else this machine's `remote-control`
+# key); print nothing otherwise. The flag's name argument is optional, so it is always given: a bare
+# `--remote-control` followed by the prompt would take the prompt as the name. A value other than
+# true or false is reported and treated as false, so a typo never connects a session to the phone.
+# Callers read the lines into an array and expand it as ${a[@]+"${a[@]}"}, which macOS's bash 3.2
+# needs under `set -u` when the array is empty.
+remote_control_args() {
+  local v src
+  if v=$(fleet-decl --canonical "$1" canonicalRemoteControl 2>/dev/null); then src="canonicalRemoteControl"
+  else v=$REMOTE_CONTROL; src="remote-control in $FLEET_CONFIG"; fi
+  case "$v" in
+    true) printf '%s\n' --remote-control "$1" ;;
+    false|'') ;;
+    *) printf 'note     %-24s %s is %s, not true or false; launching without Remote Control\n' "$1" "$src" "$v" >&2 ;;
+  esac
+}
 
 # run_bounded SECONDS CMD... -- run CMD, killed after SECONDS. GNU `timeout` is absent from a stock
 # macOS (and `gtimeout` exists there only where coreutils was installed), and a bare `timeout` fails
@@ -276,6 +295,11 @@ configuration (file, then the variable that overrides each key):
   handoffs-search = <dir>    FLEET_HANDOFFS_SEARCH  tree searched for a staged handoff's placed
                                                     copy (default: the handoffs directory)
   hub = <name>               FLEET_HUB              the session that runs `place`, named by `stage`
+  remote-control = true|false FLEET_REMOTE_CONTROL  launch, refresh and resume (--fork) with
+                                                    `--remote-control <name>`, so the session is
+                                                    reachable from the Claude app under its name
+                                                    (default false); a canonical's manifest
+                                                    `canonicalRemoteControl` overrides it
   place-commit = true|false  FLEET_PLACE_COMMIT     commit placed files in the repository holding
                                                     the handoffs directory (default false)
   the request queue's keys (no variable overrides them; defaults in brackets):
@@ -471,7 +495,7 @@ cleanup_tmproot_if_gone() {
 # glued onto its first message, and the read would drain the stream so every canonical after it is
 # silently never started. Observed 2026-08-29.
 launch_canonical() {
-  local name=$1 dir model identity handoff root settings
+  local name=$1 dir model identity handoff root settings rc_args=() l
   dir=$(fleet-decl --canonical "$name" canonicalLaunchDir 2>/dev/null)     || return 1
   model=$(fleet-decl --canonical "$name" canonicalLaunchModel 2>/dev/null) || return 1
   identity=$(fleet-decl --canonical "$name" canonicalIdentity 2>/dev/null) || return 1
@@ -480,8 +504,9 @@ launch_canonical() {
   mkdir -p "$root" 2>/dev/null
   settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
   record_tmproot "$name" "$root" || return 1
+  while IFS= read -r l; do rc_args+=("$l"); done < <(remote_control_args "$name" </dev/null)
   ( cd "$FLEET_ROOT/$dir" \
-    && exec "$(claude_bin)" --bg -n "$name" --model "$model" --settings "$settings" \
+    && exec "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --model "$model" --settings "$settings" \
        "This session is $name, $identity. The previous session's handoff is at $handoff: read it first and resume the work it describes. Reply with one line confirming you have resumed, then begin." \
   ) </dev/null
 }
@@ -2280,6 +2305,8 @@ cmd_resume() {
   mkdir -p "$root" 2>/dev/null
   settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
   record_tmproot "$name" "$root" || die "resume: could not record temp root for '$name'"
+  local rc_args=() l
+  while IFS= read -r l; do rc_args+=("$l"); done < <(remote_control_args "$name" </dev/null)
 
   # </dev/null for the same reason as the launch in cmd_up: Claude Code appends piped stdin to the
   # prompt, and this may be called from a loop whose stdin is a name stream.
@@ -2294,12 +2321,12 @@ cmd_resume() {
   local src_cwd
   src_cwd=$(printf '%s' "$json" | jq -r --arg i "$old_id" '.[]|select(.id==$i)|.cwd // empty' | head -n1)
   if [ -n "$src_cwd" ] && [ -d "$src_cwd" ]; then
-    ( cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 ) \
+    ( cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 ) \
       || die "resume: launch failed for '$name' (from $src_cwd)"
   else
     printf 'note     %-24s source cwd unknown or gone (%s) -- launching from %s\n' \
       "$name" "${src_cwd:-none}" "$(pwd)"
-    "$(claude_bin)" --bg -n "$name" --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 \
+    "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 \
       || die "resume: launch failed for '$name'"
   fi
 

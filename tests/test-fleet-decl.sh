@@ -62,6 +62,7 @@ projects:
     canonicalIdentity: "the canonical session for demo"
     canonicalLaunchDir: internal/withcanon
     canonicalLaunchModel: fable
+    canonicalRemoteControl: false
     canonicalMachines: [hostA, hostB]
   plain:
     path: internal/plain
@@ -121,6 +122,11 @@ out=$(run --canonicals 2>/dev/null | tr '\n' ' ')
 [ "$out" = "demo-canonical " ] && ok "--canonicals lists declared canonicals" || bad "--canonicals" "out=[$out]"
 out=$(run --canonical demo-canonical canonicalLaunchModel 2>/dev/null)
 [ "$out" = "fable" ] && ok "--canonical reads a key by canonical name" || bad "--canonical" "out=[$out]"
+out=$(run --canonical demo-canonical canonicalRemoteControl 2>/dev/null); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "false" ] && ok "--canonical prints a declared false, exit 0 (not read as absent)" \
+  || bad "--canonical false" "rc=$rc out=[$out]"
+run --canonical demo-canonical canonicalNoSuchKey >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "--canonical on an undeclared key is still exit 1" || bad "--canonical absent key" "rc=$rc"
 out=$(run --canonical-list demo-canonical canonicalMachines 2>/dev/null | tr '\n' ' ')
 [ "$out" = "hostA hostB " ] && ok "--canonical-list yields one machine per line" || bad "--canonical-list" "out=[$out]"
 run --canonical no-such-canonical canonicalLaunchDir >/dev/null 2>&1; rc=$?
@@ -506,7 +512,7 @@ for good in '    container:
       branches: default' '    container:
       branches: [main, develop, release/1.0]
       filter: blob:none' '    container:
-      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true' '    claudeLocalSettings: claude/projects/alpha.json' '    claudeDirSettings:
+      filter: blob:none' '    container: {}' '    claudeTrust: false' '    claudeTrust: true' '    canonicalRemoteControl: true' '    canonicalRemoteControl: false' '    claudeLocalSettings: claude/projects/alpha.json' '    claudeDirSettings:
       seats/one: claude/projects/alpha-one.json'; do
   out=$(cont_check "$good"); rc=$?
   [ "$rc" -eq 0 ] && ok "--check accepts a container block: $(printf '%s' "$good" | tr -s ' \n' ' ')" || bad "--check container valid" "rc=$rc $out :: $good"
@@ -546,6 +552,9 @@ a claudeDirSettings value that is not a file name|    claudeDirSettings:\n      
 an empty claudeDirSettings value|    claudeDirSettings:\n      seats/one: ""|-|[claudeDirSettings-value] alpha: claudeDirSettings.seats/one
 a quoted claudeTrust false|    claudeTrust: "false"|-|[claudeTrust-value] alpha: claudeTrust
 claudeTrust: no, a string in YAML 1.2|    claudeTrust: no|-|[claudeTrust-value] alpha: claudeTrust
+a quoted canonicalRemoteControl true|    canonicalRemoteControl: "true"|-|[canonicalRemoteControl-value] alpha: canonicalRemoteControl
+canonicalRemoteControl: yes, a string in YAML 1.2|    canonicalRemoteControl: yes|-|[canonicalRemoteControl-value] alpha: canonicalRemoteControl
+a near-miss of canonicalRemoteControl|    canonicalRemotecontrol: true|-|[unknown-key] alpha: canonicalRemotecontrol
 CASES
 
 printf '\nfleet-decl: %d passed, %d failed\n' "$pass" "$fail"

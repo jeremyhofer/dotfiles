@@ -91,6 +91,7 @@ The settings in the config file, each overridable by an environment variable for
 | `handoffs` | `FLEET_HANDOFFS_DIR` | where `place` copies staged handoffs | `place` refuses; `status` skips its unplaced check |
 | `handoffs-search` | `FLEET_HANDOFFS_SEARCH` | the tree searched for a placed copy (and for a predecessor) | the `handoffs` directory |
 | `hub` | `FLEET_HUB` | the session that places; `stage` names it in its output | not named |
+| `remote-control` | `FLEET_REMOTE_CONTROL` | `true`: `up`, `refresh` and `resume --fork` launch each canonical with `--remote-control <name>`, so it is reachable from the Claude app under its name; a canonical's manifest `canonicalRemoteControl` overrides it. A queued `resume` runs `claude respawn <id>`, which takes no other argument (Claude Code 2.1.319); whether a respawned session keeps Remote Control is unmeasured | `false`: no Remote Control |
 | `place-commit` | `FLEET_PLACE_COMMIT` | `true`: `place` commits the files it placed, and only those, in the repository holding `handoffs`; it never pushes | `false`: copies only |
 | `stage-check` | `FLEET_STAGE_CHECK` | an executable `stage` runs as `<check> <draft>` before staging; non-zero refuses the draft and prints the check's output. Point it at a script that runs the handoffs repository's blocking commit gates on the draft, so a draft that `place`'s commit would refuse is refused while its author can fix it. One that is not an executable file refuses every `stage` | no check |
 

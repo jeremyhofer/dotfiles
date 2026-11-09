@@ -1,6 +1,6 @@
 ---
 name: canonical-takeover
-description: Use when taking over, launching, relaunching, refreshing, resuming or closing a canonical session — running `fleet-canonicals up`/`down` (or `start`/`stop`)/`refresh`/`resume`/`dedupe`/`status`/`list`, requesting one of those from inside a sandbox (`fleet-canonicals request`, the `serve-requests` runner, a refused request's result file), declaring or changing a canonical in the fleet record (`canonical`, `canonicalLaunchModel`, `canonicalLaunchDir`, `canonicalIdentity`, `canonicalMachines`), choosing a canonical's model, or when a canonical name resolves to the wrong session, a stale duplicate row appears in the agents view, a canonical is missing on a machine that should run it, or a session comes up on an unexpected model. Covers how a launch is composed from the record, why the model is declared rather than inherited, how a launch resolves its handoff through a pointer, the handoff freshness gate on `down` and `refresh`, the request queue's checks and who may request what, the verify-the-name-landed step, and why opening a stale row silently resumes it.
+description: Use when taking over, launching, relaunching, refreshing, resuming or closing a canonical session — running `fleet-canonicals up`/`down` (or `start`/`stop`)/`refresh`/`resume`/`dedupe`/`status`/`list`, requesting one of those from inside a sandbox (`fleet-canonicals request`, the `serve-requests` runner, a refused request's result file), declaring or changing a canonical in the fleet record (`canonical`, `canonicalLaunchModel`, `canonicalLaunchDir`, `canonicalIdentity`, `canonicalMachines`, `canonicalRemoteControl`), choosing a canonical's model, or when a canonical name resolves to the wrong session, a stale duplicate row appears in the agents view, a canonical is missing on a machine that should run it, or a session comes up on an unexpected model. Covers how a launch is composed from the record, why the model is declared rather than inherited, how a launch resolves its handoff through a pointer, the handoff freshness gate on `down` and `refresh`, the request queue's checks and who may request what, the verify-the-name-landed step, and why opening a stale row silently resumes it.
 ---
 
 # Canonical takeover, launch and lifecycle
@@ -39,6 +39,7 @@ Each canonical's project in the record declares:
 | `canonicalLaunchDir` | the launch directory, relative to `FLEET_ROOT` (default `~/Devel`) |
 | `canonicalLaunchModel` | the `--model` value |
 | `canonicalMachines` | the machines it runs on, each as `hostname` prints it |
+| `canonicalRemoteControl` | optional, `true` or `false`: launch with `--remote-control <name>`, overriding the machine's `remote-control` key in `fleet-canonicals`' config |
 
 `fleet-decl --check` reports a canonical declared incompletely. **"This machine" is the output of
 `hostname`, matched whole and case-sensitively**, not an SSH alias or a label. Run `hostname` on the
@@ -59,7 +60,9 @@ claude --bg -n <name> --model <canonicalLaunchModel> \
 ```
 
 `-n` sets the name at launch, so no rename step follows. Typed by hand, the prompt is a shell
-argument: keep it to this one line.
+argument: keep it to this one line. Where Remote Control is on for the canonical, the launch also
+carries `--remote-control <name>` after `-n <name>`; the flag's name is optional, so it is always
+given, or the prompt that follows would be taken as the name.
 
 **No handoff path is stored in the record, and that is the point.** What changes between parks is
 the handoff, and it is resolved through the pointer at launch, so a launch never quietly aims at a

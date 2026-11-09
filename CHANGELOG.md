@@ -99,6 +99,18 @@ New tools with nothing to configure, for reference: `fleet-slot`, `land`, `loop-
 `LIVE-UNLISTED`. A push to the publish remote is gated only in a clone that sets
 `dotfiles.publishRemote`.
 
+### `fleet-canonicals`: Remote Control at launch, `remote-control` and `canonicalRemoteControl`
+
+- A new `fleet-canonicals` config key, `remote-control = true|false` (default false), and a
+  per-canonical override in the fleet record, `canonicalRemoteControl: true|false`. When on, `up`,
+  `refresh` and `resume --fork` launch the canonical with `--remote-control <name>`, so it is
+  reachable from the Claude app under its own name. A queued `resume` runs `claude respawn <id>`,
+  which takes no other argument; whether a respawned session keeps Remote Control is unmeasured.
+  Nothing changes for a layer that sets neither. `fleet-decl --check` refuses a
+  `canonicalRemoteControl` that is not an unquoted boolean.
+- `fleet-decl --canonical` now prints a declared `false` (exit 0) instead of reading it as not
+  declared; an absent key is still exit 1.
+
 ### `claude-project-settings`: permission rules declarable in a directory's file
 
 - A `claudeDirSettings` file, the one merged into `<directory>/.claude/settings.json`, may now hold

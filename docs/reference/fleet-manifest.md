@@ -80,6 +80,7 @@ Every other tag is the domain's own vocabulary and only selects.
 | `canonicalIdentity` | text | the session launcher | yes when `canonical` is set |
 | `canonicalLaunchDir` | a path | the session launcher; `memory-doctor` | yes when `canonical` is set |
 | `canonicalLaunchModel` | a model id | the session launcher | yes when `canonical` is set |
+| `canonicalRemoteControl` | `true` or `false` | the session launcher | no. Overrides the machine's `remote-control` key in `fleet-canonicals`' config for this canonical: when true, `up`, `refresh` and `resume --fork` launch it with `--remote-control <name>`, reachable from the Claude app under its name |
 | `canonicalMachines` | list of hostnames, each exactly as `hostname` prints it on that machine (a whole, case-sensitive match; not an alias or a free label) | the session launcher | yes when `canonical` is set. A machine expects, and launches, only the canonicals that list its `hostname`, so a name that does not match leaves the canonical unexpected there, silently |
 
 **The layout is declared, and `fleet-decl --layout <name>` reads it.** An entry is a bare container
