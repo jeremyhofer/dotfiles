@@ -38,10 +38,24 @@ starts warm. Two things switch the sharing off without telling you:
   means the sandbox must grant write access to `~/.nx`; without the grant every checkout is cold and
   nothing says why.
 
-**Daemon sockets need no override when `~/.nx` is writable.** Nx 24 then puts them in
-`~/.nx/sockets`. `NX_SOCKET_DIR` was the old fix for "Attempted to open socket that exceeds the
-maximum socket length" in deeply nested worktree paths; with a writable `~/.nx` it is not needed, so
-do not add it as a reflex.
+**Sockets in a sandbox: `/tmp/.nx/<uid>` wins once it exists, and a sandbox cannot write it.** Nx
+24 puts its daemon and plugin-worker sockets under `/tmp/.nx/<uid>/sockets/` when that directory
+exists, and only otherwise in `~/.nx/sockets` (the resolution is native code; `nx/dist/src/daemon/
+tmp-dir.js` names it). Any Nx run outside a sandbox, a terminal's daemon included, creates
+`/tmp/.nx/<uid>`, and from then on a sandboxed run can no longer use its default: the sandbox mounts
+`/tmp` read-only, the new workspace's directory there cannot be created (`EROFS`), and Nx falls back
+to a socket under `<workspace>/.nx/workspace-data/d/`. In a deeply nested checkout that path exceeds
+the socket length limit, and **every plugin fails to load, Nx's own default plugins included**
+("Failed to load N Nx plugin(s): Attempted to open socket that exceeds the maximum socket length").
+A workspace whose directory under `/tmp/.nx/<uid>` was made earlier still works, so it looks
+intermittent. Measured 2026-11-09 on the workstation (by a project session, then reproduced in a
+fresh scratch workspace with `--verbose`). An earlier version of this skill said a writable `~/.nx`
+made `NX_SOCKET_DIR` unnecessary; that held only while `/tmp/.nx/<uid>` did not exist.
+
+So in a sandboxed session **set `NX_SOCKET_DIR` to a directory only your user can write**, for
+example `NX_SOCKET_DIR="$TMPDIR/nxs"` (create it first), until the machine's configuration sets it
+for every session. Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its sockets
+there. `--verbose` names the directory Nx rejected and why.
 
 **The project graph is cached too, and it can go stale after a path-alias change.** Besides the task
 cache, Nx keeps the project graph it builds, the per-file import edges included, in the checkout's
