@@ -7,6 +7,13 @@ docs/
 
 # Test harness for in-repo helper scripts — source-only, never deployed.
 tests/
+# Nx, for development only: none of it reaches $HOME, and applying the base never needs Node
+# (tests/run-all.sh runs the suites without it). .nx/ needs no line: chezmoi ignores dot-entries.
+package.json
+package-lock.json
+nx.json
+node_modules/
+tools/
 
 # Overlay starter skeleton — in-repo template for scaffold-overlay, not a deployable dotfile.
 overlay-skeleton/

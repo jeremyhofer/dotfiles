@@ -57,4 +57,39 @@ if ! out=$(cd "$root" && python3 "$lint" --blocking-only 2>&1); then
 fi
 echo "ok:   no source comment depends on context this tree cannot carry"
 
+# CHECK 3 -- the Nx development files never deploy.
+#
+# The base is an Nx workspace for development only: applying it must never need Node, and nothing Nx
+# uses may land in $HOME, where a package.json or node_modules would sit as clutter at best and be
+# picked up as a workspace by tools run there at worst. .chezmoiignore is what keeps them out, and a
+# line dropped from it would fail silently, so this asks chezmoi itself which targets the source
+# manages. It runs on a scratch copy without .chezmoiexternal*, whose downloads the question does not
+# need, under a scratch config, cache and destination, so nothing of this machine's is read or
+# written. Skipped where chezmoi is not installed.
+if command -v chezmoi >/dev/null 2>&1; then
+  _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
+  hyg=$(mktemp -d "$_TMP/test-repo-hygiene.XXXXXX"); trap 'rm -rf "$hyg"' EXIT
+  mkdir -p "$hyg/src" "$hyg/home"
+  (cd "$root" && git ls-files -z --cached --others --exclude-standard) \
+    | (cd "$root" && xargs -0 sh -c 'd=$1; shift; for f; do [ -e "$f" ] || [ -L "$f" ] || continue; mkdir -p "$d/$(dirname "$f")"; cp -P "$f" "$d/$f"; done' _ "$hyg/src")
+  # The files under test exist in a fresh checkout too, but node_modules/ is never tracked: stand one in.
+  mkdir -p "$hyg/src/node_modules/x" && : > "$hyg/src/node_modules/x/index.js"
+  rm -f "$hyg/src"/.chezmoiexternal*
+  printf '[data]\n    domain = "home"\n' > "$hyg/c.toml"
+  if ! managed=$(chezmoi --source "$hyg/src" --config "$hyg/c.toml" --destination "$hyg/home" \
+       --cache "$hyg/cache" --persistent-state "$hyg/state.boltdb" managed --include files 2>"$hyg/err"); then
+    echo "FAIL: chezmoi could not list the managed files: $(head -n 3 "$hyg/err")"; exit 1
+  fi
+  [ -n "$managed" ] || { echo "FAIL: chezmoi listed no managed files, so this check would see nothing"; exit 1; }
+  leaked=$(printf '%s\n' "$managed" | grep -E '^(package\.json|package-lock\.json|nx\.json|node_modules/|tools/|\.nx/)' || true)
+  if [ -n "$leaked" ]; then
+    echo "FAIL: Nx development files would deploy to \$HOME (add them to .chezmoiignore):"
+    printf '%s\n' "$leaked" | sed 's/^/      /'
+    exit 1
+  fi
+  echo "ok:   no Nx development file deploys"
+else
+  echo "skip: chezmoi not installed, so the Nx deploy check did not run"
+fi
+
 echo "PASS"

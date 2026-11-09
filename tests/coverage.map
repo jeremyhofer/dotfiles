@@ -53,7 +53,7 @@ test-claude-usage-report.sh         private_dot_local/bin/executable_claude-usag
 test-claude-worklog-hook.sh         private_dot_local/bin/executable_claude-worklog-hook
 test-claude-worktree-hook.sh        private_dot_local/bin/executable_claude-worktree-hook
 test-comment-lint.sh                private_dot_local/bin/executable_comment-lint
-test-repo-hygiene.sh                private_dot_local/bin/executable_comment-lint
+test-repo-hygiene.sh                private_dot_local/bin/executable_comment-lint .chezmoiignore package.json package-lock.json nx.json
 test-context-footprint.sh           private_dot_local/bin/executable_context-footprint
 test-context-lint.sh                private_dot_local/bin/executable_context-lint
 test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
