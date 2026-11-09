@@ -82,6 +82,7 @@ fi
 
 base=$(cat <<EOF
 {
+  "awaySummaryEnabled": false,
   "editorMode": "vim",
   "enableArtifact": false,
   "skipWorkflowUsageWarning": true,

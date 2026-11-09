@@ -35,6 +35,7 @@ out=$(run '' "$TMP/absent")
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 || { echo "FAIL: empty input must yield valid JSON"; fail=1; }
 [ "$(val "$out" '.statusLine.type')" = "command" ] || { echo "FAIL: base must declare the status line"; fail=1; }
 [ "$(val "$out" '.editorMode')" = "vim" ] || { echo "FAIL: base default editorMode missing"; fail=1; }
+[ "$(val "$out" '.awaySummaryEnabled')" = "false" ] || { echo "FAIL: base must turn the away recap off"; fail=1; }
 [ "$(val "$out" '.sandbox')" = "null" ] || { echo "FAIL: base must not declare a sandbox policy"; fail=1; }
 
 # B) the fragment's declared block wins over the base; live-only keys survive; model is untouched

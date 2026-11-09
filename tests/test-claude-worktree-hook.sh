@@ -125,6 +125,22 @@ done
 out=$(run "$HOOK" bash "$(bash_payload 'git worktree remove a; git worktree add b')")
 [ "$(decision "$out")" = deny ] && ok "a line that removes and adds is refused (the add wins)" || no "remove masked an add: $out"
 
+echo "== Bash guard: wt remove without --foreground is refused =="
+# A background removal moves the worktree into worktrunk's trash and deletes it from a detached
+# process; a session's command ending (a sandboxed one especially) can kill that process, so the
+# trash is never emptied. --foreground finishes inside the command.
+for c in 'wt remove x' 'wt remove --no-hooks x' 'cd /r && wt remove x' 'bash -c "wt remove x"' \
+         'wt -C /r remove x' 'wt remove'; do
+  expect_bash "$HOOK" deny "$c" "refused: $c"
+done
+for c in 'wt remove --foreground x' 'wt -C /r remove --no-hooks --foreground x' 'echo "wt remove x"' \
+         'wt list' 'wt switch --create remove'; do
+  expect_bash "$HOOK" allow "$c" "allowed: $c"
+done
+out=$(run "$HOOK" bash "$(bash_payload 'wt remove x')")
+printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q -- '--foreground' \
+  && ok "the wt remove refusal names --foreground" || no "wt remove reason does not name --foreground: $out"
+
 echo "== Bash guard: stands down where worktrunk is not installed =="
 out=$(run "$HOOK" bash "$(bash_payload 'git worktree add x')" "$NO_WT")
 [ "$(decision "$out")" = allow ] && ok "no wt on PATH: allowed (no wt command to name)" || no "refused although wt is absent: $out"
@@ -133,6 +149,10 @@ echo "== Bash guard RED: with the check removed, the forbidden call goes through
 broken 's/^        add|move) printf .%s. "\$sub"; exit 0 ;;$/        add|move) ;;/' 'add|move) printf'
 expect_bash "$b" allow 'git worktree add x' "broken copy (add/move match removed) allows git worktree add"
 expect_bash "$b" allow 'git -C /r worktree move x y' "broken copy allows git -C worktree move"
+broken 's/^        wt-remove-bg) printf .%s. "\$sub"; exit 0 ;;$/        wt-remove-bg) ;;/' 'wt-remove-bg) printf'
+expect_bash "$b" allow 'wt remove x' "broken copy (wt-remove-bg match removed) allows a background wt remove"
+broken 's/\*worktree\* | \*remove\*)/*worktree*)/' '*worktree\* | \*remove\*)'
+expect_bash "$b" allow 'wt remove x' "broken copy (fast path without remove) lets wt remove through unscanned"
 echo "== Remove RED: making remove refuse again turns the warning test red =="
 broken 's/^    remove) warn .*/    remove) how=x ;;/' "    remove) warn '"
 expect_bash "$b" deny 'git worktree remove x' "broken copy (warning turned into a refusal) denies git worktree remove"

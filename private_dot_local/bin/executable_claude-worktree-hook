@@ -55,9 +55,9 @@ esac
 input=$(cat 2>/dev/null) || exit 0
 
 # Cheap exit for the hottest path: this runs before every Bash call, and almost none mention
-# worktrees. Checked on the raw JSON before anything is spawned.
+# worktrees or a removal. Checked on the raw JSON before anything is spawned.
 if [ "$subcommand" = bash ]; then
-  case "$input" in *worktree*) ;; *) exit 0 ;; esac
+  case "$input" in *worktree* | *remove*) ;; *) exit 0 ;; esac
 fi
 
 command -v jq >/dev/null 2>&1 || exit 0
@@ -182,7 +182,7 @@ function subs(t, d,    L, i, j, dep, q) {
   }
 }
 function rescan(s, d) { if (d > 8) return; tokenize(s, d); scan(d) }
-function scan(d,    k, m, t, b, j, u, inner) {
+function scan(d,    k, m, t, b, j, u, inner, q, fg) {
   m = ntok[d]
   for (k = 0; k < m; k++) {
     t = tok[d, k]
@@ -198,6 +198,22 @@ function scan(d,    k, m, t, b, j, u, inner) {
           continue
         }
         if (u == "worktree" && j + 1 < m) print tok[d, j + 1]
+        break
+      }
+    }
+    if (b == "wt") {
+      # `wt remove` without --foreground: worktrunk moves the worktree into its trash and deletes it
+      # from a detached process, which the end of a session's command can kill, leaving the trash
+      # full. The first non-option word is the subcommand; -C takes a value.
+      for (j = k + 1; j < m && tok[d, j] != SEP; j++) {
+        u = tok[d, j]
+        if (u == "-C") { j++; continue }
+        if (u ~ /^-/) continue
+        if (u == "remove") {
+          fg = 0
+          for (q = j + 1; q < m && tok[d, q] != SEP; q++) if (tok[d, q] == "--foreground") fg = 1
+          if (!fg) print "wt-remove-bg"
+        }
         break
       }
     }
@@ -219,13 +235,15 @@ BEGIN { SEP = "\001"; rescan(ENVIRON["HOOK_CMD"], 0) }
 AWK
 
 # What the command line does with `git worktree`: "add" or "move" if it invokes either (refused),
-# else "remove" if it invokes that (warned), else nothing.
+# "wt-remove-bg" for a `wt remove` without --foreground (refused), else "remove" if it invokes
+# `git worktree remove` (warned), else nothing.
 worktree_verdict() {
   HOOK_CMD=$1 awk "$SCANNER" </dev/null 2>/dev/null | {
     seen=""
     while IFS= read -r sub; do
       case "$sub" in
         add|move) printf '%s' "$sub"; exit 0 ;;
+        wt-remove-bg) printf '%s' "$sub"; exit 0 ;;
         remove) seen=remove ;;
       esac
     done
@@ -253,6 +271,7 @@ guard_bash() {
            *) how="$how In a session, the EnterWorktree tool and a subagent launched with isolation \"worktree\" create through worktrunk too." ;;
          esac ;;
     move) how='worktrunk has no move: create the new worktree with `wt switch --create <branch>`, carry the work across by committing it, then `wt remove --no-hooks --foreground <old name>`.' ;;
+    wt-remove-bg) deny 'wt remove is refused here without --foreground: a background removal moves the worktree into worktrunk'"'"'s trash and deletes it from a detached process that the end of this command can kill, so the trash is never emptied. Use `wt remove --no-hooks --foreground <name>`.' ;;
     remove) warn 'Raw `git worktree remove` is the fallback here; the standard removal is `wt remove --no-hooks --foreground <name>`, after leaving the worktree (ExitWorktree with action "keep" if this session entered it). Never force either one.' ;;
     *) exit 0 ;;
   esac
