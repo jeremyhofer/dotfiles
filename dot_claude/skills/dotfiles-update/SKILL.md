@@ -86,9 +86,13 @@ sh ~/.local/share/chezmoi/setup/overlay-doctor        # overlay compliance, then
 ```
 
 **When the changelog has a "Catching up from <date> in one pass" section** whose starting date is
-no later than the date of the commit you noted, follow it rather than assembling the ACTION list yourself: it orders
-the same entries' steps, private-layer edits before the apply and the terminal steps after it.
-An entry newer than that section is still yours to read.
+LATER than the date of the commit you noted, follow it rather than assembling the ACTION list
+yourself: it is written for a machine whose base predates that date, and orders the steps of every
+entry from that date on, private-layer edits before the apply and the terminal steps after it.
+Entries between your commit and that date are not in it, so read those first; an entry newer than
+the section is still yours to read too. If your commit is at or after its starting date, your
+machine already applied its early steps: skip the section and read only the entries after your
+commit.
 
 **Why the full `overlay-doctor` runs before the apply as well as after:** its cross-layer section
 compares the two source trees, which are both current once pulled, so it can name a conflict before

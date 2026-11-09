@@ -240,9 +240,10 @@ moves one, the entry moves with it.
 granted; a sandboxed `up` once failed with `EROFS` there. Stopping a session signals another
 session's process, which a sandboxed shell may not be able to see. So `up`, `refresh`, `down`,
 `dedupe`, `resume`, `resume-at` and `clean` run from a plain terminal or from a session that runs the
-command outside its sandbox; do not grant `~/.claude` to make them fit. A session inside its
-sandbox requests `up`, `down`, `refresh` or `resume` through the queue instead (below). `status`, `list`, `handoff`,
-`stage` and `place` run inside it.
+command outside its sandbox; do not grant `~/.claude` to make them fit. `clean` refuses inside the
+Linux sandbox by itself (below). A session inside its sandbox requests `up`, `down`, `refresh` or
+`resume` through the queue instead (below). `status`, `list`, `handoff`, `stage` and `place` run
+inside it.
 
 **Inside a sandbox, the list of live sessions can be wrong, and every session verb trusts it.** The
 tool reads `claude agents --json` (active sessions) and, for some checks, `--all` (stopped ones
@@ -251,16 +252,25 @@ specific sockets: in the human's terminal the list was complete and current, whi
 session the active list was empty, or held only one session started by hand, and `--all` listed
 the others with stale states (`failed` where the terminal said `done`). The likely cause, not
 confirmed, is that the sandbox cannot reach the session service's socket, under
-`/private/tmp/cc-daemon-*` there, and the CLI falls back to judging liveness itself. A home machine
-whose sandbox allows every socket shows the true list inside its sessions. What a wrong list does,
-read from the tool's logic (none of these was run on that machine):
+`/private/tmp/cc-daemon-*` there, and the CLI falls back to judging liveness itself.
 
-| Verb, run inside such a sandbox | What it does |
+**A sandbox that reaches the socket still gets an incomplete list.** The active list leaves out any
+job whose state reads `done` or `failed` while its process runs, from a terminal as well. A terminal
+finds those processes through Claude Code's pid records (`status` reports them `LIVE-UNLISTED`; `up`
+refuses them). Inside the Linux sandbox `/proc` shows only the sandbox's own processes, so that
+check finds nothing, while other seats' roots under `/tmp` stay visible. Measured on a Linux
+workstation whose sandbox allows every socket, 2026-11-09 00:04, inside a session, with two seats
+`done` and running and four `working`, each verb in its `--dry-run` form:
+
+| Verb, run inside the sandbox | What it did |
 | --- | --- |
-| `status` | reports every other canonical missing or failed |
-| `up` | launches a duplicate of every canonical that is in fact running |
-| `clean` | removes the scratch roots of live sessions |
-| `dedupe`, `down` | find nothing to close and do nothing |
+| `status` | reported the four `working` seats `OK` and the two `done` ones `MISSING` |
+| `up --dry-run` | would have started a second session for each of the two |
+| `dedupe --dry-run`, `down --dry-run <a done seat>` | found nothing to close (`not running`) |
+| `clean --dry-run`, before it learned the pid-record check | would have removed a `done` seat's root, while keeping every listed one's |
+| `clean`, since | refuses: other sessions' processes are hidden from the sandbox |
+
+A refusal or a dry run changes nothing; none of the verbs was run for real.
 
 So the verbs in the paragraph above stay the human's, run from a terminal, and a session's own
 `status` is a hint, never a finding: where it disagrees with the terminal, the terminal is right.

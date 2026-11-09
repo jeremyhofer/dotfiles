@@ -1014,9 +1014,10 @@ cmd_dedupe() {
 #     only that one is kept (a record written after the session started may be another launch's);
 #   - one with no usable record, or more than one (duplicates, each with a root): keep them all;
 #   - a live process the listing omits: keep them all, since its start time is in no listing row.
-# The pid-record check sees nothing inside the Linux sandbox, where other sessions' processes are
-# hidden (and /tmp is the sandbox's own), and cannot run without the queue script and uv. Either way
-# every unlisted seat would read as gone, so clean refuses rather than guess.
+# The pid-record check sees nothing inside the Linux sandbox, where /proc shows only the sandbox's
+# own processes (measured: 8 there, while other seats' roots under /tmp stay visible), and cannot
+# run without the queue script and uv. Either way every unlisted seat would read as gone, so clean
+# refuses rather than guess.
 # A root younger than CLEAN_MIN_AGE is kept whatever the listing says, because a launch records its
 # root and creates it BEFORE its session appears in the listing. And only an exact
 # c-<short name>-XXXXXX directory for a declared canonical is ever a candidate: not a symlink, not a
@@ -1075,7 +1076,7 @@ cmd_clean() {
   shorts=$(while IFS= read -r n; do [ -n "$n" ] && printf '%s\n' "$(tmproot_short "$n")"; done <<< "$names" | sort -u)
   # Seats the live listing omits while their process runs (see the header above). Fail closed.
   if [ "$(cat "${FLEET_PROC_ROOT:-/proc}/1/comm" 2>/dev/null)" = bwrap ]; then
-    printf 'clean: refusing to run inside a sandbox: other sessions'"'"' processes, and the real /tmp, are hidden\n' >&2
+    printf 'clean: refusing to run inside a sandbox: other sessions'"'"' processes are hidden\n' >&2
     printf '  from here, so every seat the sessions list omits would read as gone. Run it from a plain terminal.\n' >&2
     exit 2
   fi

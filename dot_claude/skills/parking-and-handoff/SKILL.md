@@ -95,21 +95,21 @@ step 5's closing rule (end on a statement), which holds at every turn of a backg
    fill: a compaction costs about one full-history request and is cheap only at roughly 60% fill or
    less with a warm cache. At high fill, a fresh session beats compacting.
 
-   **Every turn of a background session ends with a statement, never a question**, not only the
-   last one before a park. A long-running session cannot tell which turn will precede an idle
-   stop, so a rule kept for "the final turn" is kept too late. Anything that needs the human is
-   recorded where it lasts, in the project's work tracker or the handoff's open list (step 1b), and
-   the message says what is pending and where, as a statement: "Pending your decision, recorded in
-   <entry>: A or B." Whether the agent view still reads that as asking is unmeasured; the record,
-   not the phrasing, is what keeps the ask reachable after a stop. **Why:** Claude Code's agent view marks a session whose last turn asked its
-   human something as `blocked`. The mark outlives the process: after an idle stop the session
-   stays in the live listing as `blocked`, so `up` reads it as running. A queued `resume` still
-   reaches it once the runner can prove no process is behind it, but resuming brings back the
-   stale question. A queued `refresh` reaches it only if the session parked first, its handoff
-   recorded after it started; otherwise only a `refresh` from a terminal does. Four long-running
-   sessions on one machine were left in that state in one day (2026-11-08): three by a closing
-   question before going idle, and one by a mid-session turn ending "Which do you want?", after which the
-   human stepped away and the idle stop came.
+   **Every turn of a background session ends with a statement, never a question**, not only the last
+   one before a park. A long-running session cannot tell which turn will precede an idle stop, so a
+   rule kept for "the final turn" is kept too late. Anything that needs the human is recorded where
+   it lasts, in the project's work tracker or the handoff's open list (step 1b), and the message
+   says what is pending and where, as a statement: "Pending your decision, recorded in <entry>: A or
+   B." Whether the agent view still reads that as asking is unmeasured; the record, not the
+   phrasing, is what keeps the ask reachable after a stop. **Why:** Claude Code's agent view marks a
+   session whose last turn asked its human something as `blocked`. The mark outlives the process:
+   after an idle stop the session stays in the live listing as `blocked`, so `up` reads it as
+   running. A queued `resume` still reaches it once the runner can prove no process is behind it,
+   but resuming brings back the stale question. A queued `refresh` reaches it only if the session
+   parked first, its handoff recorded after it started; otherwise only a `refresh` from a terminal
+   does. Four long-running sessions on one machine were left in that state in one day (2026-11-08):
+   three by a closing question before going idle, and one by a mid-session turn ending "Which do you
+   want?", after which the human stepped away and the idle stop came.
 
 ## Checkpointing is not parking, and most pauses are checkpoints
 
@@ -251,9 +251,9 @@ is `fleet-canonicals request refresh <own name> --reason 'parked: <handoff>'`. T
 the turn to end, so the request cannot cut the park short, and refreshes it within a few minutes;
 the kickoff block then says so instead of asking the human. The turn that makes the request ends
 with a statement like every other turn (step 5): a closing question leaves the session marked
-`blocked`, and nothing the human can answer later is left to reach. Until self-refresh is
-enabled the runner refuses that request (check `self-refresh` in its result file), and the human runs `refresh`.
-Skill `canonical-takeover`, "Requesting from a sandbox", has the rules.
+`blocked`, and nothing the human can answer later is left to reach. Until self-refresh is enabled
+the runner refuses that request (check `self-refresh` in its result file), and the human runs
+`refresh`. Skill `canonical-takeover`, "Requesting from a sandbox", has the rules.
 
 **(b) The prompt:** thin. Identity (which canonical this is), what to read first (the handoff,
 resolved through the pointer, plus any plan it names), and the immediate task. Nothing else. The
@@ -303,13 +303,14 @@ Closing the outgoing session is part of the handover, not tidying afterwards.
   step), not before; closing first risks having no live canonical if the launch fails. A session
   cannot close itself as its own final act, so a park with no successor (a usage ramp-down) has
   nothing to close.
-- **How, and who:** the human runs it, from a terminal; a session names the command and does not
-  run it. A lifecycle verb on ANOTHER canonical is requested, not run, from a sandbox, and only by a
+- **How, and who:** the human runs it, from a terminal; a session names the command and does not run
+  it. A lifecycle verb on ANOTHER canonical is requested, not run, from a sandbox, and only by a
   requester the config allows to act on others (skill `canonical-takeover`, "Requesting from a
-  sandbox"); a session may request its own `down`. `fleet-canonicals dedupe [--dry-run] [<name>]` closes every session for a name except
-  the newest and never signals the session it runs inside. `fleet-canonicals down <name>` closes a
-  canonical outright. Both act on the list of live sessions, which inside a session's sandbox can
-  be wrong (the base's `docs/reference/fleet-sessions.md`, "Sandbox and permissions"). Both stop the process and then delete the row with `claude rm <id>`.
+  sandbox"); a session may request its own `down`. `fleet-canonicals dedupe [--dry-run] [<name>]`
+  closes every session for a name except the newest and never signals the session it runs inside.
+  `fleet-canonicals down <name>` closes a canonical outright. Both act on the list of live sessions,
+  which inside a session's sandbox can be wrong (the base's `docs/reference/fleet-sessions.md`,
+  "Sandbox and permissions"). Both stop the process and then delete the row with `claude rm <id>`.
 - **Why delete, not just stop:** a stopped session leaves `claude agents --json` but stays in
   `--all` as a `done` row, and opening that row resumes it. A resumed session re-registers under the
   canonical name with its start time rewritten, so it looks like a fresh launch while carrying days
