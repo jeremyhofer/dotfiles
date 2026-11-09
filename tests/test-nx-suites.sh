@@ -59,6 +59,13 @@ else
   bad "nx show projects" "$(errs)"
 fi
 
+echo "== the tracer's control target"
+# verify-task-io needs one nx:noop target to subtract Nx's own reads from each suite's trace.
+if nxq show project control --json; then
+  if grep -q '"executor":"nx:noop"' "$tmp/out"; then ok "control:noop exists and does nothing (nx:noop)"
+  else bad "control has no nx:noop target" "$(head -c 300 "$tmp/out")"; fi
+else bad "nx show project control" "$(errs)"; fi
+
 echo "== a serial suite runs alone under Nx too"
 # tests/run-all.sh runs a suite marked `# run-all: serial` alone; under Nx that is the target's
 # `parallelism: false`. Found here with the runner's own test, so the two cannot read the marker

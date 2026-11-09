@@ -176,6 +176,13 @@ function buildProjects(root) {
       },
     };
   }
+  // The control a tracer needs: one target that does nothing, so a run of it shows Nx's own file
+  // reads and writes, which a trace of each suite then subtracts (verify-task-io). Not cached, so
+  // it is never audited as a suite would be.
+  projects['tools/nx/control'] = {
+    name: 'control',
+    targets: { noop: { executor: 'nx:noop', cache: false } },
+  };
   return projects;
 }
 
