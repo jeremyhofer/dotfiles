@@ -1269,7 +1269,9 @@ def seats_declared_here() -> list[str] | None:
 # cache_creation_input_tokens of that entry's message.usage (the director's hand method, 06:50).
 # The window is not in the transcript, which records the bare model id, so it comes from the seat's
 # declared launch model: a `[1m]` suffix is 1,000,000 tokens, anything else the config key
-# context-window (200,000 by default, as of this writing; not re-verified per model release).
+# context-window (200,000 by default). The window a plain alias gets depends on the plan, so a
+# machine sets context-window to its own: on a plan where plain `opus` has 1M (measured 2026-11-10,
+# a seat at 291k with no compaction), the default flags seats falsely.
 TRANSCRIPT_TAIL = 4 * 1024 * 1024
 
 
@@ -1324,6 +1326,13 @@ def seat_context(name: str, sids: set[str], cfg: dict[str, str]) -> dict | None:
         return None
     (_m, tokens, at), sid = max(found, key=lambda f: f[0][0])
     window = context_window(name, cfg)
+    if tokens > window:
+        # A prompt cannot exceed its window, so the window value is what is wrong. Measured
+        # 2026-11-10: a seat launched as plain `opus` reached 291k tokens with no compaction while
+        # the 200,000 default applied, and status flagged it CONTEXT-HIGH at 145.7%. No percent is
+        # recorded rather than a false one; status names the window as the thing to fix.
+        return {"tokens": tokens, "window": window, "percent": None, "overWindow": True,
+                "sessionId": sid, "at": at}
     return {"tokens": tokens, "window": window, "percent": round(100 * tokens / window, 1),
             "sessionId": sid, "at": at}
 

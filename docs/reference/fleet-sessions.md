@@ -307,7 +307,11 @@ seat's last main-thread reply, read from its transcript (`input_tokens` + `cache
 `cache_creation_input_tokens` of that entry's `message.usage`), against its context window, as
 `tokens`, `window`, `percent`, `sessionId` and `at`. The transcript records only the bare model id,
 so the window comes from the seat's declared `canonicalLaunchModel`: one ending in `[1m]` is
-1,000,000 tokens, any other the config key `context-window` (200,000 by default). `status` appends
+1,000,000 tokens, any other the config key `context-window` (200,000 by default). The window a
+plain alias gets depends on the plan, so a machine sets `context-window` to its own: on 2026-11-10 a
+seat launched as plain `opus` reached 291k tokens with no compaction. A prompt larger than the window
+proves the setting wrong, so it records no percent and `status` prints
+`context 291k, more than the 200k window: set context-window` rather than a false flag. `status` appends
 `context 72.8% (728k of 1000k)` to a seat's line, `context ?` when no figure can be read, and the
 word `CONTEXT-HIGH` at `context-flag-pct` (50 by default) or more. Jeremy asked on 2026-11-10 for
 seats to be refreshed proactively above 50%, and the director's sweep acts on that word. The flag

@@ -903,6 +903,15 @@ FLEET_RECORD="$T/rec1m.yaml" fc snapshot >/dev/null
 [[ "$(ctxfield alpha-canonical window)" == 1000000 && "$(ctxfield alpha-canonical percent)" == 14.6 ]] \
   && ok "snapshot: a seat launched on a [1m] model is measured against 1,000,000 tokens" \
   || bad "1m window: $(jq -c '.seats["alpha-canonical"].context' "$SNAP")"
+# A prompt larger than the assumed window proves the window value wrong, not the seat over 100%.
+# Measured 2026-11-10: a seat launched as plain `opus` reached 291k tokens with no compaction, and
+# status flagged it CONTEXT-HIGH at 145.7% of the 200k default.
+ctx_transcript s-cx 291452; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$(ctxfield alpha-canonical percent)" == null && "$(ctxfield alpha-canonical overWindow)" == true ]] \
+  && ok "snapshot: a prompt larger than the window records no percent, and says so" \
+  || bad "over-window snapshot: $(jq -c '.seats["alpha-canonical"].context' "$SNAP")"
+[[ "$l" == *"context 291k, more than the 200k window"* && "$l" != *CONTEXT-HIGH* && "$l" != *%* ]] \
+  && ok "status: a prompt larger than the window names the window as wrong, never CONTEXT-HIGH" || bad "status over the window: $l"
 rm -f "$T/transcripts/p/s-cx.jsonl"; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
 [[ "$(ctxfield alpha-canonical)" == null && "$l" == *"context ?"* ]] \
   && ok "a live seat with no readable transcript shows context ?, not a number" || bad "no transcript: $l"

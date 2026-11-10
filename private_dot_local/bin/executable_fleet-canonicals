@@ -177,6 +177,8 @@ snapshot_context() {
   jq -r --arg n "$1" --argjson f "$CONTEXT_FLAG_PCT" '
     .seats[$n] // empty | .context as $c
     | if ($c | type) != "object" then "  context ?"
+      elif $c.overWindow == true then
+        "  context \(($c.tokens / 1000) | floor)k, more than the \(($c.window / 1000) | floor)k window: set context-window"
       else "  context \($c.percent)% (\(($c.tokens / 1000) | floor)k of \(($c.window / 1000) | floor)k)"
            + (if $c.percent >= $f then " CONTEXT-HIGH" else "" end)
       end' "$SNAPSHOT_FILE" 2>/dev/null
