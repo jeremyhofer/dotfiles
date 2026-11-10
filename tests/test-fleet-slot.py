@@ -393,6 +393,23 @@ def test_wait_on_a_free_slot_runs_the_command_at_once(isolated):
     assert r.returncode == 0 and r.stdout.strip() == "ran", r.stderr
 
 
+def test_wait_runs_the_command_without_its_own_interpreter_first_on_path(isolated):
+    """`uv run --script` puts the tool's own environment's bin first on PATH; the command must not
+    inherit it. Measured 2026-11-10: a publish run under `fleet-slot wait` resolved python3 to
+    fleet-slot's uv environment, and overlay-doctor's report then named a path in the home
+    directory, failing publish-check."""
+    own = os.path.dirname(sys.executable)
+    env = {"PATH": own + os.pathsep + os.environ["PATH"], "VIRTUAL_ENV": sys.prefix}
+    r = slot("wait", "--free", "--interval", "0.1", "--", "sh", "-c", 'echo "$PATH"; echo "venv=${VIRTUAL_ENV:-}"',
+             env=env)
+    assert r.returncode == 0, r.stderr
+    path_line, venv_line = r.stdout.strip().splitlines()
+    dirs = [os.path.realpath(d) for d in path_line.split(os.pathsep) if d]
+    assert os.path.realpath(own) not in dirs
+    assert venv_line == "venv="
+    assert "/usr/bin" in dirs or "/bin" in dirs  # the rest of PATH survives
+
+
 def test_wait_returns_the_commands_status(isolated):
     r = slot("wait", "--free", "--interval", "0.1", "--", "sh", "-c", "exit 7")
     assert r.returncode == 7

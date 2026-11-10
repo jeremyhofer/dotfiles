@@ -93,7 +93,7 @@ assess() {
   # The base's Python tools, two of them on every commit's hook path, run on whichever python3 is
   # first on PATH; they are written for 3.9, the version macOS's command-line tools ship.
   if command -v python3 >/dev/null 2>&1; then
-    note "python3               $(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null) ($(command -v python3))"
+    note "python3               $(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null) ($(_home_safe "$(command -v python3)"))"
   else
     note "python3               missing"
   fi
@@ -329,14 +329,14 @@ case "$_as" in "~/"*) _as="$HOME/${_as#\~/}" ;; esac
 if [ -z "$_as" ]; then
   note "info        Tier V: no allowedSignersFile configured (signature verification is off here)"
 elif [ ! -f "$_as" ]; then
-  note "advisory    Tier V: allowedSignersFile points at a missing file: $_as"
+  note "advisory    Tier V: allowedSignersFile points at a missing file: $(_home_safe "$_as")"
   note "            signature verification cannot succeed; not gating (signing may be off by design)"
 else
   # A principal line is "<principal> [namespaces=...] <keytype> <key>". Comment and blank lines
   # do not count -- a file containing only comments looks populated and verifies nothing.
   _n=$(grep -cE '^[^#[:space:]]+[[:space:]]+.*(ssh-|sk-ssh-)' "$_as" 2>/dev/null || true)
   if [ "${_n:-0}" -eq 0 ]; then
-    note "advisory    Tier V: allowedSignersFile has no principal lines: $_as"
+    note "advisory    Tier V: allowedSignersFile has no principal lines: $(_home_safe "$_as")"
   else
     note "OK          Tier V: allowedSignersFile present, $_n principal(s)"
   fi

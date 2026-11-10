@@ -171,6 +171,14 @@ out=$(ASSESS_MANAGED_SETTINGS="$tmp/managed.json" OVERLAY_SRC="$tmp/nope" sh "$s
 echo "$out" | grep -q 'managed settings keys *env hooks permissions' || { echo "FAIL(M5): managed key names not listed"; echo "$out"; exit 1; }
 echo "$out" | grep -q 'SECRETVALUE' && { echo "FAIL(M5): a managed value leaked into the report"; echo "$out"; exit 1; }
 echo "ok:   managed settings key names listed, values never"
+# A tool resolved from under the home directory is named ~-relative, never by its full path.
+# Measured 2026-11-10: run under `fleet-slot wait`, python3 resolved to a uv environment under
+# ~/.cache, and its full path in the report failed M6 below inside publish-check.
+hh="$tmp/hh"; mkdir -p "$hh/bin"; ln -s "$(command -v python3)" "$hh/bin/python3"
+out=$(HOME="$hh" PATH="$hh/bin:$PATH" OVERLAY_SRC="$tmp/nope" sh "$script" --machine 2>&1) || true
+echo "$out" | grep -q "$hh" && { echo "FAIL(M7): a tool under the home directory is named by its full path"; echo "$out"; exit 1; }
+echo "$out" | grep -q 'python3 .*(~/bin/python3)' || { echo "FAIL(M7): python3 under the home directory not named ~-relative"; echo "$out"; exit 1; }
+echo "ok:   a tool under the home directory is named ~-relative"
 out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) || true
 mk "$tmp/ov"; out=$(OVERLAY_SRC="$tmp/ov" sh "$script" 2>&1) || true
 echo "$out" | grep -q 'machine assessment' || { echo "FAIL(M6): the full run does not include the assessment"; echo "$out"; exit 1; }

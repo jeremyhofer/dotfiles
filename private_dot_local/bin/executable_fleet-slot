@@ -674,8 +674,23 @@ def cmd_wait(argv: list[str]) -> int:
           file=sys.stderr if cmd else sys.stdout)
     if cmd:
         sys.stdout.flush()
-        os.execvp(cmd[0], cmd)
+        os.execvpe(cmd[0], cmd, command_env())
     return 0
+
+
+def command_env() -> dict[str, str]:
+    """This environment without what `uv run --script` added for this file: uv puts the script's
+    own environment's bin first on PATH, and the command `wait` runs would inherit it. Measured
+    2026-11-10: a publish run under `fleet-slot wait` resolved python3 to fleet-slot's uv
+    environment, overlay-doctor's report named that path in the home directory, and publish-check
+    failed. The same leak, and the same fix, as fleet-canonicals-queue's child_env (2026-11-08)."""
+    env = dict(os.environ)
+    own_bin = os.path.realpath(os.path.dirname(sys.executable))
+    env["PATH"] = os.pathsep.join(d for d in env.get("PATH", "").split(os.pathsep)
+                                  if d and os.path.realpath(d) != own_bin)
+    if env.get("VIRTUAL_ENV") and os.path.realpath(env["VIRTUAL_ENV"]) == os.path.realpath(sys.prefix):
+        del env["VIRTUAL_ENV"]
+    return env
 
 
 COMMANDS = {"request": cmd_request, "grant": cmd_grant, "release": cmd_release,
