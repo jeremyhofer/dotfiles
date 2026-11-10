@@ -29,6 +29,7 @@ cat > "$tmp/tests/run-all.sh" <<'EOF'
 #!/bin/sh
 echo ran > "$PA_MARK"
 echo "$*" > "$PA_ARGS"
+echo "${RUN_ALL_PROFILE:-}" > "$PA_PROF"
 env | grep '^CHEZMOI' > "$PA_ENV" || true
 echo "PASS   test-good.sh"
 [ "${RUNALL_RC:-0}" = 0 ] || { echo "FAIL   test-broken.sh (exit 1)"; echo "       | the reason it failed"; }
@@ -46,7 +47,7 @@ done | sort -u
 echo "select-suites: stand-in" >&2
 EOF
 # Utilities the script uses, from this machine; the tools it requires, as stand-ins.
-for u in sh env sed grep mktemp tail cat rm dirname sort tr; do
+for u in sh env sed grep mktemp tail cat rm dirname sort tr date mkdir; do
   p=$(command -v "$u") || { bad "$u on PATH" "the test needs it"; exit 1; }
   ln -s "$p" "$tmp/bin/$u"; ln -s "$p" "$tmp/nouv/$u"
 done
@@ -54,10 +55,12 @@ for r in git python3 uv jq yq gitleaks wt; do
   printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/$r"; chmod +x "$tmp/bin/$r"
   [ "$r" = uv ] || ln -s "$tmp/bin/$r" "$tmp/nouv/$r"
 done
-export PA_MARK="$tmp/ran" PA_ENV="$tmp/env" PA_ARGS="$tmp/args"
+export PA_MARK="$tmp/ran" PA_ENV="$tmp/env" PA_ARGS="$tmp/args" PA_PROF="$tmp/prof"
+# The run record goes under XDG_STATE_HOME: a scratch one for every case, never this machine's.
+st="$tmp/state"
 run() { # run <PATH dir> [VAR=value ...]: the script's exit code in $rc, its stderr in $tmp/err
   d=$1; shift; rm -f "$PA_MARK"
-  env PATH="$d" TMPDIR="$tmp/logs" "$@" sh "$tmp/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
+  env PATH="$d" TMPDIR="$tmp/logs" XDG_STATE_HOME="$st" "$@" sh "$tmp/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
 }
 
 echo "== a failing suite aborts the apply"
@@ -111,7 +114,7 @@ g init -q && g add -A && g commit -q -m one
 ledger="$(cd "$tmp/repo" && GIT_CONFIG_GLOBAL=/dev/null "$realgit" rev-parse --absolute-git-dir)/pre-apply/passed"
 lrun() { # lrun [VAR=value ...]: run the repository's copy; rc and $tmp/err as run(); args the runner got in $tmp/args
   rm -f "$PA_MARK" "$PA_ARGS"
-  env PATH="$tmp/gitbin" TMPDIR="$tmp/logs" GIT_CONFIG_GLOBAL=/dev/null "$@" sh "$tmp/repo/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
+  env PATH="$tmp/gitbin" TMPDIR="$tmp/logs" XDG_STATE_HOME="$st" GIT_CONFIG_GLOBAL=/dev/null "$@" sh "$tmp/repo/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
 }
 lines() { if [ -f "$ledger" ]; then wc -l < "$ledger" | tr -d ' '; else echo 0; fi; }
 lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
@@ -176,6 +179,20 @@ run "$tmp/bin" RUNALL_RC=1 PRE_APPLY_OS=Linux DOTFILES_SKIP_PRE_APPLY=1
 [ "$rc" -eq 0 ] && ok "exit 0 with the skip set" || bad "exit 0 with the skip set" "rc=$rc"
 grep -q "SKIPPED by DOTFILES_SKIP_PRE_APPLY" "$tmp/err" && ok "says it was skipped, and by what" || bad "names the skip" "$(cat "$tmp/err")"
 [ ! -e "$PA_MARK" ] && ok "runs no suite when skipped" || bad "runs no suite when skipped" "the runner ran"
+
+echo "== each run is recorded: one history line, and the per-suite profile path handed to run-all"
+rm -rf "$st"
+run "$tmp/bin" RUNALL_RC=1 PRE_APPLY_OS=Linux
+run "$tmp/bin" RUNALL_RC=0 PRE_APPLY_OS=Linux
+h="$st/dotfiles/pre-apply.history"
+[ "$(wc -l < "$h" 2>/dev/null | tr -d ' ')" = 2 ] && ok "one history line per run" || bad "history lines" "$(cat "$h" 2>/dev/null)"
+sed -n 1p "$h" | grep -Eq '^[0-9T:Z-]+ Linux [^ ]+ all [0-9]+ 1$' && ok "a failed run's line: time, OS, tree, all, seconds, exit 1" || bad "failed run line" "$(sed -n 1p "$h")"
+sed -n 2p "$h" | grep -Eq ' 0$' && ok "a passing run's line ends in exit 0" || bad "passing run line" "$(sed -n 2p "$h")"
+[ "$(cat "$PA_PROF")" = "$st/dotfiles/pre-apply.last-profile.tsv" ] && ok "run-all gets RUN_ALL_PROFILE in the state directory" || bad "profile path" "$(cat "$PA_PROF")"
+# A state directory that cannot be written loses the record, never the apply.
+: > "$tmp/notadir"
+env PATH="$tmp/bin" TMPDIR="$tmp/logs" XDG_STATE_HOME="$tmp/notadir" RUNALL_RC=0 PRE_APPLY_OS=Linux sh "$tmp/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
+{ [ "$rc" -eq 0 ] && [ -z "$(cat "$PA_PROF")" ]; } && ok "an unwritable state directory: the apply passes, no profile" || bad "unwritable state" "rc=$rc prof=$(cat "$PA_PROF") $(cat "$tmp/err")"
 
 echo "== .chezmoi.toml.tmpl renders the hook"
 if command -v chezmoi >/dev/null 2>&1; then

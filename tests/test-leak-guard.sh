@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# run-all: serial
 # Test leak-guard: the MECHANISM, against a fixture domain with an invented vocabulary.
 #
 # The guard's patterns, allow rules and push policy are the domain's own files under ~/.dotlocal, so
@@ -302,19 +301,15 @@ if push "$r" "$sha" "$Z" origin git@git.example.test:~owner/alpha-extra; then ec
 r=$(newrepo push_other); sha=$(mkpush "$r" "ok msg" "has hush-term content")
 if push "$r" "$sha" "$Z" origin https://public.example/x/y; then echo "FAIL: public destination wrongly keyed private"; exit 1; fi
 
-# 24) PERF + line-number fidelity on a LARGE added file. The original scan forked two
-# greps PER INPUT LINE (~14s for a single 3.3k-line file; minutes across a fresh repo's
-# first push, where every commit is legitimately new -- which read as a hang). This pins
-# the batched behavior: a 4k-line add must still name the token at its real line, fast.
+# 24) Line-number fidelity on a LARGE added file: a 4k-line add must still name the token at its
+# real line. Its SPEED bound is test-leak-guard-perf.sh's, which runs alone (a wall-clock bound in
+# this suite made all of it run serially).
 r=$(newrepo perf); i=0; : > "$r/big.txt"
 while [ "$i" -lt 4000 ]; do printf 'clean line %s\n' "$i" >> "$r/big.txt"; i=$((i+1)); done
 printf 'and a ZZQ-77 marker at the end\n' >> "$r/big.txt"
 git -C "$r" add big.txt
-start=$(date +%s)
 out=$(gate "$r" pre-commit 2>&1 || true)
-elapsed=$(( $(date +%s) - start ))
-printf '%s' "$out" | grep -qE 'big\.txt:4001:.*ZZQ-77' || { echo "FAIL: perf case should report ZZQ-77 at big.txt line 4001"; exit 1; }
-[ "$elapsed" -le 5 ] || { echo "FAIL: 4k-line scan took ${elapsed}s (>5s) -- per-line fork regression"; exit 1; }
+printf '%s' "$out" | grep -qE 'big\.txt:4001:.*ZZQ-77' || { echo "FAIL: a large add should report ZZQ-77 at big.txt line 4001"; exit 1; }
 
 # 24b) MULTIPLE hits on ONE line are still deduped, sorted, and reported together on a
 # single output line (the batched scan groups per line rather than emitting per match).

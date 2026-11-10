@@ -120,16 +120,34 @@ if [ -n "$base" ]; then
   fi
 fi
 
+# THE RECORD OF EACH RUN, so the wait an apply costs is measured rather than remembered: one line
+# per run appended to pre-apply.history (UTC time, OS, the tree or "dirty", how many suites ran or
+# "all", wall seconds, exit), and the run's per-suite times in pre-apply.last-profile.tsv
+# (run-all.sh's RUN_ALL_PROFILE), both under ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/
+# beside post-apply's. Recording can never refuse an apply: a state directory that cannot be
+# written loses the record, not the apply.
+sd=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles
+prof=""
+mkdir -p "$sd" 2>/dev/null && [ -w "$sd" ] && prof="$sd/pre-apply.last-profile.tsv"
+started=$(date +%s)
+record() { # record <exit>
+  [ -n "$prof" ] || return 0
+  n=all; [ -n "$only" ] && n=$(printf '%s\n' $only | grep -c .)
+  printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$os" "${tree:-dirty}" "$n" \
+    "$(( $(date +%s) - started ))" "$1" >> "$sd/pre-apply.history" 2>/dev/null || true
+}
+
 t=${TMPDIR:-/tmp}; t=${t%/}
 log=$(mktemp "$t/dotfiles-pre-apply.XXXXXX") || { echo "dotfiles pre-apply: no temp file for the log; apply refused" >&2; exit 1; }
 if [ -n "$only" ]; then
   printf 'dotfiles pre-apply: running the suites the change reaches (%s) before the apply...\n' "${only% }" >&2
   # shellcheck disable=SC2086 # one suite name per word
-  sh "$here/run-all.sh" --only $only > "$log" 2>&1; rc=$?
+  RUN_ALL_PROFILE=$prof sh "$here/run-all.sh" --only $only > "$log" 2>&1; rc=$?
 else
   printf 'dotfiles pre-apply: no earlier full pass to compare with; running every suite (tests/run-all.sh) before the apply...\n' >&2
-  sh "$here/run-all.sh" > "$log" 2>&1; rc=$?
+  RUN_ALL_PROFILE=$prof sh "$here/run-all.sh" > "$log" 2>&1; rc=$?
 fi
+record "$rc"
 if [ "$rc" -eq 0 ]; then
   printf 'dotfiles pre-apply: %s\n' "$(tail -n 1 "$log")" >&2
   rm -f "$log"

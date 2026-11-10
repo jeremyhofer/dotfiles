@@ -11,7 +11,7 @@ commit before their deletion; the line numbers are theirs.
 with a shell variable expanded to one row per value it took. Each label is kept in the pytest suite
 as the message of the assertion, or the label of the table row, that replaced it, so a row can be
 found by searching the suite for its label. Every id below was in `pytest --collect-only` output when
-the table was written. No check was removed: 292 checks, 292 rows.
+the table was written. No check was removed: 294 checks, 294 rows (two added on 2026-11-10 with the `url_ok` fix).
 
 **What changed in the port**, besides the harness the suite's docstring describes:
 
@@ -313,6 +313,8 @@ meta-tests (`test_mutant_*`, one per row of `MUTANTS`), and `test_check_floor[mo
 | 556 | a gpgv that returns no signed text is refused | `test_estate_a_gpgv_that_returns_no_signed_text_is_refused` |
 | 557 | and not with a traceback | `test_estate_a_gpgv_that_returns_no_signed_text_is_refused` |
 | 563 | validate: an http repository is refused | `test_estate_validate_refuses_a_plain_http_repository` |
+| 571 | validate: http to 127.0.0.10 is not the loopback, and is refused | `test_estate_validate_refuses_http_to_a_lookalike_of_the_loopback[127.0.0.10]` |
+| 571 | validate: http to 127.0.0.1.example.invalid is not the loopback, and is refused | `test_estate_validate_refuses_http_to_a_lookalike_of_the_loopback[127.0.0.1.example.invalid]` |
 
 ## test-image-bump-latest.sh (30 checks)
 

@@ -1659,6 +1659,18 @@ def test_estate_validate_refuses_a_plain_http_repository(estate):
     expect(e.go("validate", "vector"), 4, "'repo' must be an https URL", label="validate: an http repository is refused")
 
 
+# Plain http is allowed only to the loopback address the tests use, judged by the HOST: an address or
+# a name that merely starts with "127.0.0.1" is another host.
+@pytest.mark.parametrize("host", ["127.0.0.10", "127.0.0.1.example.invalid"])
+def test_estate_validate_refuses_http_to_a_lookalike_of_the_loopback(estate, host):
+    e = estate()
+    d = e.descriptor("vector")
+    d.write_text(re.sub(r'"repo": "http://127\.0\.0\.1:\d+/apt"', '"repo": "http://%s/apt"' % host,
+                        d.read_text()))
+    expect(e.go("validate", "vector"), 4, "'repo' must be an https URL",
+           label="validate: http to %s is not the loopback, and is refused" % host)
+
+
 # ================================================================= `latest` for a container image
 
 RELEASES = "repos/acme/widget/releases"
@@ -1929,6 +1941,10 @@ def run_one_test(nodeid, tool_path):
 # exactly once in the tool. A `# guard:` or `# step:` comment in the tool marks a line a mutant here
 # disables.
 MUTANTS = [
+    ("url-ok-prefix", "a host that merely starts with the loopback's address passes as the loopback",
+     'return parts.scheme == "http" and parts.hostname == "127.0.0.1"',
+     'return parts.scheme == "http" and (parts.hostname or "").startswith("127.0.0.1")',
+     "test_estate_validate_refuses_http_to_a_lookalike_of_the_loopback[127.0.0.10]"),
     # --- the frame and validate
     ("validate-missing-field", "a missing field is not reported",
      "if not hasattr(module, name) and not (manual and name in DEPLOY_ONLY):", "if False:",
@@ -2059,8 +2075,8 @@ MUTANTS = [
     ("apt-no-signed-text", "an empty signed text is read as a Release",
      "if not text.strip():", "if False:", "test_estate_a_gpgv_that_returns_no_signed_text_is_refused"),
     ("url-https", "a plain-http repository is accepted",
-     'return isinstance(url, str) and (url.startswith("https://") or url.startswith("http://127.0.0.1"))',
-     "return isinstance(url, str)", "test_estate_validate_refuses_a_plain_http_repository"),
+     'return parts.scheme == "http" and parts.hostname == "127.0.0.1"',
+     'return parts.scheme == "http"', "test_estate_validate_refuses_a_plain_http_repository"),
     # --- latest
     ("latest-prerelease", "a pre-release counts as a release",
      'if rel.get("draft") or rel.get("prerelease"):', 'if rel.get("draft"):',

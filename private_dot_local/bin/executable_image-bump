@@ -879,8 +879,15 @@ def is_artifact(module):
 
 
 def url_ok(url):
-    """A pinned URL is https; plain http is allowed only to the loopback, which the tests use."""
-    return isinstance(url, str) and (url.startswith("https://") or url.startswith("http://127.0.0.1"))
+    """A pinned URL is https; plain http is allowed only to the loopback, which the tests use. The
+    host is parsed, not prefix-matched: `http://127.0.0.10/` and `http://127.0.0.1.example.invalid/`
+    start with the loopback's address and are other hosts."""
+    if not isinstance(url, str):
+        return False
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https":
+        return bool(parts.hostname)
+    return parts.scheme == "http" and parts.hostname == "127.0.0.1"
 
 
 def _asset_problems(name, value):
