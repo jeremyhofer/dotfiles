@@ -32,7 +32,40 @@ Entries are newest first.
 
 ---
 
+## 2026-11-10
+
+### A session-state snapshot, written outside every sandbox
+
+`fleet-canonicals snapshot` writes each seat's state (live, dead or unknown) to
+`$FLEET_STATE/sessions.json` from `claude agents --json`, Claude Code's pid records and the daemon
+roster. `status`, `up` and `clean` use a snapshot no older than `snapshot-max-age` (45 s): a seat it
+reads as unknown shows `UNKNOWN (<why>)`, never `MISSING`, and `up` starts neither a live nor an
+unknown seat. A stale snapshot makes them refuse; a missing one gives a note and the direct reads
+these verbs made before. The request runner refuses while it is stale.
+
+**ACTION.** Each machine's owner enables the timer once, from a terminal:
+`systemctl --user enable --now fleet-canonicals-snapshot.timer` on Linux, or on macOS
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-snapshot.plist`
+(the `fleet-canonicals-snapshot.service` unit and the `local.dotfiles.fleet-canonicals-snapshot.plist`
+LaunchAgent ship with the base, not enabled). Until it runs, nothing changes.
+
 ## 2026-11-09
+
+### leak-guard: a domain may run it warn-only; a crash says so
+
+`~/.dotlocal/git-leak-policy` takes an optional `mode=warn`: every finding and refusal is printed
+("leak-guard: WARNED") and the commit or push goes through. No mode line, or `mode=enforce`,
+refuses as before; any other value enforces and says so. `hook-doctor` reports such a machine as
+WARN-ONLY, not DARK. Separately, a new-branch push to a remote holding a commit the clone lacks no
+longer ends the guard silently, and any unexpected exit now prints
+`leak-guard: internal error at line N (exit S), refused`.
+
+### fleet-canonicals: init, and a fleet rate limit that scales
+
+`fleet-canonicals init [--up] <name>` brings a never-launched seat to the point `up` accepts it: a
+first-launch handoff from the record and its pointer. `request-limit-fleet` now defaults to `auto`,
+max(10, 2 × the seats declared for the machine); a number in the config still wins. A machine with
+more than five seats therefore allows more lifecycle requests per hour than before.
 
 ### One shape of apply-time testing on every OS: selected suites before, every suite after
 
