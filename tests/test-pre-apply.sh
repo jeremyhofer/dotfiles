@@ -9,6 +9,10 @@
 # tests/ directory, and run under a PATH holding stand-ins for the tools it requires, so no suite and
 # no real apply runs.
 set -u
+# The skip switches are the CALLER's: an apply run with one set starts the detached post-apply's
+# run-all, and so this suite, with it still exported. Inherited, it would skip the script under test
+# and fail every case that expects a run. Cases that test a skip pass it explicitly.
+unset DOTFILES_SKIP_PRE_APPLY DOTFILES_SKIP_POST_APPLY
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)
 t=${TMPDIR:-/tmp}; t=${t%/}

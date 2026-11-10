@@ -9,6 +9,10 @@
 # release file, so a test can observe the script while the run is still going. Every detached run is
 # released and waited for before the test ends: none outlives it.
 set -u
+# The skip switches are the CALLER's: an apply run with one set starts the detached post-apply's
+# run-all, and so this suite, with it still exported. Inherited, it would skip the script under test
+# and fail every case that expects a run. Cases that test a skip pass it explicitly.
+unset DOTFILES_SKIP_PRE_APPLY DOTFILES_SKIP_POST_APPLY
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)
 t=${TMPDIR:-/tmp}; t=${t%/}
