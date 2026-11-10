@@ -29,7 +29,9 @@ _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 # which is /bin/sh on Arch and macOS); a POSIX shell without one reports the exit status alone.
 _lg_intended=0; _lg_line=
 (trap ':' ERR) 2>/dev/null && trap '_lg_line=$LINENO' ERR
-trap '_lg_rc=$?; if [ "$_lg_rc" != 0 ] && [ "$_lg_intended" != 1 ]; then printf "leak-guard: internal error at line %s (exit %s), refused\n" "${_lg_line:-unknown}" "$_lg_rc" >&2; fi' EXIT
+# In the domain's warn mode (below) the same trap turns every refusal into a report: a refusal or a
+# crash still prints why, then the guard exits 0.
+trap '_lg_rc=$?; if [ "$_lg_rc" != 0 ] && [ "$_lg_intended" != 1 ]; then printf "leak-guard: internal error at line %s (exit %s), refused\n" "${_lg_line:-unknown}" "$_lg_rc" >&2; fi; if [ "$_lg_rc" != 0 ] && [ "${LG_MODE:-enforce}" = warn ]; then printf "leak-guard: WARNED, not refused: git-leak-policy has mode=warn, so the refusal above is reported only\n" >&2; exit 0; fi' EXIT
 MODE="${1:-}"
 DOT="$HOME/.dotlocal"
 
@@ -42,6 +44,17 @@ MARK_RE=$(first_re "$DOT/git-leak-markers")
 SENS_RE=$(first_re "$DOT/git-leak-sensitive")
 ALLOW_RE=$(first_re "$DOT/git-leak-allow")
 PRIV_URL_RE=$(grep -E '^private-url=' "$DOT/git-leak-policy" 2>/dev/null | head -1 | sed 's/^private-url=//' || true)
+# THE DOMAIN'S MODE. `mode=warn` in git-leak-policy reports every finding and every refusal and lets
+# the commit or push through, for a domain that wants the guard's findings without its veto;
+# `mode=enforce`, or no mode line, refuses. A value that is neither ENFORCES and says so: a typo in
+# the switch must not be what turns the guard off.
+LG_MODE=$(sed -n 's/^mode=//p' "$DOT/git-leak-policy" 2>/dev/null | head -1 | tr -d '[:space:]')
+case "$LG_MODE" in
+  ""|enforce) LG_MODE=enforce ;;
+  warn) : ;;
+  *) printf 'leak-guard: git-leak-policy has mode=%s, which is neither enforce nor warn; enforcing\n' "$LG_MODE" >&2
+     LG_MODE=enforce ;;
+esac
 
 # EVERY PER-REPO DECLARATION IS READ FROM THE FLEET RECORD, not from the repo being guarded.
 #
@@ -407,5 +420,9 @@ esac
 # The remediation line names the CURRENT mechanism. It used to say `git config leakguard.disable
 # true`, which stopped being true the moment these declarations moved into the fleet record --
 # and wrong advice in a blocking message is worse than none, because it is followed.
+if [ "$rc" != 0 ] && [ "$LG_MODE" = warn ]; then
+  echo "leak-guard: WARNED — the token(s) named above are being ADDED here; git-leak-policy has mode=warn, so this is reported, not refused." >&2
+  _lg_intended=1; exit 0
+fi
 [ "$rc" = 0 ] || echo "leak-guard: BLOCKED — the token(s) named above are being ADDED here; remove or abstract them (for a genuine false positive, declare leakDisable or a wider leakPolicy for this repo in the fleet record, then re-run)." >&2
 _lg_intended=1; exit "$rc"

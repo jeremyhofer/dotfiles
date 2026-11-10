@@ -233,6 +233,35 @@ case "$out" in
   *) echo "FAIL: a crashed guard refused without saying so: $out"; exit 1 ;;
 esac
 
+# 16f-16h) the DOMAIN's mode, a `mode=` line in git-leak-policy. warn: every finding and every
+# refusal is reported and the commit goes through. A value that is neither enforce nor warn ENFORCES,
+# saying so, so a typo cannot be what switches the guard off.
+modehome() { # modehome <dir> <mode line>: a fixture HOME whose policy carries that mode line
+  mkdir -p "$1/.dotlocal"; cp "$tmp/.dotlocal/"git-leak-* "$1/.dotlocal/"
+  printf '%s\n' "$2" >> "$1/.dotlocal/git-leak-policy"; }
+modehome "$tmp/warn-home" mode=warn
+r=$(newrepo warnmode); stage "$r" "the marker ZZQ-71 is here"
+out=$(HOME="$tmp/warn-home" sh -c "cd '$r' && sh '$guard' pre-commit" 2>&1) || {
+  echo "FAIL: warn mode refused a marker it should only report: $out"; exit 1; }
+case "$out" in
+  *ZZQ-71*"leak-guard: WARNED"*) : ;;
+  *) echo "FAIL: warn mode did not report the finding: $out"; exit 1 ;;
+esac
+case "$out" in *"BLOCKED"*) echo "FAIL: warn mode said BLOCKED: $out"; exit 1 ;; esac
+out=$(HOME="$tmp/warn-home" FLEET_RECORD="$tmp/absent.yaml" sh -c "cd '$r' && sh '$guard' pre-commit" 2>&1) || {
+  echo "FAIL: warn mode refused on an unusable record instead of reporting it: $out"; exit 1; }
+case "$out" in
+  *"record is unusable"*"WARNED, not refused"*) : ;;
+  *) echo "FAIL: warn mode hid a fail-closed refusal: $out"; exit 1 ;;
+esac
+modehome "$tmp/typo-home" mode=wran
+out=$(HOME="$tmp/typo-home" sh -c "cd '$r' && sh '$guard' pre-commit" 2>&1) && {
+  echo "FAIL: an unknown mode switched the guard off"; exit 1; }
+case "$out" in
+  *"neither enforce nor warn; enforcing"*"BLOCKED"*) : ;;
+  *) echo "FAIL: an unknown mode was not named while enforcing: $out"; exit 1 ;;
+esac
+
 # 18) missing markers pattern file must fail CLOSED: with git-leak-markers absent from HOME (the
 # sensitive file still there, so the domain IS configured), a marker staged in an (implicitly public)
 # repo must still BLOCK -- a gate that can't run is a reason to block, not a reason to pass.

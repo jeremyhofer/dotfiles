@@ -239,7 +239,13 @@ EOF_HOOKS
   # shellcheck disable=SC2086
   err=$(cd "$wt" 2>/dev/null && git -c core.hooksPath="$CFG_EMPTY_HOOKS" $off hook run ${tostdin[@]+"${tostdin[@]}"} "$ev" ${1+"$@"} 2>&1 >/dev/null </dev/null)
   rc=$?
-  case "$err" in *"leak-guard: BLOCKED"*) printf '%s\tGUARD\n' "$rc" ;; *) printf '%s\tOTHER\n' "$rc" ;; esac
+  # WARN: the guard reported the plant and let it through, which is its domain's warn mode
+  # (git-leak-policy mode=warn), not a hole; classify tells the two apart by this text.
+  case "$err" in
+    *"leak-guard: BLOCKED"*) printf '%s\tGUARD\n' "$rc" ;;
+    *"leak-guard: WARNED"*)  printf '%s\tWARN\n' "$rc" ;;
+    *) printf '%s\tOTHER\n' "$rc" ;;
+  esac
 }
 
 # cfg_probe_event <worktree> <event> -> "clean_rc<TAB>plant_rc<TAB>plant_sig"
@@ -299,9 +305,11 @@ cfg_probe_event() {
 #            nothing commits.
 #   UNKNOWN  a clean input refused but a planted one accepted: incoherent, never counted as clean
 #   EXEMPT   the fleet record exempts this repo (markers are legal here), with the value printed
+#   WARN-ONLY every event: the leak-guard REPORTED the planted marker and let it through, because the
+#            domain set mode=warn in git-leak-policy. Deliberate, so not a hole; listed so it is seen
 #   EXTERNAL an upstream clone;  SKIP  no work tree
 classify() {
-  local wt=$1 ev c p s dark="" blocked="" unknown="" policy disabled exempt=""
+  local wt=$1 ev c p s dark="" blocked="" unknown="" policy disabled exempt="" warned=""
   # NO WORK TREE, NOTHING TO GUARD. In the bare-container layout the container ROOT is a valid git
   # context but has no work tree, so nothing can ever be committed from it, and a probe there would
   # measure nothing while still returning a verdict. You pass through container roots on the way to
@@ -333,6 +341,8 @@ classify() {
       blocked="${blocked:+$blocked, }$ev (clean rc=$c)"
     elif [ "$c" != 0 ]; then
       unknown="${unknown:+$unknown, }$ev (clean rc=$c, planted rc=$p)"
+    elif [ -z "$exempt" ] && [ "$p" = 0 ] && [ "$s" = WARN ]; then
+      warned="${warned:+$warned, }$ev"
     elif [ -z "$exempt" ] && { [ "$p" = 0 ] || [ "$s" != GUARD ]; }; then
       dark="${dark:+$dark, }$ev (planted rc=$p, $s)"
     fi
@@ -342,6 +352,7 @@ classify() {
   if [ -n "$blocked" ]; then printf 'BLOCKED\ta CLEAN input was refused on: %s -- nothing leaks, nothing commits\n' "$blocked"; return; fi
   if [ -n "$unknown" ]; then printf 'UNKNOWN\tincoherent on: %s -- do not treat as clean\n' "$unknown"; return; fi
   if [ -n "$exempt" ];  then printf 'EXEMPT\t%s (markers are legal here)\n' "$exempt"; return; fi
+  if [ -n "$warned" ];  then printf 'WARN-ONLY\tthe leak-guard reported a planted %s and let it through on: %s (git-leak-policy mode=warn)\n' "$PLANT_MARKER" "$warned"; return; fi
   printf 'GUARDED\tcommit-msg, pre-commit and pre-push each refused a planted %s\n' "$PLANT_MARKER"
 }
 
@@ -522,14 +533,14 @@ cmd_check_path() {
   local line; line=$(classify "$d")
   v=${line%%	*}; det=${line#*	}
   case "$v" in
-    GUARDED|EXEMPT|SKIP|EXTERNAL)
+    GUARDED|EXEMPT|WARN-ONLY|SKIP|EXTERNAL)
       # The repo's OWN gates are reported here too, as warnings that do not fail the check: this
       # path blocks worktree creation, and unwired gates can be legitimately transient (a fresh
       # worktree before its dependency install). Without this line a GUARDED here said nothing about
       # them, and read as if it did -- reported 2026-09-24.
       local gv="" gd="" sv="" sd=""
       lhp=$(hookspath_local "$d")
-      if [ "$v" = GUARDED ] || [ "$v" = EXEMPT ]; then
+      if [ "$v" = GUARDED ] || [ "$v" = EXEMPT ] || [ "$v" = WARN-ONLY ]; then
         IFS=$'\t' read -r gv gd <<<"$(gates_status "$d")"
         ensure_empty_hooks
         IFS=$'\t' read -r sv sd <<<"$(scan_probe "$d")"
@@ -592,7 +603,7 @@ cmd_check() {
     say "  !! SCAN-OFF — no hook.secret-scan entry in global config: commits here are not scanned for"
     say "     secrets. It ships in the public base's ~/.gitconfig; apply that. (hook-doctor explain SCAN-OFF)"
   fi
-  local dark="" blocked="" unknown="" viol="" unwired="" exempt_lines="" guarded=0 exempt=0 total=0 external=0
+  local dark="" blocked="" unknown="" viol="" unwired="" exempt_lines="" guarded=0 exempt=0 total=0 external=0 warnonly=0 warn_lines=""
   local scandark="" scanblocked="" scanned=0
   # PARALLEL. Worktrees are independent, so they are probed several at a time (xargs -P, which GNU
   # and BSD both have; bash 3.2 on macOS has no `wait -n`). Results are collected per worktree and
@@ -640,6 +651,7 @@ EOF
     case "$v" in
       GUARDED)  guarded=$((guarded+1)) ;;
       EXEMPT)   exempt=$((exempt+1)); exempt_lines="$exempt_lines  $wt — $d\n" ;;
+      WARN-ONLY) warnonly=$((warnonly+1)); warn_lines="$warn_lines  $wt — $d\n" ;;
       DARK)     dark="$dark  $wt — $d\n" ;;
       BLOCKED)  blocked="$blocked  $wt — $d\n" ;;
       EXTERNAL) external=$((external+1)) ;;
@@ -662,9 +674,10 @@ EOF
   [ -n "$unwired" ] && { say "GATES-UNWIRED — the repo tracks commit gates that will not run in this worktree:"; printf '%b' "$unwired"; say ""; }
   [ -n "$viol" ]    && { say "HOOKSPATH-LOCAL (warning) — the repo sets its own core.hooksPath; the guard still runs, its .git/hooks do not:"; printf '%b' "$viol"; say ""; }
   [ -n "$exempt_lines" ] && { say "EXEMPT — legitimately unguarded, with the value that caused it:"; printf '%b' "$exempt_lines"; say ""; }
+  [ -n "$warn_lines" ] && { say "WARN-ONLY — the guard reports but refuses nothing (git-leak-policy mode=warn):"; printf '%b' "$warn_lines"; say ""; }
   [ -n "$scandark" ]    && { say "SCAN-DARK: commits here are NOT scanned for secrets (hook-doctor explain SCAN-DARK)"; printf '%b' "$scandark"; say ""; }
   [ -n "$scanblocked" ] && { say "SCAN-BLOCKED: the secret scan refuses even a clean commit here"; printf '%b' "$scanblocked"; say ""; }
-  say "  GUARDED $guarded   EXEMPT $exempt   EXTERNAL $external   of $total"
+  say "  GUARDED $guarded   EXEMPT $exempt   WARN-ONLY $warnonly   EXTERNAL $external   of $total"
   [ -z "$scanoff" ] && say "  SCANNED $scanned of $total (the global secret scan, probed on pre-commit)"
   say ""
   say "  This report covers $host ONLY. Git config and hooks are per-machine, so a green run here"
@@ -684,6 +697,8 @@ cmd_explain() {
   Usually the leak-guard refusing to classify the repo (read its message: an unreadable fleet record, a missing policy file)." ;;
     EXEMPT)  say "EXEMPT — markers are LEGAL here (leakPolicy=notes|internal, or leakDisable, DECLARED in the fleet record). Correct for the domain's notes repository and its private overlay.
   Check the printed value is the one you intended: this is also the shape a silently disarmed repo would take." ;;
+    WARN-ONLY) say "WARN-ONLY — on every event the leak-guard reported the planted marker and let it through, because this machine's domain sets mode=warn in ~/.dotlocal/git-leak-policy. The guard is live; it reports and does not refuse, by the domain's choice.
+  If this machine should refuse, remove the mode line or set mode=enforce in the domain's overlay and apply it." ;;
     UNKNOWN) say "UNKNOWN — a clean input was refused while a planted one passed, or the repo is declared but absent. It is a VERDICT, not a silence: never counted as clean. Read the printed codes." ;;
     "HOOKSPATH-LOCAL"|"D2-VIOLATION") say "HOOKSPATH-LOCAL — a WARNING. This repo sets its own core.hooksPath. The publish guard still runs (configured hooks ignore core.hooksPath), but git no longer runs the repo's traditional hooks in .git/hooks.
   When the repo's own tooling set it to its tracked gates (husky's .husky/_ is the usual case), those gates run natively and run-repo-gates leaves them to git; nothing needs changing unless something in .git/hooks was meant to run too.
@@ -700,7 +715,7 @@ cmd_explain() {
   A refusal by some other hook is still SCAN-DARK: that hook is not the scan and can change without anyone noticing." ;;
     SCAN-BLOCKED) say "SCAN-BLOCKED — FAIL-CLOSED: the secret scan refuses even a clean commit, so nothing commits here. Usually gitleaks is not on PATH or ~/.config/gitleaks/floor.toml is missing: install gitleaks and apply the public base." ;;
     SCAN-OFF) say "SCAN-OFF — this machine's global git config has no hook.secret-scan entry, so no commit on it is scanned for secrets. It ships in the public base's ~/.gitconfig; apply that (git 2.54+ needed for configured hooks)." ;;
-    *) die "unknown verdict '${1:-}'. One of: GUARDED DARK BLOCKED EXEMPT UNKNOWN NOT-CONFIGURED EXTERNAL HOOKSPATH-LOCAL GATES-UNWIRED SCANNED SCAN-DARK SCAN-BLOCKED SCAN-OFF" 2 ;;
+    *) die "unknown verdict '${1:-}'. One of: GUARDED DARK BLOCKED EXEMPT WARN-ONLY UNKNOWN NOT-CONFIGURED EXTERNAL HOOKSPATH-LOCAL GATES-UNWIRED SCANNED SCAN-DARK SCAN-BLOCKED SCAN-OFF" 2 ;;
   esac
 }
 
@@ -715,10 +730,10 @@ usage: hook-doctor <command>
                           print nothing and exit 0 when clean; a check that speaks every time
                           becomes wallpaper, which is "report loud" failing in a new costume
   check [--repo <substr>] every worktree: commit-msg, pre-commit and pre-push each probed
-  explain <verdict>       what GUARDED/DARK/BLOCKED/EXEMPT/UNKNOWN/EXTERNAL/HOOKSPATH-LOCAL mean,
+  explain <verdict>       what GUARDED/DARK/BLOCKED/EXEMPT/WARN-ONLY/UNKNOWN/EXTERNAL/HOOKSPATH-LOCAL mean,
                           and SCANNED/SCAN-DARK/SCAN-BLOCKED/SCAN-OFF for the global secret scan
 
-exit: 0 all GUARDED or EXEMPT | 1 a hole was found | 2 refused to report (believe nothing above)
+exit: 0 all GUARDED, EXEMPT or WARN-ONLY | 1 a hole was found | 2 refused to report (believe nothing above)
 
 Report-only. It never installs, heals, or writes to a repo.
 USAGE

@@ -105,6 +105,15 @@ want "P1 exit 0" " rc=0" "$p1"
 after=$(snapshot "$k")
 [ "$before" = "$after" ] && ok "P2 repository untouched (objects, index, refs, status)" || bad "P2 repository untouched" "before: $before / after: $after"
 
+# --- W1: the domain's warn mode -> WARN-ONLY, not DARK, exit 0 ------------------------------------
+# mode=warn in git-leak-policy: the guard reports the planted marker and lets it through. That is the
+# domain's choice, so it is listed rather than counted as a hole, and never read as a dead guard.
+fhw="$tmp/home-warn"; cp -R "$fh" "$fhw"; printf 'mode=warn\n' >> "$fhw/.dotlocal/git-leak-policy"
+w1=$(RUNHOME="$fhw" run "$tmp/gcfg" check)
+want  "W1 warn mode -> WARN-ONLY" "WARN-ONLY 1 " "$w1"
+lacks "W1 warn mode is not DARK" "DARK — fail-open" "$w1"
+want  "W1 exit 0" " rc=0" "$w1"
+
 # --- P3: ONE event disabled locally -> DARK naming only that event, exit 1 ------------------------
 git_q -C "$k" config hook.publish-guard-pre-push.enabled false
 p3=$(run "$tmp/gcfg" check)

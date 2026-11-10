@@ -47,8 +47,10 @@ start refusing commits. To turn it on, add to the overlay's `dot_dotlocal/`:
   public destination (hostnames, internal service names). Blocked except in `private` repositories
   and on pushes to a private destination.
 - `git-leak-policy`: `private-url=<regex>` naming the push destinations that are private (anything
-  else is public), and `probe-marker=<token>`, a token the markers match that `hook-doctor` plants
-  to prove the guard is live.
+  else is public), `probe-marker=<token>`, a token the markers match that `hook-doctor` plants
+  to prove the guard is live, and optionally `mode=warn`, under which the guard reports every
+  finding and refusal but lets the commit or push through (`hook-doctor` reads it as WARN-ONLY).
+  No mode line, or `mode=enforce`, refuses; any other value enforces and says so.
 - `git-leak-allow` (optional): one regex matched whole-line against `<path>:<added line>`, exempting
   a known generated line from the sensitive gate.
 
