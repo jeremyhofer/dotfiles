@@ -163,24 +163,35 @@ snapshot_seat() {
 }
 
 # Context use. The snapshot records each live seat's context use (tokens in its last reply's prompt
-# against its window; how it is read is in fleet-canonicals-queue, "context use"). Jeremy,
-# 2026-11-10: seats are refreshed proactively at 50% or more, so `status` flags them CONTEXT-HIGH
-# for the director's sweep. The flag is advisory: it does not change status's exit code, which
-# reports seats that are broken, not seats due for a refresh.
-CONTEXT_FLAG_PCT=$(config_value FLEET_CONTEXT_FLAG_PCT context-flag-pct)
-case "$CONTEXT_FLAG_PCT" in ''|*[!0-9]*) CONTEXT_FLAG_PCT=50 ;; esac
+# against its window; how it is read is in fleet-canonicals-queue, "context use"). The flag is
+# graded, because the rule is: Jeremy, 2026-11-10 13:11, "proactively after context passes 50%,
+# can assess when it makes sense to do a refresh, it doesn't need to be forced, but should be more
+# critical as you get higher". The director's sweep applies it in bands, and `status` names them:
+#   CONTEXT-WATCH     context-watch-pct (50) up to high: refresh at the next natural boundary
+#   CONTEXT-HIGH      context-high-pct (65) up to critical: park at the end of the current step
+#   CONTEXT-CRITICAL  context-critical-pct (80) and above: park now
+# A single flag from 50% read as "refresh now" to anyone scanning the column. The flags are
+# advisory: they do not change status's exit code, which reports seats that are broken, not seats
+# due for a refresh.
+CONTEXT_WATCH_PCT=$(config_value FLEET_CONTEXT_WATCH_PCT context-watch-pct)
+CONTEXT_HIGH_PCT=$(config_value FLEET_CONTEXT_HIGH_PCT context-high-pct)
+CONTEXT_CRITICAL_PCT=$(config_value FLEET_CONTEXT_CRITICAL_PCT context-critical-pct)
+case "$CONTEXT_WATCH_PCT" in ''|*[!0-9]*) CONTEXT_WATCH_PCT=50 ;; esac
+case "$CONTEXT_HIGH_PCT" in ''|*[!0-9]*) CONTEXT_HIGH_PCT=65 ;; esac
+case "$CONTEXT_CRITICAL_PCT" in ''|*[!0-9]*) CONTEXT_CRITICAL_PCT=80 ;; esac
 
-# snapshot_context NAME -- "  context 72.8% (728k of 1000k)[ CONTEXT-HIGH]" from a fresh snapshot,
+# snapshot_context NAME -- "  context 72.8% (728k of 1000k)[ CONTEXT-<band>]" from a fresh snapshot,
 # "  context ?" for a seat with no readable figure, or nothing without a snapshot.
 snapshot_context() {
   [ "$SNAP_USE" = 1 ] || return 0
-  jq -r --arg n "$1" --argjson f "$CONTEXT_FLAG_PCT" '
+  jq -r --arg n "$1" --argjson w "$CONTEXT_WATCH_PCT" --argjson h "$CONTEXT_HIGH_PCT" --argjson crit "$CONTEXT_CRITICAL_PCT" '
     .seats[$n] // empty | .context as $c
     | if ($c | type) != "object" then "  context ?"
       elif $c.overWindow == true then
         "  context \(($c.tokens / 1000) | floor)k, more than the \(($c.window / 1000) | floor)k window: set context-window"
       else "  context \($c.percent)% (\(($c.tokens / 1000) | floor)k of \(($c.window / 1000) | floor)k)"
-           + (if $c.percent >= $f then " CONTEXT-HIGH" else "" end)
+           + (if $c.percent >= $crit then " CONTEXT-CRITICAL" elif $c.percent >= $h then " CONTEXT-HIGH"
+              elif $c.percent >= $w then " CONTEXT-WATCH" else "" end)
       end' "$SNAPSHOT_FILE" 2>/dev/null
 }
 
@@ -434,8 +445,10 @@ configuration (file, then the variable that overrides each key):
   snapshot-max-age = <secs>  [45]    a session snapshot older than this is refused (FLEET_SNAPSHOT_MAX_AGE)
   context-window = <tokens>  [200000]  a seat's context window, unless its launch model ends in [1m]
                                      (then 1000000); the snapshot's context percent is against it
-  context-flag-pct = <pct>   [50]    status flags a seat CONTEXT-HIGH at this context use or more
-                                     (FLEET_CONTEXT_FLAG_PCT); advisory, the exit code ignores it
+  context-watch-pct = <pct>  [50]    status flags a seat CONTEXT-WATCH from this context use
+  context-high-pct = <pct>   [65]    ... CONTEXT-HIGH from this
+  context-critical-pct = <pct> [80]  ... CONTEXT-CRITICAL from this (FLEET_CONTEXT_WATCH_PCT,
+                                     _HIGH_PCT, _CRITICAL_PCT); advisory, the exit code ignores them
   request-max-age = <secs>   [600]   a queued request older than this is refused as stale
   request-limit-canonical = <n> [3]  lifecycle actions per canonical per rolling hour
   request-limit-fleet = <n>  [auto]  lifecycle actions for the whole fleet per rolling hour; auto

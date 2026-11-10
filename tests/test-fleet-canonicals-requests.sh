@@ -889,14 +889,21 @@ l=$(statusline alpha-canonical)
   && ok "status: a seat at 72.8% shows its context and the CONTEXT-HIGH flag" || bad "status line at 72.8%: $l"
 fc status >/dev/null; rc_high=$?
 ctx_transcript s-cx 99800; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
-[[ "$l" == *"context 49.9%"* && "$l" != *CONTEXT-HIGH* ]] && ok "status: 49.9% is not flagged" || bad "status line at 49.9%: $l"
+[[ "$l" == *"context 49.9%"* && "$l" != *CONTEXT-* ]] && ok "status: 49.9% is not flagged" || bad "status line at 49.9%: $l"
 fc status >/dev/null; rc_low=$?
 [[ $rc_high == $rc_low ]] && ok "status: the flag does not change the exit code (advisory)" || bad "exit code $rc_high flagged vs $rc_low not"
 ctx_transcript s-cx 100000; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
-[[ "$l" == *"context 50.0%"*CONTEXT-HIGH* || "$l" == *"context 50%"*CONTEXT-HIGH* ]] \
-  && ok "status: exactly 50% is flagged" || bad "status line at 50%: $l"
-print 'context-flag-pct = 80' > "$T/config"; ctx_transcript s-cx 145600; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
-[[ "$l" == *"context 72.8%"* && "$l" != *CONTEXT-HIGH* ]] && ok "status: context-flag-pct moves the threshold" || bad "status with flag at 80: $l"
+[[ "$l" == *"context 50"*CONTEXT-WATCH* && "$l" != *CONTEXT-HIGH* ]] \
+  && ok "status: exactly 50% is CONTEXT-WATCH (a refresh at the next boundary), not HIGH" || bad "status line at 50%: $l"
+# The bands follow the refresh rule of 2026-11-10 13:11: 50-65 watch, 65-80 high, 80+ critical.
+ctx_transcript s-cx 129800; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 64.9%"*CONTEXT-WATCH* ]] && ok "status: 64.9% is still CONTEXT-WATCH" || bad "status line at 64.9%: $l"
+ctx_transcript s-cx 130000; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 65"*CONTEXT-HIGH* && "$l" != *CONTEXT-WATCH* ]] && ok "status: 65% is CONTEXT-HIGH" || bad "status line at 65%: $l"
+ctx_transcript s-cx 160000; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 80"*CONTEXT-CRITICAL* && "$l" != *CONTEXT-HIGH* ]] && ok "status: 80% is CONTEXT-CRITICAL" || bad "status line at 80%: $l"
+print 'context-high-pct = 75' > "$T/config"; ctx_transcript s-cx 145600; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 72.8%"*CONTEXT-WATCH* ]] && ok "status: context-high-pct moves the band" || bad "status with high at 75: $l"
 : > "$T/config"
 sed 's/canonicalLaunchModel: opus$/canonicalLaunchModel: "opus[1m]"/' "$T/rec.yaml" > "$T/rec1m.yaml"
 FLEET_RECORD="$T/rec1m.yaml" fc snapshot >/dev/null
@@ -910,7 +917,7 @@ ctx_transcript s-cx 291452; fc snapshot >/dev/null; l=$(statusline alpha-canonic
 [[ "$(ctxfield alpha-canonical percent)" == null && "$(ctxfield alpha-canonical overWindow)" == true ]] \
   && ok "snapshot: a prompt larger than the window records no percent, and says so" \
   || bad "over-window snapshot: $(jq -c '.seats["alpha-canonical"].context' "$SNAP")"
-[[ "$l" == *"context 291k, more than the 200k window"* && "$l" != *CONTEXT-HIGH* && "$l" != *%* ]] \
+[[ "$l" == *"context 291k, more than the 200k window"* && "$l" != *CONTEXT-* && "$l" != *%* ]] \
   && ok "status: a prompt larger than the window names the window as wrong, never CONTEXT-HIGH" || bad "status over the window: $l"
 rm -f "$T/transcripts/p/s-cx.jsonl"; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
 [[ "$(ctxfield alpha-canonical)" == null && "$l" == *"context ?"* ]] \

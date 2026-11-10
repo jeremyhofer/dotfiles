@@ -312,10 +312,13 @@ plain alias gets depends on the plan, so a machine sets `context-window` to its 
 seat launched as plain `opus` reached 291k tokens with no compaction. A prompt larger than the window
 proves the setting wrong, so it records no percent and `status` prints
 `context 291k, more than the 200k window: set context-window` rather than a false flag. `status` appends
-`context 72.8% (728k of 1000k)` to a seat's line, `context ?` when no figure can be read, and the
-word `CONTEXT-HIGH` at `context-flag-pct` (50 by default) or more. Jeremy asked on 2026-11-10 for
-seats to be refreshed proactively above 50%, and the director's sweep acts on that word. The flag
-is advisory: it does not change `status`'s exit code.
+`context 72.8% (728k of 1000k)` to a seat's line, `context ?` when no figure can be read, and a
+graded flag: `CONTEXT-WATCH` from `context-watch-pct` (50), `CONTEXT-HIGH` from `context-high-pct`
+(65), `CONTEXT-CRITICAL` from `context-critical-pct` (80). The bands follow Jeremy's rule of
+2026-11-10: past 50% a refresh is a judgment that grows stricter as context grows. Watch means
+refresh at the next natural boundary, high means park at the end of the current step, and
+critical means park now. The director's sweep acts on these words. The flags are advisory: they do
+not change `status`'s exit code.
 
 `refresh` stops the seat and then waits for a snapshot taken after the stop, up to 30 seconds
 (`FLEET_REFRESH_SNAPSHOT_WAIT`), before its `up`. The snapshot current at the stop still lists the
