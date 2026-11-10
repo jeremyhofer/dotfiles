@@ -360,7 +360,7 @@ confirmed:
    confirm with a search of a different shape, `rg -uu -g '!.git' -F '<old path>'`, before calling
    it done: one query's empty result is not proof. **A code comment never cites an initiative
    folder**, even where a document did: the folder's name carries an entry id, which `comment-lint`
-   refuses in code, and the folder moves to `closed/` at close. Describe the thing in its own terms
+   refuses in code, and the folder moves to `docs/archive/initiatives/` at close. Describe the thing in its own terms
    in the comment, and let the folder's `README.md` point at the code instead.
 5. Run the lints (step 5) and commit.
 
