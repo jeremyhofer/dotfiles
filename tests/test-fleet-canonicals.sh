@@ -150,6 +150,7 @@ projects:
     canonicalLaunchDir: theta
     canonicalLaunchModel: fable
     canonicalMachines: [$(hostname)]
+    leakPolicy: private
   three:
     scope: three
     canonical: three-canonical
@@ -536,6 +537,28 @@ if command -v uv >/dev/null 2>&1; then
   [[ "$(print -r -- "$out" | grep '^delta-canonical')" != *MISSING* ]] && ok "the live holder's line does not say MISSING" \
       || bad "status still says MISSING: $out"
   rm -rf "$FLEET_PROC_ROOT/4242" "$FLEET_PID_RECORD_DIR/4242.json"
+  # A holder that appears AFTER up's first check (a resume from the agents view meanwhile): up
+  # re-reads the holder just before launching. A stand-in queue answers `live-holders` with nothing
+  # on its first call and a holder from call RACE_AT on; RACE_AT=99 is the control, never a holder.
+  RQ="$TMPROOT/race"; mkdir -p "$RQ"
+  cat > "$RQ/queue.py" <<'PY'
+import os, sys
+c = os.environ["RACE_COUNT"]
+n = int(open(c).read() or 0) if os.path.exists(c) else 0
+open(c, "w").write(str(n + 1))
+if sys.argv[1:2] == ["live-holders"] and n + 1 >= int(os.environ["RACE_AT"]):
+    print(f"{sys.argv[2]}\tpid 4343 (resumed meanwhile)\t4343\tabcdef0123456789")
+PY
+  race_up() { rm -f "$RQ/count" "$TMPROOT_LAUNCHLOG"
+    RACE_COUNT="$RQ/count" RACE_AT="$1" FLEET_CANONICALS_QUEUE="$RQ/queue.py" fc up delta-canonical }
+  out=$(race_up 99)
+  [[ "$out" == *"starting"*"delta-canonical"* ]] && grep -q delta-canonical "$TMPROOT_LAUNCHLOG" 2>/dev/null \
+      && ok "up launches when no holder appears (race control)" || bad "race control did not launch: $out"
+  out=$(race_up 2)
+  [[ "$out" == *"REFUSED"*"delta-canonical"*"took the name while up was checking"*"pid 4343"* ]] \
+      && ! grep -q delta-canonical "$TMPROOT_LAUNCHLOG" 2>/dev/null \
+      && ok "up re-checks the holder just before launching, and refuses one that appeared" \
+      || bad "up launched over a holder that appeared after its first check: $out"
 else
   print "SKIP: uv is not installed, so the live-holder cases cannot run the queue"
 fi
@@ -749,6 +772,74 @@ out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
 [[ $rc -ne 0 && "$out" == *"REFUSED"*"theta-canonical"*"no handoff recorded"* ]] \
     && ok "up --dry-run refuses a name with no pointer at all" \
     || bad "up rehearsed a launch with no pointer (rc=$rc): $out"
+# The refusal names the next step, as down and refresh do. A candidate file is named only when
+# exactly one handoff for the seat exists; with none or several the operator picks, and `up`
+# never records a pointer itself.
+NSDIR="$TMPROOT/ns-handoffs"; mkdir -p "$NSDIR"
+nsup() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" FLEET_HANDOFFS_DIR="$NSDIR" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" up theta-canonical --dry-run 2>&1 }
+out=$(nsup); rc=$?
+[[ $rc -ne 0 && "$out" == *"fleet-canonicals handoff theta-canonical --set <path-to-handoff>"* \
+   && "$out" == *"none carries"* ]] \
+    && ok "up's missing-pointer refusal prints the handoff --set next step" \
+    || bad "no next step on a missing pointer (rc=$rc): $out"
+print "# park" > "$NSDIR/2026-01-01-0900-theta-canonical-park.md"
+out=$(nsup); rc=$?
+[[ $rc -ne 0 && "$out" == *"fleet-canonicals handoff theta-canonical --set $NSDIR/2026-01-01-0900-theta-canonical-park.md"* ]] \
+    && ok "with exactly one candidate, the next step names it" \
+    || bad "one candidate not named (rc=$rc): $out"
+print "# park" > "$NSDIR/2026-01-02-0900-theta-canonical-park.md"
+out=$(nsup); rc=$?
+[[ $rc -ne 0 && "$out" == *"--set <path-to-handoff>"* && "$out" == *"2 handoff files"* \
+   && "$out" != *"--set $NSDIR/"* ]] \
+    && ok "with several candidates, none is named" \
+    || bad "a candidate named among several (rc=$rc): $out"
+[[ ! -e "$GSTATE/theta-canonical.handoff" ]] \
+    && ok "up never records a pointer itself" || bad "up recorded a pointer"
+
+# init: a NEVER-LAUNCHED seat gets a first-launch handoff from the record, and only such a seat.
+# theta has no pointer here; its transcripts are looked for under its launch directory's key.
+ITD="$TMPROOT/init-transcripts"; mkdir -p "$ITD"
+initfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" FLEET_TRANSCRIPT_DIR="$ITD" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" "$@" 2>&1 }
+out=$(initfc init nosuch-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *"not a canonical declared for this machine"* ]] \
+    && ok "init refuses an undeclared name" || bad "init of an undeclared name (rc=$rc): $out"
+ikey=$(printf '%s' "$TMPROOT/theta" | sed 's/[^A-Za-z0-9]/-/g'); mkdir -p "$ITD/$ikey"
+print '{"type":"agent-name","agentName":"theta-canonical","sessionId":"s1"}' > "$ITD/$ikey/s1.jsonl"
+out=$(initfc init theta-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *"has a session transcript"* && ! -e "$GSTATE/theta-canonical.handoff" ]] \
+    && ok "init refuses a seat with a transcript under its launch directory" \
+    || bad "init over a seat that has run (rc=$rc): $out"
+rm -rf "$ITD/$ikey"
+# Only a finding on the seat's OWN project refuses: this record's other projects lack a leakPolicy
+# too, and the cases below pass despite them; with theta's removed, init names theta's.
+grep -v '^    leakPolicy: private$' "$FLEET_RECORD" > "$TMPROOT/rec-nopolicy.yaml"
+out=$(FLEET_RECORD="$TMPROOT/rec-nopolicy.yaml" initfc init --dry-run theta-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *"not completely declared"*"[policy-missing] theta:"* ]] \
+    && ok "init refuses a seat whose own project has a fleet-decl --check finding" \
+    || bad "init over an incomplete declaration (rc=$rc): $out"
+out=$(initfc init --dry-run theta-canonical); rc=$?
+[[ $rc -eq 0 && "$out" == *"would init"*"theta-canonical"* && ! -e "$GSTATE/theta-canonical.handoff" ]] \
+    && ok "init --dry-run checks and writes nothing" || bad "init --dry-run (rc=$rc): $out"
+out=$(initfc init theta-canonical); rc=$?
+ih=$(FLEET_STATE="$GSTATE" bash "$TOOL" handoff theta-canonical 2>&1)
+[[ $rc -eq 0 && "$ih" == *"theta-canonical-first-launch.md" && -f "$ih" ]] \
+    && grep -q 'nothing to' "$ih" && grep -q 'canonicalLaunchDir: theta' "$ih" \
+    && ok "init writes a first-launch handoff from the record and records the pointer" \
+    || bad "init (rc=$rc): $out / pointer: $ih"
+out=$(initfc up theta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would start"*"theta-canonical"* ]] \
+    && ok "after init, up accepts the seat" || bad "up after init (rc=$rc): $out"
+out=$(initfc init theta-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *"already has a handoff pointer"* ]] \
+    && ok "init refuses a seat that has a pointer" || bad "a second init (rc=$rc): $out"
+rm -f "$GSTATE/theta-canonical.handoff"
+: > "$TMPROOT_LAUNCHLOG"
+out=$(initfc init --up theta-canonical); rc=$?
+[[ $rc -eq 0 && "$out" == *"starting"*"theta-canonical"* ]] && grep -q theta-canonical "$TMPROOT_LAUNCHLOG" \
+    && ok "init --up launches the seat" || bad "init --up (rc=$rc): $out"
+rm -f "$GSTATE/theta-canonical.handoff"
 print "$TMPROOT/zeta-handoff.md"  >  "$GSTATE/theta-canonical.handoff"
 print "# set-at $NOW"             >> "$GSTATE/theta-canonical.handoff"
 

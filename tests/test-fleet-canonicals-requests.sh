@@ -53,6 +53,7 @@ projects:
     canonicalLaunchDir: gamma
     canonicalLaunchModel: opus
     canonicalMachines: [$host]
+    leakPolicy: private
   director:
     scope: director
     canonical: director-canonical
@@ -355,6 +356,42 @@ mkdir -p "$Q"; plant r-fleet up gamma-canonical gamma-canonical
 serve >/dev/null; expect r-fleet refused rate "an eleventh action for the fleet within the hour is refused"
 print 'request-limit-fleet = 20' > "$T/config"; plant r-fleet2 up gamma-canonical gamma-canonical
 serve >/dev/null; expect r-fleet2 done "" "request-limit-fleet in the config raises the fleet limit"
+# With no key, the fleet limit scales with the seats the record declares for THIS machine:
+# max(10, 2 x seats), so one refresh round plus one recovery per seat fits. A 13-seat machine gets
+# 26; ten actions in the hour, the old fixed default, must not stop its eleventh.
+cp "$T/rec.yaml" "$T/rec13.yaml"
+for n in s1 s2 s3 s4 s5 s6 s7 s8 s9; do
+  printf '  %s:\n    scope: %s\n    canonical: %s-canonical\n    canonicalIdentity: "%s"\n    canonicalLaunchDir: %s\n    canonicalLaunchModel: opus\n    canonicalMachines: [%s]\n' \
+    "$n" "$n" "$n" "$n" "$n" "$host" >> "$T/rec13.yaml"
+done
+[[ $(FLEET_RECORD="$T/rec13.yaml" fleet-decl --canonicals | wc -l | tr -d ' ') == 14 ]] \
+  || bad "the 13-seat fixture: $(FLEET_RECORD="$T/rec13.yaml" fleet-decl --canonicals | tr '\n' ' ')"
+reset
+now=$(date +%s)
+for n in a b c d e f g h i j; do print '{"at":'$(( now - 300 ))',"name":"'$n'-canonical","outcome":"done"}' >> "$T/state/requests-audit.jsonl"; done
+mkdir -p "$Q"; plant r-fleet13 up gamma-canonical gamma-canonical
+FLEET_RECORD="$T/rec13.yaml" serve >/dev/null
+expect r-fleet13 done "" "with 13 seats declared here, an eleventh action in the hour is not refused"
+reset
+for n in {1..26}; do print '{"at":'$(( now - 300 ))',"name":"x'$n'-canonical","outcome":"done"}' >> "$T/state/requests-audit.jsonl"; done
+mkdir -p "$Q"; plant r-fleet13b up gamma-canonical gamma-canonical
+FLEET_RECORD="$T/rec13.yaml" serve >/dev/null
+expect r-fleet13b refused rate "...and its twenty-seventh is (26 = 2 x 13)"
+
+# init: a never-launched seat, requested from inside a sandbox. Only a request-any requester can ask
+# (the seat has no session to ask for itself), and the runner runs `init --up`, so it launches.
+reset
+rm -f "$T/state/gamma-canonical.handoff"
+plant r-init init gamma-canonical alpha-canonical
+serve >/dev/null
+expect r-init refused requester "a canonical cannot request another seat's init"
+plant r-init2 init gamma-canonical director-canonical
+serve >/dev/null
+expect r-init2 done "" "a director's init request is served"
+[[ "$(cat "$CLAUDE_LOG")" == *"--bg -n gamma-canonical"* ]] && [[ "$(bash "$TOOL" handoff gamma-canonical 2>&1)" == *"first-launch.md" ]] \
+  && ok "the served init writes the first-launch handoff and launches the seat" \
+  || bad "init request: $(cat "$CLAUDE_LOG") / $(bash "$TOOL" handoff gamma-canonical 2>&1)"
+bash "$TOOL" handoff gamma-canonical --set "$T/gamma.handoff.md" >/dev/null 2>&1
 
 # usage
 reset

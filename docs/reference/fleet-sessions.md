@@ -121,8 +121,8 @@ key set to nothing is an empty list, not the default):
 | --- | --- | --- |
 | `request-max-age` | `600` | seconds after which a queued request is refused as stale |
 | `request-limit-canonical` | `3` | lifecycle actions (run, whether they succeeded or failed) per canonical in a rolling hour |
-| `request-limit-fleet` | `10` | the same, for every canonical together |
-| `request-usage-threshold` | `85` | the 7-day usage percent at which `up`, `refresh` and `resume` are refused |
+| `request-limit-fleet` | `auto` | the same, for every canonical together; `auto` is max(10, 2 × the seats the record declares for this machine), so one refresh round plus one recovery per seat fits |
+| `request-usage-threshold` | `85` | the 7-day usage percent at which `up`, `refresh`, `resume` and `init` are refused |
 | `request-usage-exempt` | none | canonicals that may still be started above the threshold |
 | `request-any` | `director-canonical` | requesters who may request any canonical's action; everyone else, only their own |
 | `never-touch` | `director-canonical` | canonicals the queue never acts on, for any verb, whoever asks; refused at `request` too |
@@ -138,6 +138,13 @@ inside the checkout failed worse: the update was a write a sandbox can refuse, a
 quietly read the previous handoff. The pointer sits outside every repository and is set
 explicitly. Its `set-at` stamp also lets `down` and `refresh` refuse to end a session whose
 recorded handoff is older than the session, since that handoff cannot describe its work.
+
+**A seat that has never launched has no handoff to point at**, so `up` refuses it like any other
+seat without one. `fleet-canonicals init <name>` is the way in: it requires the seat fully declared
+for this machine with no `fleet-decl --check` finding on its project, refuses a name that has a pointer or a
+transcript under its launch directory (a seat that has run has a real handoff somewhere, and a
+generated one would hide it), then writes a first-launch handoff from the record into the stub
+directory, records the pointer, and with `--up` launches.
 
 ### The hub's own handoff
 
@@ -277,7 +284,9 @@ So the verbs in the paragraph above stay the human's, run from a terminal, and a
 
 ### Requesting a lifecycle action
 
-**A session requests `up`, `down`, `refresh` or `resume` instead of running it.**
+**A session requests `up`, `down`, `refresh`, `resume` or `init` instead of running it.** A
+requested `init` runs `init --up`, and only a `request-any` requester can ask for it, since the seat
+has no session of its own to ask with.
 `fleet-canonicals request <verb> <name> --reason <text>` writes one file into
 `$FLEET_STATE/requests/`, which a canonical can already write (the table above); it runs nothing.
 `fleet-canonicals serve-requests`, started every minute outside every sandbox by a systemd user
@@ -303,11 +312,11 @@ No notification is sent. The runner refuses, in this order, a request that:
 - shares its canonical with an older request in the same pass or one marked running (a runner that
   died mid-verb leaves one; remove it by hand);
 - would exceed `request-limit-canonical` or `request-limit-fleet` in the past hour;
-- is `up`, `refresh` or `resume` while the highest current `seven_day_pct` in
+- is `up`, `refresh`, `resume` or `init` while the highest current `seven_day_pct` in
   `$XDG_RUNTIME_DIR/claude-usage/*.json` is at or above `request-usage-threshold` and the canonical
   is not exempt (a file whose `seven_day_resets_at` has passed is skipped; with no files, usage is
   not checked);
-- is `up` or `resume` where `claude-trust-check` reports the canonical's project untrusted, or
+- is `up`, `resume` or `init` where `claude-trust-check` reports the canonical's project untrusted, or
   cannot read the trust state;
 - names a canonical with no live row in `claude agents --json` while a live process holds the name:
   a Claude Code pid record under `~/.claude/sessions/` names it and its pid is running (on Linux,

@@ -61,9 +61,9 @@ import sys
 import time
 from pathlib import Path
 
-VERBS = ("up", "down", "refresh", "resume")
-STOPPING = ("down", "refresh")          # verbs that end a running session
-STARTING = ("up", "refresh", "resume")  # verbs that spend usage
+VERBS = ("up", "down", "refresh", "resume", "init")
+STOPPING = ("down", "refresh")                  # verbs that end a running session
+STARTING = ("up", "refresh", "resume", "init")  # verbs that spend usage (init runs with --up)
 REQUEST_KEYS = {"id", "time", "verb", "name", "reason", "requester"}
 RETAIN_SECONDS = 7 * 24 * 3600
 VERB_TIMEOUT = 600
@@ -75,7 +75,8 @@ VERB_TIMEOUT = 600
 DEFAULTS = {
     "request-max-age": "600",             # seconds before a queued request is stale
     "request-limit-canonical": "3",       # actions per canonical per rolling hour
-    "request-limit-fleet": "10",          # actions for the whole fleet per rolling hour
+    "request-limit-fleet": "auto",        # actions for the whole fleet per rolling hour; auto:
+                                          # max(10, 2 x the seats declared for this machine)
     "request-usage-threshold": "85",      # 7-day usage percent at which starting verbs stop
     "request-usage-exempt": "",           # canonicals that may still be started above it
     "request-any": "director-canonical",  # requesters who may act on any canonical
@@ -306,7 +307,7 @@ def pending_for(name: str, exclude: Path | None = None) -> list[str]:
 
 
 def cmd_request(argv: list[str]) -> int:
-    usage = "usage: fleet-canonicals request <up|down|refresh|resume> <name> --reason <text> [--as <requester>]"
+    usage = "usage: fleet-canonicals request <up|down|refresh|resume|init> <name> --reason <text> [--as <requester>]"
     pos: list[str] = []
     reason = ""
     claimed = ""
@@ -507,13 +508,37 @@ def check_one_per_canonical(req: dict, ctx: Pass, path: Path) -> str | None:
     return None
 
 
+FLEET_LIMIT_FLOOR = 10
+
+
+def seats_here() -> int | None:
+    """How many canonicals the fleet record declares for this machine, or None when the record
+    cannot be read."""
+    rc, out = decl("--canonicals")
+    if rc != 0:
+        return None
+    return sum(1 for n in out.splitlines() if n and declared_here(n)[0])
+
+
+def fleet_limit(cfg: dict[str, str]) -> int:
+    """The fleet's lifecycle actions per rolling hour. A whole number in the config wins. `auto`,
+    the default, scales with the machine: max(10, 2 x the seats declared for it), so one refresh
+    round plus one recovery per seat fits. A fixed 10 was smaller than one round on a 13-seat
+    machine. An unreadable record falls back to the floor, the smaller limit, never a larger one."""
+    if cfg.get("request-limit-fleet", "auto").strip() in ("", "auto"):
+        n = seats_here()
+        return max(FLEET_LIMIT_FLOOR, 2 * n) if n is not None else FLEET_LIMIT_FLOOR
+    return as_int(cfg, "request-limit-fleet")
+
+
 def check_rate(req: dict, ctx: Pass, path: Path) -> str | None:
     hour = ctx.t - 3600
     acted = [a for a in ctx.audit if a.get("outcome") in ("done", "failed") and a.get("at", 0) > hour]
     mine = [a for a in acted if a.get("name") == req["name"]]
-    lc, lf = as_int(ctx.cfg, "request-limit-canonical"), as_int(ctx.cfg, "request-limit-fleet")
+    lc = as_int(ctx.cfg, "request-limit-canonical")
     if len(mine) >= lc:
         return f"rate: '{req['name']}' has had {len(mine)} lifecycle actions in the last hour (limit {lc})"
+    lf = fleet_limit(ctx.cfg)
     if len(acted) >= lf:
         return f"rate: the fleet has had {len(acted)} lifecycle actions in the last hour (limit {lf})"
     return None
@@ -554,7 +579,7 @@ def check_usage(req: dict, ctx: Pass, path: Path) -> str | None:
 
 
 def check_trust(req: dict, ctx: Pass, path: Path) -> str | None:
-    if req["verb"] not in ("up", "resume"):
+    if req["verb"] not in ("up", "resume", "init"):
         return None
     rc, untrusted = ctx.trust()
     if rc == 0:
@@ -1039,7 +1064,10 @@ def respawn(name: str, ctx: Pass) -> tuple[str, str]:
 def execute(req: dict, ctx: Pass) -> tuple[str, str]:
     if req["verb"] == "resume":
         return respawn(req["name"], ctx)
-    rc, out = run(sibling("fleet-canonicals", "FLEET_CANONICALS_BIN") + [req["verb"], req["name"]],
+    # init is requested to START a never-launched seat, so it runs with --up; `init` alone only
+    # records a handoff, which nobody would queue a request for.
+    extra = ["--up"] if req["verb"] == "init" else []
+    rc, out = run(sibling("fleet-canonicals", "FLEET_CANONICALS_BIN") + [req["verb"]] + extra + [req["name"]],
                   timeout=VERB_TIMEOUT)
     ctx.refresh_listing()
     return ("done" if rc == 0 else "failed"), f"fleet-canonicals {req['verb']} {req['name']} exited {rc}\n{out}"

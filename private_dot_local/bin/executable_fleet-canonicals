@@ -305,7 +305,15 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     same wait, then run `up`. For when no session will be alive to wake.
                     Run it backgrounded (`fleet-canonicals resume-at &`).
 
-  request <up|down|refresh|resume> <name> --reason TEXT [--as REQUESTER]
+  init [--up] [--dry-run] <name>
+                    for a seat that has NEVER launched: `up` refuses a seat with no handoff,
+                    and a first launch has none to inherit. Requires the seat fully declared
+                    for this machine, with no `fleet-decl --check` finding on its project; refuses a
+                    name that has a handoff pointer or a transcript under its launch directory.
+                    Writes a first-launch handoff from the record, records the pointer, and with
+                    --up launches. --dry-run checks and writes nothing.
+
+  request <up|down|refresh|resume|init> <name> --reason TEXT [--as REQUESTER]
                     ask for a lifecycle action from INSIDE a sandbox, where the verbs above
                     cannot run. Writes one request into $FLEET_STATE/requests/; never runs
                     anything. Refuses --force and --stub, a name not declared for this machine,
@@ -360,7 +368,8 @@ configuration (file, then the variable that overrides each key):
   the request queue's keys (no variable overrides them; defaults in brackets):
   request-max-age = <secs>   [600]   a queued request older than this is refused as stale
   request-limit-canonical = <n> [3]  lifecycle actions per canonical per rolling hour
-  request-limit-fleet = <n>  [10]    lifecycle actions for the whole fleet per rolling hour
+  request-limit-fleet = <n>  [auto]  lifecycle actions for the whole fleet per rolling hour; auto
+                                     is max(10, 2 x the seats declared for this machine)
   request-usage-threshold = <pct> [85]  7-day usage at which up, refresh and resume are refused
   request-usage-exempt = <names>  [none]  canonicals that may still be started above it
   request-any = <names>      [director-canonical]  requesters who may act on any canonical
@@ -833,12 +842,25 @@ cmd_up() {
     # launch would. launch_canonical checks it again; this one is for the message and the dry run.
     if ! why=$(resolve_handoff "$name" 2>&1 >/dev/null); then
       printf 'REFUSED %-24s %s\n' "$name" "$why" >&2
+      read_pointer "$name" >/dev/null 2>&1 || handoff_next_step "$name" >&2
       refused=1
       continue
     fi
     if [ "$dry" = "1" ]; then
       printf 'would start %-20s %s\n' "$name" "$script"
       started=$((started + 1))
+      continue
+    fi
+    # RE-CHECK THE HOLDER at the last moment before launching. The check above ran before the
+    # declaration and handoff reads, and a session resumed from the agents view in between holds the
+    # name by the time the launch runs; launching then starts a second session under it. Re-reading
+    # the pid records here NARROWS that window to the time `launch_canonical` takes to start; it does
+    # NOT close it. Nothing here can lock the agents view out, so a resume landing inside the launch
+    # itself still races.
+    holder=$(live_holder "$name")
+    if [ -n "$holder" ]; then
+      printf 'REFUSED %-24s a live process took the name while up was checking: %s\n' "$name" "$holder" >&2
+      refused=1
       continue
     fi
     printf 'starting %-23s %s\n' "$name" "$script"
@@ -1307,6 +1329,36 @@ cmd_resume_at() {
 
 pointer_path() { printf '%s/%s.handoff' "$FLEET_STATE" "$1"; }
 
+# handoff_next_step NAME -- for a refusal that found NO pointer: the command that records one. It
+# SUGGESTS and never sets, for the reason above: a file name is weak evidence of which handoff a
+# seat should read. A file is named only when exactly one handoff in the staging or handoffs
+# directory carries NAME in its file name, and then as a candidate to check; with none or several,
+# the choice is the operator's.
+handoff_next_step() {
+  local n=$1 d c count=0 one="" where=""
+  for d in "$FLEET_STATE/handoff-staging" "$HANDOFFS_DIR"; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    where="$where $d"
+    for c in "$d"/*-"$n"-*.md; do
+      [ -f "$c" ] || continue
+      count=$((count + 1)); one=$c
+    done
+  done
+  if [ "$count" = 1 ]; then
+    printf '  Next step, if this is the handoff for its last sitting (the only file naming %s):\n' "$n"
+    printf '      fleet-canonicals handoff %s --set %s\n' "$n" "$one"
+  else
+    printf '  Next step: record the handoff it should read, then retry:\n'
+    printf '      fleet-canonicals handoff %s --set <path-to-handoff>\n' "$n"
+    if [ "$count" = 0 ]; then
+      printf '  (none carries %s in its file name in:%s)\n' "$n" "${where:- no handoff directory}"
+    else
+      printf '  (%s handoff files carry %s in their names in:%s; choose the one for its last sitting)\n' \
+        "$count" "$n" "$where"
+    fi
+  fi
+}
+
 # ONE reader for the recorded pointer, used by the `handoff` verb and by the launcher.
 #
 # The launcher used to get this by re-invoking `"$0" handoff "$name"`, which was wrong in a way
@@ -1387,6 +1439,91 @@ handoff_problem() {
     printf 'has changed since its last commit: %s' "$phys"; return 0
   fi
   return 1
+}
+
+# transcripts_under_launch_dir NAME -- the first transcript under NAME's launch directory that
+# records NAME as its session name, or nothing. Claude Code files a session's transcript under
+# $FLEET_TRANSCRIPT_DIR/<the launch directory, every character but letters and digits made `-`>/,
+# and a named session writes an `agent-name` entry carrying its name. Only that one directory is
+# read: the whole transcript tree is gigabytes, and a seat that ever launched through this tool
+# also has a pointer, which `init` checks first.
+transcripts_under_launch_dir() {
+  local name=$1 dir key
+  dir=$(fleet-decl --canonical "$name" canonicalLaunchDir 2>/dev/null) || return 0
+  key=$(printf '%s' "$FLEET_ROOT/$dir" | sed 's/[^A-Za-z0-9]/-/g')
+  [ -d "$FLEET_TRANSCRIPT_DIR/$key" ] || return 0
+  grep -lF "\"agentName\":\"$name\"" "$FLEET_TRANSCRIPT_DIR/$key"/*.jsonl 2>/dev/null | head -n 1
+}
+
+# write_first_launch_handoff NAME -- a dated handoff for a seat's FIRST launch, written where stubs
+# go (so the handoff gate accepts its location), built from the record alone. It says outright that
+# there is nothing to inherit, as a stub does, and adds what the record declares the seat to be.
+write_first_launch_handoff() {
+  local name=$1 dir file v
+  dir=$(stub_dir)
+  mkdir -p "$dir" || { printf 'cannot create %s\n' "$dir" >&2; return 1; }
+  file="$dir/$(date +%Y-%m-%d-%H%M%S)-$name-first-launch.md"
+  {
+    printf '# Handoff -- %s, FIRST LAUNCH (%s)\n\n' "$name" "$(date '+%Y-%m-%d %H:%M %Z')"
+    printf 'Generated by `fleet-canonicals init`. **This seat has never run: there is nothing to\n'
+    printf 'inherit**, and no earlier session or handoff describes work it did.\n\n'
+    printf '## What the fleet record declares\n\n'
+    for v in canonicalIdentity canonicalLaunchDir canonicalLaunchModel; do
+      printf -- '- %s: %s\n' "$v" "$(fleet-decl --canonical "$name" "$v" 2>/dev/null || printf 'not declared')"
+    done
+    printf -- '- canonicalMachines: %s\n\n' \
+      "$(fleet-decl --canonical-list "$name" canonicalMachines 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+    printf '## What a successor should do\n\n'
+    printf 'Read the project'"'"'s own context file and tracked state (its register, issues or board),\n'
+    printf 'then pick up where the operator directs. Park with a real handoff before this session ends.\n'
+  } > "$file" || { printf 'cannot write %s\n' "$file" >&2; return 1; }
+  printf '%s\n' "$file"
+}
+
+# cmd_init [--up] [--dry-run] NAME -- make a never-launched seat launchable. `up` refuses a seat with
+# no handoff, which is right for every seat that has run and wrong for one that never has: there is
+# no park to point at. This writes the one handoff a first launch can honestly have, from the record,
+# and refuses wherever the seat may have run before, since a generated handoff would then hide the
+# real one.
+cmd_init() {
+  local name="" up=0 dry=0 chk crc proj mine ptr t file
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --up) up=1; shift ;;
+      --dry-run) dry=1; shift ;;
+      -*) die "init: unknown option '$1' (usage: init [--up] [--dry-run] <name>)" ;;
+      *) [ -z "$name" ] || die "init: one name at a time"; name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "init: need a canonical name"
+  expected_names | grep -qxF "$name" \
+    || die "init: '$name' is not a canonical declared for this machine (known: $(expected_names | tr '\n' ' '))"
+  # THE SEAT'S OWN DECLARATION, by `fleet-decl --check`'s findings on its project. Not the whole
+  # record's: on a machine with many seats, an unrelated seat's gap would otherwise block every first
+  # launch. An unreadable record (exit 2) refuses outright.
+  proj=$(fleet-decl --values canonical 2>/dev/null | awk -F '\t' -v n="$name" '$2 == n { print $1; exit }')
+  [ -n "$proj" ] || die "init: no project in the fleet record declares canonical '$name'"
+  chk=$(fleet-decl --check 2>&1); crc=$?
+  [ "$crc" -ne 2 ] || die "init: the fleet record is unreadable (fleet-decl --check exit 2)"
+  mine=$(printf '%s\n' "$chk" | grep -F "] $proj: " || true)
+  [ -z "$mine" ] || die "init: '$name' is not completely declared (fleet-decl --check, project $proj):
+$mine"
+  launch_desc "$name" >/dev/null || die "init: '$name' is not fully declared in the fleet record"
+  ptr=$(pointer_path "$name")
+  [ ! -e "$ptr" ] || die "init: '$name' already has a handoff pointer ($ptr), so it is not a first launch.
+  Use: fleet-canonicals up $name   (or record its handoff with: fleet-canonicals handoff $name --set <path>)"
+  t=$(transcripts_under_launch_dir "$name")
+  [ -z "$t" ] || die "init: '$name' has a session transcript, so it has run before: $t
+  Write or find its real handoff, then: fleet-canonicals handoff $name --set <path>"
+  if [ "$dry" = 1 ]; then
+    printf 'would init %-21s first-launch handoff in %s\n' "$name" "$(stub_dir)"
+    [ "$up" = 0 ] || printf 'would start %-20s %s\n' "$name" "$(launch_desc "$name")"
+    return 0
+  fi
+  file=$(write_first_launch_handoff "$name") || die "init: could not write the first-launch handoff"
+  cmd_handoff "$name" --set "$file" >/dev/null || die "init: could not record the pointer to $file"
+  printf 'init     %-23s %s\n' "$name" "$file"
+  [ "$up" = 0 ] || cmd_up "$name"
 }
 
 cmd_handoff() {
@@ -2560,6 +2697,7 @@ case "${1:-}" in
   resume)    shift; cmd_resume "$@" ;;
   up|start)  shift; cmd_up "$@" ;;
   handoff)   shift; cmd_handoff "$@" ;;
+  init)      shift; cmd_init "$@" ;;
   place)           shift; cmd_place "$@" ;;
   stage)           shift; cmd_stage "$@" ;;
   dedupe)          shift; cmd_dedupe "$@" ;;
