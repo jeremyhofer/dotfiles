@@ -126,6 +126,9 @@ EOF
 chmod +x "$TMP/claude"
 export CLAUDE_CONTEXT_PROBE_CLAUDE="$TMP/claude" FAKE_STATE="$STATE" FAKE_HOME="$FHOME"
 export CLAUDE_CONTEXT_PROBE_FLEET_WAIT=3 CLAUDE_CONTEXT_PROBE_FLEET_ATTACH_WAIT=1
+# Session temp dirs go under the suite's own scratch, which a sandbox can write; the default (/tmp)
+# is checked once, below, where it can be written.
+mkdir -p "$TMP/s"; export CLAUDE_CONTEXT_PROBE_SESSION_TMP_PARENT="$TMP/s"
 
 run() { rm -rf "$STATE" "$FHOME"; mkdir -p "$FHOME"; FAKE_MODE=$1 HOME="$FHOME" bash "$PROBE" --fleet 2>/dev/null; }
 # Every session the stub created must have had `rm` called on it.
@@ -164,6 +167,23 @@ cleaned && ok "rm was called for every session created" || bad "a session was no
 [ -n "$tdir" ] && [ ! -e "$tdir" ] && ok "the temp dir is gone" || bad "temp dir left behind" "$tdir"
 grep -q -- '--tools' "$STATE/args" && bad "--fleet ran a context session" || ok "--fleet runs only fleet checks"
 grep -q -- '--bg -n ccprobe-fleet-' "$STATE/args" && ok "the session is named ccprobe-fleet-<nonce>" || bad "session name" "$(cat "$STATE/args")"
+
+printf '\n== the probe plumbing ==\n'
+rm -rf "$STATE" "$FHOME"; mkdir -p "$FHOME"
+err=$(FAKE_MODE=normal HOME="$FHOME" bash "$PROBE" --fleet 2>&1 >/dev/null)
+has "$err" 'BrokenPipe' && bad "a listing helper wrote into a closed pipe" "$err" || ok "no broken-pipe noise on stderr"
+# CLAUDE_CODE_TMPDIR longer than about 30 characters silently falls back to the default TMPDIR
+# (measured 2026-09-28, fleet-canonicals' new_tmproot), which made the tmpdir row read `no` on a
+# real run (2026-11-10, 2.1.322) when the probe's own path was 41 characters.
+if ( d=$(mktemp -d /tmp/c-ccpt-XXXXXX 2>/dev/null) && rmdir "$d" ); then
+  rm -rf "$STATE" "$FHOME"; mkdir -p "$FHOME"
+  FAKE_MODE=normal HOME="$FHOME" env -u CLAUDE_CONTEXT_PROBE_SESSION_TMP_PARENT bash "$PROBE" --fleet >/dev/null 2>&1
+  td=$(sed -n 's/.*"CLAUDE_CODE_TMPDIR":"\([^"]*\)".*/\1/p' "$STATE/args" | head -n 1)
+  [ -n "$td" ] && [ "${#td}" -le 22 ] && ok "the session temp dir is short enough to be honored (${#td} chars)" || bad "session temp dir too long" "${#td}: $td"
+  [ -n "$td" ] && [ ! -e "$td" ] && ok "...and it is removed" || bad "session temp dir left behind" "$td"
+else
+  printf '  skip the session temp dir length: /tmp cannot be written here (an agent sandbox)\n'
+fi
 
 printf '\n== an appended system-prompt file ==\n'
 out=$(run normal)

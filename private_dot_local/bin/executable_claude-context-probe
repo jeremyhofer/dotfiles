@@ -141,7 +141,10 @@ fleet_rows() { # every listed row, from `agents --json` then `agents --all --jso
 }
 find_row() { # <name>: sets R_ID R_PID R_SID R_CWD R_STATE from the first listed row with that name
   local line
-  line=$(fleet_rows | awk -F'|' -v n="$1" '$2 == n { print; exit }')
+  # awk reads to the end rather than exiting at the first match: fleet_rows runs two listings into
+  # this pipe, and an early exit left the second writing into a closed pipe, which Python reports
+  # as "Exception ignored ... BrokenPipeError" on the terminal (seen 2026-11-10 on a real run).
+  line=$(fleet_rows | awk -F'|' -v n="$1" '$2 == n && !f { print; f = 1 }')
   [ -n "$line" ] || return 1
   IFS='|' read -r R_ID _ R_PID R_SID R_CWD R_STATE <<< "$line"
   seen_names="$seen_names $1"
@@ -198,16 +201,28 @@ fleet_cleanup() {
     find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$sid.jsonl" -type f -exec rm -f {} + 2>/dev/null
   done
   [ -n "$FLEET_DIR" ] && [ -n "${WORK:-}" ] && rm -rf "$WORK"
+  [ -n "${TD:-}" ] && [ "$KEEP" -eq 0 ] && rm -rf "$TD"
   [ "$KEEP" -eq 1 ] || rm -rf "$ROOT"
 }
 
 fleet_main() {
-  local NAME="ccprobe-fleet-$NONCE" INC='INCONCLUSIVE (needs an earlier check)' TD="$ROOT/sessiontmp"
+  local NAME="ccprobe-fleet-$NONCE" INC='INCONCLUSIVE (needs an earlier check)'
+  # The session's temp root must be SHORT: Claude Code silently ignores a CLAUDE_CODE_TMPDIR longer
+  # than about 30 characters and gives sandboxed Bash the default TMPDIR (measured 2026-09-28: 19
+  # and 28 characters kept, 38 and 49 fell back). Under the probe's own root it was 41, and the
+  # tmpdir row read `no` on a real run (2026-11-10, 2.1.322). /tmp, not $TMPDIR, which is long on
+  # macOS (CLAUDE_CONTEXT_PROBE_SESSION_TMP_PARENT overrides it). Where it cannot be written (inside
+  # an agent sandbox) the probe's own root is used, and the tmpdir row may then read `no` for the
+  # length alone, which is said. Global, so the exit trap can remove it.
+  TD=$(mktemp -d "${CLAUDE_CONTEXT_PROBE_SESSION_TMP_PARENT:-/tmp}/c-ccp-XXXXXX" 2>/dev/null) || {
+    TD=$(mktemp -d "$ROOT/c-ccp-XXXXXX") || exit 2
+    printf 'claude-context-probe: the session temp dir could not be made in /tmp; the one used is long, so the tmpdir row may read no for its length alone\n' >&2
+  }
   local r_bg=$INC r_ag=$INC r_apid=$INC r_ast=$INC r_env=$INC r_tmp=$INC r_tr=$INC r_att=$INC r_res=$INC r_rm=$INC r_resp=$INC
   local id2="" pid2="" oldpid alias out rc line t t2 td2 tool bg_err bg_rc
   created_names=""; seen_names=""; created_sids=""; apid=""; TFILE=""
   if [ -n "$FLEET_DIR" ]; then WORK="$FLEET_DIR/ccprobe-fleet-$NONCE"; else WORK="$ROOT/work"; fi
-  mkdir -p "$WORK" "$TD" || exit 2
+  mkdir -p "$WORK" || exit 2
   trap fleet_cleanup EXIT
   # The appended-file checks' fixture: a positive control every session in WORK loads, a codeword
   # nothing references, and the appended file, kept outside WORK.
