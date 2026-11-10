@@ -88,6 +88,30 @@ case "$ask" in *probe-dynamic*)
   [ "$mode" = modelbash ] && echo '{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}'
   ;;
 esac
+# The subagent session: the main session dispatches one Agent call; what the subagent reports is
+# on lines carrying that call's id as parent_tool_use_id. Modes bend what the subagent sees or does:
+#   subnolocal  the subagent does not see CLAUDE.local.md (the main session still does)
+#   subleak     the dispatch prompt carries the CLAUDE.local.md codeword
+#   subread     the subagent reads a file itself
+#   subneg      the subagent reports the unreferenced codeword
+#   subnone     no subagent is dispatched
+negword() { d=$PWD; while [ "$d" != / ]; do [ -f "$d/unreferenced.md" ] && { grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$d/unreferenced.md"; return; }; d=$(dirname "$d"); done; }
+case "$ask" in *"Use the Agent tool"*)
+  if [ "$mode" != subnone ]; then
+    local_cw=$(grep -o 'CCPROBE-[A-Z]*-[0-9]*' CLAUDE.local.md 2>/dev/null)
+    [ "$mode" = subnolocal ] && echo "$local_cw"
+    dp='List every token in your context that contains the text CCPROBE- , one per line.'
+    [ "$mode" = subleak ] && dp="$dp Include $local_cw"
+    printf '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_A1","name":"Agent","input":{"prompt":"%s"}}]}}\n' "$dp"
+    sub=$(grep -o 'CCPROBE-[A-Z]*-[0-9]*' CLAUDE.md)
+    [ "$mode" = subnolocal ] || sub="$sub $local_cw"
+    [ "$mode" = subneg ] && sub="$sub $(negword)"
+    [ "$mode" = subread ] && printf '{"type":"assistant","parent_tool_use_id":"toolu_A1","message":{"content":[{"type":"tool_use","id":"toolu_R1","name":"Read","input":{"file_path":"x"}}]}}\n'
+    printf '{"type":"assistant","parent_tool_use_id":"toolu_A1","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$sub"
+    printf '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A1","content":"done"}]}}\n'
+  fi
+  ;;
+esac
 if [ "$mode" = leak ]; then
   d=$PWD
   while [ "$d" != / ]; do
@@ -175,6 +199,25 @@ printf '\n== a session that fails ==\n'
 out=$(run fail); rc=$?
 [ "$rc" -ne 0 ] && has "$out" 'plain-clone=INCONCLUSIVE' \
   && ok "a non-zero claude exit makes the session INCONCLUSIVE" || bad "failed session not INCONCLUSIVE" "rc=$rc: $out"
+
+printf '\n== a subagent dispatched from the repository with CLAUDE.local.md ==\n'
+out=$(run normal)
+has "$out" 'subagent=OK' && ok "the subagent session is OK on an honest run" || bad "subagent session not OK" "$out"
+sec=$(printf '%s\n' "$out" | sed -n '/^Subagents/,/^$/p')
+has "$sec" 'positive control) *loaded' && has "$sec" 'CLAUDE.local.md in the repository *loaded' \
+  && ok "the subagent's own report: CLAUDE.md and CLAUDE.local.md loaded" || bad "subagent rows on an honest run" "$sec"
+out=$(run subnolocal); sec=$(printf '%s\n' "$out" | sed -n '/^Subagents/,/^$/p')
+has "$sec" 'positive control) *loaded' && has "$sec" 'CLAUDE.local.md in the repository *NOT loaded' \
+  && ok "the main session seeing CLAUDE.local.md does not count for the subagent" || bad "main session's sighting counted" "$sec"
+out=$(run subleak); rc=$?
+[ "$rc" -ne 0 ] && has "$out" 'subagent=INCONCLUSIVE (the dispatch prompt carried a codeword)' \
+  && ok "a dispatch prompt carrying a codeword makes the subagent session INCONCLUSIVE" || bad "dispatch leak not caught" "rc=$rc: $out"
+out=$(run subread)
+has "$out" 'subagent=INCONCLUSIVE (the subagent used a tool itself)' && ok "a subagent that reads files itself is not counted" || bad "subagent tool use not caught" "$out"
+out=$(run subneg)
+has "$out" 'subagent=INVALID' && ok "a subagent reporting the unreferenced codeword is INVALID" || bad "subagent negative control not caught" "$out"
+out=$(run subnone)
+has "$out" 'subagent=INCONCLUSIVE (no subagent was dispatched)' && ok "no dispatch is INCONCLUSIVE, never NOT loaded" || bad "missing dispatch misread" "$out"
 
 printf '\n== the API cannot be reached ==\n'
 out=$(run apierror); rc=$?

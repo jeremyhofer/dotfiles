@@ -14,6 +14,10 @@
 #   bad1m       `-p --model opus[1m]` fails
 #   noworkflow  the tool listing omits Workflow
 #   exited      every listed row has state "exited"
+#   noappend    a file passed with --append-system-prompt-file never reaches the session
+#   appendlost  it reaches the launched session but not one resumed with --resume
+#   appendneg   a session reports the codeword nothing references
+#   untrusted   `--bg` refuses: "Workspace not trusted..."
 # FAKE_PID=1 makes `agents --json` rows carry a pid, as on versions that list one.
 
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
@@ -72,11 +76,13 @@ case "${1:-}" in
   attach) printf 'attach %s\n' "$2" >> "$S/log"; sleep 60 ;;
   --bg)
     [ "$mode" = bgfail ] && { echo "launch failed" >&2; exit 1; }
-    name=""; sid=""; settings=""; prompt=""
+    [ "$mode" = untrusted ] && { echo "Workspace not trusted. Run \`claude\` in $PWD once and accept the trust prompt, then retry." >&2; exit 1; }
+    name=""; sid=""; settings=""; prompt=""; ap=""
     shift
     while [ $# -gt 0 ]; do
       case "$1" in
         -n) name=$2; shift 2 ;; --resume) sid=$2; shift 2 ;; --settings) settings=$2; shift 2 ;;
+        --append-system-prompt-file) ap=$2; shift 2 ;;
         --model|--allowedTools) shift 2 ;; --) prompt=$2; break ;; *) prompt=$1; shift ;;
       esac
     done
@@ -84,11 +90,23 @@ case "${1:-}" in
     n=$(( $(wc -l < "$S/log") + 1 ))
     id="id$n"; newsid="sid$n"; pid=$(spawn)
     printf '%s|%s|%s|%s|%s\n' "$id" "$name" "$pid" "$newsid" "$PWD" >> "$S/rows"
+    printf '%s|%s\n' "$name" "$PWD" >> "$S/cwds"
     printf 'created %s\n' "$id" >> "$S/log"
     sub=projects
     mkdir -p "$FAKE_HOME/.claude/$sub/proj"
     t="$FAKE_HOME/.claude/$sub/proj/$newsid.jsonl"
     printf '{"type":"user","message":"%s"}\n' "$prompt" > "$t"
+    # The appended file, as the session sees it: given at launch, or carried over by a resume.
+    if [ -n "$ap" ]; then printf '%s\n' "$ap" > "$S/append-$newsid"
+    elif [ -n "$sid" ] && [ -f "$S/append-$sid" ] && [ "$mode" != appendlost ]; then cp "$S/append-$sid" "$S/append-$newsid"; fi
+    case "$prompt" in
+      *CCPROBE-LIST*)
+        words=$(grep -o 'CCPROBE-[A-Z]*-[0-9]*' CLAUDE.md 2>/dev/null)
+        [ -f "$S/append-$newsid" ] && [ "$mode" != noappend ] && words="$words $(grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$(cat "$S/append-$newsid")")"
+        [ "$mode" = appendneg ] && words="$words $(grep -o 'CCPROBE-[A-Z]*-[0-9]*' unreferenced.md)"
+        printf '{"type":"assistant","message":"CCPROBE-LIST: %s"}\n' "$(echo $words)" >> "$t" ;;
+      *'single word OK'*) printf '{"type":"assistant","message":"OK"}\n' >> "$t" ;;
+    esac
     case "$prompt" in *printenv*)
       nonce=$(sed -n 's/.*"CCPROBE_ENV":"\([^"]*\)".*/\1/p' <<< "$settings")
       td=$(sed -n 's/.*"CLAUDE_CODE_TMPDIR":"\([^"]*\)".*/\1/p' <<< "$settings")
@@ -146,6 +164,28 @@ cleaned && ok "rm was called for every session created" || bad "a session was no
 [ -n "$tdir" ] && [ ! -e "$tdir" ] && ok "the temp dir is gone" || bad "temp dir left behind" "$tdir"
 grep -q -- '--tools' "$STATE/args" && bad "--fleet ran a context session" || ok "--fleet runs only fleet checks"
 grep -q -- '--bg -n ccprobe-fleet-' "$STATE/args" && ok "the session is named ccprobe-fleet-<nonce>" || bad "session name" "$(cat "$STATE/args")"
+
+printf '\n== an appended system-prompt file ==\n'
+out=$(run normal)
+row "$out" append-launch yes && row "$out" append-resume yes && ok "append-launch and append-resume yes when the file reaches both" || bad "append rows on a green stub" "$out"
+grep -q -- '--append-system-prompt-file' "$STATE/args" && ok "the launch passes the file" || bad "no append flag" "$(cat "$STATE/args")"
+grep -- '--resume' "$STATE/args" | grep -q -- '--append-system-prompt-file' && bad "a resume passed the file again" "$(cat "$STATE/args")" || ok "the resume does not pass the file again"
+cleaned && ok "every append session removed" || bad "an append session left behind" "$(cat "$STATE/log")"
+out=$(run noappend); rc=$?
+row "$out" append-launch no && row "$out" append-resume no && [ "$rc" -ne 0 ] && ok "a file that never arrives reads no, exit non-zero" || bad "noappend" "rc=$rc: $out"
+out=$(run appendlost)
+row "$out" append-launch yes && row "$out" append-resume no && ok "a file lost on resume: launch yes, resume no" || bad "appendlost" "$out"
+out=$(run appendneg)
+row "$out" append-launch 'INVALID' && ok "the unreferenced codeword makes the row INVALID" || bad "appendneg" "$out"
+out=$(run untrusted)
+row "$out" bg-launch 'no (exit 1: Workspace not trusted' && has "$out" '^note: the background launch was refused for an untrusted workspace' \
+  && ok "an untrusted workspace is named, with the --fleet-dir way out" || bad "untrusted" "$out"
+row "$out" append-launch 'INCONCLUSIVE' && ok "the append rows are INCONCLUSIVE when nothing can launch" || bad "append rows without a launch" "$out"
+fd="$TMP/trusted"; mkdir -p "$fd"; rm -rf "$STATE" "$FHOME"; mkdir -p "$FHOME"
+out=$(FAKE_MODE=normal HOME="$FHOME" bash "$PROBE" --fleet --fleet-dir "$fd" 2>/dev/null)
+grep -q "^.*|$fd/ccprobe-fleet-" "$STATE/cwds" 2>/dev/null && ok "--fleet-dir starts the sessions inside DIR" || bad "--fleet-dir cwd" "$(cat "$STATE/cwds" 2>/dev/null)"
+[ -z "$(ls -A "$fd")" ] && ok "--fleet-dir leaves DIR empty afterwards" || bad "--fleet-dir left files" "$(ls -A "$fd")"
+has "$out" "$fd" && bad "--fleet-dir's path leaked into the output" "$out" || ok "no --fleet-dir path in the output"
 
 printf '\n== rows as measured on 2.1.285: no pid ==\n'
 out=$(run normal); rc=$?

@@ -39,21 +39,32 @@ set -u
 CLAUDE_BIN=${CLAUDE_CONTEXT_PROBE_CLAUDE:-claude}
 KEEP=0
 FLEET=0
-for arg in "$@"; do
-  case "$arg" in
+FLEET_DIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --keep) KEEP=1 ;;
     --fleet) FLEET=1 ;;
+    --fleet-dir)
+      [ $# -ge 2 ] && [ -d "$2" ] || { printf 'claude-context-probe: --fleet-dir needs an existing directory\n' >&2; exit 2; }
+      FLEET_DIR=$(cd "$2" && pwd); shift ;;
     -h|--help)
       sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
-      printf '\nusage: claude-context-probe [--keep]\n       claude-context-probe --fleet [--keep]\n'
-      printf '  --keep   leave the temp tree in place and print its path\n'
-      printf '  --fleet  run ONLY the background-session checks (--bg, agents, attach, resume, rm,\n'
-      printf '           respawn, model aliases, tool names) instead of the context checks. It starts\n'
-      printf '           real background sessions and a few small model calls, and removes them again.\n'
+      printf '\nusage: claude-context-probe [--keep]\n       claude-context-probe --fleet [--fleet-dir DIR] [--keep]\n'
+      printf '  --keep       leave the temp tree in place and print its path\n'
+      printf '  --fleet      run ONLY the background-session checks (--bg, agents, attach, resume, rm,\n'
+      printf '               respawn, an appended system-prompt file, model aliases, tool names) instead\n'
+      printf '               of the context checks. It starts real background sessions and a few small\n'
+      printf '               model calls, and removes them again.\n'
+      printf '  --fleet-dir  start the background sessions in a fresh directory made inside DIR (and\n'
+      printf '               removed after), not under the temp directory. A background session refuses\n'
+      printf '               an untrusted workspace, so DIR must be inside a project whose trust prompt\n'
+      printf '               was accepted; a directory without its own .git inherits that project'"'"'s trust.\n'
       exit 0 ;;
-    *) printf 'claude-context-probe: unknown argument %s\n' "$arg" >&2; exit 2 ;;
+    *) printf 'claude-context-probe: unknown argument %s\n' "$1" >&2; exit 2 ;;
   esac
+  shift
 done
+[ -z "$FLEET_DIR" ] || [ "$FLEET" -eq 1 ] || { printf 'claude-context-probe: --fleet-dir only applies with --fleet\n' >&2; exit 2; }
 
 command -v "$CLAUDE_BIN" >/dev/null 2>&1 || { printf 'claude-context-probe: %s not found on PATH\n' "$CLAUDE_BIN" >&2; exit 2; }
 command -v git >/dev/null 2>&1 || { printf 'claude-context-probe: git not found on PATH\n' >&2; exit 2; }
@@ -86,6 +97,11 @@ FLEET_ATTACH_WAIT=${CLAUDE_CONTEXT_PROBE_FLEET_ATTACH_WAIT:-15}     # seconds `a
 FLEET_ALLOW_FLAG=--allowedTools
 FLEET_ALLOWED_TOOLS='Bash(printenv:*)'
 FLEET_PROMPT='Run the shell command: printenv CCPROBE_ENV TMPDIR . Then reply with its output on one line, prefixed CCPROBE-FLEET: and nothing else.'
+# The appended-file checks, both needed before a long-running seat's context is delivered this way:
+# does a file passed with --append-system-prompt-file reach a BACKGROUND session, and is it still
+# there after a --resume that does not pass it again? The reply prefix is spelled without its colon
+# in the prompt, so the prompt itself, which the transcript records, never matches the reply.
+FLEET_LIST_PROMPT='List every token in your context that contains the text CCPROBE- , on one line separated by spaces, starting with the word CCPROBE-LIST followed by a colon, and nothing else. Use no tools.'
 
 alive() { # a pid that exists and is not a zombie
   kill -0 "$1" 2>/dev/null || return 1
@@ -145,6 +161,25 @@ reply_line() { # the model's one-line answer from the transcript, cleaned of JSO
                            if ($1 ~ /^\// || $1 == n) { print; exit } }' > "$ROOT/reply"
   [ -s "$ROOT/reply" ]
 }
+list_reply() { # <session id>: the session's CCPROBE-LIST reply lines, from its transcript, into $ROOT/list-<sid>
+  local tf
+  tf=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$1.jsonl" -type f 2>/dev/null | head -n 1)
+  [ -n "$tf" ] || return 1
+  sed -n 's/.*CCPROBE-LIST:/CCPROBE-LIST:/p' "$tf" > "$ROOT/list-$1"
+  [ -s "$ROOT/list-$1" ]
+}
+turn_replied() { # <session id>: its transcript holds an assistant entry
+  local tf
+  tf=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$1.jsonl" -type f 2>/dev/null | head -n 1)
+  [ -n "$tf" ] && grep -q '"type":"assistant"' "$tf"
+}
+list_verdict() { # <session id>: yes | no | INVALID | INCONCLUSIVE (...) for the appended file's codeword
+  wait_for $((FLEET_WAIT * 2)) list_reply "$1" || { printf 'INCONCLUSIVE (no reply in the transcript)'; return; }
+  if grep -q -- "$(cw FLEETNEG)" "$ROOT/list-$1"; then printf 'INVALID (the unreferenced codeword was seen)'
+  elif ! grep -q -- "$(cw FLEETROOT)" "$ROOT/list-$1"; then printf 'INCONCLUSIVE (the positive control was not seen)'
+  elif grep -q -- "$(cw APPEND)" "$ROOT/list-$1"; then printf yes
+  else printf no; fi
+}
 FLEET_CLEANED=0
 fleet_cleanup() {
   [ "$FLEET_CLEANED" -eq 1 ] && return
@@ -162,6 +197,7 @@ fleet_cleanup() {
   for sid in $created_sids; do
     find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$sid.jsonl" -type f -exec rm -f {} + 2>/dev/null
   done
+  [ -n "$FLEET_DIR" ] && [ -n "${WORK:-}" ] && rm -rf "$WORK"
   [ "$KEEP" -eq 1 ] || rm -rf "$ROOT"
 }
 
@@ -170,8 +206,14 @@ fleet_main() {
   local r_bg=$INC r_ag=$INC r_apid=$INC r_ast=$INC r_env=$INC r_tmp=$INC r_tr=$INC r_att=$INC r_res=$INC r_rm=$INC r_resp=$INC
   local id2="" pid2="" oldpid alias out rc line t t2 td2 tool bg_err bg_rc
   created_names=""; seen_names=""; created_sids=""; apid=""; TFILE=""
-  mkdir -p "$ROOT/work" "$TD" || exit 2
+  if [ -n "$FLEET_DIR" ]; then WORK="$FLEET_DIR/ccprobe-fleet-$NONCE"; else WORK="$ROOT/work"; fi
+  mkdir -p "$WORK" "$TD" || exit 2
   trap fleet_cleanup EXIT
+  # The appended-file checks' fixture: a positive control every session in WORK loads, a codeword
+  # nothing references, and the appended file, kept outside WORK.
+  plant "$WORK/CLAUDE.md" FLEETROOT
+  plant "$WORK/unreferenced.md" FLEETNEG
+  plant "$ROOT/append.md" APPEND
   trap 'exit 130' INT TERM
   printf 'claude-context-probe: --fleet starting real background sessions (a few minutes)...\n' >&2
   local settings
@@ -179,7 +221,7 @@ fleet_main() {
 
   # 1. bg-launch. --allowedTools takes several values, so the prompt follows a `--`.
   # stdout is discarded; stderr is kept so a failed launch can say why.
-  bg_err=$( cd "$ROOT/work" && "$CLAUDE_BIN" --bg -n "$NAME" --model haiku --settings "$settings" \
+  bg_err=$( cd "$WORK" && "$CLAUDE_BIN" --bg -n "$NAME" --model haiku --settings "$settings" \
       "$FLEET_ALLOW_FLAG" "$FLEET_ALLOWED_TOOLS" -- "$FLEET_PROMPT" 2>&1 >/dev/null </dev/null )
   bg_rc=$?
   if [ "$bg_rc" -eq 0 ]; then
@@ -233,7 +275,7 @@ fleet_main() {
     if row_up "$NAME"; then r_att=yes; else r_att=no; fi
     # 7. resume-bg
     created_names="$created_names $NAME-r"
-    if ( cd "$ROOT/work" && "$CLAUDE_BIN" --bg -n "$NAME-r" --model haiku --resume "$SID" -- 'reply OK' ) >/dev/null 2>&1 </dev/null \
+    if ( cd "$WORK" && "$CLAUDE_BIN" --bg -n "$NAME-r" --model haiku --resume "$SID" -- 'reply OK' ) >/dev/null 2>&1 </dev/null \
        && wait_for "$FLEET_WAIT" row_up "$NAME-r"; then
       r_res=yes; id2=$R_ID; pid2=$R_PID
       created_sids="$created_sids $R_SID"
@@ -257,15 +299,44 @@ fleet_main() {
     fi
   fi
 
+  # 12. append-launch, 13. append-resume (needs a background launch that works)
+  local r_apl=$INC r_apr=$INC sid3
+  if [ "$r_bg" = yes ]; then
+    created_names="$created_names $NAME-ap $NAME-aq $NAME-aq-r"
+    if ( cd "$WORK" && "$CLAUDE_BIN" --bg -n "$NAME-ap" --model haiku --append-system-prompt-file "$ROOT/append.md" \
+           -- "$FLEET_LIST_PROMPT" ) >/dev/null 2>&1 </dev/null && wait_for "$FLEET_WAIT" find_row "$NAME-ap"; then
+      created_sids="$created_sids $R_SID"
+      r_apl=$(list_verdict "$R_SID")
+    else
+      r_apl='no (the launch with the appended file did not start)'
+    fi
+    # The resume does NOT pass the file again: the question is whether it survives on its own.
+    if ( cd "$WORK" && "$CLAUDE_BIN" --bg -n "$NAME-aq" --model haiku --append-system-prompt-file "$ROOT/append.md" \
+           -- 'Reply with the single word OK. Use no tools.' ) >/dev/null 2>&1 </dev/null && wait_for "$FLEET_WAIT" find_row "$NAME-aq"; then
+      sid3=$R_SID; created_sids="$created_sids $sid3"
+      if ! wait_for $((FLEET_WAIT * 2)) turn_replied "$sid3"; then
+        r_apr='INCONCLUSIVE (the first turn never replied)'
+      elif ( cd "$WORK" && "$CLAUDE_BIN" --bg -n "$NAME-aq-r" --model haiku --resume "$sid3" -- "$FLEET_LIST_PROMPT" ) >/dev/null 2>&1 </dev/null \
+           && wait_for "$FLEET_WAIT" find_row "$NAME-aq-r"; then
+        created_sids="$created_sids $R_SID"
+        r_apr=$(list_verdict "$R_SID")
+      else
+        r_apr='INCONCLUSIVE (the resume did not start)'
+      fi
+    else
+      r_apr='INCONCLUSIVE (the launch with the appended file did not start)'
+    fi
+  fi
+
   # 10. models
   local mrows=""
   for alias in haiku sonnet opus 'opus[1m]'; do
-    out=$( cd "$ROOT/work" && "$CLAUDE_BIN" -p --model "$alias" --max-turns 1 --no-session-persistence \
+    out=$( cd "$WORK" && "$CLAUDE_BIN" -p --model "$alias" --max-turns 1 --no-session-persistence \
              'Reply with the single word OK.' 2>/dev/null </dev/null ); rc=$?
     if [ "$rc" -eq 0 ] && grep -qw OK <<< "$out"; then mrows="$mrows$alias=yes;"; else mrows="$mrows$alias=no;"; fi
   done
   # 11. tools: names only, from a session told not to use any
-  out=$( cd "$ROOT/work" && "$CLAUDE_BIN" -p --model haiku --max-turns 1 --no-session-persistence \
+  out=$( cd "$WORK" && "$CLAUDE_BIN" -p --model haiku --max-turns 1 --no-session-persistence \
            'List the names of your available tools, comma separated, and nothing else. Do not use any tool.' 2>/dev/null </dev/null ); rc=$?
 
   fleet_cleanup
@@ -282,6 +353,7 @@ fleet_main() {
     'INCONCLUSIVE (no pid'*) printf '  %-18s %s\n' respawn "$r_resp" ;;
     *) row_ respawn "$r_resp" ;;
   esac
+  row_ append-launch "$r_apl"; row_ append-resume "$r_apr"
   for alias in haiku sonnet opus 'opus[1m]'; do
     case "$mrows" in *"$alias=yes;"*) row_ "model $alias" yes ;; *) row_ "model $alias" no ;; esac
   done
@@ -293,6 +365,10 @@ fleet_main() {
   if [ "$rc" -ne 0 ]; then printf '  %-18s %s\n' 'tool Bash' 'INCONCLUSIVE (session failed)'
   elif grep -qw Bash <<< "$out"; then printf '  %-18s %s\n' 'tool Bash' 'present (run_in_background is a Bash parameter; not checked)'
   else printf '  %-18s %s\n' 'tool Bash' absent; fi
+  case "$r_bg" in *'not trusted'*)
+    printf 'note: the background launch was refused for an untrusted workspace; re-run with\n'
+    printf '      --fleet-dir <a directory inside a project whose trust prompt was accepted>\n' ;;
+  esac
   printf 'run with: claude-context-probe --fleet\n'
   [ "$KEEP" -eq 1 ] && printf '\nkept: %s\n' "$ROOT"
   return "$notok"
@@ -478,7 +554,7 @@ run_session() { # <dir> <outfile> [extra args...]
   printf '%s\n' "$?" > "$out.rc"
 }
 
-printf 'claude-context-probe: running 5 headless sessions (up to a minute each)...\n' >&2
+printf 'claude-context-probe: running 6 headless sessions (up to a minute each)...\n' >&2
 # shellcheck disable=SC2086
 run_session "$W" "$ROOT/out-a" --settings "$ROOT/settings.json" --strict-mcp-config $mcp_args
 run_session "$B/repo" "$ROOT/out-b" --strict-mcp-config
@@ -496,6 +572,17 @@ ASK_READ='Use the Read tool to read these three files, and no others: sub/data.t
     --tools "Read" --allowedTools "Read" --max-turns 6 \
     --output-format stream-json --verbose ) > "$ROOT/out-e" 2> "$ROOT/out-e.err"
 printf '%s\n' "$?" > "$ROOT/out-e.rc"
+# Session F dispatches one subagent from the repository whose root has CLAUDE.local.md, and reads
+# only what the SUBAGENT reported: its entries carry the Agent call's id as parent_tool_use_id, and
+# the call's tool_result closes it. The subagent may hold Read only because a subagent's tools come
+# from the main session's; it is told to use none, and a session where it did is not counted.
+# Measured first by hand 2026-11-10 on 2.1.322.
+ASK_SUB='Do not read any file yourself. Use the Agent tool exactly once, with subagent_type ccprobe-sub, model haiku, run_in_background false, and this prompt, copied exactly: "List every token in your context that contains the text CCPROBE- , one per line, with nothing else. If there are none, output NONE. Use no tools." Then reply with only the answer the subagent gave, unchanged.'
+SUB_AGENTS='{"ccprobe-sub":{"description":"Lists the codewords in its own context.","prompt":"You report what is in your context. Use no tools.","tools":["Read"]}}'
+( cd "$W" && printf '%s\n' "$ASK_SUB" | "$CLAUDE_BIN" -p --no-session-persistence --strict-mcp-config \
+    --tools "Agent,Read" --agents "$SUB_AGENTS" --max-turns 4 \
+    --output-format stream-json --verbose ) > "$ROOT/out-f" 2> "$ROOT/out-f.err"
+printf '%s\n' "$?" > "$ROOT/out-f.rc"
 
 seen() { # <outfile> <label>
   grep -q -- "$(cw "$2")" "$1" 2>/dev/null
@@ -547,6 +634,28 @@ if [ "$se" = OK ]; then
   done
 fi
 [ "$sa" = OK ] && [ "$sb" = OK ] || [ "$sc" != OK ] || sc=INCONCLUSIVE
+# Session F: only the subagent's own stream counts. Its positive control is the repository-root
+# CLAUDE.md seen BY THE SUBAGENT; a dispatch prompt carrying any codeword, or a subagent that used a
+# tool other than its hand-back, could have passed a codeword on, so neither is counted.
+sf=$(session_state "$ROOT/out-f" '')
+: > "$ROOT/out-f.sub"
+if [ "$sf" = OK ]; then
+  agent_id=$(grep -o '"id":"[^"]*","name":"Agent"' "$ROOT/out-f" 2>/dev/null | head -n 1 | sed 's/^"id":"//; s/","name":"Agent"$//')
+  if [ -z "$agent_id" ]; then
+    sf='INCONCLUSIVE (no subagent was dispatched)'
+  elif grep -F -- "\"id\":\"$agent_id\",\"name\":\"Agent\"" "$ROOT/out-f" | grep -q -- "CCPROBE-[A-Z]*-$NONCE"; then
+    sf='INCONCLUSIVE (the dispatch prompt carried a codeword)'
+  else
+    grep -F -e "\"parent_tool_use_id\":\"$agent_id\"" -e "\"tool_use_id\":\"$agent_id\"" "$ROOT/out-f" > "$ROOT/out-f.sub" 2>/dev/null
+    if grep -q '"type":"tool_use","id":"[^"]*","name":"\(Read\|Bash\|Glob\|Grep\)"' "$ROOT/out-f.sub"; then
+      sf='INCONCLUSIVE (the subagent used a tool itself)'
+    elif seen "$ROOT/out-f.sub" NEGATIVE; then
+      sf=INVALID
+    elif ! seen "$ROOT/out-f.sub" REPOROOT; then
+      sf=INCONCLUSIVE
+    fi
+  fi
+fi
 
 managed="none found"
 for m in /etc/claude-code/managed-settings.json "/Library/Application Support/ClaudeCode/managed-settings.json"; do
@@ -570,7 +679,7 @@ if [ "$POLICY_ROWS" -gt 0 ]; then
   printf '  %d rows suppressed as POLICY; every other row is measured as usual.\n\n' "$POLICY_ROWS"
 fi
 refusal_cause=""
-for f in out-a out-b out-c out-d out-e; do
+for f in out-a out-b out-c out-d out-e out-f; do
   if refused "$ROOT/$f"; then refusal_cause=$REFUSAL_MATCH; break; fi
 done
 if [ -n "$refusal_cause" ]; then
@@ -582,14 +691,14 @@ fi
 # 2.1.322: `claude -p` ended with "API Error: Couldn't connect through your proxy
 # (ERR_PROXY_TUNNEL)"). Name it, quoting the first error, and say what to allow.
 api_error=""
-for f in out-a out-b out-c out-d out-e; do
+for f in out-a out-b out-c out-d out-e out-f; do
   api_error=$(grep -o -m 1 'API Error:[^"]*' "$ROOT/$f" "$ROOT/$f.err" 2>/dev/null | head -n 1 | sed 's/^[^:]*:API Error:/API Error:/')
   [ -n "$api_error" ] && break
 done
 if [ -n "$api_error" ]; then
   printf 'UNREACHABLE: at least one session could not reach the model ("%s"); the sessions it covers are not measured. Inside a Claude Code sandbox, allow api.anthropic.com (allowed_domains), or run the probe from a terminal.\n' "$api_error"
 fi
-printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s  on-demand=%s\n' "$sa" "$sb" "$sc" "$sd" "$se"
+printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s  on-demand=%s  subagent=%s\n' "$sa" "$sb" "$sc" "$sd" "$se" "$sf"
 printf '\nInstruction files\n'
 row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-a" REPOROOT "$sa")"
 row 'CLAUDE.md in the container above a worktree (.git file)'   "$(verdict "$ROOT/out-a" CONTAINER "$sa")"
@@ -612,6 +721,9 @@ row 'nested CLAUDE.md, after reading a file beside it'           "$(verdict "$RO
 row 'nested CLAUDE.md importing AGENTS.md, at session start'     "$(verdict "$ROOT/out-a" NESTIMPORT "$sa")"
 row 'nested CLAUDE.md importing AGENTS.md, after reading beside' "$(verdict "$ROOT/out-e" NESTIMPORT "$se")"
 row 'rules file with paths:, after reading a matching file'      "$(verdict "$ROOT/out-e" RULESCOPED "$se")"
+printf '\nSubagents (what a dispatched subagent itself reports)\n'
+row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-f.sub" REPOROOT "$sf")"
+row 'CLAUDE.local.md in the repository'                         "$(verdict "$ROOT/out-f.sub" LOCALMD "$sf")"
 printf '\nHooks (from --settings) and dynamic context\n'
 row 'SessionStart hook'                                         "$(hookline "$ROOT/ran-ss" "$ROOT/out-a" HOOKSESSION "$sa")"
 row 'UserPromptSubmit hook'                                     "$(hookline "$ROOT/ran-ups" "$ROOT/out-a" HOOKPROMPT "$sa")"
@@ -634,7 +746,7 @@ else
 fi
 printf '\nManaged settings: %s\n' "$managed"
 printf 'Negative control: a codeword in a file nothing references was %s.\n' \
-  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE || seen "$ROOT/out-d" NEGATIVE || seen "$ROOT/out-e" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
+  "$(if seen "$ROOT/out-a" NEGATIVE || seen "$ROOT/out-b" NEGATIVE || seen "$ROOT/out-c" NEGATIVE || seen "$ROOT/out-d" NEGATIVE || seen "$ROOT/out-e" NEGATIVE || seen "$ROOT/out-f" NEGATIVE; then printf 'SEEN (results invalid)'; else printf 'not seen'; fi)"
 
 if [ "$KEEP" -eq 1 ]; then printf '\nkept: %s\n' "$ROOT"; fi
-[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ] && [ "$sd" = OK ] && [ "$se" = OK ]
+[ "$sa" = OK ] && [ "$sb" = OK ] && [ "$sc" = OK ] && [ "$sd" = OK ] && [ "$se" = OK ] && [ "$sf" = OK ]

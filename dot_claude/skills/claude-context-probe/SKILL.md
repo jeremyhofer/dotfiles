@@ -13,9 +13,10 @@ managed policy an administrator installed. The docs describe the defaults, not a
 ## Run it
 
 ```sh
-claude-context-probe          # a few minutes; five short headless sessions
+claude-context-probe          # a few minutes; six short headless sessions
 claude-context-probe --keep   # also keep the temp tree, for debugging on that machine only
 claude-context-probe --fleet  # the background-session checks only; see "Fleet checks"
+claude-context-probe --fleet --fleet-dir <dir>   # same, inside a trusted project (see below)
 ```
 
 - **Run it in an ordinary terminal**, not from inside an agent session. An agent's sandbox changes
@@ -25,7 +26,7 @@ claude-context-probe --fleet  # the background-session checks only; see "Fleet c
   first run is the baseline: a verdict that differs between the two is a fact about the second
   machine; a verdict that is the same is a fact about the Claude Code version.
 - It needs `claude` and `git` on PATH, and `python3` for the MCP check (skipped without it).
-- It spends five model sessions and writes only under the temp directory, which it deletes.
+- It spends six model sessions and writes only under the temp directory, which it deletes.
 
 ## Relay it
 
@@ -43,7 +44,7 @@ passed with `--settings` do not run). `disableSideloadFlags` makes the MCP row `
 rejects `--mcp-config` at startup, so the probe leaves the flag off and the other rows still run.
 `POLICY` is a measured answer about the machine, not something to re-run.
 
-**First line: the five sessions.** Each must say `OK` before any of its rows mean anything.
+**First line: the six sessions.** Each must say `OK` before any of its rows mean anything.
 
 - `INCONCLUSIVE`: the session failed, or the model did not report the repository-root CLAUDE.md
   that every session must see (the positive control). Its rows are not verdicts. Re-run; if it
@@ -114,6 +115,14 @@ fresh each time. It works in skills and custom commands only; a `CLAUDE.md` does
 - `INCONCLUSIVE (the model ran a shell command itself)`: the codeword may have come from the
   model's own call. Re-run.
 
+**Subagents.** Session F dispatches one subagent from the repository that has a `CLAUDE.local.md`,
+and only what the SUBAGENT reports counts: the entries carrying the Agent call's id. The main session
+also sees both files, so its own answer would prove nothing. The positive control is the repository
+root's `CLAUDE.md` seen by the subagent. `INCONCLUSIVE (the dispatch prompt carried a codeword)` or
+`(the subagent used a tool itself)` means a codeword could have been passed on rather than loaded.
+`CLAUDE.local.md ... loaded` means project-private instructions reach subagents as well as the main
+session. Measured `loaded` on 2.1.322, 2026-11-10.
+
 **Skills and MCP.** A listed project skill means skills in `.claude/skills` are an on-demand
 channel on this machine. A listed MCP tool means a stdio MCP server can be attached, which is what
 on-demand retrieval over MCP would need. `NOT loaded` on either usually means a managed policy.
@@ -144,7 +153,17 @@ transcripts and temp dir (`--keep` keeps only the temp dir).
 | `rm` | `claude rm` removed the row and left the transcript |
 | `respawn` | after its process was killed, a session with the same name came back on a new pid; `INCONCLUSIVE` where rows carry no pid |
 | `model <alias>` | `claude -p --model <alias>` answered, for `haiku`, `sonnet`, `opus`, `opus[1m]` |
+| `append-launch` | a session launched with `--append-system-prompt-file` reported the file's codeword. Positive control: the working directory's `CLAUDE.md`; negative: a file nothing references (`INVALID` if seen) |
+| `append-resume` | a session launched with the file, after one turn, then continued with `--bg --resume` WITHOUT passing it again, still reported the codeword: the file is part of the session, not only of its first launch |
 | `tool <name>` | `present` or `absent` from the session's own list of tool names, for `Agent`, `Workflow`, `EnterWorktree`, `SendMessage`, `ListAgents`; `Bash` is reported present only, since `run_in_background` is a parameter of it that a name list cannot show |
+
+**A background session refuses an untrusted workspace** ("Workspace not trusted", seen on 2.1.322),
+and the temp directory is never trusted, so there `bg-launch` reads `no` and a note names the way
+out: `--fleet-dir DIR` starts the sessions in a fresh directory inside DIR and removes it after.
+DIR must sit inside a project whose trust prompt was accepted, and the directory the probe makes
+there has no `.git` of its own: a nested repository does not inherit its parent's trust. From
+inside an agent sandbox, `--bg` cannot start at all (it cannot create `~/.claude/jobs/<id>`), so
+the fleet checks need a terminal.
 
 A `no` on `bg-launch` makes the rows that need a session `INCONCLUSIVE`; it reads
 `no (exit N: <first line of the launch's stderr>)`, so the cause shows before anyone guesses at it. The exit status is
