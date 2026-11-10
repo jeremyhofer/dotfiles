@@ -196,6 +196,7 @@ sanctioned next step.
 | You see | Which layer | What is sanctioned |
 | --- | --- | --- |
 | `Read-only file system` or `Operation not permitted` on a write | the Bash sandbox's filesystem allow-list (`sandbox` in a settings layer) | write where the session was given (the working directory, `$TMPDIR`), or tell the person which path the work needs |
+| `Permission denied` or `Not a directory` writing `.vscode`, `.idea`, `.mcp.json` or a `.claude/` settings file in the working directory | the sandbox's protected-path placeholders: empty read-only files it mounts over those names in the session's directory, whether or not the real one exists (they also show as untracked files in `git status`). The same names under `$TMPDIR` are writable (measured 2026-11-10) | a fixture or tool that needs such a file builds it under `$TMPDIR`; one that must exist in the checkout is the person's to create from a plain shell |
 | a `<sandbox_violations>` block naming a host | the sandbox's network proxy | in auto mode, re-run with that host in `allowed_domains`, when the task needs it; otherwise report |
 | `Permission to use … has been denied`, or a prompt the person declined | a `permissions.deny` rule, or the person | nothing: ask, naming the rule if you can see it |
 | `PreToolUse:… hook error:` with a reason | a hook (a shell or secret guard, say) | the alternative form the reason names, when your command really is that case |

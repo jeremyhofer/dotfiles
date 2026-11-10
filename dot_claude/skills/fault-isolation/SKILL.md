@@ -86,6 +86,14 @@ memory "full" above 10% when it failed, is load-induced. Report it, with the tim
 snapshot reading, to whoever coordinates the shared machine (on a fleet with a systems hub, that
 session), within the day, before the snapshot's history ages out.
 
+**Browser end-to-end lanes are the load that does this, and shell suites are not.** Each lane runs
+real browsers, so two or more at once, from different sessions, can push a shared machine far past
+its core count. The symptom is a TIMEOUT, not an assertion failure: tests failing at their limit
+with milliseconds to spare. Measured on a 16-core machine: four heavy gates at once, two of them
+browser lanes, put the 1-minute load at 24 to 35, and one lane's tests hit their 15 s limit, while
+shell suites running alongside added under one core. So before starting a browser-heavy run on a
+shared machine, read the load first, and follow the domain's rule for when one may start.
+
 ## Which rungs are BLIND from where you are standing
 
 This is the part that cannot be automated and the reason this is a skill rather than a tool. A rung
