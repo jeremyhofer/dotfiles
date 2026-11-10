@@ -862,4 +862,50 @@ out=$(FLEET_REFRESH_SNAPSHOT_WAIT=2 fc refresh gamma-canonical); rc=$?
   || bad "refresh with no post-stop snapshot (rc=$rc): $out"
 rm -f "$SNAP"
 
+# context use: the snapshot records each live seat's prompt size at its last main-thread reply
+# (input + cache read + cache creation) against its window, and status flags 50% or more.
+# ctx_transcript SESSION TOKENS [SIDECHAIN_TOKENS]: a transcript whose last main-thread reply's
+# prompt was TOKENS, optionally followed by a larger subagent (sidechain) reply that must not count
+ctx_transcript() {
+  local f="$T/transcripts/p/$1.jsonl"
+  print -l '{"type":"user","message":{"role":"user","content":"go"},"timestamp":"2026-11-10T11:00:00Z"}' > "$f"
+  jq -cn --argjson t "$2" '{type:"assistant", timestamp:"2026-11-10T11:00:05Z", message:{role:"assistant",
+    stop_reason:"end_turn", usage:{input_tokens:1, cache_creation_input_tokens:100, cache_read_input_tokens:($t - 101), output_tokens:50}}}' >> "$f"
+  [[ -z "${3:-}" ]] || jq -cn --argjson t "$3" '{type:"assistant", isSidechain:true, timestamp:"2026-11-10T11:00:09Z",
+    message:{role:"assistant", usage:{input_tokens:$t, output_tokens:5}}}' >> "$f"
+}
+ctxfield() { jq -r --arg n "$1" ".seats[\$n].context${2:+.$2} // \"null\"" "$SNAP" }
+statusline() { fc status | grep "^$1" }
+reset; live_row cx000001 alpha-canonical idle s-cx; ctx_transcript s-cx 145600 900000
+fc snapshot >/dev/null
+[[ "$(ctxfield alpha-canonical tokens)" == 145600 && "$(ctxfield alpha-canonical window)" == 200000 \
+   && "$(ctxfield alpha-canonical percent)" == 72.8 && "$(ctxfield alpha-canonical sessionId)" == s-cx ]] \
+  && ok "snapshot: a live seat's context is its last main-thread prompt against a 200k window; a later subagent reply is ignored" \
+  || bad "snapshot context: $(jq -c '.seats["alpha-canonical"].context' "$SNAP")"
+[[ "$(ctxfield beta-canonical)" == null ]] && ok "snapshot: a dead seat has no context figure" \
+  || bad "dead seat context: $(ctxfield beta-canonical)"
+l=$(statusline alpha-canonical)
+[[ "$l" == *OK*"context 72.8% (145k of 200k) CONTEXT-HIGH"* ]] \
+  && ok "status: a seat at 72.8% shows its context and the CONTEXT-HIGH flag" || bad "status line at 72.8%: $l"
+fc status >/dev/null; rc_high=$?
+ctx_transcript s-cx 99800; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 49.9%"* && "$l" != *CONTEXT-HIGH* ]] && ok "status: 49.9% is not flagged" || bad "status line at 49.9%: $l"
+fc status >/dev/null; rc_low=$?
+[[ $rc_high == $rc_low ]] && ok "status: the flag does not change the exit code (advisory)" || bad "exit code $rc_high flagged vs $rc_low not"
+ctx_transcript s-cx 100000; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 50.0%"*CONTEXT-HIGH* || "$l" == *"context 50%"*CONTEXT-HIGH* ]] \
+  && ok "status: exactly 50% is flagged" || bad "status line at 50%: $l"
+print 'context-flag-pct = 80' > "$T/config"; ctx_transcript s-cx 145600; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$l" == *"context 72.8%"* && "$l" != *CONTEXT-HIGH* ]] && ok "status: context-flag-pct moves the threshold" || bad "status with flag at 80: $l"
+: > "$T/config"
+sed 's/canonicalLaunchModel: opus$/canonicalLaunchModel: "opus[1m]"/' "$T/rec.yaml" > "$T/rec1m.yaml"
+FLEET_RECORD="$T/rec1m.yaml" fc snapshot >/dev/null
+[[ "$(ctxfield alpha-canonical window)" == 1000000 && "$(ctxfield alpha-canonical percent)" == 14.6 ]] \
+  && ok "snapshot: a seat launched on a [1m] model is measured against 1,000,000 tokens" \
+  || bad "1m window: $(jq -c '.seats["alpha-canonical"].context' "$SNAP")"
+rm -f "$T/transcripts/p/s-cx.jsonl"; fc snapshot >/dev/null; l=$(statusline alpha-canonical)
+[[ "$(ctxfield alpha-canonical)" == null && "$l" == *"context ?"* ]] \
+  && ok "a live seat with no readable transcript shows context ?, not a number" || bad "no transcript: $l"
+rm -f "$SNAP"
+
 [[ $fail == 0 ]] && { print "ALL PASS"; exit 0 } || { print "FAILURES"; exit 1 }

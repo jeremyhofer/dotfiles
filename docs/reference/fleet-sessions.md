@@ -302,6 +302,17 @@ the listing omits reads `LIVE-UNLISTED`, an unknown one `UNKNOWN (<why>)` and ne
 request runner refuses every request while the snapshot is stale and refuses starting a seat it
 reads as `unknown`.
 
+**Context use.** For each live seat the snapshot also records `context`: the prompt size of the
+seat's last main-thread reply, read from its transcript (`input_tokens` + `cache_read_input_tokens` +
+`cache_creation_input_tokens` of that entry's `message.usage`), against its context window, as
+`tokens`, `window`, `percent`, `sessionId` and `at`. The transcript records only the bare model id,
+so the window comes from the seat's declared `canonicalLaunchModel`: one ending in `[1m]` is
+1,000,000 tokens, any other the config key `context-window` (200,000 by default). `status` appends
+`context 72.8% (728k of 1000k)` to a seat's line, `context ?` when no figure can be read, and the
+word `CONTEXT-HIGH` at `context-flag-pct` (50 by default) or more. Jeremy asked on 2026-11-10 for
+seats to be refreshed proactively above 50%, and the director's sweep acts on that word. The flag
+is advisory: it does not change `status`'s exit code.
+
 `refresh` stops the seat and then waits for a snapshot taken after the stop, up to 30 seconds
 (`FLEET_REFRESH_SNAPSHOT_WAIT`), before its `up`. The snapshot current at the stop still lists the
 stopped process, and `up` would refuse on it; on 2026-11-10 that left a refreshed seat down. The

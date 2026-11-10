@@ -162,6 +162,26 @@ snapshot_seat() {
   jq -r --arg n "$1" '.seats[$n] // empty | [.state, .why] | @tsv' "$SNAPSHOT_FILE" 2>/dev/null
 }
 
+# Context use. The snapshot records each live seat's context use (tokens in its last reply's prompt
+# against its window; how it is read is in fleet-canonicals-queue, "context use"). Jeremy,
+# 2026-11-10: seats are refreshed proactively at 50% or more, so `status` flags them CONTEXT-HIGH
+# for the director's sweep. The flag is advisory: it does not change status's exit code, which
+# reports seats that are broken, not seats due for a refresh.
+CONTEXT_FLAG_PCT=$(config_value FLEET_CONTEXT_FLAG_PCT context-flag-pct)
+case "$CONTEXT_FLAG_PCT" in ''|*[!0-9]*) CONTEXT_FLAG_PCT=50 ;; esac
+
+# snapshot_context NAME -- "  context 72.8% (728k of 1000k)[ CONTEXT-HIGH]" from a fresh snapshot,
+# "  context ?" for a seat with no readable figure, or nothing without a snapshot.
+snapshot_context() {
+  [ "$SNAP_USE" = 1 ] || return 0
+  jq -r --arg n "$1" --argjson f "$CONTEXT_FLAG_PCT" '
+    .seats[$n] // empty | .context as $c
+    | if ($c | type) != "object" then "  context ?"
+      else "  context \($c.percent)% (\(($c.tokens / 1000) | floor)k of \(($c.window / 1000) | floor)k)"
+           + (if $c.percent >= $f then " CONTEXT-HIGH" else "" end)
+      end' "$SNAPSHOT_FILE" 2>/dev/null
+}
+
 # autostart-default: whether a seat that sets no `canonicalAutostart` starts on a bare `up`. UNSET
 # MEANS TRUE, so a machine that configures nothing behaves as it always did, and a value that is
 # neither true nor false is reported and also treated as true: a typo must never become a critical
@@ -348,9 +368,10 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     Writes a first-launch handoff from the record, records the pointer, and with
                     --up launches. --dry-run checks and writes nothing.
 
-  snapshot          write each seat's state (live, dead or unknown) to $FLEET_STATE/sessions.json,
-                    from the sessions list, Claude Code's pid records and the daemon roster. Run
-                    every 15 s OUTSIDE every sandbox by fleet-canonicals-snapshot.timer (macOS: the
+  snapshot          write each seat's state (live, dead or unknown), and a live seat's context
+                    use, to $FLEET_STATE/sessions.json, from the sessions list, Claude Code's
+                    pid records, the daemon roster and the transcripts. Run every 15 s OUTSIDE
+                    every sandbox by fleet-canonicals-snapshot.timer (macOS: the
                     local.dotfiles.fleet-canonicals-snapshot LaunchAgent), which the machine's owner
                     enables once; refuses inside a sandbox. status, up and clean use a fresh one,
                     refuse a stale one, and note a missing one.
@@ -409,6 +430,10 @@ configuration (file, then the variable that overrides each key):
                                                     the handoffs directory (default false)
   the request queue's keys (no variable overrides them; defaults in brackets):
   snapshot-max-age = <secs>  [45]    a session snapshot older than this is refused (FLEET_SNAPSHOT_MAX_AGE)
+  context-window = <tokens>  [200000]  a seat's context window, unless its launch model ends in [1m]
+                                     (then 1000000); the snapshot's context percent is against it
+  context-flag-pct = <pct>   [50]    status flags a seat CONTEXT-HIGH at this context use or more
+                                     (FLEET_CONTEXT_FLAG_PCT); advisory, the exit code ignores it
   request-max-age = <secs>   [600]   a queued request older than this is refused as stale
   request-limit-canonical = <n> [3]  lifecycle actions per canonical per rolling hour
   request-limit-fleet = <n>  [auto]  lifecycle actions for the whole fleet per rolling hour; auto
@@ -699,7 +724,7 @@ report_line() {
     0) local sst="" swhy=""
        IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
        case "$sst" in
-         live)    printf '%-28s LIVE-UNLISTED (%s; the sessions list here omits it)\n' "$name" "$swhy"; return ;;
+         live)    printf '%-28s LIVE-UNLISTED (%s; the sessions list here omits it)%s\n' "$name" "$swhy" "$(snapshot_context "$name")"; return ;;
          unknown) printf '%-28s UNKNOWN (%s)\n' "$name" "$swhy"; return ;;
        esac
        holder=$(live_holder "$name")
@@ -713,9 +738,10 @@ report_line() {
        else
          printf '%-28s MISSING\n' "$name"
        fi ;;
-    1) printf '%-28s OK        (%s, started %s)\n' "$name" \
+    1) printf '%-28s OK        (%s, started %s)%s\n' "$name" \
          "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.id')" \
-         "$(fmt_started "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.startedAt')")" ;;
+         "$(fmt_started "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.startedAt')")" \
+         "$(snapshot_context "$name")" ;;
     *) ids=$(printf '%s' "$json" | jq -r --arg n "$name" \
               '[.[]|select(.name==$n)]|sort_by(.startedAt)|reverse|.[]|"\(.id)@\(.startedAt)"' | paste -sd' ' -)
        printf '%-28s DUPLICATE: %s sessions — %s\n' "$name" "$count" "$ids" ;;
