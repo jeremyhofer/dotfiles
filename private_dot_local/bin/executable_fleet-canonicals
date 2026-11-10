@@ -2347,6 +2347,39 @@ cmd_refresh() {
     || die "refresh: '$name' was stopped but a live process still holds the name after ${waited}s
   ($holder); NOT launching a second one. Check 'fleet-canonicals status' before retrying."
 
+  # WAIT FOR A SESSION SNAPSHOT TAKEN AFTER THE STOP. The snapshot current at this moment was taken
+  # up to one timer interval ago, while the old session was still running, so it lists the process
+  # just stopped and `up` refuses on it ("the session snapshot shows it running"). Measured
+  # 2026-11-10 06:49: refresh stopped pid 11281, `up` refused on a snapshot up to 15 s old, and the
+  # seat was left down until someone ran `up` by hand. This waits for the snapshot to be RETAKEN
+  # rather than treating the stopped pid as dead: the stop was confirmed from where refresh runs,
+  # and inside a sandbox that view cannot see other sessions' processes, which is the reason the
+  # snapshot exists. A snapshot taken after the stop that still shows the seat running is a real
+  # refusal, and `up` makes it. Skipped when there is no snapshot (the direct reads apply) or the
+  # one there already shows the seat dead or absent.
+  local stopped_at snap_state snap_wait taken
+  stopped_at=$(date +%s)
+  snap_wait=${FLEET_REFRESH_SNAPSHOT_WAIT:-30}
+  if [ -e "$SNAPSHOT_FILE" ]; then
+    snap_state=$(jq -r --arg n "$name" '.seats[$n].state // "absent"' "$SNAPSHOT_FILE" 2>/dev/null)
+    if [ "$snap_state" != dead ] && [ "$snap_state" != absent ]; then
+      waited=0
+      while :; do
+        taken=$(jq -r '.takenAt // empty' "$SNAPSHOT_FILE" 2>/dev/null)
+        case "$taken" in ''|*[!0-9]*) taken=0 ;; esac
+        [ "$taken" -gt "$stopped_at" ] && break
+        [ "$waited" -ge "$snap_wait" ] && die "refresh: '$name' is stopped, but the session snapshot was not retaken within ${snap_wait}s of the stop,
+  and the one there predates the stop, so it still lists the stopped session; NOT launching on it.
+  Is the snapshot timer running? systemctl --user status fleet-canonicals-snapshot.timer
+  (macOS: launchctl print gui/\$(id -u)/local.dotfiles.fleet-canonicals-snapshot)
+  Once it has run: fleet-canonicals up $name"
+        sleep 1
+        waited=$((waited + 1))
+      done
+      printf 'note     %-24s waited %ss for a session snapshot taken after the stop\n' "$name" "$waited"
+    fi
+  fi
+
   # The OLD session's root, and ONLY the old one: this runs after the wait loop above has already
   # confirmed zero live rows for $name, and strictly BEFORE cmd_up below writes a fresh record for
   # the session it is about to start. Calling rm_tmproot directly here (rather than going through

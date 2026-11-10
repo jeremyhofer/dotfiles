@@ -828,4 +828,38 @@ plant r-snap3 up gamma-canonical gamma-canonical; serve >/dev/null
 expect r-snap3 done "" "the runner serves it once the snapshot is fresh and the seat dead (control)"
 rm -f "$SNAP"
 
+# refresh: the snapshot that was current when refresh STOPPED the seat still lists the stopped
+# process, so the relaunch must wait for one taken after the stop instead of refusing on it.
+# Measured 2026-11-10 06:49: refresh stopped pid 11281, then `up` refused "the session snapshot
+# shows it running" on a snapshot up to 15 s old, and the seat was left down.
+# snap_seat_at DELAY STATE: after DELAY seconds, write a snapshot taken then, showing gamma in STATE
+snap_seat_at() {
+  ( sleep "$1"
+    jq -n --argjson t "$(date +%s)" --arg s "$2" \
+      '{version:1, takenAt:$t, seats:{"gamma-canonical":{state:$s, why:"fixture, after the stop", pids:[]}}}' \
+      > "$SNAP.n" && mv "$SNAP.n" "$SNAP" ) &
+}
+refresh_fixture() {
+  reset; live_row rf000001 gamma-canonical idle s; transcript s ended
+  pid_record 6101 gamma-canonical 600; proc_alive 6101 600
+  jq -n --argjson t "$(date +%s)" \
+    '{version:1, takenAt:$t, seats:{"gamma-canonical":{state:"live", why:"listed (idle); pid 6101 (fixture)", pids:[6101]}}}' > "$SNAP"
+}
+refresh_fixture; snap_seat_at 3 dead
+out=$(FLEET_REFRESH_SNAPSHOT_WAIT=20 fc refresh gamma-canonical); rc=$?; wait
+[[ $rc -eq 0 && "$out" == *"started 1"* && "$out" != *REFUSED* ]] \
+  && ok "refresh: a snapshot from before the stop that lists the stopped pid does not block the relaunch" \
+  || bad "refresh blocked by the pre-stop snapshot (rc=$rc): $out"
+refresh_fixture; snap_seat_at 3 live
+out=$(FLEET_REFRESH_SNAPSHOT_WAIT=20 fc refresh gamma-canonical); rc=$?; wait
+[[ $rc -ne 0 && "$out" == *REFUSED*"snapshot shows it running"* && "$out" != *"started 1"* ]] \
+  && ok "refresh: a snapshot taken AFTER the stop that still shows the seat running refuses (control)" \
+  || bad "refresh with a post-stop live snapshot (rc=$rc): $out"
+refresh_fixture
+out=$(FLEET_REFRESH_SNAPSHOT_WAIT=2 fc refresh gamma-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *"not retaken"*"fleet-canonicals up gamma-canonical"* && "$out" != *"started 1"* ]] \
+  && ok "refresh: no snapshot after the stop within the wait refuses, naming the next step" \
+  || bad "refresh with no post-stop snapshot (rc=$rc): $out"
+rm -f "$SNAP"
+
 [[ $fail == 0 ]] && { print "ALL PASS"; exit 0 } || { print "FAILURES"; exit 1 }

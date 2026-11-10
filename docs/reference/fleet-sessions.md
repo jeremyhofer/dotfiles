@@ -302,6 +302,12 @@ the listing omits reads `LIVE-UNLISTED`, an unknown one `UNKNOWN (<why>)` and ne
 request runner refuses every request while the snapshot is stale and refuses starting a seat it
 reads as `unknown`.
 
+`refresh` stops the seat and then waits for a snapshot taken after the stop, up to 30 seconds
+(`FLEET_REFRESH_SNAPSHOT_WAIT`), before its `up`. The snapshot current at the stop still lists the
+stopped process, and `up` would refuse on it; on 2026-11-10 that left a refreshed seat down. The
+wait is skipped when there is no snapshot or it already shows the seat dead. If no new snapshot
+arrives, `refresh` refuses, names the timer, and leaves the seat stopped for `up` once it has run.
+
 ### Requesting a lifecycle action
 
 **A session requests `up`, `down`, `refresh`, `resume` or `init` instead of running it.** A
