@@ -59,6 +59,17 @@ which the shared cache needs anyway. Where the base's settings are not deployed,
 for example `NX_SOCKET_DIR="$TMPDIR/nxs"`. Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its sockets
 there. `--verbose` names the directory Nx rejected and why.
 
+**But `NX_SOCKET_DIR` is one socket, not a directory of them: two workspaces that share it break
+each other.** Nx's default directories keep a subdirectory per workspace; `NX_SOCKET_DIR` is used as
+given, and the daemon's socket in it is always `d.sock`. So the daemon of the second workspace to
+start takes the socket, and the first workspace's next command reaches the wrong daemon and fails,
+exit 1: "The Nx Daemon for '<two>' received a message from a different workspace ('<one>') and
+refused to process it". Measured 2026-11-10 with 24.0.2 and two scratch workspaces. One shared value
+for every session (as `~/.nx/s` above) therefore makes Nx fail intermittently in whichever repository
+or worktree started its daemon first. Until the shared value changes, give each checkout its own
+directory per command (`NX_SOCKET_DIR="$TMPDIR/nxs-<checkout>"`), or run with `NX_DAEMON=false`,
+which leaves only the plugin workers' sockets, and those are named per process.
+
 **From Nx 24.0.3 or so, no socket directory passes inside a bubblewrap sandbox, `NX_SOCKET_DIR`
 included.** Newer releases walk every level above a socket directory from `/` and refuse it unless
 each level is owned by you or by root, with no opt-out (nrwl/nx#37660, merged 2026-11-03). A
