@@ -377,6 +377,79 @@ def test_an_unreadable_state_file_is_exit_2_not_free(isolated):
     assert r.returncode == 2 and "not a readable slot state" in r.stderr
 
 
+# ---- wait ------------------------------------------------------------------------------------
+# The waits must be SEEN to hold a run back: a command started under `wait` has not run while the
+# slot is held or the load is high, and runs once that changes. A wait that returned at once would
+# pass every case that only checks the end state.
+
+def wait_bg(*args, env=None):
+    e = dict(os.environ, **(env or {}))
+    return subprocess.Popen([sys.executable, str(TOOL), "wait", *args], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=e)
+
+
+def test_wait_on_a_free_slot_runs_the_command_at_once(isolated):
+    r = slot("wait", "--free", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    assert r.returncode == 0 and r.stdout.strip() == "ran", r.stderr
+
+
+def test_wait_returns_the_commands_status(isolated):
+    r = slot("wait", "--free", "--interval", "0.1", "--", "sh", "-c", "exit 7")
+    assert r.returncode == 7
+
+
+def test_wait_holds_while_another_session_has_the_slot_then_runs_when_released(isolated):
+    granted("alpha")
+    mark = isolated / "ran"
+    p = wait_bg("--free", "--interval", "0.1", "--", "sh", "-c", f"touch {mark}")
+    time.sleep(1.5)
+    assert p.poll() is None and not mark.exists(), "the command ran while another session held the slot"
+    assert slot("release", "alpha", "--as", "alpha").returncode == 0
+    assert p.wait(timeout=20) == 0 and mark.exists()
+
+
+def test_wait_holds_while_the_load_is_high_then_runs_when_it_falls(isolated):
+    lf = isolated / "load"
+    lf.write_text("9.5 9 9\n")
+    mark = isolated / "ran"
+    p = wait_bg("--free", "--load", "8", "--interval", "0.1", "--", "sh", "-c", f"touch {mark}",
+                env={"FLEET_SLOT_LOAD": str(lf)})
+    time.sleep(1.5)
+    assert p.poll() is None and not mark.exists(), "the command ran at a load above the limit"
+    lf.write_text("3.0 5 6\n")
+    assert p.wait(timeout=20) == 0 and mark.exists()
+
+
+def test_wait_steady_needs_the_conditions_to_hold_for_that_long(isolated):
+    lf = isolated / "load"
+    lf.write_text("1.0\n")
+    t0 = time.monotonic()
+    r = slot("wait", "--free", "--load", "8", "--steady", "1.5", "--interval", "0.1",
+             env={"FLEET_SLOT_LOAD": str(lf)})
+    assert r.returncode == 0 and time.monotonic() - t0 >= 1.5
+
+
+def test_wait_times_out_with_exit_3_naming_the_holder(isolated):
+    granted("alpha")
+    r = slot("wait", "--free", "--timeout", "0.5", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    assert r.returncode == 3 and "held by alpha" in r.stderr and "ran" not in r.stdout
+
+
+def test_wait_without_free_accepts_the_callers_own_slot(isolated):
+    granted("alpha")
+    r = slot("wait", "--as", "alpha", "--timeout", "2", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    assert r.returncode == 0 and r.stdout.strip() == "ran", r.stderr
+    r = slot("wait", "--free", "--as", "alpha", "--timeout", "0.5", "--interval", "0.1")
+    assert r.returncode == 3
+
+
+def test_wait_usage_errors(isolated):
+    assert slot("wait", "--load", "x").returncode == 2
+    assert slot("wait", "--timeout", "-1").returncode == 2
+    assert slot("wait", "--").returncode == 2
+    assert slot("wait", "extra").returncode == 2
+
+
 def test_unknown_command_and_option_are_usage_errors(isolated):
     assert slot("frob").returncode == 2
     assert slot("status", "--frob").returncode == 2

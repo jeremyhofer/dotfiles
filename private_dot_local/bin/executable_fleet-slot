@@ -71,6 +71,13 @@ usage: fleet-slot <command> [arguments]
   status [--json] [--recent N]
               the holder, since when, its expected end and how far overdue; the queue; the
               last slots; the machine's load
+  wait [--free] [--load N] [--steady SECONDS] [--timeout SECONDS] [--interval SECONDS]
+       [--as NAME] [-- COMMAND...]
+              block until the slot is free (or the caller's own; --free: only free) and, with
+              --load, the 1-minute load average is under N, both holding for --steady seconds;
+              then run COMMAND in this process, or print one line and exit 0. --timeout gives
+              up with exit 3. For untimed heavy work that must not land on another session's
+              timed sample: it waits, it never takes the slot
   check [<holder>]
               exit 0 when <holder> has the slot or nobody does, 1 when someone else does.
               Without <holder>, the calling session's name (the status line's usage
@@ -85,7 +92,8 @@ no arbiter the slot goes first come, first served: a request on a free slot take
 passes it to the next in the queue.
 
 exit status: 0 done; 1 refused, or (check) another holder has the slot; 2 usage, configuration or
-an unreadable state file.
+an unreadable state file; 3 (wait) the timeout passed first. After wait runs COMMAND, the status is
+COMMAND's.
 """
 
 DIRECTOR = "director-canonical"   # the default arbiter, once the fleet record declares it here
@@ -93,6 +101,7 @@ FIRST_COME = "first-come"         # `granted_by` and the history `rule` of a gra
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 EXIT_REFUSED = 1
 EXIT_USAGE = 2
+EXIT_TIMEOUT = 3
 
 HOME = Path.home()
 
@@ -593,8 +602,84 @@ def cmd_check(argv: list[str]) -> int:
     return EXIT_REFUSED
 
 
+def current_load() -> float:
+    """The 1-minute load average. FLEET_SLOT_LOAD names a file holding it instead, re-read on every
+    poll, so a test can change the load while a wait is running."""
+    f = os.environ.get("FLEET_SLOT_LOAD")
+    if f:
+        return float(Path(f).read_text(encoding="utf-8").split()[0])
+    return os.getloadavg()[0]
+
+
+def cmd_wait(argv: list[str]) -> int:
+    # WHY A VERB. Untimed heavy work (a full suite run, a browser gate) may run beside other work but
+    # must not land on another session's timed sample, and on a loaded machine its own wall-clock
+    # bounds fail for no defect. Sessions kept hand-writing the same wait loop, and a loop written
+    # in a hurry checked the load and forgot the slot. This is that loop, once, tested. It never
+    # takes the slot: a run that must not be overlapped requests it instead.
+    cmd: list[str] = []
+    if "--" in argv:
+        i = argv.index("--")
+        argv, cmd = argv[:i], argv[i + 1:]
+        if not cmd:
+            raise Usage("wait: nothing after --")
+    pos, opts = parse(argv, {"--free": False, "--load": True, "--steady": True, "--timeout": True,
+                             "--interval": True, "--as": True})
+    if pos:
+        raise Usage("wait: no positional arguments (a command goes after --)")
+
+    def num(key: str, default: float | None) -> float | None:
+        if key not in opts:
+            return default
+        try:
+            v = float(str(opts[key]))
+        except ValueError:
+            raise Usage(f"wait: {key} takes a number") from None
+        if v < 0:
+            raise Usage(f"wait: {key} cannot be negative")
+        return v
+
+    limit = num("--load", None)
+    steady = num("--steady", 0.0) or 0.0
+    timeout = num("--timeout", None)
+    interval = num("--interval", 15.0) or 0.1
+    me = None if "--free" in opts else (str(opts["--as"]) if "--as" in opts else session_name(listing=True))
+    start = time.monotonic()
+    ok_since: float | None = None
+    while True:
+        with locked(write=False) as d:
+            h = load(d)["holder"]
+        slot_ok = not h or (me is not None and h["name"] == me)
+        cur = current_load() if limit is not None else None
+        load_ok = cur is None or cur < limit
+        t = time.monotonic()
+        if slot_ok and load_ok:
+            ok_since = t if ok_since is None else ok_since
+            if t - ok_since >= steady:
+                break
+        else:
+            ok_since = None
+        if timeout is not None and t - start >= timeout:
+            why = []
+            if not slot_ok:
+                why.append(f"the slot is held by {h['name']}")
+            if not load_ok:
+                why.append(f"load {cur:.2f} is not under {limit:g}")
+            print(f"fleet-slot: wait: gave up after {timeout:g}s: " + (" and ".join(why) or
+                  f"the conditions did not hold for {steady:g}s"), file=sys.stderr)
+            return EXIT_TIMEOUT
+        time.sleep(interval)
+    state = "free" if not h else f"yours ({h['name']})"
+    print(f"fleet-slot: wait: the slot is {state}" + ("" if cur is None else f", load {cur:.2f}"),
+          file=sys.stderr if cmd else sys.stdout)
+    if cmd:
+        sys.stdout.flush()
+        os.execvp(cmd[0], cmd)
+    return 0
+
+
 COMMANDS = {"request": cmd_request, "grant": cmd_grant, "release": cmd_release,
-            "status": cmd_status, "check": cmd_check}
+            "status": cmd_status, "check": cmd_check, "wait": cmd_wait}
 
 
 def main(argv: list[str]) -> int:
