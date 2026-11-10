@@ -561,6 +561,14 @@ world
 edit "$R/image/bump/vector/image_bump.py" 's#"repo": "http://127.0.0.1:[0-9]*/apt"#"repo": "http://repo.example.invalid/apt"#'
 go validate vector
 expect "validate: an http repository is refused" 4 "'repo' must be an https URL"
+# Plain http is allowed only to the loopback address the tests use, judged by the HOST: an address
+# or name that merely starts with "127.0.0.1" is another host.
+for host in 127.0.0.10 127.0.0.1.example.invalid; do
+  world
+  edit "$R/image/bump/vector/image_bump.py" "s#\"repo\": \"http://127.0.0.1:[0-9]*/apt\"#\"repo\": \"http://$host/apt\"#"
+  go validate vector
+  expect "validate: http to $host is not the loopback, and is refused" 4 "'repo' must be an https URL"
+done
 
 if [ "$fail" -eq 0 ]; then echo PASS; exit 0; fi
 echo "FAIL: $fail case(s)"; exit 1
