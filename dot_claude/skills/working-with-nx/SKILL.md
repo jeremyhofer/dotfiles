@@ -38,56 +38,44 @@ starts warm. Two things switch the sharing off without telling you:
   means the sandbox must grant write access to `~/.nx`; without the grant every checkout is cold and
   nothing says why.
 
-**Sockets in a sandbox: `/tmp/.nx/<uid>` wins once it exists, and a sandbox cannot write it.** Nx
-24 puts its daemon and plugin-worker sockets under `/tmp/.nx/<uid>/sockets/` when that directory
-exists, and only otherwise in `~/.nx/sockets` (the resolution is native code; `nx/dist/src/daemon/
-tmp-dir.js` names it). Any Nx run outside a sandbox, a terminal's daemon included, creates
-`/tmp/.nx/<uid>`, and from then on a sandboxed run can no longer use its default: the sandbox mounts
-`/tmp` read-only, the new workspace's directory there cannot be created (`EROFS`), and Nx falls back
-to a socket under `<workspace>/.nx/workspace-data/d/`. In a deeply nested checkout that path exceeds
-the socket length limit, and **every plugin fails to load, Nx's own default plugins included**
-("Failed to load N Nx plugin(s): Attempted to open socket that exceeds the maximum socket length").
-A workspace whose directory under `/tmp/.nx/<uid>` was made earlier still works, so it looks
-intermittent. Measured 2026-11-09 on the workstation (by a project session, then reproduced in a
-fresh scratch workspace with `--verbose`). An earlier version of this skill said a writable `~/.nx`
-made `NX_SOCKET_DIR` unnecessary; that held only while `/tmp/.nx/<uid>` did not exist.
+**Claude Code sessions run Nx with no socket at all: `NX_DAEMON=false` and `NX_ISOLATE_PLUGINS=false`.**
+The dotfiles base sets both in every session's `~/.claude/settings.json` `env` (2026-11-10), and
+retires the `NX_SOCKET_DIR` it set before. With no daemon and plugins loaded in process, Nx opens no
+socket, so neither defect below can reach a session. The cost is a project graph built per command,
+with no daemon to cache it. A terminal's Nx is untouched: the env reaches sessions only. Where the
+base's settings are not deployed, set both per command.
 
-So a sandboxed session needs **`NX_SOCKET_DIR` set to a directory only its user can write**. The
-dotfiles base sets it for every Claude Code session in `~/.claude/settings.json`'s `env`, to
-`~/.nx/s` (Nx creates it, mode 0700); that holds wherever the session's sandbox can write `~/.nx`,
-which the shared cache needs anyway. Where the base's settings are not deployed, set it per command,
-for example `NX_SOCKET_DIR="$TMPDIR/nxs"`. Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its sockets
-there. `--verbose` names the directory Nx rejected and why.
+Why no socket, measured 2026-11-10; each of these alone made sessions' Nx fail:
 
-**But `NX_SOCKET_DIR` is one socket, not a directory of them: two workspaces that share it break
-each other.** Nx's default directories keep a subdirectory per workspace; `NX_SOCKET_DIR` is used as
-given, and the daemon's socket in it is always `d.sock`. So the daemon of the second workspace to
-start takes the socket, and the first workspace's next command reaches the wrong daemon and fails,
-exit 1: "The Nx Daemon for '<two>' received a message from a different workspace ('<one>') and
-refused to process it". Measured 2026-11-10 with 24.0.2 and two scratch workspaces. One shared value
-for every session (as `~/.nx/s` above) therefore makes Nx fail intermittently in whichever repository
-or worktree started its daemon first. Until the shared value changes, give each checkout its own
-directory per command (`NX_SOCKET_DIR="$TMPDIR/nxs-<checkout>"`), or run with `NX_DAEMON=false`,
-which leaves only the plugin workers' sockets, and those are named per process.
+- **The default socket directories.** Nx puts its daemon and plugin-worker sockets under
+  `/tmp/.nx/<uid>/` when that exists, else under `~/.nx/` (native code; `nx/dist/src/daemon/
+  tmp-dir.js` names it). Any Nx run outside a sandbox creates `/tmp/.nx/<uid>`, which a sandbox
+  cannot write, so Nx falls back to a socket under `<workspace>/.nx/workspace-data/d/`. In a nested
+  checkout that is past the socket length limit, and every plugin fails to load ("Attempted to open
+  socket that exceeds the maximum socket length"). It looks intermittent, because a workspace whose
+  directory there was made earlier still works.
+- **`NX_SOCKET_DIR` is one socket, not a directory of them.** It is used as given, and the daemon's
+  socket in it is always `d.sock`. Two workspaces sharing one value (as the base's `~/.nx/s` did
+  for every session) break each other: the second daemon takes the socket, and the first
+  workspace's next command fails, exit 1, "The Nx Daemon for '<two>' received a message from a
+  different workspace ('<one>') and refused to process it". Measured with 24.0.2. Where a daemon is
+  wanted in a sandbox, give each checkout its own directory (`NX_SOCKET_DIR="$TMPDIR/nxs-<checkout>"`).
+- **From Nx 24.0.3, no socket directory passes inside a bubblewrap sandbox.** Newer releases walk
+  every level above a socket directory from `/` and refuse it unless each is owned by you or by root,
+  with no opt-out (nrwl/nx#37660, merged 2026-11-03). A bubblewrap sandbox maps only your own uid,
+  so `/`, `/home` and `/tmp` read as owned by 65534 (`nobody`), and every directory is refused,
+  `NX_SOCKET_DIR` included ("/ sits above the configured directory and belongs to another user
+  (uid 65534)"). Measured with 24.0.5: `NX_DAEMON=false` alone still exits 1, because plugin workers
+  need a socket too; with `NX_ISOLATE_PLUGINS=false` as well, `show projects`, `run`, `run-many`
+  and `--skip-nx-cache` all pass. Nx's own advice (`nx configure-ai-agents`,
+  `sandbox.network.allowUnixSockets`) grants the default directories, which the same walk refuses,
+  so by its rule it cannot help (inferred, not measured).
 
-**From Nx 24.0.3 or so, no socket directory passes inside a bubblewrap sandbox, `NX_SOCKET_DIR`
-included.** Newer releases walk every level above a socket directory from `/` and refuse it unless
-each level is owned by you or by root, with no opt-out (nrwl/nx#37660, merged 2026-11-03). A
-bubblewrap sandbox maps only your own uid, so `/`, `/home` and `/tmp` read as owned by 65534
-(`nobody`): every directory is refused ("/ sits above the configured directory and belongs to
-another user (uid 65534)"), Nx falls back to `<workspace>/.nx/workspace-data/d/`, and in a nested
-checkout that is past the socket length limit. Measured 2026-11-10 with 24.0.5 in a scratch
-workspace: `NX_DAEMON=false` alone still exits 1, because plugin workers need a socket too.
-**`NX_DAEMON=false NX_ISOLATE_PLUGINS=false` together work**: with no daemon and plugins loaded in
-process nothing needs a socket, and `show projects`, `run`, `run-many` and `--skip-nx-cache` all
-pass. The cost is a project graph computed per command, with no daemon to cache it. Nx's own advice
-(`nx configure-ai-agents`, `sandbox.network.allowUnixSockets` entries) grants the default
-directories, which the same walk refuses, so by its rule it cannot help here (inferred, not
-measured). 24.0.2 and earlier have no walk but pin undici 7.29.x, with an npm audit high
-(GHSA-3wwx-pv8p-q78v); an `overrides` entry for `undici` `7.30.1` runs cleanly under 24.0.2
-(measured the same day). So a sandboxed fleet either holds at 24.0.2 with that override, or takes a
-newer release and sets both variables for its sessions; which is a decision for whoever owns the
-sessions' settings, recorded where the fleet records its Nx version.
+So, with the base's settings applied, a sandboxed session can run Nx past 24.0.2. That matters
+because 24.0.0 to 24.0.2 pin undici 7.29.x, with an npm audit high (GHSA-3wwx-pv8p-q78v). A
+repository that stays on 24.0.2 can instead override `undici` to `7.30.1`, which runs cleanly
+(measured the same day). Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its
+sockets there. `--verbose` names a directory Nx rejected and why.
 
 **The project graph is cached too, and it can go stale after a path-alias change.** Besides the task
 cache, Nx keeps the project graph it builds, the per-file import edges included, in the checkout's

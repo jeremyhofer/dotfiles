@@ -34,6 +34,20 @@ Entries are newest first.
 
 ## 2026-11-10
 
+### Claude Code sessions run Nx with no daemon; `NX_SOCKET_DIR` is retired
+
+The base's session `env` now sets `NX_DAEMON=false` and `NX_ISOLATE_PLUGINS=false`, and removes the
+`NX_SOCKET_DIR` (`~/.nx/s`) an earlier apply wrote: the merge gained a retired-key list for that.
+The shared socket directory let two workspaces' daemons break each other, and from Nx 24.0.3 no
+socket directory passes inside the sandbox at all (skill `working-with-nx`, section 1). Nx in a
+terminal is unchanged. A project that worked around either with its own per-checkout
+`NX_SOCKET_DIR` can drop that after the apply.
+
+### `fleet-slot wait`
+
+Blocks until the timing slot is free (or the caller's) and, with `--load N`, the load is under N,
+then runs a command: the wait for untimed heavy work, which never takes the slot.
+
 ### A session-state snapshot, written outside every sandbox
 
 `fleet-canonicals snapshot` writes each seat's state (live, dead or unknown) to
