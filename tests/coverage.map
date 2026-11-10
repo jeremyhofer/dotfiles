@@ -58,6 +58,7 @@ test-context-footprint.sh           private_dot_local/bin/executable_context-foo
 test-context-lint.sh                private_dot_local/bin/executable_context-lint
 test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
 test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_fleet-canonicals-queue
+test-fleet-canonicals-bounds.sh     private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
 test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
 test-fleet-canonicals-requests.sh   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl
 test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
