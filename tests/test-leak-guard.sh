@@ -209,6 +209,30 @@ head_sha=$(git -C "$r" rev-parse HEAD)
 if push "$r" "$head_sha" "$base_sha" origin https://public.example/x/y; then
   echo "FAIL: pre-push did not block a NEW leak inside the delta"; exit 1; fi
 
+# 16d) a NEW-BRANCH push to a remote holding a commit this clone LACKS (another machine pushed it).
+# The exclude loop asks `git cat-file -e` of every remote sha; a missing one must be skipped, not
+# end the guard. Here the remote's only ref is such a commit, so it is the loop's last sha too: the
+# shape that once made the loop's status the pipeline's and killed the guard under `set -e`,
+# refusing a clean push with no message.
+lacks="$tmp/lacks.git"; git init -q --bare "$lacks"
+o=$(newrepo push_lacks_other); mkpush "$o" "elsewhere" "pushed from another clone" >/dev/null
+git -C "$o" push -q "$lacks" HEAD:refs/heads/main
+r=$(newrepo push_lacks); sha=$(mkpush "$r" "clean" "clean content")
+out=$(push "$r" "$sha" "$Z" "$lacks" "$lacks" 2>&1) || {
+  echo "FAIL: a clean new-branch push was refused when the remote holds a commit the clone lacks"
+  printf '%s\n' "$out"; exit 1; }
+
+# 16e) a CRASH is never a silent refusal. A temp directory that does not exist fails the guard's
+# `mktemp`, an unintended exit under `set -e`: the push must still be refused, and the guard must
+# say an internal error refused it rather than end with no word.
+out=$(printf 'refs/heads/main %s refs/heads/main %s\n' "$sha" "$Z" \
+  | TMPDIR="$tmp/no-such-dir" gate "$r" pre-push origin https://public.example/x/y 2>&1) && {
+  echo "FAIL: a crashed guard let the push through"; exit 1; }
+case "$out" in
+  *"leak-guard: internal error at line"*"refused"*) : ;;
+  *) echo "FAIL: a crashed guard refused without saying so: $out"; exit 1 ;;
+esac
+
 # 18) missing markers pattern file must fail CLOSED: with git-leak-markers absent from HOME (the
 # sensitive file still there, so the domain IS configured), a marker staged in an (implicitly public)
 # repo must still BLOCK -- a gate that can't run is a reason to block, not a reason to pass.
