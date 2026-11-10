@@ -18,6 +18,7 @@
 #                                                # read from each (`--entry-list ios worktrees name`)
 #          fleet-decl --entry-map <project> <key>  # <map key><TAB><value> for each pair of a map on <project>
 #          fleet-decl --layout <project>         # `bare` or `standard`: how <project> is laid out on disk
+#          fleet-decl --live-data-paths          # every project's liveDataPaths, ~/ expanded, sorted, once each
 #          fleet-decl --check                    # validate the record; print findings
 #
 #   exit 0  value printed on stdout (empty output means the key is declared empty)
@@ -127,6 +128,34 @@ canonical_project() {
     return 2
   fi
   printf '%s' "$_hits"
+}
+
+# liveDataPaths: directories holding real, non-reproducible data (a live database, a state file),
+# which every session's sandbox is denied writing. A project may declare several. A test that ran a
+# project's real purge script from its main checkout deleted a live database on 2026-11-07; nothing
+# stood between an agent's command and the file. Each entry must be absolute or ~/-relative and
+# narrower than a root: a deny on `/` or the home directory would make every session unusable, and a
+# relative or globbed entry would mean something different to each reader.
+# live_findings -- print one finding per invalid declaration, nothing when all are valid.
+live_findings() {
+  for _lp in $(yq -r '.projects | to_entries[] | select(.value | has("liveDataPaths")) | .key' "$RECORD" 2>/dev/null || true); do
+    if [ "$(yq -r ".projects.\"$_lp\".liveDataPaths | tag" "$RECORD" 2>/dev/null)" != '!!seq' ]; then
+      printf '[liveDataPaths-value] %s: liveDataPaths must be a list of paths\n' "$_lp"; continue
+    fi
+    yq -r ".projects.\"$_lp\".liveDataPaths[] | (tag) + \"\t\" + (. | tostring)" "$RECORD" 2>/dev/null \
+      | while IFS="$(printf '\t')" read -r _lt _lv; do
+      _bad=""
+      [ "$_lt" = '!!str' ] || _bad="is not a string"
+      case "$_lv" in
+        ''|/|'~'|'~/') _bad=${_bad:-"names a root, not a directory under one"} ;;
+        /*|'~/'*) ;;
+        *) _bad=${_bad:-"is neither absolute nor ~/-relative"} ;;
+      esac
+      case "/$_lv/" in */../*|*/./*) _bad=${_bad:-"has a . or .. component"} ;; esac
+      case "$_lv" in *'*'*|*'?'*|*'['*) _bad=${_bad:-"has a glob character"} ;; esac
+      [ -z "$_bad" ] || printf '[liveDataPaths-value] %s: liveDataPaths entry %s %s\n' "$_lp" "'$_lv'" "$_bad"
+    done
+  done
 }
 
 valid_key() {
@@ -311,6 +340,21 @@ case "${1:-}" in
       printf 'standard\n'
     fi
     exit 0 ;;
+  --live-data-paths)
+    # Read by the settings layer that turns each path into a sandbox write-deny for every session.
+    # FAILS CLOSED: an invalid entry is exit 2, never skipped, because a guard that drops one entry
+    # leaves that data unprotected and says nothing.
+    [ $# -eq 1 ] || { printf 'usage: fleet-decl --live-data-paths\n' >&2; exit 2; }
+    yq -r '.projects' "$RECORD" >/dev/null 2>&1 || die_unusable "--live-data-paths: cannot read $RECORD"
+    _f=$(live_findings)
+    [ -z "$_f" ] || { printf '%s\n' "$_f" >&2; die_unusable "--live-data-paths: the record declares an invalid entry; refusing a partial list"; }
+    _out=$(yq -r '.projects | to_entries[] | .value.liveDataPaths // [] | .[]' "$RECORD" 2>/dev/null) \
+      || die_unusable "--live-data-paths: the query failed on $RECORD"
+    [ -n "$_out" ] || exit 1
+    printf '%s\n' "$_out" | while IFS= read -r _lv; do
+      case "$_lv" in '~/'*) printf '%s/%s\n' "$HOME" "${_lv#'~/'}" ;; *) printf '%s\n' "$_lv" ;; esac
+    done | LC_ALL=C sort -u
+    exit 0 ;;
   --check)
     rc=0
     # Every project must declare a policy. An ABSENT key is the failure this check exists for:
@@ -344,11 +388,13 @@ case "${1:-}" in
           container) ;;
           claudeTrust) ;;
           claudeLocalSettings|claudeDirSettings) ;;   # read by claude-project-settings
-          leak*|canonical*|container*|claude*|Claude*)
+          liveDataPaths) ;;            # read through --live-data-paths by the settings layer
+          leak*|canonical*|container*|claude*|Claude*|live*|Live*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
       done
     done
+    _f=$(live_findings); [ -z "$_f" ] || { printf '%s\n' "$_f"; rc=1; }
     # The worktrunk block is read by a generator that writes worktrunk's config. A value it does not
     # understand has to be refused somewhere every caller passes through, and this is that place --
     # otherwise the generator either guesses or silently drops the setting.

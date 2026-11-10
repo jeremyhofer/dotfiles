@@ -566,5 +566,61 @@ a near-miss of canonicalAutostart|    canonicalAutostar: false|-|[unknown-key] a
 a near-miss of canonicalRemoteControl|    canonicalRemotecontrol: true|-|[unknown-key] alpha: canonicalRemotecontrol
 CASES
 
+# liveDataPaths: directories that hold real, non-reproducible data, which every session's sandbox is
+# denied writing (a test that ran a real purge script deleted a live database, 2026-11-07). A project
+# may declare several. Each must be absolute or ~/-relative and name something narrower than a root,
+# because a deny on a whole tree would break every session. --live-data-paths fails CLOSED: a
+# guard that silently skipped an invalid entry would leave that data unprotected with nothing said.
+cat > "$TMP/live.yaml" <<'YAML'
+projects:
+  alpha:
+    scope: internal/alpha
+    leakPolicy: private
+    liveDataPaths: ["~/.local/share/alpha/db", "/srv/alpha/state"]
+  beta:
+    scope: internal/beta
+    leakPolicy: private
+    liveDataPaths: ["~/.local/share/alpha/db", "~/beta-data"]
+  gamma:
+    scope: internal/gamma
+    leakPolicy: private
+YAML
+out=$(FLEET_RECORD="$TMP/live.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "--check accepts liveDataPaths lists of absolute and ~/ paths" || bad "--check on valid liveDataPaths" "rc=$rc $out"
+out=$(HOME=/h FLEET_RECORD="$TMP/live.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --live-data-paths 2>&1); rc=$?
+want=$(printf '%s\n' /h/.local/share/alpha/db /h/beta-data /srv/alpha/state)
+[ "$rc" -eq 0 ] && [ "$out" = "$want" ] \
+  && ok "--live-data-paths: every project's paths, ~/ expanded, sorted, each once" || bad "--live-data-paths listing" "rc=$rc out=[$out]"
+cat > "$TMP/live-none.yaml" <<'YAML'
+projects:
+  gamma:
+    scope: internal/gamma
+    leakPolicy: private
+YAML
+FLEET_RECORD="$TMP/live-none.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --live-data-paths >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "--live-data-paths exits 1 when nothing is declared" || bad "--live-data-paths none" "rc=$rc"
+FLEET_RECORD="$TMP/broken.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --live-data-paths >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "--live-data-paths exits 2 on an unreadable record" || bad "--live-data-paths unreadable" "rc=$rc"
+while IFS='|' read -r label value finding; do
+  printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n    liveDataPaths: %s\n' "$value" > "$TMP/live-bad.yaml"
+  out=$(FLEET_RECORD="$TMP/live-bad.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+  [ "$rc" -eq 1 ] && [[ "$out" == *"$finding"* ]] && ok "--check refuses liveDataPaths: $label" || bad "--check liveDataPaths: $label" "rc=$rc $out"
+  out=$(FLEET_RECORD="$TMP/live-bad.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --live-data-paths 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && ok "--live-data-paths fails closed on: $label" || bad "--live-data-paths on $label" "rc=$rc out=[$out]"
+done <<'CASES'
+a string, not a list|"~/data"|[liveDataPaths-value] alpha: liveDataPaths must be a list
+an empty entry|[""]|[liveDataPaths-value] alpha: liveDataPaths entry
+a relative path|["data/db"]|[liveDataPaths-value] alpha: liveDataPaths entry
+the root|["/"]|[liveDataPaths-value] alpha: liveDataPaths entry
+the home directory|["~"]|[liveDataPaths-value] alpha: liveDataPaths entry
+the home directory with a slash|["~/"]|[liveDataPaths-value] alpha: liveDataPaths entry
+a parent reference|["~/x/../y"]|[liveDataPaths-value] alpha: liveDataPaths entry
+a glob|["~/data/*"]|[liveDataPaths-value] alpha: liveDataPaths entry
+a number|[42]|[liveDataPaths-value] alpha: liveDataPaths entry
+CASES
+printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n    liveDatapaths: ["~/x"]\n' > "$TMP/live-typo.yaml"
+out=$(FLEET_RECORD="$TMP/live-typo.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"[unknown-key] alpha: liveDatapaths"* ]] && ok "--check flags a near-miss of liveDataPaths" || bad "liveDataPaths typo" "rc=$rc $out"
+
 printf '\nfleet-decl: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
