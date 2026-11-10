@@ -59,6 +59,25 @@ which the shared cache needs anyway. Where the base's settings are not deployed,
 for example `NX_SOCKET_DIR="$TMPDIR/nxs"`. Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its sockets
 there. `--verbose` names the directory Nx rejected and why.
 
+**From Nx 24.0.3 or so, no socket directory passes inside a bubblewrap sandbox, `NX_SOCKET_DIR`
+included.** Newer releases walk every level above a socket directory from `/` and refuse it unless
+each level is owned by you or by root, with no opt-out (nrwl/nx#37660, merged 2026-11-03). A
+bubblewrap sandbox maps only your own uid, so `/`, `/home` and `/tmp` read as owned by 65534
+(`nobody`): every directory is refused ("/ sits above the configured directory and belongs to
+another user (uid 65534)"), Nx falls back to `<workspace>/.nx/workspace-data/d/`, and in a nested
+checkout that is past the socket length limit. Measured 2026-11-10 with 24.0.5 in a scratch
+workspace: `NX_DAEMON=false` alone still exits 1, because plugin workers need a socket too.
+**`NX_DAEMON=false NX_ISOLATE_PLUGINS=false` together work**: with no daemon and plugins loaded in
+process nothing needs a socket, and `show projects`, `run`, `run-many` and `--skip-nx-cache` all
+pass. The cost is a project graph computed per command, with no daemon to cache it. Nx's own advice
+(`nx configure-ai-agents`, `sandbox.network.allowUnixSockets` entries) grants the default
+directories, which the same walk refuses, so by its rule it cannot help here (inferred, not
+measured). 24.0.2 and earlier have no walk but pin undici 7.29.x, with an npm audit high
+(GHSA-3wwx-pv8p-q78v); an `overrides` entry for `undici` `7.30.1` runs cleanly under 24.0.2
+(measured the same day). So a sandboxed fleet either holds at 24.0.2 with that override, or takes a
+newer release and sets both variables for its sessions; which is a decision for whoever owns the
+sessions' settings, recorded where the fleet records its Nx version.
+
 **The project graph is cached too, and it can go stale after a path-alias change.** Besides the task
 cache, Nx keeps the project graph it builds, the per-file import edges included, in the checkout's
 `.nx/workspace-data/`. Measured twice in one workspace on 2026-11-09 under Nx 24.0.2: after a change
