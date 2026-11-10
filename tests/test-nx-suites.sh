@@ -140,6 +140,19 @@ else
   bad "building the scratch copy" "tar, ln or git failed"
 fi
 
+# Two suite files that name one project (`test-kb.sh` and `test-kb.py` are both `suite-kb`) are
+# refused, naming both: the second used to replace the first silently, and a port passes through
+# exactly that state. In the same scratch copy, with the second file and its map line added.
+if [ -d "$ws/tests" ] && printf '#!/usr/bin/env -S uv run --script\n' > "$ws/tests/test-kb.py" \
+   && printf 'test-kb.py tests/run-all.sh\n' >> "$ws/tests/coverage.map" && git -C "$ws" add -A; then
+  if NX_CACHE_PROJECT_GRAPH=false nxin "$ws" show projects; then
+    bad "two suite files naming one project are refused" "nx show projects succeeded with test-kb.sh and test-kb.py"
+  elif grep -qF 'test-kb.py and test-kb.sh both name the project suite-kb' "$tmp/err" \
+       || grep -qF 'test-kb.sh and test-kb.py both name the project suite-kb' "$tmp/err"; then
+    ok "two suite files naming one project are refused, naming both"
+  else bad "two suite files naming one project are refused" "failed, but not naming both: $(errs)"; fi
+fi
+
 echo "== a map the plugin cannot trust makes it fail"
 # The plugin reads NX_SUITES_MAP_FOR_TESTS in place of the real map, and Nx's project-graph cache
 # is off so a cached good graph cannot mask the bad map. The control is the unchanged map through

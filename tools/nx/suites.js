@@ -163,6 +163,16 @@ function buildProjects(root) {
 
   const core = entries.filter((e) => e.kind === 'core').map((e) => e.glob);
   const projects = {};
+  // TWO SUITE FILES, ONE NAME: `test-x.sh` and `test-x.py` both become `suite-x`, and the second
+  // silently replaced the first, so one suite was neither run nor cached by Nx while run-all.sh still
+  // ran both. A port passes through exactly that state (the new suite lands beside the old), so it is
+  // refused here, naming both files.
+  const named = {};
+  for (const s of suites) {
+    const name = 'suite-' + s.replace(/^test-/, '').replace(/\.(sh|py)$/, '');
+    if (named[name]) fail(named[name] + ' and ' + s + ' both name the project ' + name + ': rename one, or delete the one a port replaces');
+    named[name] = s;
+  }
   for (const s of suites) {
     const name = 'suite-' + s.replace(/^test-/, '').replace(/\.(sh|py)$/, '');
     // A suite file claims itself; a `tree` line is a whole-tree check, whose globs are inputs too.
