@@ -61,6 +61,10 @@ What does wait for a new session is short, and worth knowing exactly:
   `/effort` instead), and anything decided at launch, such as `worktree.bgIsolation`;
 - context loaded at start: `CLAUDE.md` with its imports (these standards among them) and the
   memory index, so a change to always-on rules reaches each session at its next start.
+- **an `env` key REMOVED from the settings**: a running session picks up added and changed `env`
+  values live, but a removed one stays set until the session's next start (measured 2026-11-10: a
+  running session showed two newly added keys and still held the retired one). Remove-then-rely
+  needs a restart; add-or-change does not.
 
 Source: Claude Code's docs, `settings` "When edits take effect" and `sandboxing`, both read
 2026-11-07. Measured the same day: a sandbox write grant applied at 16:10 was used by an
