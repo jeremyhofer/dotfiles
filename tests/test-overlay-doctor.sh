@@ -13,6 +13,14 @@ tmp=$(mktemp -d "$_TMP/test-overlay-doctor.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 # depends on this machine's own manifest.
 printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n' > "$tmp/mani-clean.yaml"
 FLEET_RECORD="$tmp/mani-clean.yaml"; export FLEET_RECORD
+# Likewise the base: a case that names no BASE_SRC audits this scratch base, never the checkout the
+# suite runs from, so a file added anywhere in the real base cannot change a result here. It holds
+# only what the doctor reads by name (fleet-decl, the gitignore defaults), each a declared input.
+BASE_SRC="$tmp/base-default"
+mkdir -p "$BASE_SRC/private_dot_local/bin" "$BASE_SRC/dot_config" "$BASE_SRC/overlay-skeleton"
+cp "$here/../private_dot_local/bin/executable_fleet-decl" "$BASE_SRC/private_dot_local/bin/"
+cp "$here/../overlay-skeleton/dot_gitignore_global.example" "$BASE_SRC/overlay-skeleton/"
+export BASE_SRC
 
 mk() { # build a COMPLETE, compliant fake overlay source at $1
   ov="$1"; rm -rf "$ov"

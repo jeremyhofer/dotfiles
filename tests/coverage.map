@@ -120,7 +120,7 @@ test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-ba
 test-adopt-audit.sh                 setup/adopt-audit
 test-brew-inventory.sh              setup/brew-inventory
 test-check-required-brew-tools.sh   setup/check-required-brew-tools
-test-overlay-doctor.sh              setup/overlay-doctor overlay-skeleton/dot_gitignore_global.example dot_claude/skills/** .chezmoidata.yaml .chezmoiexternal.toml.tmpl .chezmoiremove .chezmoitemplates/** private_dot_local/bin/executable_fleet-decl
+test-overlay-doctor.sh              setup/overlay-doctor overlay-skeleton/dot_gitignore_global.example private_dot_local/bin/executable_fleet-decl
 test-preserve-claude-md.sh          setup/preserve-claude-md
 test-publish-check.sh               setup/publish-check
 test-publish-pre-push.sh           .githooks/pre-push setup/publish-check
