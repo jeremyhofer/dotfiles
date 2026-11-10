@@ -51,13 +51,17 @@
 # declared lists are joined, base first, an entry both declare kept once, and the join then replaces
 # the live list as any declared array does. Events only the live file has are kept.
 #
-# env.NX_SOCKET_DIR IS DECLARED for every session. Nx 24 puts its daemon and plugin-worker sockets
-# under /tmp/.nx/<uid> once that directory exists, which any unsandboxed Nx run creates, and a
-# sandboxed session cannot write /tmp: Nx then falls back to a socket under the workspace, over the
-# socket-length limit in a deep checkout, and every plugin fails to load (skill working-with-nx,
-# section 1). ~/.nx/s is short, inside the ~/.nx a sandbox must be able to write anyway for the
-# shared cache, and Nx creates it mode 0700 when it is missing. It reaches Claude Code sessions only,
-# so they never share sockets with a daemon started in a terminal, which runs outside the sandbox.
+# env.NX_DAEMON=false AND env.NX_ISOLATE_PLUGINS=false ARE DECLARED for every session, so Nx in a
+# Claude Code session needs no socket at all (skill working-with-nx, section 1). Two defects forced it,
+# measured 2026-11-10: NX_SOCKET_DIR, declared here before, is one socket (the daemon's is always
+# d.sock), so two workspaces' daemons sharing it made the first one's next command fail ("received a
+# message from a different workspace"); and from Nx 24.0.3 every socket directory is refused inside a
+# bubblewrap sandbox, whose / reads as owned by uid 65534. The cost is a project graph built per
+# command, with no daemon to cache it. A terminal's Nx is untouched: this env reaches sessions only.
+#
+# RETIRED ENV KEYS. The merge can only add, so a key dropped from this block stays in every live
+# file an earlier apply wrote. `retired_env` below names each such key once, and the merge removes
+# it from the live env: NX_SOCKET_DIR, replaced by the two keys above.
 #
 # worktree.baseRef IS NOT DECLARED: Claude Code's default ("fresh", branch from the remote's default
 # branch) is wanted, and freshness of a worktree's base is otherwise handled by worktrunk's hooks
@@ -93,7 +97,8 @@ base=$(cat <<EOF
   "awaySummaryEnabled": false,
   "editorMode": "vim",
   "env": {
-    "NX_SOCKET_DIR": "${HOME}/.nx/s"
+    "NX_DAEMON": "false",
+    "NX_ISOLATE_PLUGINS": "false"
   },
   "enableArtifact": false,
   "skipWorkflowUsageWarning": true,
@@ -122,6 +127,8 @@ base=$(cat <<EOF
 EOF
 )
 
+retired_env='["NX_SOCKET_DIR"]'
+
 frag_path=${CLAUDE_SETTINGS_FRAGMENT:-"$HOME/.dotlocal/claude/settings-declared"}
 domain='{}'; retired='[]'; ensure='[]'
 if [ -f "$frag_path" ]; then
@@ -135,7 +142,7 @@ if [ -f "$frag_path" ]; then
   fi
 fi
 
-printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" --argjson ensure "$ensure" '
+printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" --argjson ensure "$ensure" --argjson retiredEnv "$retired_env" '
   ($base.hooks // {}) as $bh | ($domain.hooks // {}) as $dh
   | (. * ($base | del(.hooks)) * ($domain | del(.hooks)))
   | if (($bh | length) + ($dh | length)) > 0 then
@@ -148,6 +155,7 @@ printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --
         .value |= map(select(any(.hooks[]?; (.command // "") as $c | any($retired[]; . as $r | $c | contains($r))) | not)))
       | with_entries(select(.value | length > 0)))
     else . end
+  | if (.env | type) == "object" then .env |= with_entries(select(.key as $k | $retiredEnv | index([$k]) | not)) else . end
   | if ($ensure | length) > 0 then
       .permissions.allow = reduce $ensure[] as $r ((.permissions.allow // []); if index([$r]) then . else . + [$r] end)
     else . end'

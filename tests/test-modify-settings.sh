@@ -37,13 +37,22 @@ printf '%s' "$out" | jq -e . >/dev/null 2>&1 || { echo "FAIL: empty input must y
 [ "$(val "$out" '.editorMode')" = "vim" ] || { echo "FAIL: base default editorMode missing"; fail=1; }
 [ "$(val "$out" '.awaySummaryEnabled')" = "false" ] || { echo "FAIL: base must turn the away recap off"; fail=1; }
 [ "$(val "$out" '.sandbox')" = "null" ] || { echo "FAIL: base must not declare a sandbox policy"; fail=1; }
-# Nx's sockets, for every Claude Code session: a short directory only this user can write, under the
-# ~/.nx a sandbox may write, since /tmp/.nx/<uid> wins once it exists and a sandbox cannot write it
-[ "$(val "$out" '.env.NX_SOCKET_DIR')" = "$HOME/.nx/s" ] || { echo "FAIL: base must set env.NX_SOCKET_DIR to \$HOME/.nx/s"; fail=1; }
-# ...merged into the live env, never replacing it
-out=$(run '{"env":{"KEEP_ME":"1"}}' "$TMP/absent")
-[ "$(val "$out" '.env.KEEP_ME')" = "1" ] && [ "$(val "$out" '.env.NX_SOCKET_DIR')" = "$HOME/.nx/s" ] \
-  || { echo "FAIL: env.NX_SOCKET_DIR must merge into the live env, keeping its other keys"; fail=1; }
+# Nx in every Claude Code session runs with no daemon and with plugins in process, so it needs no
+# socket at all: a shared NX_SOCKET_DIR let two workspaces' daemons break each other, and newer Nx
+# refuses every socket directory inside a sandbox (skill working-with-nx)
+[ "$(val "$out" '.env.NX_DAEMON')" = "false" ] && [ "$(val "$out" '.env.NX_ISOLATE_PLUGINS')" = "false" ] \
+  || { echo "FAIL: base must set env.NX_DAEMON and env.NX_ISOLATE_PLUGINS to false"; fail=1; }
+[ "$(val "$out" '.env.NX_SOCKET_DIR')" = "null" ] || { echo "FAIL: base must not set env.NX_SOCKET_DIR"; fail=1; }
+# ...merged into the live env, never replacing it; and a RETIRED key that an earlier apply wrote is
+# removed, since the merge alone only adds and the stale value would stay on every applied machine
+out=$(run '{"env":{"KEEP_ME":"1","NX_SOCKET_DIR":"/old/s"}}' "$TMP/absent")
+[ "$(val "$out" '.env.KEEP_ME')" = "1" ] && [ "$(val "$out" '.env.NX_DAEMON')" = "false" ] \
+  || { echo "FAIL: the Nx env must merge into the live env, keeping its other keys"; fail=1; }
+[ "$(val "$out" '.env.NX_SOCKET_DIR')" = "null" ] || { echo "FAIL: a live env.NX_SOCKET_DIR must be retired"; fail=1; }
+# A live file with no env at all still gets the base's, and a retired key never appears.
+out=$(run '{"editorMode":"vim"}' "$TMP/absent")
+[ "$(val "$out" '.env | keys | join(",")')" = "NX_DAEMON,NX_ISOLATE_PLUGINS" ] \
+  || { echo "FAIL: a live file without env gets exactly the base env: $(val "$out" '.env')"; fail=1; }
 
 # B) the fragment's declared block wins over the base; live-only keys survive; model is untouched
 live='{"model":"opus","permissions":{"allow":["Bash(ls:*)"]},"sandbox":{"filesystem":{"allowWrite":["~/ad-hoc"],"denyRead":["~/secret"]}}}'
