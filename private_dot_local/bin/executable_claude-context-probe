@@ -576,6 +576,19 @@ done
 if [ -n "$refusal_cause" ]; then
   printf 'REFUSED: the model declined at least one probe prompt ("%s"); the sessions it covers are not measured.\n' "$refusal_cause"
 fi
+# A session that never reached the API reads INCONCLUSIVE like any failed session, which says
+# nothing about why. Inside a Claude Code sandbox the network filter denies api.anthropic.com, so
+# every session fails after its retries and every row reads INCONCLUSIVE (measured 2026-11-10 on
+# 2.1.322: `claude -p` ended with "API Error: Couldn't connect through your proxy
+# (ERR_PROXY_TUNNEL)"). Name it, quoting the first error, and say what to allow.
+api_error=""
+for f in out-a out-b out-c out-d out-e; do
+  api_error=$(grep -o -m 1 'API Error:[^"]*' "$ROOT/$f" "$ROOT/$f.err" 2>/dev/null | head -n 1 | sed 's/^[^:]*:API Error:/API Error:/')
+  [ -n "$api_error" ] && break
+done
+if [ -n "$api_error" ]; then
+  printf 'UNREACHABLE: at least one session could not reach the model ("%s"); the sessions it covers are not measured. Inside a Claude Code sandbox, allow api.anthropic.com (allowed_domains), or run the probe from a terminal.\n' "$api_error"
+fi
 printf 'sessions: bare-container=%s  plain-clone=%s  agents-only=%s  dynamic-skill=%s  on-demand=%s\n' "$sa" "$sb" "$sc" "$sd" "$se"
 printf '\nInstruction files\n'
 row 'CLAUDE.md at the repository root (positive control)'       "$(verdict "$ROOT/out-a" REPOROOT "$sa")"

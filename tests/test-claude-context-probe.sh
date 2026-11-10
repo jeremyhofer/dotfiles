@@ -25,6 +25,7 @@ trap 'rm -rf "$TMP"' EXIT
 #   leak      also report the codeword from the file nothing references
 #   silent    answer NONE
 #   fail      exit non-zero
+#   apierror  print the API Error line a session that cannot reach the API ends with, exit 1
 #   refuse    answer with a refusal message instead of tokens, and exit 0
 #   hookdrop  run the hooks but do not report their context
 #   nohooks   never run the hooks (as under a policy that blocks them)
@@ -54,6 +55,9 @@ if [ -n "${FAKE_SHAPE_LOG:-}" ] && [ "$(basename "$PWD")" = main ] && [ -e ../CL
   else echo container-other-shape >> "$FAKE_SHAPE_LOG"; fi
 fi
 [ "$mode" = fail ] && exit 3
+# What a real `claude -p` prints when the API cannot be reached, after its retries (measured
+# 2026-11-10 on 2.1.322 inside a sandbox whose network filter denied api.anthropic.com:443).
+if [ "$mode" = apierror ]; then echo "API Error: Couldn't connect through your proxy (ERR_PROXY_TUNNEL) — the proxy refused the tunnel: check its credentials and that it allows this host"; exit 1; fi
 if [ "$mode" = refuse ]; then echo "This prompt contains unsafe content and cannot be processed."; exit 0; fi
 if [ "$mode" = silent ]; then echo NONE; exit 0; fi
 for f in CLAUDE.md AGENTS.md; do [ -f "$f" ] && grep -o 'CCPROBE-[A-Z]*-[0-9]*' "$f"; done
@@ -171,6 +175,15 @@ printf '\n== a session that fails ==\n'
 out=$(run fail); rc=$?
 [ "$rc" -ne 0 ] && has "$out" 'plain-clone=INCONCLUSIVE' \
   && ok "a non-zero claude exit makes the session INCONCLUSIVE" || bad "failed session not INCONCLUSIVE" "rc=$rc: $out"
+
+printf '\n== the API cannot be reached ==\n'
+out=$(run apierror); rc=$?
+[ "$rc" -ne 0 ] && has "$out" '^UNREACHABLE: .*API Error: Couldn.t connect' \
+  && ok "an API that cannot be reached is named, quoting the error" || bad "unreachable API not named" "rc=$rc: $out"
+has "$out" 'api.anthropic.com' && ok "...and the line says which host to allow" || bad "no host named" "$out"
+has "$out" 'bare-container=INCONCLUSIVE' && ok "...and the sessions stay INCONCLUSIVE" || bad "sessions misread" "$out"
+out=$(run fail)
+! has "$out" 'UNREACHABLE' && ok "a session that fails otherwise does not claim the API was unreachable" || bad "UNREACHABLE on a plain failure" "$out"
 
 printf '\n== hooks that run but whose context never arrives ==\n'
 out=$(run hookdrop); rc=$?

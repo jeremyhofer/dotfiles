@@ -47,7 +47,11 @@ rejects `--mcp-config` at startup, so the probe leaves the flag off and the othe
 
 - `INCONCLUSIVE`: the session failed, or the model did not report the repository-root CLAUDE.md
   that every session must see (the positive control). Its rows are not verdicts. Re-run; if it
-  persists, run with `--keep` and read `out-*.err`.
+  persists, run with `--keep` and read `out-*.err`. When the cause is that the model could not be
+  reached, an `UNREACHABLE:` line above the sessions quotes the `API Error:` a session ended with.
+  Inside a Claude Code sandbox the network filter denies `api.anthropic.com`, so every session
+  fails that way, each after about three minutes of retries: run the probe with `api.anthropic.com`
+  in the Bash call's `allowed_domains`, or from a terminal.
 - `INVALID`: the model reported a codeword planted in a file nothing references (the negative
   control), so it was guessing or reading files. Every row from it is untrustworthy.
 - `REFUSED`: the model declined the probe prompt (a known refusal text, such as "This prompt
