@@ -348,14 +348,20 @@ confirmed:
    sentinel, a Next action. The first entry is `<PREFIX>-0001` by hand: on an empty register every
    `register` command stops with "holds no entries".
 2. `mkdir -p docs/initiatives/<ID>-<slug>/<type>` and `git mv` each document into its type
-   subdirectory. Give an undated spec, plan or research note the date it was first committed:
+   subdirectory. **Find which entry owns a document in the entries' bodies as well as their
+   `artifacts:` lines.** Many repositories record ownership in prose ("the plan for this is
+   `plans/...`") and never list it under `artifacts:`, so a search of `artifacts:` alone files
+   those documents under the wrong initiative, or under none. Give an undated spec, plan or research note the date it was first committed:
    `git log --diff-filter=A --follow --format=%as -- <file> | tail -1`.
 3. Write the folder's `README.md` (purpose, entry, subjects, every file by type, its decision
    records) and add `folder:docs/initiatives/<ID>-<slug>/` to the entry's `artifacts:`.
 4. Rewrite every citation of each moved file so it resolves: `git grep -nF '<old path>'`, and for
    bare file names `git grep -nF '<file name>'`, across documents, configuration and scripts. Then
    confirm with a search of a different shape, `rg -uu -g '!.git' -F '<old path>'`, before calling
-   it done: one query's empty result is not proof.
+   it done: one query's empty result is not proof. **A code comment never cites an initiative
+   folder**, even where a document did: the folder's name carries an entry id, which `comment-lint`
+   refuses in code, and the folder moves to `closed/` at close. Describe the thing in its own terms
+   in the comment, and let the folder's `README.md` point at the code instead.
 5. Run the lints (step 5) and commit.
 
 **5. Lints, seen red.** Run `context-lint`, `register-lint docs/register` and `doc-lint` until
