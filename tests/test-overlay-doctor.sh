@@ -21,6 +21,12 @@ mkdir -p "$BASE_SRC/private_dot_local/bin" "$BASE_SRC/dot_config" "$BASE_SRC/ove
 cp "$here/../private_dot_local/bin/executable_fleet-decl" "$BASE_SRC/private_dot_local/bin/"
 cp "$here/../overlay-skeleton/dot_gitignore_global.example" "$BASE_SRC/overlay-skeleton/"
 export BASE_SRC
+# The doctor reads the machine's domain from `chezmoi data`, which renders the REAL source on this
+# machine, and skips Tier W on the work domain. A stand-in chezmoi reporting a non-work domain, first
+# on PATH for every case, keeps the suite from depending on the machine running it.
+mkdir -p "$tmp/dombin"
+printf '#!/bin/sh\n[ "$1" = data ] && { printf "{\\"domain\\":\\"home\\"}\\n"; exit 0; }\nexit 1\n' > "$tmp/dombin/chezmoi"; chmod +x "$tmp/dombin/chezmoi"
+PATH="$tmp/dombin:$PATH"; export PATH
 
 mk() { # build a COMPLETE, compliant fake overlay source at $1
   ov="$1"; rm -rf "$ov"
@@ -467,11 +473,9 @@ printf '%s\n' "$out" | grep 'global configured hooks' | grep -q 'other-hook (dis
 echo "ok:   a configured hook that is switched off is listed as disabled, naming the setting"
 # ---- Tier W: workspace trust is advisory and prints names, never a path -------------------------
 # A stub claude-trust-check stands in for the real one: it answers by exit status and prints names.
-mk "$tmp/ov"; mkdir -p "$tmp/trbin" "$tmp/dombin"
-# The doctor reads the machine's domain from `chezmoi data`, and skips Tier W on the work domain. A
-# stand-in chezmoi that reports a non-work domain keeps cases W1-W4 from depending on the machine
-# running the suite; W5 and W6 put their own work-domain stand-in ahead of it.
-printf '#!/bin/sh\n[ "$1" = data ] && { printf "{\\"domain\\":\\"home\\"}\\n"; exit 0; }\nexit 1\n' > "$tmp/dombin/chezmoi"; chmod +x "$tmp/dombin/chezmoi"
+mk "$tmp/ov"; mkdir -p "$tmp/trbin"
+# The stand-in chezmoi from the top of this file reports a non-work domain, so W1-W4 run Tier W; W5
+# and W6 put their own work-domain stand-in ahead of it.
 stub_trust() { # $1 exit status, $2 stdout
   printf '#!/bin/sh\n[ "${1:-}" = --names-only ] || exit 9\nprintf "%%s" "%s"\nexit %s\n' "$2" "$1" > "$tmp/trbin/claude-trust-check"
   chmod +x "$tmp/trbin/claude-trust-check"
