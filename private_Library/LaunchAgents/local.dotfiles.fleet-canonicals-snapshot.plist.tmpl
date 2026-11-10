@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  fleet-canonicals snapshot on macOS: the canonical sessions' state, merged from the sessions list,
+  Claude Code's pid records and the daemon roster into $FLEET_STATE/sessions.json every 15 seconds,
+  the launchd counterpart of the systemd user timer fleet-canonicals-snapshot.timer on Linux (see
+  `fleet-canonicals help`). launchd does not start a second copy while one runs.
+  NOT LOADED BY THE BASE: the machine's owner loads it once, from a terminal:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-snapshot.plist
+  PATH is set outright: a LaunchAgent's PATH is launchd's minimal one, and the snapshot needs uv and
+  jq from Homebrew and fleet-canonicals, fleet-decl and claude from ~/.local/bin.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.dotfiles.fleet-canonicals-snapshot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ .chezmoi.homeDir }}/.local/bin/fleet-canonicals</string>
+    <string>snapshot</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartInterval</key><integer>15</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/fleet-canonicals-snapshot.log</string>
+  <key>StandardErrorPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/fleet-canonicals-snapshot.log</string>
+</dict>
+</plist>

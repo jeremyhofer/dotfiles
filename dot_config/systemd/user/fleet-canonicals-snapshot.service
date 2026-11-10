@@ -1,0 +1,20 @@
+# One session-state snapshot: `fleet-canonicals snapshot` merges the sessions list, Claude Code's
+# per-process pid records and the daemon roster into $FLEET_STATE/sessions.json, read OUTSIDE every
+# sandbox so a sandboxed session reads the truth from the file. Run by
+# fleet-canonicals-snapshot.timer every 15 seconds; see `fleet-canonicals --help`.
+# Linux only: the base's .chezmoiignore skips .config/systemd on macOS, which runs the LaunchAgent
+# local.dotfiles.fleet-canonicals-snapshot instead.
+#
+# Not enabled by the base. The machine's owner enables the timer once, from a terminal:
+#   systemctl --user enable --now fleet-canonicals-snapshot.timer
+[Unit]
+Description=Snapshot the canonical sessions' state (fleet-canonicals snapshot)
+
+[Service]
+Type=oneshot
+# A user unit's PATH is the manager's, which lacks ~/.local/bin, where the base installs
+# fleet-canonicals and fleet-decl and where Claude Code installs `claude`.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/fleet-canonicals snapshot
+# One snapshot takes about half a second; a pass that hangs must not hold the next one off long.
+TimeoutStartSec=30s

@@ -1,0 +1,14 @@
+# Every 15 seconds, counted from the previous run's start. The readers (status, up, clean and the
+# request runner) refuse a snapshot older than snapshot-max-age, 45 seconds by default, so three
+# missed runs in a row are what it takes to stop them. Not enabled by the base; see
+# fleet-canonicals-snapshot.service.
+[Unit]
+Description=Snapshot the canonical sessions' state every 15 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

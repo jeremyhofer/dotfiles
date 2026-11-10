@@ -83,6 +83,7 @@ DEFAULTS = {
     "never-touch": "director-canonical",  # canonicals the queue never acts on, for any verb
     "allow-self-refresh": "false",        # true: a canonical may request its own refresh
     "request-idle-states": "done,idle,waiting",  # agents-listing states that are not working
+    "snapshot-max-age": "45",             # seconds before the session snapshot is too old to use
 }
 
 
@@ -720,6 +721,29 @@ def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
             "operator decides, from a terminal")
 
 
+def check_snapshot(req: dict, ctx: Pass, path: Path) -> str | None:
+    # The session snapshot (see `snapshot` below). Missing: the timer is not enabled here, and the
+    # runner's own reads, made outside every sandbox, stand alone. Stale or unreadable: refuse, since
+    # it may describe sessions as they no longer are. Fresh: a starting verb for a seat it reads as
+    # UNKNOWN is refused, since nothing could tell whether the seat is running.
+    if not SNAPSHOT.exists():
+        return None
+    try:
+        d = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+        taken = int(d["takenAt"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return f"the session snapshot {SNAPSHOT} is unreadable; is fleet-canonicals-snapshot running?"
+    limit = int(os.environ.get("FLEET_SNAPSHOT_MAX_AGE") or as_int(ctx.cfg, "snapshot-max-age"))
+    if ctx.t - taken > limit:
+        return (f"the session snapshot is {ctx.t - taken}s old (snapshot-max-age {limit}s); "
+                "is fleet-canonicals-snapshot running?")
+    seat = (d.get("seats") or {}).get(req["name"]) or {}
+    if req["verb"] in STARTING and seat.get("state") == "unknown":
+        return (f"'{req['name']}' is UNKNOWN in the session snapshot ({seat.get('why') or 'no reason given'}); "
+                "not starting a seat whose state cannot be read")
+    return None
+
+
 def unlisted_idle_signals(name: str) -> "str | Wait | None":
     """None when the live process behind a canonical the listing omits is idle between turns; else
     a Wait (a signal says a turn may be running) or a refusal (a signal cannot be read)."""
@@ -1001,6 +1025,7 @@ CHECKS = [
     ("usage", check_usage),
     ("trust", check_trust),
     ("keep-alive", check_keepalive),
+    ("snapshot", check_snapshot),
     ("live-process", check_live_process),
     ("working", check_working),
 ]
@@ -1200,13 +1225,103 @@ def cmd_live_holders(argv: list[str]) -> int:
     return 0
 
 
+# ---- the session-state snapshot ------------------------------------------------------------
+#
+# WHY A FILE. Inside a sandbox, other sessions' processes are hidden and the sessions list can
+# omit a session that is running (measured 2026-11-09 22:51: `status` from a sandbox read a live,
+# idle canonical MISSING while its pid record said idle and its process ran). So the state is read
+# OUTSIDE every sandbox, by a 15-second timer, and written here for every reader. Each declared seat
+# is `live` (any source shows it running), `dead` (every source was read and none shows it), or
+# `unknown` (none shows it and a source that could have could not be read). Never "failed": an
+# unreadable source is a fact about the reader, not about the session.
+SNAPSHOT = Path(os.environ.get("FLEET_SNAPSHOT_FILE") or STATE / "sessions.json")
+SNAPSHOT_VERSION = 1
+
+
+def in_sandbox() -> bool:
+    try:
+        return (PROC / "1" / "comm").read_text(encoding="utf-8").strip() == "bwrap"
+    except OSError:
+        return False
+
+
+def pid_records_readable() -> bool:
+    try:
+        list(PID_RECORDS.glob("*.json"))
+        return PID_RECORDS.is_dir()
+    except OSError:
+        return False
+
+
+def seats_declared_here() -> list[str] | None:
+    rc, out = decl("--canonicals")
+    if rc != 0:
+        return None
+    return [n for n in out.splitlines() if n and declared_here(n)[0]]
+
+
+def take_snapshot() -> dict:
+    t = now()
+    live = agents()
+    pids_ok = pid_records_readable()
+    roster = roster_session_ids()
+    roster_state = "ok" if roster is not None else ("absent" if not ROSTER.exists() else "error")
+    seats: dict[str, dict] = {}
+    for name in seats_declared_here() or []:
+        row = newest_row(live, name) if live is not None else None
+        entries = live_pid_entries(name) if pids_ok else []
+        sids = {sid for _p, sid, _d in entries if sid}
+        if row and row.get("sessionId"):
+            sids.add(str(row["sessionId"]))
+        in_roster = bool(roster and sids & roster)
+        seen = []
+        if row:
+            seen.append(f"listed ({row.get('state') or 'no state'})")
+        seen += [d for _p, _s, d in entries]
+        if in_roster:
+            seen.append("a daemon roster worker")
+        unread = [src for src, ok in (("the sessions list", live is not None),
+                                      ("the pid records", pids_ok)) if not ok]
+        if seen:
+            state, why = "live", "; ".join(seen)
+        elif unread:
+            state, why = "unknown", "no readable source: " + " and ".join(unread) + " could not be read"
+        else:
+            state, why = "dead", "not listed, no live pid record, no roster worker"
+        seats[name] = {"state": state, "why": why, "listed": bool(row),
+                       "pids": [p for p, _s, _d in entries], "sessionIds": sorted(sids)}
+    return {"version": SNAPSHOT_VERSION, "takenAt": t, "takenAtIso": stamp(t), "host": hostname(),
+            "sources": {"agents": "ok" if live is not None else "error",
+                        "pidRecords": "ok" if pids_ok else "error", "roster": roster_state},
+            "seats": seats}
+
+
+def cmd_snapshot(argv: list[str]) -> int:
+    """Write $FLEET_STATE/sessions.json once. Refuses inside a sandbox, where the snapshot would
+    report hidden processes as dead: the one thing it exists to prevent."""
+    if argv:
+        die("usage: fleet-canonicals snapshot (no arguments)")
+    if in_sandbox():
+        die("snapshot: refusing inside a sandbox: other sessions' processes are hidden here, so every "
+            "seat the sessions list omits would read as dead. The timer runs it outside "
+            "(fleet-canonicals-snapshot.timer, or the LaunchAgent on macOS).")
+    if seats_declared_here() is None:
+        die("snapshot: the fleet record is unreadable (fleet-decl), so no seat can be named; "
+            "the previous snapshot is left to age out")
+    STATE.mkdir(parents=True, exist_ok=True)
+    write_atomic(SNAPSHOT, take_snapshot())
+    return 0
+
+
 def main() -> int:
-    verbs = ("request", "serve-requests", "live-holders")
+    verbs = ("request", "serve-requests", "live-holders", "snapshot")
     if len(sys.argv) < 2 or sys.argv[1] not in verbs:
-        die("usage: fleet-canonicals-queue request|serve-requests|live-holders ... (run it as `fleet-canonicals`)")
+        die("usage: fleet-canonicals-queue request|serve-requests|live-holders|snapshot ... (run it as `fleet-canonicals`)")
     verb, rest = sys.argv[1], sys.argv[2:]
     if verb == "live-holders":
         return cmd_live_holders(rest)
+    if verb == "snapshot":
+        return cmd_snapshot(rest)
     return cmd_request(rest) if verb == "request" else cmd_serve(rest)
 
 

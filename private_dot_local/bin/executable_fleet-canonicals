@@ -127,6 +127,41 @@ PLACE_COMMIT=$(config_value FLEET_PLACE_COMMIT place-commit)
 STAGE_CHECK=$(config_value FLEET_STAGE_CHECK stage-check)
 REMOTE_CONTROL=$(config_value FLEET_REMOTE_CONTROL remote-control)
 
+# ---- the session-state snapshot -----------------------------------------------
+# `fleet-canonicals snapshot`, run every 15 seconds OUTSIDE every sandbox by a timer, writes each
+# seat's state (live, dead or unknown) to this file, so a reader inside a sandbox, where other
+# sessions' processes are hidden and the sessions list can omit a running session, reads the state
+# from where it is visible. status, up and clean read it:
+#   - fresh (no older than snapshot-max-age): used, and `unknown` is reported as UNKNOWN, never MISSING;
+#   - stale: the verb REFUSES, naming the timer, because an old snapshot reads as current;
+#   - missing (the timer is not enabled on this machine yet): a one-line note, then the direct reads
+#     these verbs made before the snapshot existed. Making a missing snapshot refuse too is a
+#     recorded follow-up for when every machine runs the timer.
+SNAPSHOT_FILE=${FLEET_SNAPSHOT_FILE:-"$FLEET_STATE/sessions.json"}
+SNAPSHOT_MAX_AGE=$(config_value FLEET_SNAPSHOT_MAX_AGE snapshot-max-age)
+SNAPSHOT_MAX_AGE=${SNAPSHOT_MAX_AGE:-45}
+SNAP_USE=0
+
+# snapshot_gate VERB -- set SNAP_USE=1 for a fresh snapshot; note a missing one; die on a stale one.
+snapshot_gate() {
+  local taken age
+  if [ ! -e "$SNAPSHOT_FILE" ]; then
+    printf 'note     no session snapshot (%s); reading the sessions directly. Enable the snapshot timer: systemctl --user enable --now fleet-canonicals-snapshot.timer (macOS: the local.dotfiles.fleet-canonicals-snapshot LaunchAgent)\n' "$SNAPSHOT_FILE" >&2
+    return 0
+  fi
+  taken=$(jq -r '.takenAt // empty' "$SNAPSHOT_FILE" 2>/dev/null)
+  case "$taken" in ''|*[!0-9]*) die "$1: the session snapshot $SNAPSHOT_FILE is unreadable; refusing rather than guessing. Check the snapshot timer (fleet-canonicals-snapshot)" ;; esac
+  age=$(( $(date +%s) - taken ))
+  [ "$age" -le "$SNAPSHOT_MAX_AGE" ] || die "$1: the session snapshot is ${age}s old (snapshot-max-age ${SNAPSHOT_MAX_AGE}s), so it may no longer describe the sessions; refusing. Is the snapshot timer running? systemctl --user status fleet-canonicals-snapshot.timer (macOS: launchctl print gui/\$(id -u)/local.dotfiles.fleet-canonicals-snapshot)"
+  SNAP_USE=1
+}
+
+# snapshot_seat NAME -- "<state><TAB><why>" from a fresh snapshot, or nothing.
+snapshot_seat() {
+  [ "$SNAP_USE" = 1 ] || return 0
+  jq -r --arg n "$1" '.seats[$n] // empty | [.state, .why] | @tsv' "$SNAPSHOT_FILE" 2>/dev/null
+}
+
 # autostart-default: whether a seat that sets no `canonicalAutostart` starts on a bare `up`. UNSET
 # MEANS TRUE, so a machine that configures nothing behaves as it always did, and a value that is
 # neither true nor false is reported and also treated as true: a typo must never become a critical
@@ -313,6 +348,13 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     Writes a first-launch handoff from the record, records the pointer, and with
                     --up launches. --dry-run checks and writes nothing.
 
+  snapshot          write each seat's state (live, dead or unknown) to $FLEET_STATE/sessions.json,
+                    from the sessions list, Claude Code's pid records and the daemon roster. Run
+                    every 15 s OUTSIDE every sandbox by fleet-canonicals-snapshot.timer (macOS: the
+                    local.dotfiles.fleet-canonicals-snapshot LaunchAgent), which the machine's owner
+                    enables once; refuses inside a sandbox. status, up and clean use a fresh one,
+                    refuse a stale one, and note a missing one.
+
   request <up|down|refresh|resume|init> <name> --reason TEXT [--as REQUESTER]
                     ask for a lifecycle action from INSIDE a sandbox, where the verbs above
                     cannot run. Writes one request into $FLEET_STATE/requests/; never runs
@@ -366,6 +408,7 @@ configuration (file, then the variable that overrides each key):
   place-commit = true|false  FLEET_PLACE_COMMIT     commit placed files in the repository holding
                                                     the handoffs directory (default false)
   the request queue's keys (no variable overrides them; defaults in brackets):
+  snapshot-max-age = <secs>  [45]    a session snapshot older than this is refused (FLEET_SNAPSHOT_MAX_AGE)
   request-max-age = <secs>   [600]   a queued request older than this is refused as stale
   request-limit-canonical = <n> [3]  lifecycle actions per canonical per rolling hour
   request-limit-fleet = <n>  [auto]  lifecycle actions for the whole fleet per rolling hour; auto
@@ -653,7 +696,13 @@ report_line() {
   local name="$1" json="$2" count ids holder
   count=$(printf '%s' "$json" | jq --arg n "$name" '[.[] | select(.name == $n)] | length')
   case "$count" in
-    0) holder=$(live_holder "$name")
+    0) local sst="" swhy=""
+       IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
+       case "$sst" in
+         live)    printf '%-28s LIVE-UNLISTED (%s; the sessions list here omits it)\n' "$name" "$swhy"; return ;;
+         unknown) printf '%-28s UNKNOWN (%s)\n' "$name" "$swhy"; return ;;
+       esac
+       holder=$(live_holder "$name")
        # Not "MISSING": the word is what `up` and the health check read as absent.
        if [ -n "$holder" ]; then
          printf '%-28s LIVE-UNLISTED (%s; the sessions list omits it)\n' "$name" "$holder"
@@ -759,13 +808,14 @@ cmd_list() {
 
 cmd_status() {
   local json name unhealthy=0 orphan orphans=0
+  snapshot_gate status
   json=$(agents_json)
   autostart_default_note
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     line=$(report_line "$name" "$json")
     printf '%s\n' "$line"
-    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*) unhealthy=1 ;; esac
+    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*|*UNKNOWN*) unhealthy=1 ;; esac
   done < <(expected_names)
   while IFS= read -r orphan; do
     [ -n "$orphan" ] || continue
@@ -806,6 +856,7 @@ cmd_up() {
     esac
   done
   [ -z "$wanted" ] || [ "$all" = "0" ] || die "up: give names or --all, not both"
+  snapshot_gate up
   json=$(agents_json)
   autostart_default_note
   while IFS= read -r name; do
@@ -824,6 +875,16 @@ cmd_up() {
       printf 'skipped %-24s on demand (autostart is false); name it, or use --all\n' "$name"
       continue
     fi
+    # The snapshot sees from outside the sandbox: a seat it shows running, or cannot read, is not
+    # started from here.
+    local sst="" swhy=""
+    IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
+    case "$sst" in
+      live)    printf 'REFUSED %-24s the session snapshot shows it running though the sessions list here omits it: %s\n' "$name" "$swhy" >&2
+               refused=1; continue ;;
+      unknown) printf 'REFUSED %-24s UNKNOWN in the session snapshot (%s); not starting a seat whose state cannot be read\n' "$name" "$swhy" >&2
+               refused=1; continue ;;
+    esac
     holder=$(live_holder "$name")
     if [ -n "$holder" ]; then
       printf 'REFUSED %-24s a live process holds the name though the sessions list omits it: %s\n' "$name" "$holder" >&2
@@ -1109,6 +1170,13 @@ cmd_clean() {
   unlisted=$(uv run --quiet --script "$q" live-holders $names 2>/dev/null) \
     || { printf 'clean: the live-process check failed; removing nothing\n' >&2; exit 2; }
   unlisted=$(printf '%s\n' "$unlisted" | cut -f 1 | sort -u)
+  # A fresh snapshot adds every seat it shows live or cannot read: either may own a root.
+  snapshot_gate clean
+  if [ "$SNAP_USE" = 1 ]; then
+    unlisted=$( { printf '%s\n' "$unlisted"
+                  jq -r '.seats | to_entries[] | select(.value.state != "dead") | .key' "$SNAPSHOT_FILE" 2>/dev/null
+                } | grep -v '^$' | sort -u)
+  fi
   now=$(date +%s)
   for d in "$FLEET_TMPROOT_PREFIX"/c-*; do
     [ -e "$d" ] || [ -L "$d" ] || continue
@@ -2698,6 +2766,7 @@ case "${1:-}" in
   up|start)  shift; cmd_up "$@" ;;
   handoff)   shift; cmd_handoff "$@" ;;
   init)      shift; cmd_init "$@" ;;
+  snapshot)  exec_queue "$@" ;;
   place)           shift; cmd_place "$@" ;;
   stage)           shift; cmd_stage "$@" ;;
   dedupe)          shift; cmd_dedupe "$@" ;;

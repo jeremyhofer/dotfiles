@@ -751,4 +751,81 @@ out=$(fc serve-requests --loop --interval 0); rc=$?
 out=$(fc serve-requests extra); rc=$?
 [[ $rc -ne 0 ]] && ok "serve-requests still takes no other arguments" || bad "extra argument accepted: $out"
 
+# ---- the session-state snapshot -----------------------------------------------------------------
+# `snapshot`, run outside every sandbox by a timer, writes each seat's state to sessions.json; the
+# readers use a fresh one, refuse a stale one and note a missing one. Every source is a fixture.
+SNAP="$T/state/sessions.json"
+snapseat() { jq -r --arg n "$1" '.seats[$n].state // "absent"' "$SNAP" 2>/dev/null }
+# write_snap AGE NAME STATE [WHY]: a snapshot taken AGE seconds ago naming one seat
+write_snap() {
+  jq -n --argjson t $(( $(date +%s) - $1 )) --arg n "$2" --arg s "$3" --arg w "${4:-fixture}" \
+    '{version:1, takenAt:$t, seats:{($n):{state:$s, why:$w}}}' > "$SNAP"
+}
+reset; rm -f "$SNAP"
+live_row 11111111 alpha-canonical idle sa
+pid_record 4343 beta-canonical 900; proc_alive 4343 900
+out=$(fc snapshot); rc=$?
+[[ $rc -eq 0 && "$(snapseat alpha-canonical)" == live && "$(snapseat beta-canonical)" == live \
+   && "$(snapseat gamma-canonical)" == dead && "$(snapseat elsewhere-canonical)" == absent ]] \
+  && ok "snapshot: listed and pid-record seats live, the rest dead, other machines' seats absent" \
+  || bad "snapshot states (rc=$rc): $out / $(cat "$SNAP" 2>/dev/null)"
+FLEET_AGENTS_JSON_CMD=false fc snapshot >/dev/null
+[[ "$(snapseat gamma-canonical)" == unknown && "$(snapseat beta-canonical)" == live ]] \
+  && ok "snapshot: an unreadable sessions list makes an unseen seat unknown, never dead" \
+  || bad "unknown state: $(cat "$SNAP")"
+rm -f "$SNAP"; mkdir -p "$T/proc/1"; print bwrap > "$T/proc/1/comm"
+out=$(fc snapshot); rc=$?
+rm -rf "$T/proc/1"
+[[ $rc -ne 0 && "$out" == *"inside a sandbox"* && ! -e "$SNAP" ]] \
+  && ok "snapshot refuses inside a sandbox and writes nothing" || bad "snapshot in a sandbox (rc=$rc): $out"
+
+# status: a seat the snapshot shows live reads LIVE-UNLISTED, an unknown one UNKNOWN, never MISSING
+reset
+write_snap 5 gamma-canonical live "pid 9999 (fixture)"
+out=$(fc status); [[ "$(print -r -- "$out" | grep '^gamma-canonical')" == *LIVE-UNLISTED*"pid 9999"* ]] \
+  && ok "status: a fresh snapshot's live seat is LIVE-UNLISTED" || bad "status with a live snapshot seat: $out"
+write_snap 5 gamma-canonical unknown "no readable source: the sessions list could not be read"
+out=$(fc status); gl=$(print -r -- "$out" | grep '^gamma-canonical')
+[[ "$gl" == *"UNKNOWN (no readable source"* && "$gl" != *MISSING* ]] \
+  && ok "status: an unknown seat reads UNKNOWN, not MISSING" || bad "status with an unknown seat: $out"
+write_snap 100 gamma-canonical dead
+out=$(fc status); rc=$?
+[[ $rc -ne 0 && "$out" == *"snapshot is 1"??"s old"*"fleet-canonicals-snapshot"* ]] \
+  && ok "status refuses a stale snapshot, naming the timer" || bad "status with a stale snapshot (rc=$rc): $out"
+rm -f "$SNAP"; out=$(fc status)
+[[ "$out" == *"no session snapshot"* && "$out" == *alpha-canonical* ]] \
+  && ok "status with no snapshot notes it and reads the sessions directly" || bad "status without a snapshot: $out"
+
+# up: refuses a seat the snapshot shows live or unknown; a dead one starts
+rm -f "$T/state/gamma-canonical.handoff"; bash "$TOOL" handoff gamma-canonical --set "$T/gamma.handoff.md" >/dev/null 2>&1
+write_snap 5 gamma-canonical unknown "no readable source"
+out=$(fc up gamma-canonical --dry-run)
+[[ "$out" == *REFUSED*gamma-canonical*UNKNOWN* && "$out" != *"would start"* ]] \
+  && ok "up refuses a seat the snapshot reads UNKNOWN" || bad "up with an unknown seat: $out"
+write_snap 5 gamma-canonical live "pid 9999 (fixture)"
+out=$(fc up gamma-canonical --dry-run)
+[[ "$out" == *REFUSED*gamma-canonical*"snapshot shows it running"* ]] \
+  && ok "up refuses a seat the snapshot shows running though the list omits it" || bad "up with a live seat: $out"
+write_snap 5 gamma-canonical dead
+out=$(fc up gamma-canonical --dry-run)
+[[ "$out" == *"would start"*gamma-canonical* ]] && ok "up starts a seat the snapshot reads dead (control)" || bad "up with a dead seat: $out"
+write_snap 100 gamma-canonical dead
+out=$(fc up gamma-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"snapshot is 1"??"s old"* && "$out" != *"would start"* ]] \
+  && ok "up refuses a stale snapshot" || bad "up with a stale snapshot (rc=$rc): $out"
+out=$(fc clean --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"snapshot is 1"??"s old"* ]] && ok "clean refuses a stale snapshot" || bad "clean with a stale snapshot (rc=$rc): $out"
+
+# the runner: a stale snapshot refuses every request; a fresh one refuses starting an unknown seat
+reset; write_snap 100 gamma-canonical dead
+plant r-snap1 up gamma-canonical gamma-canonical; serve >/dev/null
+expect r-snap1 refused snapshot "the runner refuses a request while the snapshot is stale"
+reset; write_snap 5 gamma-canonical unknown "no readable source"
+plant r-snap2 up gamma-canonical gamma-canonical; serve >/dev/null
+expect r-snap2 refused snapshot "the runner refuses starting a seat the snapshot reads UNKNOWN"
+reset; write_snap 5 gamma-canonical dead
+plant r-snap3 up gamma-canonical gamma-canonical; serve >/dev/null
+expect r-snap3 done "" "the runner serves it once the snapshot is fresh and the seat dead (control)"
+rm -f "$SNAP"
+
 [[ $fail == 0 ]] && { print "ALL PASS"; exit 0 } || { print "FAILURES"; exit 1 }

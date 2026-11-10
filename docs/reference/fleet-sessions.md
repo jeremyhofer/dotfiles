@@ -282,6 +282,26 @@ A refusal or a dry run changes nothing; none of the verbs was run for real.
 So the verbs in the paragraph above stay the human's, run from a terminal, and a session's own
 `status` is a hint, never a finding: where it disagrees with the terminal, the terminal is right.
 
+### The session-state snapshot
+
+**On a machine that runs the snapshot timer, a sandboxed `status` reads the terminal's view.**
+`fleet-canonicals snapshot`, run every 15 seconds outside every sandbox by
+`fleet-canonicals-snapshot.timer` (macOS: the `local.dotfiles.fleet-canonicals-snapshot`
+LaunchAgent), merges `claude agents --json`, Claude Code's pid records in `~/.claude/sessions/`
+(each pid checked against the process table) and the daemon roster `~/.claude/daemon/roster.json`
+into `$FLEET_STATE/sessions.json`. Each seat declared for the machine is `live` (any source shows it
+running), `dead` (every source was read and none shows it) or `unknown` (none shows it and a source
+that could have could not be read). Every field of those Claude Code files is read as optional:
+they are undocumented, and a field missing on an older version reads as no evidence, not as dead.
+The verb refuses inside a sandbox, where it would report hidden sessions as dead.
+
+`status`, `up` and `clean` use a snapshot no older than `snapshot-max-age` (45 seconds): a live seat
+the listing omits reads `LIVE-UNLISTED`, an unknown one `UNKNOWN (<why>)` and never `MISSING`, and
+`up` refuses to start either. A stale snapshot makes them refuse, naming the timer. A missing one
+(the timer not enabled yet) gives a one-line note and the direct reads these verbs made before. The
+request runner refuses every request while the snapshot is stale and refuses starting a seat it
+reads as `unknown`.
+
 ### Requesting a lifecycle action
 
 **A session requests `up`, `down`, `refresh`, `resume` or `init` instead of running it.** A
@@ -478,6 +498,11 @@ earlier one.
     result file. Pause the runner with `touch ~/.local/state/fleet-canonicals/requests/PAUSED`;
     disable it with `systemctl --user disable --now fleet-canonicals-requests.timer` or `launchctl
     bootout gui/$(id -u)/local.dotfiles.fleet-canonicals-requests`.
+11. **Enable the session-state snapshot** ("The session-state snapshot"), from a terminal:
+    - Linux: `systemctl --user enable --now fleet-canonicals-snapshot.timer`. Check:
+      `jq .takenAtIso ~/.local/state/fleet-canonicals/sessions.json` moves every 15 seconds.
+    - macOS: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-snapshot.plist`.
+      Check the same file; output goes to `~/Library/Logs/fleet-canonicals-snapshot.log`.
 
 ### Where hooks or messaging are absent
 
