@@ -79,6 +79,7 @@ test-image-bump-check.sh            private_dot_local/bin/executable_image-bump
 test-image-bump-deploy.sh           private_dot_local/bin/executable_image-bump
 test-image-bump-estate.sh           private_dot_local/bin/executable_image-bump
 test-image-bump-latest.sh           private_dot_local/bin/executable_image-bump
+test-image-bump.py                  private_dot_local/bin/executable_image-bump
 test-install-claude-plugins.sh      private_dot_local/bin/executable_install-claude-plugins
 test-install-test-gate.sh           private_dot_local/bin/executable_install-test-gate
 test-pre-commit-trigger.sh          private_dot_local/bin/executable_install-test-gate run_onchange_install-git-hooks.sh.tmpl
