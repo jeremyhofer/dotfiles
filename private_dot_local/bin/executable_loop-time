@@ -747,7 +747,11 @@ class Session:
         self.decl, self.results, self.max_load, self.force, self.wait = decl, Path(results), max_load, force, wait
         self.slot_holder, self.ignore_slot = slot_holder, ignore_slot
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        self.head, self.dirty = git_state(decl.root)
+        # Git state per loop cwd, not per root: a root may hold several checkouts (a directory of
+        # worktrees), and each record must name the tree its loop ran in. Measured 2026-11-10:
+        # finmodel's loops in two worktrees at different commits both recorded the enclosing
+        # checkout's HEAD, dirty from its own untracked files. Read here, before any scenario edits.
+        self.git = {l.cwd: git_state(decl.root / l.cwd) for l in decl.loops}
         self.versions = {c: run_quiet(c, decl.root)[1] for c in decl.versions}
         self.counter = 0
         self.failed = False
@@ -801,7 +805,7 @@ class Session:
                "project": self.decl.project, "loop": loop.id, "mode": mode, "step": step,
                "scenario": scenario, "sample": sample, "exit_code": rc,
                "wall_seconds": round(wall, 4), "cpu_seconds": round(cpu, 4),
-               "git_head": self.head, "tree_dirty": self.dirty, "start": start, "end": end,
+               "git_head": self.git[loop.cwd][0], "tree_dirty": self.git[loop.cwd][1], "start": start, "end": end,
                "under_load": under, "slot": slot, "versions": self.versions, "runner": loop.runner,
                "env_keys": env_keys, "output": str(outp)}
         if caught_if_failing:

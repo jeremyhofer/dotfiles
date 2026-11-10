@@ -1171,3 +1171,31 @@ def test_without_fleet_slot_the_record_says_unchecked(monkeypatch):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_git_state_is_read_from_each_loops_own_cwd(tmp_path):
+    """A root holding several checkouts (a directory of worktrees inside a repository, as finmodel
+    declares `root = <repo>/.worktrees`) must record each loop's own tree. Measured 2026-11-10: two
+    loops in worktrees at different commits both recorded the enclosing checkout's HEAD, dirty."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    git(outer, "init", "-q")
+    (outer / "f").write_text("outer\n")
+    git(outer, "add", "-A")
+    git(outer, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "outer")
+    heads = {}
+    for name in ("a", "b"):
+        d = outer / "trees" / name
+        d.mkdir(parents=True)
+        git(d, "init", "-q")
+        (d / "f").write_text(f"{name}\n")
+        git(d, "add", "-A")
+        git(d, "-c", "commit.gpgsign=false", "commit", "-q", "-m", name)
+        heads[name] = git(d, "rev-parse", "HEAD").strip()
+    p = write_decl(tmp_path, outer / "trees",
+                   '[[loop]]\nid="la"\ncwd="a"\ncommand="true"\n[[loop]]\nid="lb"\ncwd="b"\ncommand="true"\n')
+    res = tmp_path / "r.jsonl"
+    for loop in ("la", "lb"):
+        assert run_main("run", p, loop, "--samples", "1", "--results", res, "--max-load", "9999") == 0
+    got = {r["loop"]: (r["git_head"], r["tree_dirty"]) for r in records(res)}
+    assert got == {"la": (heads["a"], False), "lb": (heads["b"], False)}
