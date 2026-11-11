@@ -15,6 +15,10 @@ No task runner; the commands are plain.
   `# run-all: serial` among its first lines and then runs alone, after the concurrent batch;
   `RUN_ALL_PROFILE=<file>` writes each suite's wall and CPU seconds (header of `tests/run-all.sh`). The pre-commit hook runs the suites the staged paths
   select (`tests/select-suites.sh`); the suites the change reaches run before `chezmoi apply` (`tests/pre-apply.sh`) and every suite runs after it (`tests/post-apply.sh`).
+  The landing lane: slow checks (image-bump's mutant meta-tests, `RUN_MUTANTS`) are left out of those
+  runs and run in `sh tests/land-gate.sh`, every suite with them included. Set it once per clone,
+  from a terminal: `git config land.gate 'sh tests/land-gate.sh'`; then `land check` runs it and
+  `land` merges only a tree that passed.
   A new file needs a line in `tests/coverage.map`, or every commit runs every suite and
   `sh tests/select-suites.sh --check` refuses.
 - `chezmoi diff`, then `chezmoi apply`: deploy this source to the machine. The private layer is a

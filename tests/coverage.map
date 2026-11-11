@@ -76,11 +76,7 @@ test-hook-doctor.sh                 private_dot_local/bin/executable_hook-doctor
 test-hook-doctor.sh                 private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_run-repo-gates
 test-hook-doctor.sh                 private_dot_local/bin/executable_git-secret-scan dot_config/gitleaks/floor.toml
 test-hook-doctor-chpwd.sh           .chezmoitemplates/zshrc.guard-check
-test-image-bump.sh                  private_dot_local/bin/executable_image-bump
-test-image-bump-check.sh            private_dot_local/bin/executable_image-bump
-test-image-bump-deploy.sh           private_dot_local/bin/executable_image-bump
-test-image-bump-estate.sh           private_dot_local/bin/executable_image-bump
-test-image-bump-latest.sh           private_dot_local/bin/executable_image-bump
+test-image-bump.py                  private_dot_local/bin/executable_image-bump
 test-install-claude-plugins.sh      private_dot_local/bin/executable_install-claude-plugins
 test-install-test-gate.sh           private_dot_local/bin/executable_install-test-gate
 test-pre-commit-trigger.sh          private_dot_local/bin/executable_install-test-gate run_onchange_install-git-hooks.sh.tmpl
@@ -153,6 +149,8 @@ refs test-skip-skills.sh            .claude/skills/tuicr-code-review
 # --- shipped, read by no suite -------------------------------------------------------------------
 # Documentation: the commit hook skips a commit that stages nothing else.
 exempt docs/** *.md setup/README.md
+# A port's parity table: the review record of a pytest suite that replaced shell suites.
+exempt tests/*.parity.md
 # Tools with no suite of their own; the tree checks above still read them.
 exempt private_dot_local/bin/executable_git-merge-diff private_dot_local/bin/executable_nvim-healthdump
 exempt setup/chezmoi-safe-apply bootstrap-mac.sh Brewfile
@@ -165,3 +163,4 @@ exempt .gitignore .us-spelling-lint
 exempt dot_claude/CLAUDE.md.tmpl dot_claude/standards/** dot_claude/skills/** .claude/skills/*
 exempt dot_config/** private_Library/** private_dot_local/share/**
 exempt dot_editorconfig dot_ssh/** dot_tmux.conf dot_xbindkeysrc dot_xinitrc dot_Xresources.tmpl dot_zprofile.tmpl
+exempt tests/land-gate.sh
