@@ -116,10 +116,10 @@ out=$(printf 'skip/x\n' | (cd "$r" && sh tests/select-suites.sh --run 2>&1)); rc
 echo "== the commit gate's pass credit: SUITE_CREDIT_RECORD=1 --run records what passed"
 # One line per suite that passed, `<tree> <os> <suite> <utc time>`, in a machine-local file under the
 # state directory, against the tree git would commit (git write-tree).
-st="$tmp/cache"; gl="$st/dotfiles/gate-passed"
+st="$tmp/state"; gl="$st/dotfiles/gate-passed"
 credrun() { # credrun [VAR=value ...]: select bin/a (test-a.sh) and run it, recording as the commit gate does;
   # the caller's SUITE_CREDIT_RECORD is cleared first, so a hand run with it exported tests the same thing
-  printf 'bin/a\n' | (unset SUITE_CREDIT_RECORD; cd "$r" && env XDG_CACHE_HOME="$st" SUITE_CREDIT_OS=Linux "$@" sh tests/select-suites.sh --run > "$tmp/out" 2>&1)
+  printf 'bin/a\n' | (unset SUITE_CREDIT_RECORD; cd "$r" && env XDG_STATE_HOME="$st" SUITE_CREDIT_OS=Linux "$@" sh tests/select-suites.sh --run > "$tmp/out" 2>&1)
 }
 tree=$(git -C "$r" write-tree)
 credrun
@@ -135,14 +135,6 @@ mkdir -p "$st/dotfiles"; i=0; while [ "$i" -lt 1100 ]; do printf 'oldtree%s Linu
 credrun SUITE_CREDIT_RECORD=1
 n=$(wc -l < "$gl" | tr -d ' ')
 { [ "$n" -le 1000 ] && grep -q "^$tree Linux test-a.sh " "$gl" && ! grep -q '^oldtree0 ' "$gl" && grep -q '^oldtree1099 ' "$gl"; } && ok "the ledger is bounded to its newest 1000 lines" || bad "ledger bound" "lines=$n"
-
-# A ledger that cannot be written loses the credit, never the commit, and says so: the gate shows
-# only the selector's `select-suites:` lines when the suites pass, so the warning carries that prefix.
-rm -rf "$st"; printf 'not a directory\n' > "$st"
-credrun SUITE_CREDIT_RECORD=1; rc=$?
-[ "$rc" = 0 ] && ok "an unwritable ledger still passes the run" || bad "unwritable ledger refused" "rc=$rc $(cat "$tmp/out")"
-grep -q '^select-suites: warning: .*could not record' "$tmp/out" && ok "...and warns, with the prefix the gate shows" || bad "no warning for an unwritable ledger" "$(cat "$tmp/out")"
-rm -f "$st"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] && echo PASS

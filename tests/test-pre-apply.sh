@@ -116,7 +116,7 @@ keep=0 # 1: lrun keeps the run history, so a later run can be credited by an ear
 lrun() { # lrun [VAR=value ...]: run the repository's copy; rc and $tmp/err as run(); args the runner got in $tmp/args
   rm -f "$PA_MARK" "$PA_ARGS"
   [ "$keep" = 1 ] || rm -f "$st/dotfiles/pre-apply.history"
-  env PATH="$tmp/gitbin" TMPDIR="$tmp/logs" XDG_STATE_HOME="$st" XDG_CACHE_HOME="$tmp/cache" GIT_CONFIG_GLOBAL=/dev/null "$@" sh "$tmp/repo/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
+  env PATH="$tmp/gitbin" TMPDIR="$tmp/logs" XDG_STATE_HOME="$st" GIT_CONFIG_GLOBAL=/dev/null "$@" sh "$tmp/repo/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
 }
 lines() { if [ -f "$ledger" ]; then wc -l < "$ledger" | tr -d ' '; else echo 0; fi; }
 lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
@@ -213,7 +213,7 @@ echo "== the commit gate's pass credit: a suite that passed at the gate on a tre
 # The gate ledger (<tree> <os> <suite> <time>) is what the commit gate writes. The stand-in selector
 # maps a/* to test-a.sh and b/* to test-b.sh, the same mapping pre-apply asks of it for each ledger
 # tree, so a tree whose diff to the applied one touches a/ cannot vouch for test-a.sh.
-gl="$tmp/cache/dotfiles/gate-passed"  # the gate ledger is a cache (XDG_CACHE_HOME), beside nothing pre-apply owns
+gl="$st/dotfiles/gate-passed"
 tr_() { g rev-parse 'HEAD^{tree}'; }
 echo 0 > "$tmp/repo/a/one.txt"; echo 0 > "$tmp/repo/b/one.txt"; g add -A; g commit -q -m base0
 base=$(tr_); printf '%s Linux 2000-01-01T00:00:00Z\n' "$base" > "$ledger"
@@ -222,7 +222,7 @@ T1=$(tr_)
 echo y > "$tmp/repo/a/one.txt"; g add -A; g commit -q -m aonly
 T2=$(tr_)
 gate() { # gate <tree> <os> <suite>...: what the commit gate would have recorded
-  gt=$1; go=$2; shift 2; mkdir -p "$tmp/cache/dotfiles"
+  gt=$1; go=$2; shift 2; mkdir -p "$st/dotfiles"
   for gs in "$@"; do printf '%s %s %s 2026-11-10T00:00:00Z\n' "$gt" "$go" "$gs" >> "$gl"; done
 }
 rm -f "$gl"

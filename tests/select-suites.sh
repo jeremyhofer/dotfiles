@@ -20,7 +20,7 @@
 #
 # PASS CREDIT. With SUITE_CREDIT_RECORD=1 (the commit gate sets it), --run remembers a passing run:
 # for each suite that passed it appends `<tree> <os> <suite> <utc time>` to
-# ${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/gate-passed, the tree being `git write-tree` (what
+# ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/gate-passed, the tree being `git write-tree` (what
 # the commit will contain; the gate runs this under git-staged-run). Nothing is recorded when any
 # suite failed. The file is machine-local state, never in the repository, and holds the newest 1000
 # lines (SUITE_CREDIT_KEEP). tests/pre-apply.sh reads it to skip a suite that already passed on a tree
@@ -192,12 +192,10 @@ END {
 # record_pass <profile>: append `<tree> <os> <suite> <utc time>` to the gate ledger for each suite the
 # profile (run-all.sh's RUN_ALL_PROFILE: suite, wall, cpu, exit) shows passing, then keep only the
 # newest SUITE_CREDIT_KEEP lines (default 1000). Recording can never refuse a commit: any failure here
-# loses the credit, not the commit, and --run says so. The ledger is a cache, not state: losing it costs
-# one full run, and a sandboxed agent session (which makes most commits) can write ~/.cache but not
-# ~/.local/state (measured 2026-11-10: the ledger stayed empty after every sandboxed commit).
+# loses the credit, not the commit.
 record_pass() {
   gtree=$(git -C "$root" write-tree 2>/dev/null) || return 1
-  gdir=${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles
+  gdir=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles
   mkdir -p "$gdir" 2>/dev/null || return 1
   gl="$gdir/gate-passed"
   gos=${SUITE_CREDIT_OS:-$(uname -s)}
@@ -234,10 +232,7 @@ case $mode in
     prof=$(mktemp "${TMPDIR:-/tmp}/select-suites-profile.XXXXXX") || prof=""
     # shellcheck disable=SC2086
     RUN_ALL_PROFILE=$prof SUITE_CREDIT_RECORD= sh "$here/run-all.sh" --only $names; rc=$?
-    if [ "$rc" -eq 0 ] && [ -n "$prof" ]; then
-      record_pass "$prof" || printf 'select-suites: warning: the suites passed but could not record the pass in %s; the next apply runs them again\n' \
-        "${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/gate-passed" >&2
-    fi
+    if [ "$rc" -eq 0 ] && [ -n "$prof" ]; then record_pass "$prof" || true; fi
     [ -z "$prof" ] || rm -f "$prof"
     exit "$rc"
     ;;

@@ -164,7 +164,7 @@ if [ -n "$base" ]; then
 fi
 
 # GATE CREDIT. The commit gate records each suite it ran and passed, on which OS, against the tree it
-# tested (tests/select-suites.sh, PASS CREDIT), in ${XDG_CACHE_HOME:-~/.cache}/dotfiles/gate-passed. A selected suite S is
+# tested (tests/select-suites.sh, PASS CREDIT), in <state dir>/gate-passed. A selected suite S is
 # credited, and not run, when that ledger holds a pass of S on this OS for a tree T such that the
 # paths differing between T and the working tree (untracked files included) are ones the selector does
 # not map to S: the same mapping that chose S above, so the two cannot disagree about what S reads.
@@ -173,7 +173,7 @@ fi
 # selection. The run with no earlier full pass to compare with (every suite) is not credited: it
 # exists to earn that pass.
 credited=""
-gl=${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/gate-passed
+gl="$sd/gate-passed"
 if [ -n "$only" ] && [ -f "$gl" ]; then
   # newest tree first, each once (awk reverses the file; `tac` is not on macOS)
   for T in $(awk -v o="$os" '$2 == o { l[++n] = $1 } END { for (i = n; i >= 1; i--) if (!(l[i] in s)) { s[l[i]] = 1; print l[i] } }' "$gl" | sed -n '1,25p'); do
