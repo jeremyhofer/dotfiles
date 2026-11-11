@@ -72,7 +72,17 @@ cat > "$T/claude-stub" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--help" ]; then
   echo "  --model <model>"
-  [ -n "${STUB_NOFLAG:-}" ] || echo "  --append-system-prompt-file <file>   Append a system prompt from a file"
+  if [ -n "${STUB_BRACKET:-}" ]; then
+    # The live shape (claude 2.1.322): the flag has no line of its own and is named only inside
+    # --bare's description, bracketed with its inline sibling.
+    echo "  --append-system-prompt <prompt>       Append a system prompt to the default"
+    echo "                                        via: --system-prompt[-file],"
+    echo "                                        --append-system-prompt[-file], --add-dir"
+  elif [ -z "${STUB_NOFLAG:-}" ]; then
+    echo "  --append-system-prompt-file <file>   Append a system prompt from a file"
+  else
+    echo "  --append-system-prompt <prompt>       Append a system prompt to the default"
+  fi
   exit 0
 fi
 printf '%s\n' "$*" >> "$LAUNCHLOG"
@@ -153,6 +163,12 @@ out=$(STUB_NOFLAG=1 fc up alpha-canonical)
 [[ "$(cat $LAUNCHLOG)" != *"$FLAG"* && "$(cat $LAUNCHLOG)" == *"seat record is at $KB/seats/alpha.md"* ]] \
   && ok "a claude without the flag gets the record named in the launch prompt instead" \
   || bad "fallback: $(cat $LAUNCHLOG) / $out"
+
+reset
+out=$(STUB_BRACKET=1 fc up alpha-canonical)
+[[ "$(cat $LAUNCHLOG)" == *"$FLAG $KB/seats/alpha.md"* ]] \
+  && ok "a claude that names the flag only as --append-system-prompt[-file] (2.1.322) gets the flag" \
+  || bad "bracketed help form fell back: $(cat $LAUNCHLOG) / $out"
 
 out=$(fc up --dry-run alpha-canonical)
 [[ "$out" == *"$KB/seats/alpha.md"* ]] && ok "up --dry-run shows the seat record" || bad "dry run: $out"

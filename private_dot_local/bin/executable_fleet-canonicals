@@ -571,12 +571,19 @@ kb_root() {
   printf '%s' "$v"
 }
 
-# claude_offers_context_flag -- does this claude list --append-system-prompt-file? Asked once per run.
+# claude_offers_context_flag -- does this claude name --append-system-prompt-file? Asked once per run.
+# Two spellings count: the flag on a line of its own, and `--append-system-prompt[-file]`, the only
+# form claude 2.1.322's --help uses (the flag has no line there; --bare's description names it).
+# Matching the first alone sent every seat to the prompt fallback, though the flag worked when
+# passed (measured 2026-11-10 with a codeword in the file and a control run without it).
 claude_offers_context_flag() {
   if [ -z "$CTX_FLAG_OFFERED" ]; then
     local h
     h=$("$(claude_bin)" --help </dev/null 2>&1)
-    case "$h" in *--append-system-prompt-file*) CTX_FLAG_OFFERED=yes ;; *) CTX_FLAG_OFFERED=no ;; esac
+    case "$h" in
+      *--append-system-prompt-file*|*'--append-system-prompt[-file]'*) CTX_FLAG_OFFERED=yes ;;
+      *) CTX_FLAG_OFFERED=no ;;
+    esac
   fi
   [ "$CTX_FLAG_OFFERED" = yes ]
 }
