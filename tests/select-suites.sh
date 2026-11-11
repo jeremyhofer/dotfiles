@@ -225,10 +225,13 @@ case $mode in
       # shellcheck disable=SC2086 # one suite name per word
       exec sh "$here/run-all.sh" --only $names
     fi
-    # The commit gate asks for the pass to be remembered (see PASS CREDIT in the header).
+    # The commit gate asks for the pass to be remembered (see PASS CREDIT in the header). The ask is
+    # to this invocation only, so the suites run with it cleared: a suite that tests the credit
+    # itself would otherwise see the gate's 1 where it expects none (measured 2026-11-10: the first
+    # gated commit after the hook began setting it was refused by test-select-suites.sh).
     prof=$(mktemp "${TMPDIR:-/tmp}/select-suites-profile.XXXXXX") || prof=""
     # shellcheck disable=SC2086
-    RUN_ALL_PROFILE=$prof sh "$here/run-all.sh" --only $names; rc=$?
+    RUN_ALL_PROFILE=$prof SUITE_CREDIT_RECORD= sh "$here/run-all.sh" --only $names; rc=$?
     if [ "$rc" -eq 0 ] && [ -n "$prof" ]; then record_pass "$prof" || true; fi
     [ -z "$prof" ] || rm -f "$prof"
     exit "$rc"
