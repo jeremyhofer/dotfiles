@@ -1933,10 +1933,19 @@ MUTANTS = [
 ]
 
 
+@pytest.fixture
+def mutant_dir():
+    """A directory under $TMPDIR as given, removed afterwards (pytest's own tmp_path would leave a
+    pytest-of-<user> directory behind in $TMPDIR)."""
+    d = Path(tempfile.mkdtemp(prefix="fcq-mutant-", dir=ORIGINAL_TMP))
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.mark.mutant
 @pytest.mark.parametrize("name,description,find,replace,test", MUTANTS, ids=[m[0] for m in MUTANTS])
-def test_mutant_is_caught(tmp_path, name, description, find, replace, test):
-    status, output = run_one_test(test, make_mutant(tmp_path, find, replace), tmp_path)
+def test_mutant_is_caught(mutant_dir, name, description, find, replace, test):
+    status, output = run_one_test(test, make_mutant(mutant_dir, find, replace), mutant_dir)
     # Status 1 is "tests failed"; 2 to 5 would be an interrupted, broken or empty run, which says
     # nothing about the test.
     assert status == 1 and re.search(r"\b1 failed\b", output), \
@@ -1944,19 +1953,19 @@ def test_mutant_is_caught(tmp_path, name, description, find, replace, test):
 
 
 @pytest.mark.mutant
-def test_mutant_harness_passes_an_unchanged_copy(tmp_path):
-    copy = tmp_path / "fleet-canonicals-queue-copy"
+def test_mutant_harness_passes_an_unchanged_copy(mutant_dir):
+    copy = mutant_dir / "fleet-canonicals-queue-copy"
     shutil.copy2(QUEUE_SRC, copy)
-    status, output = run_one_test("test_serve_paused", copy, tmp_path)
+    status, output = run_one_test("test_serve_paused", copy, mutant_dir)
     assert status == 0 and re.search(r"\b1 passed\b", output), output[-3000:]
 
 
 @pytest.mark.mutant
-def test_mutant_fixture_refuses_a_replacement_that_changes_nothing(tmp_path):
+def test_mutant_fixture_refuses_a_replacement_that_changes_nothing(mutant_dir):
     with pytest.raises(pytest.fail.Exception, match="occurs 0 times"):
-        make_mutant(tmp_path, "text that is not in the queue", "x")
+        make_mutant(mutant_dir, "text that is not in the queue", "x")
     with pytest.raises(pytest.fail.Exception, match="changed nothing"):
-        make_mutant(tmp_path, "VERB_TIMEOUT = 600", "VERB_TIMEOUT = 600")
+        make_mutant(mutant_dir, "VERB_TIMEOUT = 600", "VERB_TIMEOUT = 600")
 
 
 if __name__ == "__main__":
@@ -1964,6 +1973,13 @@ if __name__ == "__main__":
     # than a plugin object, because each worker collects for itself and needs the same selection.
     workers = str(min(8, os.cpu_count() or 2))
     lane = [] if os.environ.get("RUN_MUTANTS") == "1" else ["-m", "not mutant"]
-    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider",
-                          "-o", "markers=mutant: a mutant meta-test, run in the landing lane only",
-                          "-n", workers, *lane, *sys.argv[1:]]))
+    # pytest (and xdist) make a pytest-of-<user> directory under $TMPDIR for tmp_path; this file
+    # does not use tmp_path, so its basetemp is one directory of its own, removed afterwards.
+    base = tempfile.mkdtemp(prefix="fcq-basetemp-", dir=ORIGINAL_TMP)
+    try:
+        status = pytest.main([__file__, "-q", "-p", "no:cacheprovider", "--basetemp", base,
+                              "-o", "markers=mutant: a mutant meta-test, run in the landing lane only",
+                              "-n", workers, *lane, *sys.argv[1:]])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    sys.exit(status)
