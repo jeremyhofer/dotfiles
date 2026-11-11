@@ -6,6 +6,7 @@
 #   (c) `kb project` selection is `tier` AND `domain`: bare = tier-0 universal;
 #       `--domain <slug>` = that domain's tier-1 slice, written inside the KB (or --out),
 #       and never into a repository root, even one a config names.
+#       The slice is one file, CLAUDE.local.md (tests/test-kb-domain-projection.sh covers its format).
 # Run directly: `bash tests/test-kb-domain.sh`.
 set -eu
 # sedi EXPR FILE -- in-place edit, portably. Deliberately NOT the GNU in-place flag: on
@@ -93,12 +94,12 @@ echo "ok:   bare project = tier-0 universal only"
 # --domain devel: tier-1 devel slice, written inside the KB, excludes universal + tier-2. The
 # config still names a repo for this domain (older configs do); it must be ignored.
 XDG_CONFIG_HOME="$xdg" KB_ROOT="$d" kb project --domain devel >/dev/null
-da="$d/index/projections/domains/devel/AGENTS.md"
-[ -f "$da" ] || { echo "FAIL: --domain devel should write AGENTS.md under the KB ($da)"; exit 1; }
+da="$d/index/projections/domains/devel/CLAUDE.local.md"
+[ -f "$da" ] || { echo "FAIL: --domain devel should write CLAUDE.local.md under the KB ($da)"; exit 1; }
 [ -f "$repo/AGENTS.md" ] && { echo "FAIL: --domain devel wrote into the repo a config names"; exit 1; }
-grep -q 'Devel domain fact.'        "$da" || { echo "FAIL: --domain devel missing its tier-1 fact"; exit 1; }
+grep -q 'devel-fact' "$da" || { echo "FAIL: --domain devel missing its tier-1 record's pointer"; exit 1; }
 grep -q 'Universal always-on rule.' "$da" && { echo "FAIL: universal record leaked into devel projection"; exit 1; }
-grep -q 'Devel long-tail detail.'   "$da" && { echo "FAIL: devel tier-2 leaked into tier-1 projection"; exit 1; }
+grep -q 'devel-detail'              "$da" && { echo "FAIL: devel tier-2 leaked into tier-1 projection"; exit 1; }
 echo "ok:   --domain devel = tier-1 devel slice, inside the KB, not into the configured repo"
 
 # A repository root is refused, even when asked for explicitly: its context files have an owner.
@@ -113,7 +114,7 @@ echo "ok:   a repository root is refused, and its AGENTS.md is untouched"
 # --out chooses another directory
 out="$d/staging"; mkdir -p "$out"
 XDG_CONFIG_HOME="$xdg" KB_ROOT="$d" kb project --domain devel --out "$out" >/dev/null
-grep -q 'Devel domain fact.' "$out/AGENTS.md" || { echo "FAIL: --out should write where it names"; exit 1; }
+grep -q 'devel-fact' "$out/CLAUDE.local.md" || { echo "FAIL: --out should write where it names"; exit 1; }
 echo "ok:   --out writes where it names"
 
 echo "PASS"

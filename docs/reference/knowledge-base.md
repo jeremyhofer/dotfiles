@@ -20,6 +20,7 @@ Each record is one markdown file with this frontmatter (`kb new` writes it; do n
 | `tier` | `0`, `1`, `2` | 0: in the always-on projection, loaded by every session. 1: in a domain's slice. 2: read on demand only |
 | `sensitivity` | `public`, `internal`, `private`, `restricted` | `kb project --max-sensitivity` leaves out anything above the level given |
 | `status` | `draft`, `active`, `retired` | |
+| `inline` | `true`, `false`; optional | on a tier-1 record: write its full text into the domain's `CLAUDE.local.md`, not only a pointer line. Set it only for what a fresh session would otherwise spend effort re-deriving and would not meet anyway |
 | `related`, `depends-on`, `supersedes` | lists of record names | forward edges; `kb index` writes the backlinks |
 | `updated` | a date | |
 
@@ -85,9 +86,16 @@ cannot be noticed from inside the task; procedure that a situation announces bel
 | regenerate | `kb index`, `kb project --max-sensitivity internal`; a domain's slice: `kb project --domain D` |
 | in a pre-commit or CI | `kb index --check`, `kb project --check` (exit 1 on drift, write nothing) |
 
-`kb project --domain D` writes a domain's Tier-1 slice under the KB's own
-`index/projections/domains/D/`, never into a repository root: each repository's `AGENTS.md` and
-`CLAUDE.md` belong to that repository.
+`kb project --domain D` writes a domain's Tier-1 slice as one file, `CLAUDE.local.md`, under the KB's
+own `index/projections/domains/D/`, never into a repository root: each repository's `AGENTS.md` and
+`CLAUDE.md` belong to that repository. The file is a generated header, one line per record (name,
+description, path), then the full text of records with `inline: true`. Write each description to
+say what the record is and when to read it. Paths are anchored so a session in another repository
+can open them: `projection_path_root` in `kb.toml` if set, else the KB root, with `$HOME` written as
+`~`. Set `projection_path_root` when the commit gate checks the tree out elsewhere. Two `kb.toml`
+keys: `domain_projection_max_bytes` caps each such file (`kb project --domain` refuses to write an
+over-cap one) and `projection_path_root` as above. `kb project --check` also refuses a stale or
+over-cap slice for every domain directory present.
 
 A per-instance record template at `<root>/.templates/<type>.md` replaces the built-in one
 (`__NAME__`, `__TYPE__` and `__UPDATED__` are substituted).

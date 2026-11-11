@@ -35,9 +35,11 @@ usage: kb [--kb-root DIR] [--instance NAME] <subcommand> [args]
                        --if-present downgrades "never generated" to a pass
   project [--domain D] [--out DIR] [--max-sensitivity L] [--check [--if-present]]
                        generate the tier-0 projection; with --domain, that domain's
-                       tier-1 slice, written under the KB's index/projections/domains/D
-                       (or --out). Never into a repository root: each repository's
-                       AGENTS.md and CLAUDE.md belong to that repository's owner
+                       tier-1 slice as ONE file, CLAUDE.local.md (a pointer line per
+                       record, full text only for `inline: true`), written under the KB's
+                       index/projections/domains/D (or --out), capped by kb.toml
+                       domain_projection_max_bytes. Never into a repository root.
+                       Bare --check also checks every domain slice present on disk
   rename <A> <C>       rename a record + rewrite every inbound edge A->C
   retire <A>           mark a record retired + strip inbound edges
   install-hooks [repo] wire a pre-commit that runs `kb lint` + both derived-output
@@ -328,6 +330,12 @@ kb_lint_file() {
   [ -z "$_ti" ] || kb_in_set "$_ti" "$KB_ENUM_TIER" || { echo "$_f: invalid tier '$_ti'" >&2; _frc=1; }
   _st=$(kb_fm_get "$_f" status)
   [ -z "$_st" ] || kb_in_set "$_st" "$KB_ENUM_STATUS" || { echo "$_f: invalid status '$_st'" >&2; _frc=1; }
+  # `inline` is optional (absent == false): a tier-1 record that sets it true has its full text
+  # written into its domain's CLAUDE.local.md instead of only a pointer line.
+  if kb_fm_has "$_f" inline; then
+    _in=$(kb_fm_get "$_f" inline)
+    case "$_in" in true|false) ;; *) echo "$_f: invalid inline '$_in' (must be true or false)" >&2; _frc=1 ;; esac
+  fi
 
   # `### Provenance` must be the record's LAST section, because `kb project` renders a tier-0
   # body by replacing that section -- through to end of file -- with a pointer. A section added
@@ -751,9 +759,8 @@ cmd_install_hooks() {
 # should gate with the strict form (drop \`--if-present\`), which additionally catches a
 # deleted output.
 #
-# Scope: the Tier-0 universal projection at the default sensitivity ceiling. A KB that
-# also emits per-domain projections (\`kb project --domain\`) is not covered here; add
-# those explicitly if the repo emits them.
+# Scope: the Tier-0 universal projection and every per-domain CLAUDE.local.md present under
+# index/projections/domains/, at the default sensitivity ceiling (stale or over its cap blocks).
 set -e
 kb --kb-root "$_kbroot" lint
 kb --kb-root "$_kbroot" project --check --if-present
@@ -906,6 +913,89 @@ kb_projection_budget() {
   sed -n 's/^[[:space:]]*projection_max_bytes[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/kb.toml" 2>/dev/null | head -1
 }
 
+# kb_toml_get ROOT KEY -- the value of a top-level `KEY = value` line in ROOT/kb.toml, quotes
+# stripped; empty if the file or the key is absent.
+kb_toml_get() {
+  [ -f "$1/kb.toml" ] || return 0
+  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1/kb.toml" 2>/dev/null | head -1 \
+    | sed 's/[[:space:]]*#.*$//; s/^"//; s/"[[:space:]]*$//'
+}
+
+# kb_domain_cap ROOT -- the per-domain CLAUDE.local.md ceiling in BYTES (kb.toml
+# `domain_projection_max_bytes`), or empty when none is set.
+kb_domain_cap() {
+  _v=$(kb_toml_get "$1" domain_projection_max_bytes)
+  case "$_v" in ""|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$_v"
+}
+
+# kb_path_root ROOT -- the directory prefix written in front of each record's path in a domain
+# projection. A session reading the file through a symlink in ANOTHER repository cannot resolve a
+# path relative to the KB root, so the path is anchored: kb.toml `projection_path_root` if set,
+# else the KB root itself, with $HOME written as `~` so one committed file reads the same on every
+# machine whose checkout sits at the same place under its home (macOS /Users/x vs Linux /home/x).
+# The override also keeps the file byte-identical when the commit gate checks out the tree
+# elsewhere, where the real root differs.
+kb_path_root() {
+  _pr=$(kb_toml_get "$1" projection_path_root)
+  if [ -z "$_pr" ]; then
+    _pr=$1
+    case "$_pr" in /*) ;; *) _pr="$(pwd)/$_pr" ;; esac
+  fi
+  _pr=${_pr%/}
+  if [ -n "${HOME:-}" ]; then
+    case "$_pr" in
+      "$HOME"/*) _pr="~${_pr#"$HOME"}" ;;
+    esac
+  fi
+  printf '%s\n' "$_pr"
+}
+
+# kb_render_local ROOT MAXRANK DOMAIN -- the domain's CLAUDE.local.md (deterministic): a generated
+# header, one pointer line per tier-1 record, then the full text of those that declare
+# `inline: true`. A record earns full text only if a fresh session would
+# otherwise spend effort re-deriving it and would not meet it anyway; only its author can
+# judge; the `inline` field is that judgment.
+kb_render_local() {
+  _pathroot=$(kb_path_root "$1")
+  _recs=$(kb_projection_records "$1" "$2" 1 "$3")
+  printf '%s\n\n' "<!-- Generated by \`kb project --domain $3\` — do not edit by hand. Regenerate: kb project --domain $3 -->"
+  printf '# Domain context: %s (Tier 1)\n\n' "$3"
+  printf '%s\n\n' 'One line per knowledge-base record: what it is, then the path to open it when it applies.'
+  printf '%s\n' "$_recs" | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    _rel=${_f#"$1"/}
+    _full=""
+    [ "$(kb_fm_get "$_f" inline)" = true ] && _full=" (full text below)"
+    printf -- '- `%s` — %s%s → %s/%s\n' "$(kb_fm_get "$_f" name)" "$(kb_fm_get "$_f" description)" "$_full" "$_pathroot" "$_rel"
+  done
+  printf '%s\n' "$_recs" | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    [ "$(kb_fm_get "$_f" inline)" = true ] || continue
+    printf '\n## %s\n\n' "$(kb_fm_get "$_f" name)"
+    kb_body_projected "$_f" "$1"
+  done
+}
+
+# kb_check_domain ROOT MAXRANK DOMAIN OUTDIR -- 0 when OUTDIR/CLAUDE.local.md equals what
+# `kb project --domain DOMAIN` would write now AND is within the cap; otherwise prints why and
+# returns 1. Both judged on the freshly rendered text, so a change that pushes the projection over
+# the cap is caught before it is regenerated and committed.
+kb_check_domain() {
+  _cd_rc=0
+  _cd_tmp=$(mktemp "$_TMP/kb.proj.XXXXXX")
+  kb_render_local "$1" "$2" "$3" > "$_cd_tmp"
+  cmp -s "$_cd_tmp" "$4/CLAUDE.local.md" 2>/dev/null || { echo "kb: projection drift: $4/CLAUDE.local.md" >&2; _cd_rc=1; }
+  _cd_cap=$(kb_domain_cap "$1")
+  _cd_size=$(kb_file_bytes "$_cd_tmp")
+  if [ -n "$_cd_cap" ] && [ "$_cd_size" -gt "$_cd_cap" ]; then
+    echo "kb: domain projection OVER CAP: $3 is $_cd_size bytes > $_cd_cap (over by $((_cd_size - _cd_cap))); every session in its repository loads it" >&2
+    _cd_rc=1
+  fi
+  rm -f "$_cd_tmp"
+  return $_cd_rc
+}
+
 cmd_project() {
   _outflag=""
   _check=""
@@ -952,13 +1042,28 @@ cmd_project() {
   fi
 
   if [ -n "$_check" ]; then
+    _drift=0
+    if [ -n "$_domainflag" ]; then
+      if [ -n "$_ifpresent" ] && kb_check_absent "$_out/CLAUDE.local.md"; then
+        echo "kb: no generated projection present — nothing to check (--if-present)" >&2
+        return 0
+      fi
+      kb_check_domain "$_root" "$_maxrank" "$_domain" "$_out" || _drift=1
+      return $_drift
+    fi
+    # Every domain slice present on disk is held to the same standard as Tier-0: the commit gate
+    # runs the bare `--check`, so this is where a stale or over-cap CLAUDE.local.md is refused.
+    for _dd in "$_root"/index/projections/domains/*/; do
+      [ -d "$_dd" ] || continue
+      _dd=${_dd%/}
+      kb_check_domain "$_root" "$_maxrank" "$(basename "$_dd")" "$_dd" || _drift=1
+    done
     if [ -n "$_ifpresent" ] \
        && kb_check_absent "$_out/AGENTS.md" "$_out/GEMINI.md" "$_out/CLAUDE.md"; then
       echo "kb: no generated projection present — nothing to check (--if-present)" >&2
-      return 0
+      return $_drift
     fi
     # regenerate to a temp and compare; never write the real outputs. Exit 1 on any drift.
-    _drift=0
     _tmp=$(mktemp "$_TMP/kb.proj.XXXXXX")
     trap 'rm -f "$_tmp"' EXIT
     kb_render_agents "$_root" "$_maxrank" "$_tier" "$_domain" "$_title" > "$_tmp"
@@ -991,6 +1096,26 @@ cmd_project() {
     echo "kb: refusing to write a projection into a repository root ($_out): its AGENTS.md and CLAUDE.md" >&2
     echo "kb: are maintained by its owner. Project elsewhere (the default, or --out <dir>) and edit what you need in." >&2
     exit 1
+  fi
+  if [ -n "$_domainflag" ]; then
+    _tmp=$(mktemp "$_TMP/kb.proj.XXXXXX")
+    trap 'rm -f "$_tmp"' EXIT
+    kb_render_local "$_root" "$_maxrank" "$_domain" > "$_tmp"
+    _dcap=$(kb_domain_cap "$_root")
+    _dsize=$(kb_file_bytes "$_tmp")
+    if [ -n "$_dcap" ] && [ "$_dsize" -gt "$_dcap" ]; then
+      echo "kb: refusing to write $_out/CLAUDE.local.md: $_dsize bytes > the cap of $_dcap (domain_projection_max_bytes, over by $((_dsize - _dcap)))" >&2
+      echo "kb: every session in the domain's repository loads this file. Shorten a description, set a" >&2
+      echo "kb: record's tier to 2, or remove inline: true from one; raise the cap only with the reason recorded." >&2
+      exit 1
+    fi
+    mkdir -p "$_out"
+    mv "$_tmp" "$_out/CLAUDE.local.md"
+    if [ -n "$_dcap" ]; then
+      printf 'kb: domain projection %s / %s bytes (%s%% of cap)\n' "$_dsize" "$_dcap" "$(( _dsize * 100 / _dcap ))" >&2
+    fi
+    printf '%s\n' "$_out"
+    return 0
   fi
   mkdir -p "$_out"
   # write via temp + mv so consumers never see a half-generated set

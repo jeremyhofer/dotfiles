@@ -34,6 +34,17 @@ Entries are newest first.
 
 ## 2026-11-10
 
+### `kb project --domain` writes one capped `CLAUDE.local.md`
+
+A domain's Tier-1 slice is now one file, `index/projections/domains/<slug>/CLAUDE.local.md`: a
+generated header, a pointer line per record (name, description, `~`-anchored path), and the full text
+only of records marked `inline: true` (a new optional, linted frontmatter field). It no longer writes
+`AGENTS.md`, `CLAUDE.md` or `GEMINI.md` there; any left from an earlier run are ignored by the checks
+and can be deleted. Two new `kb.toml` keys: `domain_projection_max_bytes` (the cap; `kb project
+--domain` refuses to write over it) and `projection_path_root` (the path prefix; set it where a
+commit gate checks the tree out elsewhere). Bare `kb project --check`, and so any commit gate that
+runs it, now also refuses a stale or over-cap slice for every domain directory present.
+
 ### Claude Code sessions run Nx with no daemon; `NX_SOCKET_DIR` is retired
 
 The base's session `env` now sets `NX_DAEMON=false` and `NX_ISOLATE_PLUGINS=false`, and removes the

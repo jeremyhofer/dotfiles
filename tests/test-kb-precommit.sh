@@ -95,6 +95,33 @@ git -C "$r" add -A
 [ "${rc:-0}" -eq 0 ] || { echo "FAIL: regenerating the index should clear the gate"; exit 1; }
 echo "ok:   regenerating the index clears the gate"
 
+# ---------- a published DOMAIN slice is gated too: stale and over-cap both block ----------
+xdg="$r/xdg"; mkdir -p "$xdg/kb"; printf '[domain.devel]\nrepo = "%s/none"\n' "$r" > "$xdg/kb/config.toml"
+echo "xdg/" > "$r/.gitignore"
+KB_ROOT="$r" KB_DATE=2026-07-15 kb new context dfact >/dev/null
+sed -e 's/^domain:.*/domain: devel/' -e 's/^tier:.*/tier: 1/' -e 's/^status:.*/status: active/' -e 's/^description:.*/description: first. Read always./' "$r/context/dfact.md" > "$r/context/dfact.new" && mv "$r/context/dfact.new" "$r/context/dfact.md"
+dcommit() { ( cd "$r" && XDG_CONFIG_HOME="$xdg" PATH="$bin:$PATH" git commit -q -m "$1" ) 2>&1; }
+XDG_CONFIG_HOME="$xdg" KB_ROOT="$r" kb index >/dev/null
+XDG_CONFIG_HOME="$xdg" KB_ROOT="$r" kb project --domain devel >/dev/null 2>&1
+git -C "$r" add -A
+dcommit 'domain fresh' >/dev/null && rc=0 || rc=$?
+[ "${rc:-0}" -eq 0 ] || { echo "FAIL: a fresh domain slice should commit"; exit 1; }
+echo "ok:   a fresh published domain slice commits cleanly"
+sed 's/^description:.*/description: second. Read never./' "$r/context/dfact.md" > "$r/context/dfact.new" && mv "$r/context/dfact.new" "$r/context/dfact.md"
+XDG_CONFIG_HOME="$xdg" KB_ROOT="$r" kb index >/dev/null
+git -C "$r" add -A
+out=$(dcommit 'domain stale') && rc=0 || rc=$?
+[ "${rc:-0}" -ne 0 ] || { echo "FAIL: a stale domain slice did not block the commit"; exit 1; }
+printf '%s' "$out" | grep -q 'CLAUDE.local.md' || { echo "FAIL: block did not name CLAUDE.local.md; got: $out"; exit 1; }
+echo "ok:   a stale domain slice blocks the commit, naming the file"
+XDG_CONFIG_HOME="$xdg" KB_ROOT="$r" kb project --domain devel >/dev/null 2>&1
+printf 'domain_projection_max_bytes = 50\n' > "$r/kb.toml"
+git -C "$r" add -A
+out=$(dcommit 'domain over cap') && rc=0 || rc=$?
+[ "${rc:-0}" -ne 0 ] || { echo "FAIL: an over-cap domain slice did not block the commit"; exit 1; }
+printf '%s' "$out" | grep -q 'OVER CAP' || { echo "FAIL: block did not say OVER CAP; got: $out"; exit 1; }
+echo "ok:   an over-cap domain slice blocks the commit"
+
 # ---------- KB nested BELOW the git top level ----------
 r2=$(mktemp -d "$_TMP/kb.XXXXXX"); trap 'rm -rf "$r" "$r2"' EXIT
 init_repo "$r2"
