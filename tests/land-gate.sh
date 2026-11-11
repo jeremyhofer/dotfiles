@@ -7,7 +7,7 @@
 # that passed.
 #
 # It is every suite (tests/run-all.sh) with RUN_MUTANTS=1, so the slow checks a normal run leaves out
-# also run: a suite that ships mutant meta-tests (test-image-bump.py) deselects them unless it is
+# also run: a suite that ships mutant meta-tests (test-image-bump.py, test-fleet-canonicals-requests.py) deselects them unless it is
 # given that variable. The commit gate, the pre-apply and post-apply runs and the suite run by hand
 # leave them out. Arguments are passed to run-all.sh (a filter, or --only <suite>...).
 # POSIX sh only.

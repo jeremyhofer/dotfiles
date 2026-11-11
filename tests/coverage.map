@@ -61,7 +61,7 @@ test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canon
 test-fleet-canonicals-bounds.sh     private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
 test-fleet-canonicals-context.sh    private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
 test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
-test-fleet-canonicals-requests.sh   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl
+test-fleet-canonicals-requests.py   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl
 test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
 # fleet-repo runs fleet-decl from beside itself, and git-clone-worktree runs fleet-repo the same way.
 test-fleet-repo.sh                  private_dot_local/bin/executable_fleet-repo private_dot_local/bin/executable_fleet-decl
