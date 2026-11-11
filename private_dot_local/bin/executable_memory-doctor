@@ -45,6 +45,9 @@ STALE_PATHS=${MEMORY_DOCTOR_STALE_PATHS:-"${XDG_CONFIG_HOME:-$HOME/.config}/memo
 # The cliff, and the budget the write-guard enforces at 80% of it.
 CLIFF_BYTES=25600; CLIFF_LINES=200
 BUDGET_BYTES=20480; BUDGET_LINES=160
+# A canonical's store is an inbox: more than this many memories means knowledge is piling up
+# instead of moving to its home. `seats --max N` overrides it.
+SEAT_MAX_MEMORIES=20
 
 die() { printf 'memory-doctor: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -504,6 +507,52 @@ cmd_integrity() {
   return 0
 }
 
+# ================================================================================================
+# seats: each canonical's auto-memory store, reported when it holds more than SEAT_MAX_MEMORIES.
+# A store is keyed by the launch directory (its absolute path with every character but a letter or
+# digit made `-`), so two seats launched from one directory share ONE store and are reported once,
+# naming both. A seat with no store yet has nothing to report. An unreadable fleet record is an
+# error: read as "no canonicals" it would report a clean fleet.
+cmd_seats() {
+  local max=$SEAT_MAX_MEMORIES names name dir key d n f rc found=0 map seat_count
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max) [ -n "${2:-}" ] || die "seats: --max needs a number"; max=$2; shift 2 ;;
+      *) die "seats: unknown option '$1' (usage: seats [--max N])" ;;
+    esac
+  done
+  case "$max" in ''|*[!0-9]*) die "seats: --max must be a whole number, got '$max'" ;; esac
+  command -v fleet-decl >/dev/null 2>&1 || die "fleet-decl not on PATH -- cannot find the canonicals"
+  names=$(fleet-decl --canonicals); rc=$?
+  [ "$rc" -eq 0 ] || die "fleet-decl --canonicals exited $rc -- the fleet record is unreadable. Refusing to report a clean fleet."
+  map=$(mktemp "$_TMP/memory-doctor.XXXXXX") || die "mktemp failed"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    dir=$(fleet-decl --canonical "$name" canonicalLaunchDir) || continue
+    key=$(printf '%s' "$DEVEL_ROOT/$dir" | sed 's/[^A-Za-z0-9]/-/g')
+    printf '%s\t%s\n' "$key" "$name" >> "$map"
+  done <<< "$names"
+  printf 'seats: canonical memory stores over %s memories\n' "$max"
+  while IFS= read -r key; do
+    d="$STORES_ROOT/$key/memory"
+    [ -d "$d" ] || continue
+    n=0
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue
+      case "$(basename "$f")" in MEMORY.md) continue ;; esac
+      n=$((n + 1))
+    done
+    [ "$n" -gt "$max" ] || continue
+    found=1
+    printf '  OVER-LIMIT        %s  %s memories (limit %s); seat(s): %s\n' "$key" "$n" "$max" \
+      "$(awk -F'\t' -v k="$key" '$1==k{print $2}' "$map" | paste -sd, - | sed 's/,/, /g')"
+  done < <(cut -f1 "$map" | awk '!seen[$0]++')
+  rm -f "$map"
+  [ "$found" -eq 0 ] && printf '  (no canonical store over the limit)\n'
+  [ "$found" -eq 0 ] || printf '    Each memory is an inbox item: move its knowledge to its home (seat record, repository docs, KB) and delete it.\n'
+  return 0
+}
+
 usage() {
   cat <<'USAGE'
 usage: memory-doctor <command>
@@ -512,6 +561,7 @@ usage: memory-doctor <command>
   usage       which memories are actually read (needs the memory-usage hook's log)
   stale       project memories whose cited work items have all closed
   integrity   orphans, dangling index links, dangling wikilinks, stale repo paths
+  seats [--max N]  each canonical's store holding more than N memories (default 20)
   report      all of the above
 
 Nothing here emits a delete recommendation. Every finding is a REVIEW trigger.
@@ -529,7 +579,8 @@ case "${1:-report}" in
   usage)     cmd_usage ;;
   stale)     cmd_stale ;;
   integrity) cmd_integrity ;;
-  report)    cmd_budget; printf '\n'; cmd_stale; printf '\n'; cmd_integrity
+  seats)     shift; cmd_seats "$@" ;;
+  report)    cmd_budget; printf '\n'; cmd_stale; printf '\n'; cmd_integrity; printf '\n'; (cmd_seats) || printf '  (seats unavailable: see above)\n'
              printf '\n'; cmd_usage || printf '  (usage unavailable: see above)\n' ;;
   -h|--help|help) usage ;;
   *)         usage; exit 2 ;;

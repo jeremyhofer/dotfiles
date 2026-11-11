@@ -59,6 +59,7 @@ test-context-lint.sh                private_dot_local/bin/executable_context-lin
 test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
 test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_fleet-canonicals-queue
 test-fleet-canonicals-bounds.sh     private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
+test-fleet-canonicals-context.sh    private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
 test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
 test-fleet-canonicals-requests.sh   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl
 test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
@@ -85,6 +86,7 @@ test-install-test-gate.sh           private_dot_local/bin/executable_install-tes
 test-pre-commit-trigger.sh          private_dot_local/bin/executable_install-test-gate run_onchange_install-git-hooks.sh.tmpl
 test-kb.sh                          private_dot_local/bin/executable_kb
 test-kb-domain.sh                   private_dot_local/bin/executable_kb
+test-kb-domain-projection.sh        private_dot_local/bin/executable_kb
 test-kb-index.sh                    private_dot_local/bin/executable_kb
 test-kb-link.sh                     private_dot_local/bin/executable_kb
 test-kb-lint.sh                     private_dot_local/bin/executable_kb

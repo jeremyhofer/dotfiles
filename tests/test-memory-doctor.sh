@@ -439,5 +439,47 @@ has "$out" 'STALE-PATH  ' \
   && ok "the skip does not change the exit status" \
   || bad "exit status changed by a missing patterns file" "with=$rc_with without=$rc"
 
+# ---- seats: a canonical's store over the memory limit ------------------------------------------
+# A canonical's store is keyed by its launch directory, so two seats launched from one directory
+# share ONE store: it is reported once, naming both. The limit is a named constant; --max overrides
+# it, which is how the boundary is tested.
+printf '\n== seats: a canonical store holding more than the limit ==\n'
+SD="$TMP/seat-devel"; SS="$TMP/seat-projects"; SSTUB="$TMP/seat-stub"; mkdir -p "$SSTUB" "$SS"
+cat > "$SSTUB/fleet-decl" <<'EOF'
+#!/bin/sh
+case "$1" in
+  --canonicals) printf 'one-canonical\ntwo-canonical\nthree-canonical\nfour-canonical\nfive-canonical\n' ;;
+  --canonical)  case "$2" in one-canonical) echo over ;; two-canonical|three-canonical) echo shared ;;
+                  four-canonical) echo exact ;; five-canonical) echo nostore ;; esac ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$SSTUB/fleet-decl"
+seat_store() { # <launch dir> <memory count>
+  local key d i; key=$(printf '%s' "$SD/$1" | sed 's/[^A-Za-z0-9]/-/g')
+  d="$SS/$key/memory"; mkdir -p "$d"; printf '# index\n' > "$d/MEMORY.md"
+  i=0; while [ "$i" -lt "$2" ]; do printf -- '---\nname: m%s\n---\n' "$i" > "$d/m$i.md"; i=$((i+1)); done
+}
+seat_store over 21; seat_store shared 25; seat_store exact 20
+seats() { env MEMORY_DOCTOR_STORES="$SS" MEMORY_DOCTOR_DEVEL="$SD" PATH="$SSTUB:$PATH" bash "$DOC" seats "$@" 2>&1; }
+out=$(seats); rc=$?
+line_has "$out" 'one-canonical' '21' \
+  && ok "a seat store over 20 memories is reported with its count, MEMORY.md not counted" \
+  || bad "21-memory store not reported" "$out"
+has "$out" 'four-canonical' \
+  && bad "a store at exactly 20 was reported" "$out" \
+  || ok "a store at exactly 20 is not reported"
+[ "$(grep -c 'shared' <<< "$out")" -eq 1 ] && line_has "$out" 'shared' 'two-canonical' && line_has "$out" 'shared' 'three-canonical' \
+  && ok "two seats in one launch directory share one store: reported once, naming both" \
+  || bad "shared store not reported once naming both" "$out"
+out=$(seats --max 25)
+has "$out" 'shared' && bad "--max 25 still reported the 25-memory store" "$out" || ok "--max raises the limit"
+out=$(seats --max 24)
+has "$out" 'shared' && ok "--max 24 reports the 25-memory store" || bad "--max 24 did not report it" "$out"
+has "$out" 'five-canonical' && bad "a seat with no store was reported" "$out" || ok "a seat with no store is not reported"
+printf '#!/bin/sh\nexit 2\n' > "$SSTUB/fleet-decl"
+out=$(seats); rc=$?
+[ "$rc" -eq 2 ] && has "$out" 'unreadable' && ok "an unreadable fleet record is an error, not a clean fleet" || bad "unreadable record exit $rc" "$out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

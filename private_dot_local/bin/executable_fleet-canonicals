@@ -21,7 +21,8 @@
 #
 # THE MODEL IS THE FLEET RECORD. A canonical exists because a project in the per-repo record
 # (~/Devel/mani.yaml, read only through `fleet-decl`) declares `canonical: <name>` with its
-# companions -- canonicalIdentity, canonicalLaunchDir, canonicalLaunchModel, canonicalMachines -- and
+# companions -- canonicalIdentity, canonicalLaunchDir, canonicalLaunchModel, canonicalMachines, and
+# optionally canonicalContext, the seat's standing-context record, see prepare_context -- and
 # this machine runs it because its `hostname` is in canonicalMachines. Every launch is composed from
 # those declarations; nothing per repository stores a launch. $CANONICAL_ROSTER, a file of one name
 # per line, replaces the list of EXPECTED names (status, up, dedupe, down --all) and nothing else:
@@ -471,6 +472,10 @@ environment:
   FLEET_RECORD            the fleet record, read by fleet-decl (default ~/Devel/mani.yaml)
   FLEET_DEVEL_ROOT        root the record's scopes are relative to, for fleet-decl (default ~/Devel)
   FLEET_ROOT              root that each canonicalLaunchDir is relative to (default ~/Devel)
+  KB_ROOT                 KB root that each canonicalContext path is relative to (default: root in
+                          the kb config file, ~/.config/kb/config.toml); a seat that declares
+                          canonicalContext passes the record to claude with
+                          --append-system-prompt-file, and is refused if the record is missing
   FLEET_STATE             handoff pointers, staging (handoff-staging/), stub handoffs and
                           per-session temp-root records (<name>.tmproot)
                           (default $XDG_STATE_HOME/fleet-canonicals, else ~/.local/state/...)
@@ -534,6 +539,79 @@ launch_desc() {
   d=$(fleet-decl --canonical "$1" canonicalLaunchDir 2>/dev/null) || return 1
   m=$(fleet-decl --canonical "$1" canonicalLaunchModel 2>/dev/null) || return 1
   printf '%s (%s)' "$d" "$m"
+}
+
+# ---- the seat's standing context record ---------------------------------------
+# A canonical whose fleet-record entry declares `canonicalContext: <path>` has a record that
+# describes the seat: a KB record, the path relative to the KB root. Every launch this tool composes
+# (up, refresh through up, the fork in resume, and the request runner, which runs those verbs)
+# hands it to claude with --append-system-prompt-file, so the seat starts with it whatever the
+# handoff says. A seat that declares nothing launches exactly as before.
+#
+# A declared record that cannot be read REFUSES the launch. Launching without it would start a seat
+# that looks right and knows nothing, the same reason a launch refuses a missing handoff. The
+# fallback for a claude that does not offer the flag is different in kind: the record is there and
+# readable, so the launch prompt names it instead, as it names the handoff.
+#
+# prepare_context NAME sets CTX_PATH (absolute, empty when none declared), CTX_ARGS (the flag and
+# path, empty when the prompt carries the record instead) and CTX_NOTE (the prompt sentence for that
+# fallback). Returns 1 with the reason on stderr when the launch must be refused.
+CTX_PATH=""; CTX_ARGS=(); CTX_NOTE=""; CTX_FLAG_OFFERED=""
+
+# kb_root -- the KB root as the kb tool resolves it: $KB_ROOT, else `root` in the kb config file.
+kb_root() {
+  local v=${KB_ROOT:-} cfg="${XDG_CONFIG_HOME:-$HOME/.config}/kb/config.toml"
+  if [ -z "$v" ] && [ -r "$cfg" ]; then
+    v=$(awk '/^[ \t]*#/ {next} /^[ \t]*\[/ {exit}
+             /^[ \t]*root[ \t]*=/ {v=$0; sub(/^[ \t]*root[ \t]*=[ \t]*/,"",v); gsub(/^"|"[ \t]*$/,"",v); print v; exit}' "$cfg")
+  fi
+  case "$v" in
+    '~/'*) v="$HOME/${v#\~/}" ;;
+  esac
+  printf '%s' "$v"
+}
+
+# claude_offers_context_flag -- does this claude list --append-system-prompt-file? Asked once per run.
+claude_offers_context_flag() {
+  if [ -z "$CTX_FLAG_OFFERED" ]; then
+    local h
+    h=$("$(claude_bin)" --help </dev/null 2>&1)
+    case "$h" in *--append-system-prompt-file*) CTX_FLAG_OFFERED=yes ;; *) CTX_FLAG_OFFERED=no ;; esac
+  fi
+  [ "$CTX_FLAG_OFFERED" = yes ]
+}
+
+prepare_context() {
+  local name=$1 rel rc root
+  CTX_PATH=""; CTX_ARGS=(); CTX_NOTE=""
+  rel=$(fleet-decl --canonical "$name" canonicalContext 2>/dev/null); rc=$?
+  [ "$rc" -eq 1 ] && return 0
+  if [ "$rc" -ne 0 ]; then
+    printf 'the fleet record could not be read for canonicalContext (fleet-decl exit %s)\n' "$rc" >&2
+    return 1
+  fi
+  [ -n "$rel" ] || return 0
+  case "$rel" in
+    /*|..|../*|*/..|*/../*)
+      printf 'canonicalContext %s must be a path inside the KB root, with no leading / or ..\n' "$rel" >&2
+      return 1 ;;
+  esac
+  root=$(kb_root)
+  if [ -z "$root" ]; then
+    printf 'canonicalContext %s is declared but the KB root is not set (KB_ROOT, or root in the kb config file)\n' "$rel" >&2
+    return 1
+  fi
+  CTX_PATH="$root/$rel"
+  if [ ! -f "$CTX_PATH" ]; then
+    printf "the seat record %s does not exist (canonicalContext %s under KB root %s); sync the KB checkout\n" "$CTX_PATH" "$rel" "$root" >&2
+    CTX_PATH=""
+    return 1
+  fi
+  if claude_offers_context_flag; then
+    CTX_ARGS=(--append-system-prompt-file "$CTX_PATH")
+  else
+    CTX_NOTE="This session's seat record is at $CTX_PATH: read it first; it describes the seat."
+  fi
 }
 
 # ---- per-launch temp root ----------------------------------------------------
@@ -653,14 +731,15 @@ launch_canonical() {
   model=$(fleet-decl --canonical "$name" canonicalLaunchModel 2>/dev/null) || return 1
   identity=$(fleet-decl --canonical "$name" canonicalIdentity 2>/dev/null) || return 1
   handoff=$(resolve_handoff "$name") || return 1
+  prepare_context "$name" 2>/dev/null || return 1
   root=$(new_tmproot "$name")
   mkdir -p "$root" 2>/dev/null
   settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
   record_tmproot "$name" "$root" || return 1
   while IFS= read -r l; do rc_args+=("$l"); done < <(remote_control_args "$name" </dev/null)
   ( cd "$FLEET_ROOT/$dir" \
-    && exec "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --model "$model" --settings "$settings" \
-       "This session is $name, $identity. The previous session's handoff is at $handoff: read it first and resume the work it describes. Reply with one line confirming you have resumed, then begin." \
+    && exec "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --model "$model" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} --settings "$settings" \
+       "This session is $name, $identity. The previous session's handoff is at $handoff: read it first and resume the work it describes.${CTX_NOTE:+ $CTX_NOTE} Reply with one line confirming you have resumed, then begin." \
   ) </dev/null
 }
 
@@ -832,7 +911,7 @@ cmd_list() {
   # a hand-kept copy drifted once and went unnoticed for three weeks. FLEET-WIDE, unlike `status`:
   # addressing a peer does not depend on which machine runs it, so no machine filter applies here.
   [ $# -eq 0 ] || { printf 'usage: fleet-canonicals list\n' >&2; return 2; }
-  local names rc n id m
+  local names rc n id m c
   names=$(fleet-decl --canonicals 2>/dev/null); rc=$?
   if [ "$rc" -eq 2 ]; then
     printf 'fleet-canonicals: the fleet record is unreadable (fleet-decl exit 2), so no list\n' >&2
@@ -843,7 +922,8 @@ cmd_list() {
     [ -n "$n" ] || continue
     id=$(fleet-decl --canonical "$n" canonicalIdentity 2>/dev/null) || id='(no canonicalIdentity declared)'
     m=$(fleet-decl --canonical-list "$n" canonicalMachines 2>/dev/null | paste -sd, -)
-    printf '%-28s %s  [runs on: %s]\n' "$n" "$id" "${m:-no machine declared}"
+    c=$(fleet-decl --canonical "$n" canonicalContext 2>/dev/null) || c=""
+    printf '%-28s %s  [runs on: %s]%s\n' "$n" "$id" "${m:-no machine declared}" "${c:+  [seat record: $c]}"
   done <<< "$names"
 }
 
@@ -948,8 +1028,15 @@ cmd_up() {
       refused=1
       continue
     fi
+    if ! why=$(prepare_context "$name" 2>&1); then
+      printf 'REFUSED %-24s %s\n' "$name" "$why" >&2
+      refused=1
+      continue
+    fi
     if [ "$dry" = "1" ]; then
       printf 'would start %-20s %s\n' "$name" "$script"
+      prepare_context "$name" 2>/dev/null
+      [ -z "$CTX_PATH" ] || printf '  seat record %s\n' "$CTX_PATH"
       started=$((started + 1))
       continue
     fi
@@ -2287,6 +2374,11 @@ cmd_refresh() {
   script=$(launch_desc "$name") \
     || die "refresh: '$name' is not a canonical declared for this machine (known: $(expected_names | tr '\n' ' '))
   Refusing to stop a session this machine has no way to start again."
+  # A seat record that cannot be read would refuse the relaunch after the stop; refuse before it.
+  if ! why=$(prepare_context "$name" 2>&1); then
+    die "refresh: $why
+  Refusing to stop a session whose successor cannot be launched."
+  fi
 
   json=$(agents_json)
   rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
@@ -2693,7 +2785,9 @@ cmd_resume() {
     fi
   fi
 
+  prepare_context "$name" 2>/dev/null || { why=$(prepare_context "$name" 2>&1); die "resume: $why"; }
   [ -n "$prompt" ] || prompt="Resumed by fleet-canonicals. Your handoff may be stale -- rely on your own context. Confirm in one line what you were working on before this resume."
+  [ -z "$CTX_NOTE" ] || prompt="$prompt $CTX_NOTE"
 
   if [ "$dry" = "1" ]; then
     printf 'would resume %-20s from %s\n' "$name" "$uuid"
@@ -2737,12 +2831,12 @@ cmd_resume() {
   local src_cwd
   src_cwd=$(printf '%s' "$json" | jq -r --arg i "$old_id" '.[]|select(.id==$i)|.cwd // empty' | head -n1)
   if [ -n "$src_cwd" ] && [ -d "$src_cwd" ]; then
-    ( cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 ) \
+    ( cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} "$prompt" </dev/null >/dev/null 2>&1 ) \
       || die "resume: launch failed for '$name' (from $src_cwd)"
   else
     printf 'note     %-24s source cwd unknown or gone (%s) -- launching from %s\n' \
       "$name" "${src_cwd:-none}" "$(pwd)"
-    "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" "$prompt" </dev/null >/dev/null 2>&1 \
+    "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} "$prompt" </dev/null >/dev/null 2>&1 \
       || die "resume: launch failed for '$name'"
   fi
 
