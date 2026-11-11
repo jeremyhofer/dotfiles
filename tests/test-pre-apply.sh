@@ -105,15 +105,17 @@ for u in sh env sed grep mktemp tail cat rm dirname date mkdir; do
 done
 ln -s "$realgit" "$tmp/gitbin/git"
 for r in python3 uv jq yq gitleaks wt; do ln -s "$tmp/bin/$r" "$tmp/gitbin/$r"; done
-for u in sort tr; do p=$(command -v "$u") && ln -s "$p" "$tmp/gitbin/$u"; done
+for u in sort tr awk wc; do p=$(command -v "$u") && ln -s "$p" "$tmp/gitbin/$u"; done
 cp "$tmp/tests/pre-apply.sh" "$tmp/tests/run-all.sh" "$tmp/tests/select-suites.sh" "$tmp/repo/tests/"
 mkdir -p "$tmp/repo/a" "$tmp/repo/b" "$tmp/repo/docs"
 echo 1 > "$tmp/repo/a/one.txt"; echo 1 > "$tmp/repo/b/one.txt"; echo 1 > "$tmp/repo/docs/note.txt"
 g() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$realgit" -C "$tmp/repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 g init -q && g add -A && g commit -q -m one
 ledger="$(cd "$tmp/repo" && GIT_CONFIG_GLOBAL=/dev/null "$realgit" rev-parse --absolute-git-dir)/pre-apply/passed"
+keep=0 # 1: lrun keeps the run history, so a later run can be credited by an earlier one
 lrun() { # lrun [VAR=value ...]: run the repository's copy; rc and $tmp/err as run(); args the runner got in $tmp/args
   rm -f "$PA_MARK" "$PA_ARGS"
+  [ "$keep" = 1 ] || rm -f "$st/dotfiles/pre-apply.history"
   env PATH="$tmp/gitbin" TMPDIR="$tmp/logs" XDG_STATE_HOME="$st" GIT_CONFIG_GLOBAL=/dev/null "$@" sh "$tmp/repo/tests/pre-apply.sh" > "$tmp/out" 2> "$tmp/err"; rc=$?
 }
 lines() { if [ -f "$ledger" ]; then wc -l < "$ledger" | tr -d ' '; else echo 0; fi; }
@@ -132,10 +134,43 @@ lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
 { [ "$rc" -eq 0 ] && [ "$(cat "$PA_ARGS" 2>/dev/null)" = "--only test-a.sh" ]; } && ok "a change under a/ runs only test-a.sh" || bad "selected suites only" "rc=$rc args='$(cat "$PA_ARGS" 2>&1)' $(cat "$tmp/err")"
 [ "$(lines)" -eq 1 ] && ok "a selected-only pass records nothing" || bad "selected-only pass records nothing" "ledger lines: $(lines)"
 lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
-[ -e "$PA_MARK" ] && ok "the same tree is not skipped after a selected-only pass" || bad "not skipped after selected-only" "skipped"
+[ -e "$PA_MARK" ] && ok "with no run history, the same tree is not skipped after a selected-only pass" || bad "not skipped without history" "skipped"
 lrun RUNALL_RC=1 PRE_APPLY_OS=Linux
 { [ "$rc" -ne 0 ] && grep -q 'apply ABORTED' "$tmp/err"; } && ok "a failing selected suite aborts the apply" || bad "selected failure aborts" "rc=$rc"
 [ "$(lines)" -eq 1 ] && ok "a failing run records nothing" || bad "failing run records nothing" "ledger lines: $(lines)"
+
+echo "== a clean tree this machine already passed (any suites) is not run again"
+hist="$st/dotfiles/pre-apply.history"
+tree2=$(g rev-parse 'HEAD^{tree}')
+keep=1; rm -f "$hist"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+{ [ -e "$PA_MARK" ] && grep -q "^[^ ]* Linux $tree2 1 [0-9]* 0$" "$hist"; } && ok "a selected-only pass runs, and its history line names the tree" || bad "first selected run" "$(cat "$hist" 2>&1)"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+{ [ "$rc" -eq 0 ] && [ ! -e "$PA_MARK" ]; } && ok "the same clean tree again: skipped, no suite run" || bad "same tree skipped" "rc=$rc ran=$([ -e "$PA_MARK" ] && echo yes) $(cat "$tmp/err")"
+grep -q "tree $tree2 already passed on Linux at " "$tmp/err" && ok "the line names the tree and when it passed" || bad "skip line" "$(cat "$tmp/err")"
+sed -n '$p' "$hist" | grep -Eq "^[0-9T:Z-]+ Linux $tree2 skip [0-9]+ 0$" && ok "the skipped run is in the history, marked skip" || bad "skip history line" "$(cat "$hist")"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ ! -e "$PA_MARK" ] && ok "a skip line is not what a later skip rests on, but the earlier pass still is" || bad "third run" "ran"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Darwin
+[ -e "$PA_MARK" ] && ok "another OS's pass does not count" || bad "per-OS history" "skipped on Darwin"
+grep -v ' Darwin ' "$ledger" > "$tmp/ledger.keep"; cat "$tmp/ledger.keep" > "$ledger" # that full run recorded a Darwin pass
+rm -f "$hist"
+lrun RUNALL_RC=1 PRE_APPLY_OS=Linux
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ -e "$PA_MARK" ] && ok "a FAILED run on the same tree is not a pass: it runs" || bad "failed run credited" "skipped"
+rm -f "$hist"
+echo dirty >> "$tmp/repo/b/one.txt"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ -e "$PA_MARK" ] && ok "a dirty tree is never credited, even after a dirty pass" || bad "dirty credited" "skipped"
+g checkout -q -- b/one.txt
+rm -f "$hist"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+echo 3 > "$tmp/repo/a/one.txt"; g add -A; g commit -q -m other
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ -e "$PA_MARK" ] && ok "a different tree runs" || bad "different tree" "skipped"
+g reset -q --hard HEAD~1
+keep=0
 
 echo "== the working tree is what is judged: dirty edits and untracked files count"
 echo dirty >> "$tmp/repo/b/one.txt"

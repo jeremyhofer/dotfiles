@@ -38,7 +38,9 @@
 # script records one only after running every suite on a clean tree that is still HEAD's
 # afterwards; a selected-only pass proves the selected suites alone and records nothing, and a dirty
 # tree is not HEAD's tree, so it is never skipped or recorded. tests/post-apply.sh writes the same
-# ledger after its full run.
+# ledger after its full run. A selected-only pass is remembered in the run history instead (below):
+# the same clean tree, passed on this OS, is not run again, so an apply repeated seconds later (the
+# private layer's settings re-merge applies a second time) costs nothing.
 #
 # PRE_APPLY_OS overrides `uname -s`, for the tests.
 #
@@ -69,6 +71,25 @@ for v in $(env | sed -n 's/^\(CHEZMOI[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; d
 
 os=${PRE_APPLY_OS:-$(uname -s)}
 src=$(cd "$here/.." && pwd)
+
+# THE RECORD OF EACH RUN, so the wait an apply costs is measured rather than remembered: one line
+# per run appended to pre-apply.history (UTC time, OS, the tree or "dirty", how many suites ran, or
+# "all", or "skip" for a run that rested on an earlier pass, wall seconds, exit), and the run's
+# per-suite times in pre-apply.last-profile.tsv (run-all.sh's RUN_ALL_PROFILE), both under
+# ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/ beside post-apply's. Recording can never refuse an
+# apply: a state directory that cannot be written loses the record, not the apply.
+sd=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles
+prof=""
+mkdir -p "$sd" 2>/dev/null && [ -w "$sd" ] && prof="$sd/pre-apply.last-profile.tsv"
+started=$(date +%s)
+nrun=""   # what the history line says ran; empty means "all"
+record() { # record <exit>
+  [ -n "$prof" ] || return 0
+  n=${nrun:-all}; [ -z "$nrun" ] && [ -n "${only:-}" ] && n=$(printf '%s\n' $only | grep -c .)
+  printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$os" "${tree:-dirty}" "$n" \
+    "$(( $(date +%s) - started ))" "$1" >> "$sd/pre-apply.history" 2>/dev/null || true
+}
+
 tree=""; ledger=""
 # Anything git cannot answer leaves the ledger out of it: no ledger, no base, every suite runs.
 gdir=$(git -C "$src" rev-parse --git-common-dir 2>/dev/null) || gdir=""
@@ -81,6 +102,22 @@ if [ -n "$tree" ] && [ -n "$ledger" ] && [ -f "$ledger" ]; then
   when=$(grep "^$tree $os " "$ledger" | tail -n 1 | sed 's/^[^ ]* [^ ]* //')
   if [ -n "$when" ]; then
     printf 'dotfiles pre-apply: this tree already passed on %s at %s; skipped\n' "$os" "$when" >&2
+    nrun=skip; record 0
+    exit 0
+  fi
+fi
+
+# A PASS OF THIS TREE IS NOT RE-EARNED EITHER, whatever suites it ran. The ledger above holds only
+# full passes; a run that judged a selection and passed left no entry there, so a second apply of
+# the same tree (the private layer's settings re-merge applies again, seconds after the first)
+# would run the whole selection again. The run history is the account of those: a line for this OS,
+# this exact clean tree and exit 0 is a pass. A "dirty" tree is no tree, a failed run is no pass,
+# and a skip line is not itself a pass (the pass it rested on is still in the history).
+if [ -n "$tree" ] && [ -f "$sd/pre-apply.history" ]; then
+  when=$(awk -v o="$os" -v t="$tree" '$2 == o && $3 == t && $4 != "skip" && $6 == "0" { w = $1 } END { print w }' "$sd/pre-apply.history" 2>/dev/null)
+  if [ -n "$when" ]; then
+    printf 'dotfiles pre-apply: tree %s already passed on %s at %s; skipped\n' "$tree" "$os" "$when" >&2
+    nrun=skip; record 0
     exit 0
   fi
 fi
@@ -119,23 +156,6 @@ if [ -n "$base" ]; then
     printf 'dotfiles pre-apply: git could not list the changed paths; running every suite.\n' >&2
   fi
 fi
-
-# THE RECORD OF EACH RUN, so the wait an apply costs is measured rather than remembered: one line
-# per run appended to pre-apply.history (UTC time, OS, the tree or "dirty", how many suites ran or
-# "all", wall seconds, exit), and the run's per-suite times in pre-apply.last-profile.tsv
-# (run-all.sh's RUN_ALL_PROFILE), both under ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/
-# beside post-apply's. Recording can never refuse an apply: a state directory that cannot be
-# written loses the record, not the apply.
-sd=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles
-prof=""
-mkdir -p "$sd" 2>/dev/null && [ -w "$sd" ] && prof="$sd/pre-apply.last-profile.tsv"
-started=$(date +%s)
-record() { # record <exit>
-  [ -n "$prof" ] || return 0
-  n=all; [ -n "$only" ] && n=$(printf '%s\n' $only | grep -c .)
-  printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$os" "${tree:-dirty}" "$n" \
-    "$(( $(date +%s) - started ))" "$1" >> "$sd/pre-apply.history" 2>/dev/null || true
-}
 
 t=${TMPDIR:-/tmp}; t=${t%/}
 log=$(mktemp "$t/dotfiles-pre-apply.XXXXXX") || { echo "dotfiles pre-apply: no temp file for the log; apply refused" >&2; exit 1; }
