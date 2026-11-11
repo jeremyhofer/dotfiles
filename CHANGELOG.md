@@ -45,6 +45,16 @@ and can be deleted. Two new `kb.toml` keys: `domain_projection_max_bytes` (the c
 commit gate checks the tree out elsewhere). Bare `kb project --check`, and so any commit gate that
 runs it, now also refuses a stale or over-cap slice for every domain directory present.
 
+### `fleet-repo link`: a project's private knowledge, loaded through a `CLAUDE.local.md` symlink
+
+A manifest project may declare `kbDomain: <slug>` (shape checked by `fleet-decl --check`, which also
+learns `canonicalContext:`, a path to a knowledge-base record). `fleet-repo link [<project>...]` makes
+`<repo root>/CLAUDE.local.md` a symlink to that domain's projection under the kb root, adds the name to
+the clone's `.git/info/exclude`, and only reports (exit 1) a regular file, a link to elsewhere, a
+dangling link or a domain the kb config does not list. `fleet-repo clone` and `update` run it for their
+project and never fail on it. A private layer that wants every machine to converge calls
+`fleet-repo link` (no name: all declaring projects) from its apply; the base needs nothing from you.
+
 ### Claude Code sessions run Nx with no daemon; `NX_SOCKET_DIR` is retired
 
 The base's session `env` now sets `NX_DAEMON=false` and `NX_ISOLATE_PLUGINS=false`, and removes the

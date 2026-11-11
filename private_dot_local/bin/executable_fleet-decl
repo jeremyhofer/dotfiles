@@ -158,6 +158,42 @@ live_findings() {
   done
 }
 
+# kbDomain: the one knowledge-base domain whose private project records a project's sessions load
+# (the fleet linker makes <repo>/CLAUDE.local.md a symlink to that domain's projection).
+# canonicalContext: a path, relative to the knowledge base's root, to the record describing a
+# canonical session's standing context, which the session launcher passes at launch. fleet-decl
+# cannot know the kb config's domain list, so for kbDomain it checks SHAPE only (a lowercase slug);
+# the linker checks membership. A canonicalContext that were absolute, `~`-relative, globbed or
+# climbing out through `..` would name a file outside the knowledge base, so each is refused here.
+# kb_findings -- print one finding per invalid declaration, nothing when all are valid.
+kb_findings() {
+  for _kp in $(yq -r '.projects | to_entries[] | select(.value | has("kbDomain")) | .key' "$RECORD" 2>/dev/null || true); do
+    _kt=$(yq -r ".projects.\"$_kp\".kbDomain | tag" "$RECORD" 2>/dev/null)
+    _kv=$(yq -r ".projects.\"$_kp\".kbDomain | tostring" "$RECORD" 2>/dev/null)
+    if [ "$_kt" != '!!str' ]; then
+      printf '[kbDomain-value] %s: kbDomain must be a single domain name (a string)\n' "$_kp"
+    else
+      case "$_kv" in
+        ''|*[!a-z0-9-]*) printf '[kbDomain-value] %s: kbDomain %s is not a slug (lowercase letters, digits and hyphens)\n' "$_kp" "'$_kv'" ;;
+      esac
+    fi
+  done
+  for _kp in $(yq -r '.projects | to_entries[] | select(.value | has("canonicalContext")) | .key' "$RECORD" 2>/dev/null || true); do
+    _kt=$(yq -r ".projects.\"$_kp\".canonicalContext | tag" "$RECORD" 2>/dev/null)
+    _kv=$(yq -r ".projects.\"$_kp\".canonicalContext | tostring" "$RECORD" 2>/dev/null)
+    _bad=""
+    [ "$_kt" = '!!str' ] || _bad="is not a string"
+    case "$_kv" in
+      '') _bad=${_bad:-"is empty"} ;;
+      /*|'~'*) _bad=${_bad:-"is not relative to the knowledge base root"} ;;
+    esac
+    case "/$_kv/" in */../*|*/./*|*//*) _bad=${_bad:-"has an empty, . or .. component"} ;; esac
+    case "$_kv" in *'*'*|*'?'*|*'['*) _bad=${_bad:-"has a glob character"} ;; esac
+    case "$_kv" in *.md) ;; *) _bad=${_bad:-"does not end in .md"} ;; esac
+    [ -z "$_bad" ] || printf '[canonicalContext-value] %s: canonicalContext %s %s\n' "$_kp" "'$_kv'" "$_bad"
+  done
+}
+
 valid_key() {
   case "$1" in
     ""|*[!A-Za-z0-9_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$1" >&2; exit 2 ;;
@@ -389,12 +425,15 @@ case "${1:-}" in
           claudeTrust) ;;
           claudeLocalSettings|claudeDirSettings) ;;   # read by claude-project-settings
           liveDataPaths) ;;            # read through --live-data-paths by the settings layer
-          leak*|canonical*|container*|claude*|Claude*|live*|Live*)
+          kbDomain) ;;                 # read by fleet-repo link (shape checked below)
+          canonicalContext) ;;         # read by fleet-canonicals (shape checked below)
+          leak*|canonical*|container*|claude*|Claude*|live*|Live*|kb*|Kb*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
       done
     done
     _f=$(live_findings); [ -z "$_f" ] || { printf '%s\n' "$_f"; rc=1; }
+    _f=$(kb_findings); [ -z "$_f" ] || { printf '%s\n' "$_f"; rc=1; }
     # The worktrunk block is read by a generator that writes worktrunk's config. A value it does not
     # understand has to be refused somewhere every caller passes through, and this is that place --
     # otherwise the generator either guesses or silently drops the setting.

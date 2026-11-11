@@ -622,5 +622,57 @@ printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\
 out=$(FLEET_RECORD="$TMP/live-typo.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
 [ "$rc" -eq 1 ] && [[ "$out" == *"[unknown-key] alpha: liveDatapaths"* ]] && ok "--check flags a near-miss of liveDataPaths" || bad "liveDataPaths typo" "rc=$rc $out"
 
+# kbDomain and canonicalContext: the keys that deliver a project's private knowledge to its sessions.
+# kbDomain names one knowledge-base domain; fleet-decl cannot know the kb config's domain list, so it
+# checks the SHAPE only (the linker checks membership). canonicalContext is a path to a KB record
+# under the KB root, so it must be relative, end in .md, and be free of `..`, `.` and globs.
+cat > "$TMP/kb.yaml" <<'YAML'
+projects:
+  alpha:
+    scope: internal/alpha
+    leakPolicy: private
+    kbDomain: alpha-2
+    canonical: alpha-canonical
+    canonicalIdentity: the alpha seat
+    canonicalLaunchDir: internal/alpha
+    canonicalLaunchModel: m
+    canonicalMachines: [h]
+    canonicalContext: context/seats/alpha-canonical.md
+  beta:
+    scope: internal/beta
+    leakPolicy: private
+YAML
+out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "--check accepts a kbDomain slug and a canonicalContext path" || bad "--check on valid kb keys" "rc=$rc $out"
+out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry alpha kbDomain 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = alpha-2 ] && ok "--entry reads kbDomain" || bad "--entry kbDomain" "rc=$rc out=[$out]"
+out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --canonical alpha-canonical canonicalContext 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = context/seats/alpha-canonical.md ] && ok "--canonical reads canonicalContext" || bad "--canonical canonicalContext" "rc=$rc out=[$out]"
+out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --projects-with kbDomain 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = alpha ] && ok "--projects-with kbDomain lists the declaring projects" || bad "--projects-with kbDomain" "rc=$rc out=[$out]"
+while IFS='|' read -r label key value finding; do
+  printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n    %s: %s\n' "$key" "$value" > "$TMP/kb-bad.yaml"
+  out=$(FLEET_RECORD="$TMP/kb-bad.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+  [ "$rc" -eq 1 ] && [[ "$out" == *"$finding"* ]] && ok "--check refuses $key: $label" || bad "--check $key: $label" "rc=$rc $out"
+done <<'CASES'
+an uppercase letter|kbDomain|Alpha|[kbDomain-value] alpha: kbDomain
+an underscore|kbDomain|alpha_x|[kbDomain-value] alpha: kbDomain
+a slash|kbDomain|a/b|[kbDomain-value] alpha: kbDomain
+an empty string|kbDomain|""|[kbDomain-value] alpha: kbDomain
+a list|kbDomain|[alpha]|[kbDomain-value] alpha: kbDomain
+a number|kbDomain|42|[kbDomain-value] alpha: kbDomain
+an absolute path|canonicalContext|/etc/x.md|[canonicalContext-value] alpha: canonicalContext
+a home path|canonicalContext|"~/x.md"|[canonicalContext-value] alpha: canonicalContext
+a parent reference|canonicalContext|a/../b.md|[canonicalContext-value] alpha: canonicalContext
+a dot component|canonicalContext|a/./b.md|[canonicalContext-value] alpha: canonicalContext
+a glob|canonicalContext|a/*.md|[canonicalContext-value] alpha: canonicalContext
+no .md ending|canonicalContext|a/b.txt|[canonicalContext-value] alpha: canonicalContext
+an empty string|canonicalContext|""|[canonicalContext-value] alpha: canonicalContext
+a list|canonicalContext|[a.md]|[canonicalContext-value] alpha: canonicalContext
+CASES
+printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n    kbDomains: x\n' > "$TMP/kb-typo.yaml"
+out=$(FLEET_RECORD="$TMP/kb-typo.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"[unknown-key] alpha: kbDomains"* ]] && ok "--check flags a near-miss of kbDomain" || bad "kbDomain typo" "rc=$rc $out"
+
 printf '\nfleet-decl: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

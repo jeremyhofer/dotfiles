@@ -816,5 +816,205 @@ EOF
     '[ -d "$TMP/mstd/a/same/.git" ] && [ "$(git -C "$TMP/mstd/a/same" branch --show-current)" = develop ] && [ "$(git -C "$TMP/mstd/b/same" branch --show-current)" = develop ] && [ "$(upstream "$TMP/mstd/a/same")" = "$(upstream "$TMP/mstd/b/same")" ] && [ "$(fetchspecs "$TMP/mstd/a/same")" = "$(fetchspecs "$TMP/mstd/b/same")" ]'
 fi
 
+# --- link: a project's private knowledge, as a CLAUDE.local.md symlink --------------------------
+# A project that declares `kbDomain:` gets <repo root>/CLAUDE.local.md, a symlink to its domain's
+# projection under the knowledge base's root. The kb config (here a stub under the scratch HOME)
+# lists the domains and names the root; the real one is never read. Outcomes are distinct lines:
+# created, already linked, and the reports that never replace anything (a regular file, a symlink
+# pointing elsewhere, a dangling one, an unlisted domain). A link failure never fails a clone.
+mkdir -p "$HOME/.config/kb" "$TMP/kbroot/index/projections/domains/alpha" "$TMP/kbroot/index/projections/domains/beta"
+printf '# alpha\n' > "$TMP/kbroot/index/projections/domains/alpha/CLAUDE.local.md"
+printf '# beta\n' > "$TMP/kbroot/index/projections/domains/beta/CLAUDE.local.md"
+cat > "$HOME/.config/kb/config.toml" <<EOF
+root = "$TMP/kbroot"
+[domain.alpha]
+[domain.beta]
+EOF
+LK="$TMP/lk"; mkdir -p "$LK/dom"; cd "$LK" || exit 1
+cat > mani.yaml <<EOF
+projects:
+  lka:
+    path: dom/lka
+    url: $(url st)
+    branch: main
+    kbDomain: alpha
+  lkb:
+    path: dom/lkb
+    url: $(url st)
+    branch: main
+    kbDomain: beta
+    worktrees:
+      - name: feature
+        path: .worktrees/feature
+  lkx:
+    path: dom/lkx
+    url: $(url st)
+    branch: main
+    kbDomain: nodomain
+  lkn:
+    path: dom/lkn
+    url: $(url st)
+    branch: main
+  lkc:
+    path: dom/lkc
+    url: $(url st)
+    branch: main
+    kbDomain: alpha
+  lkw:
+    path: dom/lkb/.worktrees/feature
+    url: $(url st)
+    branch: feature
+    kbDomain: alpha
+  lkbare:
+    path: dom/lkbare/main
+    url: $(url st)
+    kbDomain: beta
+    container:
+      branches: default
+  lkgone:
+    path: dom/lkgone
+    url: $(url st)
+    branch: main
+    kbDomain: alpha
+  lkcl:
+    path: dom/lkcl
+    url: $(url st)
+    branch: main
+    kbDomain: alpha
+  lkcx:
+    path: dom/lkcx
+    url: $(url st)
+    branch: main
+    kbDomain: nodomain
+  lkup:
+    path: dom/lkup
+    url: $(url st)
+    branch: main
+    kbDomain: beta
+EOF
+ALPHA="$TMP/kbroot/index/projections/domains/alpha/CLAUDE.local.md"
+BETA="$TMP/kbroot/index/projections/domains/beta/CLAUDE.local.md"
+for n in lka lkx lkn lkc; do git clone -q "$(url st)" "dom/$n"; done
+FR clone lkb > /dev/null 2>&1
+# clone already links lkb (the clone verb calls the linker); start the link tests from a bare checkout.
+rm -f dom/lkb/CLAUDE.local.md
+
+FR link lka > "$TMP/out" 2>&1; rc=$?
+check "link: a missing link is created, pointing at the domain's projection; exit 0" \
+  '[ "$rc" = 0 ] && [ -L dom/lka/CLAUDE.local.md ] && [ "$(readlink dom/lka/CLAUDE.local.md)" = "$ALPHA" ] && grep -q "link lka: created" "$TMP/out"'
+check "link: ...and it reads through to the projection" '[ "$(cat dom/lka/CLAUDE.local.md)" = "# alpha" ]'
+check "link: the clone's .git/info/exclude gains the line, and git sees the link as ignored" \
+  '[ "$(grep -cx "CLAUDE.local.md" dom/lka/.git/info/exclude)" = 1 ] && [ -z "$(git -C dom/lka status --porcelain)" ]'
+FR link lka > "$TMP/out" 2>&1; rc=$?
+check "link: a second run changes nothing: exit 0, reported as already linked" \
+  '[ "$rc" = 0 ] && grep -q "link lka: already linked" "$TMP/out" && ! grep -q "created" "$TMP/out"'
+check "link: ...and the exclude line is still there exactly once" '[ "$(grep -cx "CLAUDE.local.md" dom/lka/.git/info/exclude)" = 1 ]'
+
+# An exclude line already present (someone's own), link missing: created, line not duplicated.
+check "link fixture: the clone verb had already added the exclude line" '[ "$(grep -cx "CLAUDE.local.md" dom/lkb/.git/info/exclude)" = 1 ]'
+FR link lkb > "$TMP/out" 2>&1; rc=$?
+check "link: an exclude line already present is not added twice" \
+  '[ "$rc" = 0 ] && [ -L dom/lkb/CLAUDE.local.md ] && [ "$(grep -cx "CLAUDE.local.md" dom/lkb/.git/info/exclude)" = 1 ]'
+
+printf 'hand made\n' > dom/lkx/CLAUDE.local.md
+FR link lkx > "$TMP/out" 2>&1; rc=$?
+check "link: an unlisted domain is an error, reported, and nothing is replaced" \
+  '[ "$rc" = 1 ] && grep -q "\[link-unknown-domain\] lkx" "$TMP/out" && [ "$(cat dom/lkx/CLAUDE.local.md)" = "hand made" ] && [ ! -L dom/lkx/CLAUDE.local.md ]'
+rm dom/lkx/CLAUDE.local.md
+FR link lkx > "$TMP/out" 2>&1
+check "link: ...and with nothing in the way, no link is made for it either" '[ ! -e dom/lkx/CLAUDE.local.md ] && [ ! -L dom/lkx/CLAUDE.local.md ]'
+
+printf 'hand made\n' > dom/lkc/CLAUDE.local.md
+FR link lkc > "$TMP/out" 2>&1; rc=$?
+check "link: a regular file is reported and left exactly as it was; exit 1" \
+  '[ "$rc" = 1 ] && grep -q "\[link-foreign-file\] lkc" "$TMP/out" && [ ! -L dom/lkc/CLAUDE.local.md ] && [ "$(cat dom/lkc/CLAUDE.local.md)" = "hand made" ]'
+check "link: ...and no exclude line is added for a file it did not make" '! grep -qx "CLAUDE.local.md" dom/lkc/.git/info/exclude'
+rm dom/lkc/CLAUDE.local.md
+ln -s "$BETA" dom/lkc/CLAUDE.local.md
+FR link lkc > "$TMP/out" 2>&1; rc=$?
+check "link: a symlink pointing elsewhere is reported, not repointed; exit 1" \
+  '[ "$rc" = 1 ] && grep -q "\[link-foreign-link\] lkc" "$TMP/out" && [ "$(readlink dom/lkc/CLAUDE.local.md)" = "$BETA" ]'
+rm dom/lkc/CLAUDE.local.md
+ln -s "$TMP/nowhere/CLAUDE.local.md" dom/lkc/CLAUDE.local.md
+FR link lkc > "$TMP/out" 2>&1; rc=$?
+check "link: a dangling symlink pointing elsewhere is reported as foreign, not repointed; exit 1" \
+  '[ "$rc" = 1 ] && grep -q "\[link-foreign-link\] lkc" "$TMP/out" && [ "$(readlink dom/lkc/CLAUDE.local.md)" = "$TMP/nowhere/CLAUDE.local.md" ]'
+rm dom/lkc/CLAUDE.local.md
+ln -s "$ALPHA" dom/lkc/CLAUDE.local.md
+mv "$ALPHA" "$ALPHA.away"
+FR link lkc > "$TMP/out" 2>&1; rc=$?
+check "link: the right symlink whose target does not exist (no notes checkout) is reported dangling; exit 1" \
+  '[ "$rc" = 1 ] && grep -q "\[link-dangling\] lkc" "$TMP/out" && [ "$(readlink dom/lkc/CLAUDE.local.md)" = "$ALPHA" ]'
+rm dom/lkc/CLAUDE.local.md
+FR link lkc > "$TMP/out" 2>&1; rc=$?
+check "link: a missing link with a missing target is still created, and reported dangling; exit 1" \
+  '[ "$rc" = 1 ] && [ -L dom/lkc/CLAUDE.local.md ] && grep -q "\[link-dangling\] lkc" "$TMP/out"'
+mv "$ALPHA.away" "$ALPHA"
+FR link lkc > "$TMP/out" 2>&1; rc=$?
+check "link: once the target exists the same link is fine again: exit 0" '[ "$rc" = 0 ] && grep -q "link lkc: already linked" "$TMP/out"'
+
+# A linked worktree as the repository root: the exclude belongs to the shared git directory.
+check "link fixture: lkb's declared worktree exists and is a linked worktree" '[ -f dom/lkb/.worktrees/feature/.git ]'
+FR link lkw > "$TMP/out" 2>&1; rc=$?
+check "link: at a linked worktree the exclude line goes to the shared git directory and the link is ignored" \
+  '[ "$rc" = 0 ] && [ -L dom/lkb/.worktrees/feature/CLAUDE.local.md ] && [ -z "$(git -C dom/lkb/.worktrees/feature status --porcelain)" ] && grep -qx "CLAUDE.local.md" dom/lkb/.git/info/exclude'
+
+# A bare container: the link goes at the default branch's worktree, the exclude in the container's .git.
+FR clone lkbare > /dev/null 2>&1
+rm -f dom/lkbare/main/CLAUDE.local.md
+FR link lkbare > "$TMP/out" 2>&1; rc=$?
+check "link: a bare container's link is made at its default worktree, ignored through the container's git directory" \
+  '[ "$rc" = 0 ] && [ -L dom/lkbare/main/CLAUDE.local.md ] && grep -qx "CLAUDE.local.md" dom/lkbare/.git/info/exclude && [ -z "$(git -C dom/lkbare/main status --porcelain)" ]'
+
+FR link lkn > "$TMP/out" 2>&1; rc=$?
+check "link: a project that declares no kbDomain is left alone: exit 0, nothing made" \
+  '[ "$rc" = 0 ] && [ ! -e dom/lkn/CLAUDE.local.md ] && [ ! -L dom/lkn/CLAUDE.local.md ]'
+FR link lkgone > "$TMP/out" 2>&1; rc=$?
+check "link: a project not cloned here, asked for by name: exit 1, named" \
+  '[ "$rc" = 1 ] && grep -q "\[link-no-checkout\] lkgone" "$TMP/out"'
+FR link nosuchproject > "$TMP/out" 2>&1; rc=$?
+check "link: an unknown project is a usage error: exit 2" '[ "$rc" = 2 ]'
+
+# With no name: every project that declares kbDomain, in one run; an uncloned one is a skip, a bad
+# one still fails the run.
+rm -f dom/lka/CLAUDE.local.md dom/lkb/CLAUDE.local.md dom/lkc/CLAUDE.local.md dom/lkb/.worktrees/feature/CLAUDE.local.md dom/lkbare/main/CLAUDE.local.md
+FR link > "$TMP/out" 2>&1; rc=$?
+check "link, no name: every cloned kbDomain project is linked, the unlisted domain fails the run (exit 1), an uncloned project is skipped, the undeclared one untouched" \
+  '[ "$rc" = 1 ] && [ -L dom/lka/CLAUDE.local.md ] && [ -L dom/lkb/CLAUDE.local.md ] && [ -L dom/lkc/CLAUDE.local.md ] && [ -L dom/lkbare/main/CLAUDE.local.md ] && grep -q "\[link-unknown-domain\] lkx" "$TMP/out" && grep -q "lkgone: skipped" "$TMP/out" && ! grep -q "lkn" "$TMP/out"'
+FR link lka lkb > "$TMP/out" 2>&1; rc=$?
+check "link, two names: both reported, exit 0 when both are fine" '[ "$rc" = 0 ] && grep -q "link lka: already linked" "$TMP/out" && grep -q "link lkb: already linked" "$TMP/out"'
+FR link --bogus > "$TMP/out" 2>&1; rc=$?
+check "link: an unknown option is refused: exit 2" '[ "$rc" = 2 ]'
+FR link --help > "$TMP/out" 2>&1; rc=$?
+check "link --help: usage, and it says a failed link never fails clone or update" \
+  '[ "$rc" = 0 ] && grep -q "fleet-repo link" "$TMP/out" && grep -q "never fails" "$TMP/out"'
+
+# The kb config is the authority on domains and root: no config at all is an error, not a guess.
+mv "$HOME/.config/kb/config.toml" "$HOME/.config/kb/config.toml.away"
+rm -f dom/lkb/CLAUDE.local.md
+FR link lkb > "$TMP/out" 2>&1; rc=$?
+check "link: with no kb config the domain cannot be listed: reported as an error, nothing made; exit 1" \
+  '[ "$rc" = 1 ] && grep -q "\[link-unknown-domain\] lkb" "$TMP/out" && [ ! -e dom/lkb/CLAUDE.local.md ] && [ ! -L dom/lkb/CLAUDE.local.md ]'
+mv "$HOME/.config/kb/config.toml.away" "$HOME/.config/kb/config.toml"
+
+# clone and update call it for the project they act on; a failure to link never fails them.
+FR clone lkcl > "$TMP/out" 2>&1; rc=$?
+check "clone: a fresh clone of a kbDomain project comes with its link, ignored by git; exit 0" \
+  '[ "$rc" = 0 ] && [ "$(readlink dom/lkcl/CLAUDE.local.md)" = "$ALPHA" ] && grep -qx "CLAUDE.local.md" dom/lkcl/.git/info/exclude'
+FR clone lkcx > "$TMP/out" 2>&1; rc=$?
+check "clone: a link that cannot be made (unlisted domain) is reported and the clone still succeeds: exit 0, checkout in place" \
+  '[ "$rc" = 0 ] && [ -d dom/lkcx/.git ] && grep -q "link-unknown-domain" "$TMP/out"'
+FR clone lkn > "$TMP/out" 2>&1; rc=$?
+check "clone: a project without kbDomain gets no link and no mention of one" '[ "$rc" = 0 ] && [ ! -L dom/lkn/CLAUDE.local.md ] && ! grep -qi "link" "$TMP/out"'
+git clone -q "$(url st)" dom/lkup
+FR update --project lkup > "$TMP/out" 2>&1; rc=$?
+check "update: links a kbDomain project's clone that lacks the link; exit 0" \
+  '[ "$rc" = 0 ] && [ "$(readlink dom/lkup/CLAUDE.local.md)" = "$BETA" ]'
+rm dom/lkup/CLAUDE.local.md; printf 'hand made\n' > dom/lkup/CLAUDE.local.md
+FR update --project lkup > "$TMP/out" 2>&1; rc=$?
+check "update: a foreign file is reported and the update still succeeds: exit 0, file untouched" \
+  '[ "$rc" = 0 ] && grep -q "link-foreign-file" "$TMP/out" && [ "$(cat dom/lkup/CLAUDE.local.md)" = "hand made" ]'
+cd "$TMP" || exit 1
+
 printf 'passed: %s   failed: %s%s\n' "$pass" "$fail" "$( [ "$skip" = 1 ] && printf '   (mani arm skipped)')"
 [ "$fail" -eq 0 ]

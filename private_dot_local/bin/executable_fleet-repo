@@ -5,6 +5,7 @@
 #   fleet-repo clone --url <url> [target] [--filter=<spec>] [--branches=<all|default|a,b,..>]
 #   fleet-repo update [--project <name>]
 #   fleet-repo check [<project>]
+#   fleet-repo link [<project>...]
 #   fleet-repo -h | --help
 #
 #   exit 0  done / no drift
@@ -12,6 +13,31 @@
 #           that failed) or, for `check`, drift was found
 #   exit 2  the invocation or the manifest is unusable: bad usage, no manifest found, or a manifest
 #           `fleet-decl` cannot read. A caller enforcing anything treats 2 as a refusal.
+#
+# LINK. A project that declares `kbDomain:` gets a CLAUDE.local.md at its repository root (a bare
+# container's default-branch worktree), a symlink to that domain's projection in the knowledge base,
+# so every session in the repository, subagents and nested worktrees included, loads the project's
+# private knowledge without the repository holding any of it. `fleet-repo link` with no name does
+# every project that declares one; a name does just that project. The domain must be listed in the
+# kb config ($XDG_CONFIG_HOME/kb/config.toml, else ~/.config/kb/config.toml, the file `kb` reads) and
+# the target is <kb root>/index/projections/domains/<domain>/CLAUDE.local.md, the kb root being
+# KB_ROOT, else the config's top-level `root`. One idempotent command; it NEVER replaces anything.
+# Per project, one line; a report uses the `[tag] project: message` form `check` uses:
+#     link P: created <file> -> <target>      a missing link was made, and the name added to the
+#                                             clone's .git/info/exclude (shared by its worktrees)
+#     link P: already linked                  the right link was there; nothing changed
+#     link P: skipped (not cloned ...)        no checkout on this machine; an error only if named
+#     [link-foreign-file] P: ...              a regular file is there; left as it was
+#     [link-foreign-link] P: ...              a symlink to somewhere else; left as it was
+#     [link-dangling] P: ...                  the link is right and its target is missing (no notes
+#                                             checkout, or the projection not generated yet)
+#     [link-unknown-domain] P: ...            the kb config does not list the domain, or is missing
+#     [link-no-kb-root] P: ...                the kb root could not be resolved
+#     [link-no-checkout] P: ...               named, but no checkout of its own at the path
+#   exit 0 every project fine (linked, already linked, skipped, or nothing declared); exit 1 any
+#   report above; exit 2 bad usage or an unreadable manifest. `clone` and `update` run it for the
+#   project they act on and print the same lines, but a link problem never fails them: the clone or
+#   update is complete without the link, and the report says what to fix.
 #
 # TWO LAYOUTS, chosen by the DECLARATION (`fleet-decl --layout <project>`), never by what is on disk:
 # an entry is a bare container when it declares one (a `container:` block, a `clone:` that runs this
@@ -542,6 +568,7 @@ EOF
   # which is not present on both userlands.
   run_post_worktree_create_hook "$(cd "$TARGET/$default" 2>/dev/null && pwd)"
   run_post_clone_hook
+  link_after "${PROJECT:-}"
   [ "$PROBLEMS" -eq 0 ] || return 1
 }
 
@@ -640,6 +667,7 @@ EOF
   say "$TARGET ready (on ${cur:-a detached HEAD})"
   run_post_worktree_create_hook "$(cd "$TARGET" 2>/dev/null && pwd)"
   run_post_clone_hook
+  link_after "${PROJECT:-}"
   [ "$PROBLEMS" -eq 0 ] || return 1
 }
 
@@ -715,6 +743,8 @@ cmd_update() {
     printf '[bare-container] %s: %s is a bare container, but the manifest declares a standard clone; not updated (change it over by hand, or revert the manifest entry)\n' "$project" "$dir"
     exit 1
   fi
+  # The link is a report and never fails the update; it is made first so a failed fetch leaves it.
+  link_after "$project"
   # One fetch serves every worktree: they share the repository's git directory.
   git -C "$dir" fetch --quiet origin || die "fetch failed for $project"
   dirs="$dir
@@ -752,6 +782,157 @@ EOF
 $dirs
 EOF
   [ "$PROBLEMS" -eq 0 ]
+}
+
+# ---- link ---------------------------------------------------------------------------------------
+# The file name is the same in the repository and in the projection directory.
+LINK_NAME=CLAUDE.local.md
+
+kb_config_file() { printf '%s/kb/config.toml\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
+
+# The kb root as `kb` resolves it (KB_ROOT, else the config's top-level root), a leading ~/ expanded.
+# Prints nothing when neither names one. Parsed as kb parses it, so the two cannot disagree.
+kb_root_dir() {
+  local r="" cfg
+  if [ -n "${KB_ROOT:-}" ]; then r=$KB_ROOT
+  else
+    cfg=$(kb_config_file)
+    if [ -f "$cfg" ]; then
+      r=$(awk '
+        function trim(s){ sub(/^[ \t]+/,"",s); sub(/[ \t]+$/,"",s); return s }
+        function unquote(s){ sub(/^"/,"",s); sub(/"$/,"",s); return s }
+        /^[ \t]*#/ { next }
+        /^[ \t]*\[/ { sec=trim($0); sub(/^\[/,"",sec); sub(/\][ \t]*$/,"",sec); cur=""; if (sec ~ /^instance\./) cur=substr(sec, 10); next }
+        /^[ \t]*root[ \t]*=/ { v=$0; sub(/^[ \t]*root[ \t]*=[ \t]*/,"",v); v=unquote(trim(v)); if (cur=="") { print v; exit } }
+      ' "$cfg")
+    fi
+  fi
+  case "$r" in '~/'*) r="$HOME/${r#'~/'}" ;; esac
+  printf '%s\n' "$r"
+}
+
+# Is $1 a domain the kb config lists (a [domain.<slug>] section)? A missing config lists none.
+kb_domain_listed() {
+  local cfg
+  cfg=$(kb_config_file)
+  [ -f "$cfg" ] || return 1
+  awk '/^[ \t]*#/ { next }
+       /^[ \t]*\[/ { sec=$0; sub(/^[ \t]*\[/,"",sec); sub(/\][ \t]*$/,"",sec); if (sec ~ /^domain\./) print substr(sec, 8) }' "$cfg" \
+    | grep -Fxq -- "$1"
+}
+
+# THE ONE PLACE the link's target is named: where the knowledge base writes a domain's projection
+# (`kb project --domain <slug>`). $1 kb root, $2 domain.
+link_target() { printf '%s/index/projections/domains/%s/%s\n' "$1" "$2" "$LINK_NAME"; }
+
+# Add CLAUDE.local.md to the clone's info/exclude if it is not there. `--git-path` asks git where
+# that file is for THIS checkout: a linked worktree shares its repository's, a bare container's is
+# inside the container's .git. The answer is relative to the directory git ran in.
+link_exclude() {  # $1 project $2 repository root
+  local x
+  x=$(git -C "$2" rev-parse --git-path info/exclude 2>/dev/null) || { printf '[link-no-checkout] %s: git cannot say where %s keeps its exclude file\n' "$1" "$2"; return 1; }
+  case "$x" in /*) ;; *) x="$2/$x" ;; esac
+  if [ -f "$x" ] && grep -qxF -- "$LINK_NAME" "$x"; then return 0; fi
+  mkdir -p "$(dirname "$x")"
+  # A file without a final newline would otherwise get the name glued to its last line.
+  if [ -s "$x" ] && [ "$(tail -c1 "$x" | wc -l | tr -d ' ')" = 0 ]; then printf '\n' >> "$x"; fi
+  printf '%s\n' "$LINK_NAME" >> "$x"
+  say "link $1: added $LINK_NAME to $x"
+}
+
+# link_project <project> <named>: one project's link. <named> is 1 when the person asked for this
+# project by name (so an absent checkout is an error, not a skip). Prints one outcome; returns 1 when
+# it printed a [link-*] report, 0 otherwise. Never replaces a file or a link.
+link_project() {
+  local p=$1 named=$2 dom root file target kbroot cur u pp
+  decl_into dom --entry "$p" kbDomain || {
+    [ "$named" != 1 ] || say "link $p: declares no kbDomain; nothing to link"
+    return 0
+  }
+  # A project the record cannot place is reported here, not left to load_entry's exit.
+  if ! decl_into u --entry "$p" url || ! decl_into pp --entry "$p" path; then
+    printf '[link-no-checkout] %s: the manifest gives it no url or path, so there is no checkout to link in\n' "$p"; return 1
+  fi
+  load_entry "$p"
+  root=$(lexnorm "$MDIR/$P_PATH")
+  if [ ! -d "$root" ]; then
+    if [ "$named" = 1 ]; then printf '[link-no-checkout] %s: nothing at %s (run: fleet-repo clone %s)\n' "$p" "$root" "$p"; return 1; fi
+    say "link $p: skipped (not cloned at $root)"; return 0
+  fi
+  if [ "$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)" != "$(cd "$root" && pwd -P)" ]; then
+    printf '[link-no-checkout] %s: %s is not a git checkout of its own\n' "$p" "$root"; return 1
+  fi
+  if ! kb_domain_listed "$dom"; then
+    printf "[link-unknown-domain] %s: kbDomain '%s' is not a domain in %s (or that config is missing)\n" "$p" "$dom" "$(kb_config_file)"; return 1
+  fi
+  kbroot=$(kb_root_dir)
+  if [ -z "$kbroot" ]; then
+    printf '[link-no-kb-root] %s: no knowledge-base root: KB_ROOT is unset and %s names none\n' "$p" "$(kb_config_file)"; return 1
+  fi
+  target=$(link_target "$kbroot" "$dom")
+  file="$root/$LINK_NAME"
+  if [ -L "$file" ]; then
+    cur=$(readlink "$file")
+    if [ "$cur" != "$target" ]; then
+      printf '[link-foreign-link] %s: %s points at %s, not at %s; left as it is\n' "$p" "$file" "$cur" "$target"; return 1
+    fi
+    link_exclude "$p" "$root" || return 1
+    if [ ! -e "$file" ]; then
+      printf '[link-dangling] %s: %s points at %s, which does not exist (no knowledge-base checkout here, or no projection generated for %s)\n' "$p" "$file" "$target" "$dom"; return 1
+    fi
+    say "link $p: already linked"; return 0
+  fi
+  if [ -e "$file" ]; then
+    printf '[link-foreign-file] %s: %s is a regular file, not a link to %s; left as it is\n' "$p" "$file" "$target"; return 1
+  fi
+  ln -s "$target" "$file"
+  say "link $p: created $file -> $target"
+  link_exclude "$p" "$root" || return 1
+  if [ ! -e "$file" ]; then
+    printf '[link-dangling] %s: %s points at %s, which does not exist (no knowledge-base checkout here, or no projection generated for %s)\n' "$p" "$file" "$target" "$dom"; return 1
+  fi
+  return 0
+}
+
+# What clone and update do: the same, for the project they act on, and a report is all it ever is.
+link_after() {  # $1 project
+  [ -n "${1:-}" ] || return 0
+  link_project "$1" 0 || true
+}
+
+cmd_link() {
+  local a names="" n rc=0 named=0 has
+  while [ $# -gt 0 ]; do
+    a=$1; shift
+    case "$a" in
+      -h|--help) usage; exit 0 ;;
+      -*) die "unknown option '$a' (see --help)" 2 ;;
+      *) names="$names$a
+" ;;
+    esac
+  done
+  load_manifest
+  if [ -n "$names" ]; then
+    named=1
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      case "$n" in *[!A-Za-z0-9_.-]*) die "'$n' is not a manifest project name" 2 ;; esac
+      # fleet-decl answers 1 for a project it does not know and 2 for a record it cannot read.
+      decl_into has --entry "$n" path || die "no such project in $RECORD (or it has no path): $n" 2
+    done <<EOF
+$names
+EOF
+  else
+    names=$(projects_with kbDomain)
+    [ -n "$names" ] || { say "no project declares kbDomain"; exit 0; }
+  fi
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    link_project "$n" "$named" || rc=1
+  done <<EOF
+$names
+EOF
+  exit "$rc"
 }
 
 # ---- check ------------------------------------------------------------------------------------
@@ -965,7 +1146,8 @@ case "${1:-}" in
   clone) shift; cmd_clone "$@" ;;
   update) shift; cmd_update "$@" ;;
   check) shift; cmd_check "$@" ;;
+  link) shift; cmd_link "$@" ;;
   "") usage >&2; exit 2 ;;
   -*) die "unknown option '$1' (see --help)" 2 ;;
-  *) die "unknown verb '$1' (clone, update or check; see --help)" 2 ;;
+  *) die "unknown verb '$1' (clone, update, check or link; see --help)" 2 ;;
 esac
