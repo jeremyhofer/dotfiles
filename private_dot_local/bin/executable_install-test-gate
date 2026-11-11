@@ -29,6 +29,10 @@
 # for the run and puts them back, so a commit passes or fails on the code it contains. Without that
 # helper (it ships with this base) the gate refuses rather than judge the working tree.
 #
+# IT REMEMBERS WHAT PASSED. With a selector, the gate sets SUITE_CREDIT_RECORD=1, so a passing run
+# records each suite against the staged tree in a machine-local ledger (tests/select-suites.sh, PASS
+# CREDIT) and the apply-time pre hook can skip a suite the commit gate already ran on an equivalent tree.
+#
 # IT WARNS WHEN ANOTHER SESSION HOLDS THE TIMING SLOT (fleet-slot check exits 1), and runs anyway.
 #
 # The base's own source repository gets its gate from this tool too (run_onchange_install-git-hooks),
@@ -114,7 +118,7 @@ fi
 if [ -f "$root/tests/select-suites.sh" ]; then
   printf '%s pre-commit: running the suites the staged paths select (tests/select-suites.sh); output shows only if one fails\n' "$GATE_LABEL" >&2
   if ! out=$(cd "$root" && git diff --cached --name-only --no-renames \
-             | sh "$staged_run" sh tests/select-suites.sh --run 2>&1); then
+             | SUITE_CREDIT_RECORD=1 sh "$staged_run" sh tests/select-suites.sh --run 2>&1); then
     printf '\n%s pre-commit: a selected suite failed -- commit refused:\n' "$GATE_LABEL" >&2
     printf '%s\n' "$out" >&2
     printf '\n  re-run with: git diff --cached --name-only --no-renames | sh tests/select-suites.sh --run\n' >&2

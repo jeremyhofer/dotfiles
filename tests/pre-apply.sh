@@ -42,6 +42,12 @@
 # the same clean tree, passed on this OS, is not run again, so an apply repeated seconds later (the
 # private layer's settings re-merge applies a second time) costs nothing.
 #
+# WHAT THE COMMIT GATE ALREADY PASSED IS NOT RE-EARNED. The commit gate records each suite it ran and
+# passed, on which OS and against which tree, in a machine-local ledger (tests/select-suites.sh, PASS
+# CREDIT). A selected suite is credited and skipped when the ledger holds a pass of it for a tree
+# whose difference from the working tree touches nothing the selector maps to that suite (the code
+# marked GATE CREDIT below). A machine that never commits just runs its selection.
+#
 # PRE_APPLY_OS overrides `uname -s`, for the tests.
 #
 # Exit 0 the selected suites passed, or none was selected, or skipped (above); 1 a suite failed
@@ -154,6 +160,42 @@ if [ -n "$base" ]; then
     fi
   else
     printf 'dotfiles pre-apply: git could not list the changed paths; running every suite.\n' >&2
+  fi
+fi
+
+# GATE CREDIT. The commit gate records each suite it ran and passed, on which OS, against the tree it
+# tested (tests/select-suites.sh, PASS CREDIT), in <state dir>/gate-passed. A selected suite S is
+# credited, and not run, when that ledger holds a pass of S on this OS for a tree T such that the
+# paths differing between T and the working tree (untracked files included) are ones the selector does
+# not map to S: the same mapping that chose S above, so the two cannot disagree about what S reads.
+# A tree git no longer has, a selector that fails, and any entry for another OS credit nothing. Only
+# the newest 25 distinct trees are weighed. Machines that never commit (no ledger) just run the
+# selection. The run with no earlier full pass to compare with (every suite) is not credited: it
+# exists to earn that pass.
+credited=""
+gl="$sd/gate-passed"
+if [ -n "$only" ] && [ -f "$gl" ]; then
+  # newest tree first, each once (awk reverses the file; `tac` is not on macOS)
+  for T in $(awk -v o="$os" '$2 == o { l[++n] = $1 } END { for (i = n; i >= 1; i--) if (!(l[i] in s)) { s[l[i]] = 1; print l[i] } }' "$gl" | sed -n '1,25p'); do
+    [ -n "$only" ] || break
+    git -C "$src" cat-file -e "$T^{tree}" 2>/dev/null || continue
+    d1=$(git -C "$src" diff --name-only --no-renames "$T" 2>/dev/null) || continue
+    d2=$(git -C "$src" ls-files --others --exclude-standard 2>/dev/null) || continue
+    selT=$(printf '%s\n%s\n' "$d1" "$d2" | sed '/^$/d' | sort -u | sh "$here/select-suites.sh" 2>/dev/null) || continue
+    got=""; left=""
+    for S in $only; do
+      if grep -q "^$T $os $S " "$gl" && ! printf '%s\n' "$selT" | grep -qx "$S"; then got="$got $S"; else left="$left $S"; fi
+    done
+    if [ -n "$got" ]; then
+      printf 'dotfiles pre-apply: credited%s from tree %s (passed at the commit gate on %s; nothing since touches what they read)\n' "$got" "$T" "$os" >&2
+      only=${left# }
+      credited="$credited$got"
+    fi
+  done
+  if [ -n "$credited" ] && [ -z "$only" ]; then
+    printf 'dotfiles pre-apply: every selected suite was credited; none to run before the apply.\n' >&2
+    nrun=0; record 0
+    exit 0
   fi
 fi
 

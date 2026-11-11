@@ -18,6 +18,14 @@
 # only the whole-tree checks whose globs match it. Documentation alone never reaches here: the
 # commit gate skips a commit that stages nothing else.
 #
+# PASS CREDIT. With SUITE_CREDIT_RECORD=1 (the commit gate sets it), --run remembers a passing run:
+# for each suite that passed it appends `<tree> <os> <suite> <utc time>` to
+# ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/gate-passed, the tree being `git write-tree` (what
+# the commit will contain; the gate runs this under git-staged-run). Nothing is recorded when any
+# suite failed. The file is machine-local state, never in the repository, and holds the newest 1000
+# lines (SUITE_CREDIT_KEEP). tests/pre-apply.sh reads it to skip a suite that already passed on a tree
+# the change since cannot affect. SUITE_CREDIT_OS overrides `uname -s`, for the tests.
+#
 # WHY ONE MAP FILE, NOT A HEADER IN EACH SUITE. The core, the exemptions and the whole-tree checks
 # are not facts about any one suite, so they need a central file anyway; one file with one format
 # keeps "what covers X?" a single grep, and the check below reads it in one pass.
@@ -181,6 +189,24 @@ END {
   printf "select-suites --check: the map covers all %d tracked files\n", ntracked
 }'
 
+# record_pass <profile>: append `<tree> <os> <suite> <utc time>` to the gate ledger for each suite the
+# profile (run-all.sh's RUN_ALL_PROFILE: suite, wall, cpu, exit) shows passing, then keep only the
+# newest SUITE_CREDIT_KEEP lines (default 1000). Recording can never refuse a commit: any failure here
+# loses the credit, not the commit.
+record_pass() {
+  gtree=$(git -C "$root" write-tree 2>/dev/null) || return 1
+  gdir=${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles
+  mkdir -p "$gdir" 2>/dev/null || return 1
+  gl="$gdir/gate-passed"
+  gos=${SUITE_CREDIT_OS:-$(uname -s)}
+  gnow=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  awk -F '\t' -v t="$gtree" -v o="$gos" -v n="$gnow" '$4 == "0" { print t, o, $1, n }' "$1" >> "$gl" 2>/dev/null || return 1
+  keep=${SUITE_CREDIT_KEEP:-1000}
+  if [ "$(wc -l < "$gl" | tr -d ' ')" -gt "$keep" ]; then
+    tail -n "$keep" "$gl" > "$gl.new" 2>/dev/null && mv "$gl.new" "$gl"
+  fi
+}
+
 case $mode in
   check)
     command -v git >/dev/null 2>&1 && git -C "$root" rev-parse --git-dir >/dev/null 2>&1 \
@@ -195,7 +221,16 @@ case $mode in
   run)
     names=$(awk -v mode=select "$prog" phase=map "$map" phase=paths -) || exit $?
     [ -n "$names" ] || exit 0
-    # shellcheck disable=SC2086 # one suite name per word
-    exec sh "$here/run-all.sh" --only $names
+    if [ "${SUITE_CREDIT_RECORD:-}" != 1 ]; then
+      # shellcheck disable=SC2086 # one suite name per word
+      exec sh "$here/run-all.sh" --only $names
+    fi
+    # The commit gate asks for the pass to be remembered (see PASS CREDIT in the header).
+    prof=$(mktemp "${TMPDIR:-/tmp}/select-suites-profile.XXXXXX") || prof=""
+    # shellcheck disable=SC2086
+    RUN_ALL_PROFILE=$prof sh "$here/run-all.sh" --only $names; rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$prof" ]; then record_pass "$prof" || true; fi
+    [ -z "$prof" ] || rm -f "$prof"
+    exit "$rc"
     ;;
 esac

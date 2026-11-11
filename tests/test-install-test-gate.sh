@@ -102,16 +102,18 @@ cat > "$tmp/sel/tests/select-suites.sh" <<'EOF'
 #!/bin/sh
 [ "$1" = --run ] || exit 97
 cat > "$SEL_LOG"
+printf '%s' "${SUITE_CREDIT_RECORD-unset}" > "$SEL_ENV"
 echo "select-suites: stand-in selector"
 exit "$(cat "$SEL_RC" 2>/dev/null || echo 0)"
 EOF
 echo gone > "$tmp/sel/bin/old"; echo keep > "$tmp/sel/bin/tool"; git -C "$tmp/sel" add -A; git -C "$tmp/sel" commit -qm sel --no-verify
 sh "$tool" "$tmp/sel" --label sel --skip-var SKIP_SEL > /dev/null 2>&1
-export SEL_LOG="$tmp/sel.log" SEL_RC="$tmp/sel.rc"; echo 0 > "$SEL_RC"
+export SEL_LOG="$tmp/sel.log" SEL_RC="$tmp/sel.rc" SEL_ENV="$tmp/sel.env"; echo 0 > "$SEL_RC"
 git -C "$tmp/sel" rm -q bin/old
 commit_one "$tmp/sel" bin/tool; rc=$?
 check "with a selector: its pass lets the commit through, run-all.sh is not run directly" '[ "$rc" = 0 ] && ! grep -q suite-ran "$tmp/out"'
 check "with a selector: it gets the staged paths, a deleted one included" 'grep -qx bin/tool "$SEL_LOG" && grep -qx bin/old "$SEL_LOG"'
+check "with a selector: the gate asks it to remember the pass (SUITE_CREDIT_RECORD=1)" '[ "$(cat "$SEL_ENV")" = 1 ]'
 check "with a selector: its one-line summary is shown" 'grep -q "select-suites: stand-in selector" "$tmp/out"'
 echo 1 > "$SEL_RC"
 commit_one "$tmp/sel" bin/tool; rc=$?

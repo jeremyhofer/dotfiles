@@ -209,6 +209,55 @@ lrun RUNALL_RC=0 PRE_APPLY_OS=Darwin
 lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
 [ -e "$PA_MARK" ] && ok "a macOS entry does not vouch for Linux" || bad "per-OS ledger" "skipped on Linux"
 
+echo "== the commit gate's pass credit: a suite that passed at the gate on a tree the change cannot affect is not run again"
+# The gate ledger (<tree> <os> <suite> <time>) is what the commit gate writes. The stand-in selector
+# maps a/* to test-a.sh and b/* to test-b.sh, the same mapping pre-apply asks of it for each ledger
+# tree, so a tree whose diff to the applied one touches a/ cannot vouch for test-a.sh.
+gl="$st/dotfiles/gate-passed"
+tr_() { g rev-parse 'HEAD^{tree}'; }
+echo 0 > "$tmp/repo/a/one.txt"; echo 0 > "$tmp/repo/b/one.txt"; g add -A; g commit -q -m base0
+base=$(tr_); printf '%s Linux 2000-01-01T00:00:00Z\n' "$base" > "$ledger"
+echo x > "$tmp/repo/a/one.txt"; echo x > "$tmp/repo/b/one.txt"; g add -A; g commit -q -m both
+T1=$(tr_)
+echo y > "$tmp/repo/a/one.txt"; g add -A; g commit -q -m aonly
+T2=$(tr_)
+gate() { # gate <tree> <os> <suite>...: what the commit gate would have recorded
+  gt=$1; go=$2; shift 2; mkdir -p "$st/dotfiles"
+  for gs in "$@"; do printf '%s %s %s 2026-11-10T00:00:00Z\n' "$gt" "$go" "$gs" >> "$gl"; done
+}
+rm -f "$gl"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ "$(cat "$PA_ARGS")" = "--only test-a.sh test-b.sh" ] && ok "no gate ledger: the whole selection runs" || bad "baseline selection" "args='$(cat "$PA_ARGS")'"
+
+rm -f "$gl"; gate "$T2" Linux test-a.sh test-b.sh
+lrun RUNALL_RC=1 PRE_APPLY_OS=Linux
+{ [ "$rc" -eq 0 ] && [ ! -e "$PA_MARK" ]; } && ok "both passed at the gate for exactly this tree: credited, nothing runs" || bad "exact tree credited" "rc=$rc ran=$([ -e "$PA_MARK" ] && echo yes) $(cat "$tmp/err")"
+grep -q "credited test-a.sh test-b.sh from tree $T2" "$tmp/err" && ok "says which suites were credited and from which tree" || bad "credit line" "$(cat "$tmp/err")"
+
+rm -f "$gl"; gate "$T1" Linux test-a.sh test-b.sh
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ "$(cat "$PA_ARGS" 2>/dev/null)" = "--only test-a.sh" ] && ok "T1 -> now touches a/ only: test-a.sh runs, test-b.sh (b/ untouched) is credited" || bad "plant: a tree whose diff touches the suite's inputs" "args='$(cat "$PA_ARGS" 2>&1)' $(cat "$tmp/err")"
+grep -q "credited test-b.sh from tree $T1" "$tmp/err" && ! grep -q "credited.*test-a.sh" "$tmp/err" && ok "...and only test-b.sh is named as credited" || bad "credit line names" "$(cat "$tmp/err")"
+
+rm -f "$gl"; gate "$T1" Linux test-a.sh
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ "$(cat "$PA_ARGS" 2>/dev/null)" = "--only test-a.sh test-b.sh" ] && ok "a suite passed at a tree whose diff touches its inputs is NOT credited" || bad "stale-input tree credited" "args='$(cat "$PA_ARGS" 2>&1)'"
+
+rm -f "$gl"; gate "$T2" Darwin test-a.sh test-b.sh
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ "$(cat "$PA_ARGS" 2>/dev/null)" = "--only test-a.sh test-b.sh" ] && ok "another OS's gate pass is not credited" || bad "per-OS credit" "args='$(cat "$PA_ARGS" 2>&1)'"
+
+rm -f "$gl"; gate deadbeefdeadbeefdeadbeefdeadbeefdeadbeef Linux test-a.sh test-b.sh
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ "$(cat "$PA_ARGS" 2>/dev/null)" = "--only test-a.sh test-b.sh" ] && ok "a ledger tree git no longer has credits nothing" || bad "gone tree credited" "args='$(cat "$PA_ARGS" 2>&1)'"
+
+rm -f "$gl"; gate "$T2" Linux test-a.sh
+echo dirty >> "$tmp/repo/a/one.txt"
+lrun RUNALL_RC=0 PRE_APPLY_OS=Linux
+[ "$(cat "$PA_ARGS" 2>/dev/null)" = "--only test-a.sh test-b.sh" ] && ok "a dirty edit under a/ voids the credit for test-a.sh (the working tree is what is judged)" || bad "dirty edit credited" "args='$(cat "$PA_ARGS" 2>&1)'"
+g checkout -q -- a/one.txt
+rm -f "$gl"
+
 echo "== DOTFILES_SKIP_PRE_APPLY=1 skips, loudly, for an apply the suites themselves depend on"
 run "$tmp/bin" RUNALL_RC=1 PRE_APPLY_OS=Linux DOTFILES_SKIP_PRE_APPLY=1
 [ "$rc" -eq 0 ] && ok "exit 0 with the skip set" || bad "exit 0 with the skip set" "rc=$rc"
