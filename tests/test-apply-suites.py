@@ -373,6 +373,15 @@ def test_pre_keeps_a_concurrency_the_caller_set(rig):
     assert rig.nx_calls()[0]["env"]["NX_PARALLEL"] == "2"
 
 
+@pytest.mark.parametrize("mode", ["pre", "check"])
+def test_git_configuration_passed_in_the_environment_does_not_reach_the_suites(rig, mode):
+    rig.run(mode, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="land.gate", GIT_CONFIG_VALUE_0="x",
+            GIT_CONFIG_PARAMETERS="'user.name'='x'")
+    env = rig.nx_calls()[0]["env"]
+    assert not [k for k in env if k.startswith("GIT_CONFIG_") and k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")]
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1", "the rig's own isolation is kept"
+
+
 def test_pre_removes_chezmoi_s_variables(rig):
     rig.run("pre", CHEZMOI="1", CHEZMOI_SOURCE_DIR="/somewhere")
     env = rig.nx_calls()[0]["env"]

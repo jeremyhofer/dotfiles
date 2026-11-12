@@ -126,7 +126,11 @@ that names the failing suites and the report: the refusal is the case a person i
 The alert hook is started detached and never waited for, here and after a post failure.
 
 The CHEZMOI_* variables chezmoi sets for a hook are removed first, so the suites run as they do at
-commit time rather than inside chezmoi's environment.
+commit time rather than inside chezmoi's environment. So is git configuration passed in the
+environment (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and its KEY_<n>/VALUE_<n> pairs): it is the
+caller's, and every git command a suite runs would read it. Measured: `land check` run with
+land.gate given that way (the way its help names for a sandbox) failed test-land.py, whose scratch
+repositories then all had that gate.
 
 POST: EVERY SUITE, UNCACHED, IN THE BACKGROUND. `post` returns at once and leaves
 `post --run` running in its own session with every descriptor closed, because chezmoi waits for a
@@ -181,8 +185,12 @@ def say(tag: str, msg: str) -> None:
     print(f"dotfiles {tag}: {msg}", file=sys.stderr, flush=True)
 
 
+GIT_ENV_CONFIG = re.compile(r"^GIT_CONFIG_(PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)$")
+
+
 def hook_env() -> dict:
-    return {k: v for k, v in os.environ.items() if not k.startswith("CHEZMOI")}
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith("CHEZMOI") and not GIT_ENV_CONFIG.match(k)}
 
 
 def ledger(event: str, detail: str = "", head: str = "") -> None:
