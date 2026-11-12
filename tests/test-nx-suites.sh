@@ -103,7 +103,7 @@ for t in "$here"/test-*.sh "$here"/test-*.py; do
     *) interp=$(sed -n '1s|^#!.*[/ ]||p' "$t") ;;
   esac
   ncmd=$((ncmd + 1))
-  expect="GIT_CONFIG_GLOBAL=\"\$PWD/tests/git-isolated.gitconfig\" exec $interp tests/$s < /dev/null"
+  expect="GIT_CONFIG_GLOBAL=\"\$PWD/tests/git-isolated.gitconfig\" PYTHONPYCACHEPREFIX=\"\${TMPDIR:-/tmp}/suites-no-pycache\" exec $interp tests/$s < /dev/null"
   [ "$(field "$(proj "$t")" 2)" = "$expect" ] || { nbadcmd=$((nbadcmd + 1)); printf '        %s: %s\n' "$s" "$(field "$(proj "$t")" 2)"; }
 done
 [ "$nbadcmd" = 0 ] && ok "each of $ncmd targets runs its suite under the shebang's interpreter, git isolated" \
@@ -152,10 +152,19 @@ done
 [ "$(field suite-hc-status 4)" = true ] && ok "suite-hc-status (unmarked, the control) may run beside others" \
   || bad "suite-hc-status (unmarked, the control) runs alone" "it carries \"parallelism\":false"
 
-# A scratch copy of the tracked tree, for what must not touch this checkout.
+# A scratch copy of the tracked tree, for what must not touch this checkout. Only the files whose
+# CONTENT the plugin or Nx reads are copied: the suites, the map, the plugin, Nx's configuration and
+# the core. Every other tracked path is an empty file of the same name, which is all the plugin
+# needs of it (that it is tracked), so this suite reads nothing it does not hash.
 ws="$tmp/ws"; mkdir -p "$ws"
-if ! { (cd "$root" && git ls-files | tar -cf - -T -) | (cd "$ws" && tar -xf -) \
-       && ln -s "$root/node_modules" "$ws/node_modules" && git -C "$ws" init -q && git -C "$ws" add -A; }; then
+copied() { case "$1" in tests/test-*|tests/coverage.map|tools/nx/suites.js|nx.json|package.json|package-lock.json|tests/git-isolate.sh|tests/git-isolated.gitconfig) return 0 ;; esac; return 1; }
+scratch_ok=1
+git -C "$root" ls-files > "$tmp/tracked" || scratch_ok=0
+while IFS= read -r f; do
+  mkdir -p "$ws/$(dirname "$f")" || scratch_ok=0
+  if copied "$f"; then cp "$root/$f" "$ws/$f" || scratch_ok=0; else : > "$ws/$f"; fi
+done < "$tmp/tracked"
+if ! { [ "$scratch_ok" = 1 ] && ln -s "$root/node_modules" "$ws/node_modules" && git -C "$ws" init -q && git -C "$ws" add -A; }; then
   bad "building the scratch copy" "tar, ln or git failed"
   echo "FAILED: $fail of $((pass + fail))"; exit 1
 fi
@@ -171,6 +180,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 [ "$(git config --global user.email)" = test@example.invalid ] || { echo "the isolated config is not read"; exit 1; }
 [ "$GIT_CONFIG_NOSYSTEM" = 1 ] && [ "$TEST_GIT_ISOLATED" = 1 ] || { echo "git isolation incomplete"; exit 1; }
 [ "$PYTHONDONTWRITEBYTECODE" = 1 ] || { echo "bytecode may be written"; exit 1; }
+case "$PYTHONPYCACHEPREFIX" in "$(cd "$here/.." && pwd)"*|'') echo "bytecode is read from the checkout: $PYTHONPYCACHEPREFIX"; exit 1 ;; esac
 [ "$FORCE_COLOR" = 0 ] && [ "$PY_COLORS" = 0 ] && [ "$NO_COLOR" = 1 ] || { echo "color is forced: FORCE_COLOR=$FORCE_COLOR"; exit 1; }
 [ ! -t 0 ] && [ -z "$(cat)" ] || { echo "stdin is not empty"; exit 1; }
 echo probe-ran

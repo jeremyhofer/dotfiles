@@ -180,4 +180,4 @@ def test_usage_is_exit_2():
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", *sys.argv[1:]]))
+    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider", *sys.argv[1:]]))

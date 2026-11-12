@@ -66,8 +66,8 @@ test-context-lint.sh                private_dot_local/bin/executable_context-lin
 test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
 test-prose-lint.py                  private_dot_local/bin/executable_prose-lint
 test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_fleet-canonicals-queue
-test-fleet-canonicals-bounds.sh     private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
-test-fleet-canonicals-context.sh    private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
+test-fleet-canonicals-bounds.sh     private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_fleet-canonicals-queue
+test-fleet-canonicals-context.sh    private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_fleet-canonicals-queue
 test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
 test-fleet-canonicals-requests.py   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_claude-usage-override
 test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
@@ -150,7 +150,7 @@ test-statusline-usage.sh            dot_claude/statusline-command.sh private_dot
 test-tooling-inventory.sh           dot_claude/tooling.md dot_claude/tooling-reference.md
 test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-mise-fleet-trust.py            private_dot_local/bin/executable_mise-fleet-trust private_dot_local/bin/executable_fleet-decl run_onchange_after_trust-mise-configs.sh.tmpl .chezmoiignore
-test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map package-lock.json
+test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map package.json package-lock.json
 # A tracked .npmrc has no line on purpose: a glob matching no tracked file is refused as dead. A new
 # tracked .npmrc is refused as unclaimed (test-coverage-map.py), and the suite hashes the tracked
 # file list (tools/nx/suites.js, READS_TRACKED_LIST), so it re-runs when one is added.
@@ -187,6 +187,8 @@ exempt run_*.sh run_*.sh.tmpl
 # chezmoi metadata and fragments no suite reads.
 exempt .chezmoidata.yaml .chezmoiexternal.toml.tmpl .chezmoiremove .chezmoitemplates/zprofile.linux
 exempt .gitignore .us-spelling-lint
+# The landing gate's audit register (verify-task-io reads it at landing; no suite does).
+exempt .verify-task-io.toml
 # Configuration and content deployed as is.
 exempt dot_claude/CLAUDE.md.tmpl dot_claude/standards/** dot_claude/skills/** .claude/skills/*
 exempt dot_config/** private_Library/** private_dot_local/share/**

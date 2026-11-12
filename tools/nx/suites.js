@@ -101,7 +101,10 @@ const ENV_INPUTS = ['SANDBOX_RUNTIME', 'RUN_MUTANTS'];
 //     (the workspace root) in the command, never written into the graph, so every checkout of the
 //     repository computes the same task hash and shares one cache;
 //   * Python writes no bytecode and pytest no cache directory: written inside the checkout they are
-//     files one suite leaves for the next to read, which a cache hit cannot restore and Nx cannot hash;
+//     files one suite leaves for the next to read, which a cache hit cannot restore and Nx cannot hash.
+//     PYTHONPYCACHEPREFIX, set in the command to a directory under $TMPDIR that nothing writes, moves
+//     the bytecode Python and pytest's assertion rewriting would READ out of the checkout too: a
+//     stale tests/__pycache__ left by a run by hand was read by a suite (verify-task-io, at landing);
 //   * no color. Nx sets FORCE_COLOR=true for every task, so a child pytest colored its summary and a
 //     suite matching `\b1 failed\b` in it found an escape code where the word boundary was: every
 //     mutant meta-test failed under Nx while passing outside it (measured with Nx 24.0.5). A suite
@@ -128,7 +131,7 @@ function suiteCommand(suite, head) {
       fail('tests/' + suite + ': its first line names no interpreter this plugin runs (sh, bash, zsh, or `uv run --script`): ' + (bang || '(empty)'));
     }
   }
-  return 'GIT_CONFIG_GLOBAL="$PWD/tests/git-isolated.gitconfig" exec ' + interp + ' tests/' + suite + ' < /dev/null';
+  return 'GIT_CONFIG_GLOBAL="$PWD/tests/git-isolated.gitconfig" PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/suites-no-pycache" exec ' + interp + ' tests/' + suite + ' < /dev/null';
 }
 
 // The map's globs as regexes in the map's own dialect. Kept as a regex, not a Nx glob, for the jobs

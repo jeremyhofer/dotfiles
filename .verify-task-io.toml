@@ -1,0 +1,8 @@
+# verify-task-io's register for this workspace (the landing gate runs the audit). Each entry is a
+# judgment made after a measured finding, with its reason; the audit's header has the format.
+
+[[accepted]]
+kind = "read"
+glob = "tests/test-*"
+targets = ["suite-nx-suites:test"]
+why = "tools/nx/suites.js reads every suite file to take its first 10 lines (the shebang that picks the interpreter, and the serial marker), and this suite runs the plugin through Nx. The target hashes exactly those lines through a runtime input (EXTRA_RUNTIME in the plugin), so an edit below line 10 of a suite cannot change its verdict; declaring the whole files would re-run it on every suite edit."
