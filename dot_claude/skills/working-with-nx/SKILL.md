@@ -258,6 +258,13 @@ command's allowed domains.** The scratch consumer fetches third-party dependenci
 the grant the sandbox proxy answers E403. That is an environment fault, not a defect in the package:
 stop and report the missing grant instead of retrying or routing around the proxy.
 
+**Never run Nx in the dotfiles base with `SANDBOX_RUNTIME` removed or changed** (`env -u
+SANDBOX_RUNTIME`, `SANDBOX_RUNTIME=`). Every suite target there hashes that variable, so that a pass
+recorded inside a sandbox never replays in the terminal apply, where a suite can behave differently.
+The cache is shared by every checkout and worktree, so a sandboxed run without the variable writes
+an entry the terminal apply will trust. If one was written, clear the cache with Nx's own
+`nx reset --onlyCache` in the base, never by deleting files under `~/.nx`.
+
 For the other sandbox cases in this skill, see the cache write grant (section 1) and placeholder
 dotfiles (section 3).
 
