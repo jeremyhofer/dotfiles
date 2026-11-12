@@ -101,7 +101,7 @@
 #   update            In a repository (or `--project <name>`): ONE fetch for the container, then a
 #                     fast-forward-only merge of each worktree's upstream, one line per worktree
 #                     saying what happened. Exit 1 if any could not move. Across many repositories:
-#                     mani exec --all --parallel 'fleet-repo update'
+#                     mani exec --all --ignore-non-existing --parallel 'fleet-repo update'
 #   check [<project>] Drift between declaration and disk, reported and never fixed: no container, a
 #                     plain clone where a container is declared, fetch refspecs that differ from the
 #                     declared set, a missing worktree, a missing upstream, a container the

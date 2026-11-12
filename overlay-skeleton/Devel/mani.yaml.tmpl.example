@@ -8,7 +8,7 @@
 # lives on one hosted service needs nothing more). Only if many URLs share a host root this domain
 # wants factored out: define an overlay [data] value (named in this domain's terms) and reference it
 # here with chezmoi template syntax — this file is rendered as a template.
-# `mani sync` clones; `mani exec --all 'git pull --ff-only'` safely updates; tag entries for subsets
+# `mani sync` clones; `mani exec --all --ignore-non-existing 'git pull --ff-only'` safely updates; tag entries for subsets
 # (e.g. `mani sync --tags active`). Exclude chezmoi-source dirs and retired repos.
 
 projects:
