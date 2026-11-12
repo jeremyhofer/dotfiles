@@ -392,6 +392,32 @@ out=$(FLEET_RECORD="$TMP/vals.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values no
 [ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--values: none declaring is exit 1, empty" || bad "--values none" "rc=$rc out=$out"
 out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values path 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "--values: unreadable record is exit 2" || bad "--values unreadable" "rc=$rc"
+# --values-list: one line per item of every project's sequence, flow-style and block-style alike.
+cat > "$TMP/lists.yaml" <<'YAML'
+projects:
+  flow:
+    canonicalMachines: [hostA, hostB]
+  block:
+    canonicalMachines:
+      - hostC
+      - hostD
+  scalar:
+    canonicalMachines: hostE
+  empty:
+    canonicalMachines: []
+  mapped:
+    canonicalMachines: {k: hostF}
+  none:
+    path: internal/none
+YAML
+out=$(FLEET_RECORD="$TMP/lists.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values-list canonicalMachines 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "$(printf 'flow\thostA\nflow\thostB\nblock\thostC\nblock\thostD')" ] && ok "--values-list: one line per item, flow and block lists alike, a scalar, a map and an empty list skipped" || bad "--values-list canonicalMachines" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/lists.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values-list path 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [ -z "$out" ] && ok "--values-list: no project with a sequence is exit 1, empty" || bad "--values-list none" "rc=$rc out=$out"
+out=$(FLEET_RECORD="$TMP/nope.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values-list canonicalMachines 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--values-list: unreadable record is exit 2" || bad "--values-list unreadable" "rc=$rc"
+out=$(FLEET_RECORD="$TMP/lists.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --values-list 'bad key' 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--values-list: a key that is not an identifier path is exit 2" || bad "--values-list bad key" "rc=$rc"
 out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry alpha worktrunk.layout 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ "$out" = "bare" ] && ok "--entry reads a nested key by project name" || bad "--entry" "rc=$rc out=$out"
 out=$(FLEET_RECORD="$TMP/wt.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry beta url 2>&1); rc=$?

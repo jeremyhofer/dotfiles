@@ -12,6 +12,7 @@
 #          fleet-decl --projects-with <key>      # every project that declares <key>, one per line
 #          fleet-decl --entry <project> <key>    # a key on the project named <project>
 #          fleet-decl --values <key>             # <project><TAB><value> for every project declaring <key>
+#          fleet-decl --values-list <key>        # <project><TAB><item> for each item of every project's <key> sequence
 #          fleet-decl --entry-list <project> <key> [<item-key>]
 #                                                # the items of a sequence on <project>, one per line;
 #                                                # with <item-key> the items are maps and that key is
@@ -286,6 +287,19 @@ case "${1:-}" in
     [ $# -eq 2 ] || { printf 'usage: fleet-decl --values <key>\n' >&2; exit 2; }
     valid_key "$2"
     _out=$(yq -e -r ".projects | to_entries[] | select(.value.$2 != null) | .key + \"\t\" + (.value.$2 | tostring)" "$RECORD" 2>/dev/null) || exit 1
+    [ -n "$_out" ] || exit 1
+    printf '%s\n' "$_out"
+    exit 0 ;;
+  --values-list)
+    # The bulk form of --canonical-list, for the same reason --values exists. --values cannot serve a
+    # sequence: it prints the list as YAML gives it, one line for a flow-style list and several
+    # untabbed lines for a block-style one, so a caller splitting on the tab finds no items for the
+    # second. One line per item instead. A project whose key is not a sequence is skipped: the tag
+    # test is for a map, whose values `[]` would otherwise print as items (a scalar has none). Exit 1
+    # when no project has an item.
+    [ $# -eq 2 ] || { printf 'usage: fleet-decl --values-list <key>\n' >&2; exit 2; }
+    valid_key "$2"
+    _out=$(yq -e -r ".projects | to_entries[] | select(.value.$2 | tag == \"!!seq\") | .key as \$k | .value.$2[] | \$k + \"\t\" + (. | tostring)" "$RECORD" 2>/dev/null) || exit 1
     [ -n "$_out" ] || exit 1
     printf '%s\n' "$_out"
     exit 0 ;;

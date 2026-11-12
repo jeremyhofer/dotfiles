@@ -10,6 +10,9 @@
   jq, uv and yq from Homebrew and fleet-canonicals, fleet-decl and claude from ~/.local/bin. A
   session the runner launches inherits this PATH, so it also carries fnm's default Node (node, npm,
   npx), which an interactive shell gets from .zshrc and launchd never reads.
+  ProcessType is Standard, not Background, for the reason the snapshot agent's comment gives:
+  a pass makes the same kind of reads, which ran 6 to 30 times slower at Background there (this
+  agent was not timed separately), and a queued lifecycle action waits on the pass.
 -->
 <plist version="1.0">
 <dict>
@@ -24,7 +27,7 @@
     <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:{{ .chezmoi.homeDir }}/.local/share/fnm/aliases/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>StartInterval</key><integer>60</integer>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Standard</string>
   <key>StandardOutPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/fleet-canonicals-requests.log</string>
   <key>StandardErrorPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/fleet-canonicals-requests.log</string>
 </dict>

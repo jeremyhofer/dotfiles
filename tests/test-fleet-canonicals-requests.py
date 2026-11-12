@@ -1446,6 +1446,57 @@ def test_snapshot_refuses_inside_a_sandbox(fleet):
         "snapshot refuses inside a sandbox and writes nothing (rc=%s): %s" % (r.status, r.out)
 
 
+# The snapshot names its seats from four reads of the whole record rather than several per seat (a
+# 29-seat machine took about 15 s a pass that way, 2026-11-12). It must name exactly the seats the
+# per-seat test, declared_here(), accepts, in the record's order.
+EDGE_SEATS = """  block:
+    scope: block
+    canonical: block-canonical
+    canonicalLaunchDir: block
+    canonicalMachines:
+      - some-other-host
+      - {host}
+  nodir:
+    scope: nodir
+    canonical: nodir-canonical
+    canonicalMachines: [{host}]
+  nomachines:
+    scope: nomachines
+    canonical: nomachines-canonical
+    canonicalLaunchDir: nomachines
+  scalarmachine:
+    scope: scalarmachine
+    canonical: scalarmachine-canonical
+    canonicalLaunchDir: scalarmachine
+    canonicalMachines: {host}
+  twice1:
+    scope: twice1
+    canonical: twice-canonical
+    canonicalLaunchDir: twice1
+    canonicalMachines: [{host}]
+  twice2:
+    scope: twice2
+    canonical: twice-canonical
+    canonicalLaunchDir: twice2
+    canonicalMachines: [{host}]
+"""
+
+
+def test_snapshot_seats_are_the_per_seat_test_in_record_order(fleet):
+    rec = fleet.T / "rec-edges.yaml"
+    rec.write_text((fleet.S / "rec.yaml").read_text() + EDGE_SEATS.format(host=HOST))
+    fleet.mp.setenv("FLEET_RECORD", str(rec))
+    r = fleet.snapshot()
+    got = list(json.loads(fleet.snap.read_text())["seats"]) if r.status == 0 else r.out
+    names = subprocess.run([str(DECL), "--canonicals"], capture_output=True, text=True).stdout.split()
+    per_seat = [n for n in dict.fromkeys(names) if fleet.q.declared_here(n)[0]]
+    want = ["alpha-canonical", "beta-canonical", "gamma-canonical", "director-canonical", "block-canonical"]
+    assert per_seat == want and got == want, \
+        "snapshot: the seats are the per-seat test's, in the record's order: a block-style machine " \
+        "list counts; no launch directory, no machine list, a scalar machine, another machine and a " \
+        "name two projects declare do not (per-seat %s, snapshot %s)" % (per_seat, got)
+
+
 # status: a seat the snapshot shows live reads LIVE-UNLISTED, an unknown one UNKNOWN, never MISSING
 
 def _status_line(fleet, name):
@@ -1814,6 +1865,15 @@ MUTANTS = [
      "test_serve_snapshot_unknown_seat_may_still_be_stopped"),
     ("snapshot-age", "a stale snapshot is accepted",
      "    if ctx.t - taken > limit:\n", "    if False:\n", "test_serve_snapshot_stale"),
+    ("snapshot-seats-machine-list", "the machine lists are read with plain --values, which prints a list whole",
+     'machines = decl_pairs("--values-list", "canonicalMachines")', 'machines = decl_pairs("--values", "canonicalMachines")',
+     "test_snapshot_seats_are_the_per_seat_test_in_record_order"),
+    ("snapshot-seats-twice", "a name two projects declare is a seat",
+     "if n and owners[n] == 1 and p in with_dir", "if n and p in with_dir",
+     "test_snapshot_seats_are_the_per_seat_test_in_record_order"),
+    ("snapshot-seats-launch-dir", "a seat with no launch directory is a seat",
+     " and p in with_dir and p in here]", " and p in here]",
+     "test_snapshot_seats_are_the_per_seat_test_in_record_order"),
     ("live-process-reused-pid", "a reused pid counts as the live process",
      "return not proc_start or (len(fields) > 19 and fields[19] == str(proc_start))", "return True",
      "test_serve_a_reused_pid_does_not_refuse_up"),

@@ -32,6 +32,37 @@ Entries are newest first.
 
 ---
 
+## 2026-11-12
+
+### The session snapshot reads the fleet record in bulk; two LaunchAgents leave Background
+
+`fleet-canonicals snapshot` named its seats by asking `fleet-decl` about one seat at a time, twice a
+pass: 1 + 2N `fleet-decl` runs and N `hostname` runs, each `fleet-decl` several `yq` processes. On a
+work machine with 29 seats a pass took about 15 s under load, and the snapshot LaunchAgent took 31 s
+to 169 s against a 45 s `snapshot-max-age`, so `status`, `up` and the request runner refused on a
+stale snapshot. It now reads the record four times a pass, whatever the seat count, and reads
+Claude Code's pid records once rather than once per seat. The request runner's fleet rate limit
+counts the seats the same way. The seats named are unchanged: the same test, in the record's order.
+
+`fleet-decl` gains `--values-list <key>`: `<project><TAB><item>` for each item of every project's
+`<key>` sequence. `--values` cannot serve a sequence, since it prints the list as YAML gives it.
+
+**ACTION, on each Mac that loaded them, after the apply:** the `fleet-canonicals-snapshot` and
+`fleet-canonicals-requests` LaunchAgents now declare `ProcessType` `Standard`. macOS throttles a
+`Background` job hard: the same snapshot took 5.31 s from a terminal. An apply rewrites the plist
+file, but the agent loaded by hand keeps its old settings until it is loaded again, from a terminal:
+
+```sh
+for a in fleet-canonicals-snapshot fleet-canonicals-requests; do
+  launchctl bootout "gui/$(id -u)/local.dotfiles.$a" \
+    && launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.dotfiles.$a.plist
+done
+```
+
+A Mac that never loaded one leaves it unloaded: `bootout` fails for it and its `bootstrap` is skipped.
+The `machine-snapshot` agent stays at `Background`, with low-priority I/O, on purpose: it must not add
+to the load it measures.
+
 ## 2026-11-11
 
 ### The apply runs its suites through Nx; the hand-built pass records are retired
@@ -58,8 +89,12 @@ What the apply prints: one line as the run starts (the Node used, and whether `n
 skipped) and Nx's summary on a pass, including how many suites were read from the cache. A failure
 prints the same "apply ABORTED" block as before: the failing suites, the full log, a re-run command
 per suite. `DOTFILES_SKIP_PRE_APPLY=1`, `DOTFILES_SKIP_POST_APPLY=1` and the skip while a suite tool
-is missing are unchanged, and so are the hook paths, so no `chezmoi init` is needed. The first apply
-on each machine runs every suite, since no pass is recorded under the new key yet.
+is missing are unchanged, and so are the hook paths, so the hooks need no `chezmoi init`. The apply
+does warn "config file template has changed, run chezmoi init": this change edited a comment in
+`.chezmoi.toml.tmpl`, and chezmoi compares the template's text, not what it renders to. `chezmoi init`
+once clears the warning and changes nothing else, since every prompt in it is asked only once
+(corrected 2026-11-12; this entry first said no `chezmoi init` was needed, without the warning). The
+first apply on each machine runs every suite, since no pass is recorded under the new key yet.
 
 **ACTION, on each machine, before the first apply of this change:** `fnm install 26.13.0`, then
 check it with `fnm exec --using=26.13.0 node --version`. Without it that apply is refused, naming the

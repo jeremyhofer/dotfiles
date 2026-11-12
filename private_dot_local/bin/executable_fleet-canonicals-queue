@@ -517,10 +517,8 @@ FLEET_LIMIT_FLOOR = 10
 def seats_here() -> int | None:
     """How many canonicals the fleet record declares for this machine, or None when the record
     cannot be read."""
-    rc, out = decl("--canonicals")
-    if rc != 0:
-        return None
-    return sum(1 for n in out.splitlines() if n and declared_here(n)[0])
+    found = seat_declarations(hostname())
+    return None if found is None else len(found[0])
 
 
 def fleet_limit(cfg: dict[str, str]) -> int:
@@ -669,21 +667,30 @@ def pid_alive(pid: int, proc_start: str) -> bool:
     return True
 
 
-def live_pid_entries(name: str) -> list[tuple[int, str, str]]:
-    """(pid, session id, description) for each pid record under ~/.claude/sessions that names this
-    canonical and whose process is alive. These are Claude Code's own per-process files
-    (undocumented, read as the transcripts are: a field missing or renamed finds nothing, which is
-    today's behavior without this check). The session id is empty when the record carries none."""
-    found: list[tuple[int, str, str]] = []
+def read_pid_records() -> list[tuple[Path, object]]:
+    """Each pid record under ~/.claude/sessions with what it parses to, in file-name order; a record
+    that cannot be read or parsed is left out."""
+    records: list[tuple[Path, object]] = []
     try:
         files = sorted(PID_RECORDS.glob("*.json"))
     except OSError:
-        return found
+        return records
     for f in files:
         try:
-            d = json.loads(f.read_text(encoding="utf-8"))
+            records.append((f, json.loads(f.read_text(encoding="utf-8"))))
         except (OSError, ValueError):
             continue
+    return records
+
+
+def live_pid_entries(name: str, records: list[tuple[Path, object]] | None = None) -> list[tuple[int, str, str]]:
+    """(pid, session id, description) for each pid record under ~/.claude/sessions that names this
+    canonical and whose process is alive. These are Claude Code's own per-process files
+    (undocumented, read as the transcripts are: a field missing or renamed finds nothing, which is
+    today's behavior without this check). The session id is empty when the record carries none.
+    RECORDS, from read_pid_records(), lets a caller asking about every seat read the files once."""
+    found: list[tuple[int, str, str]] = []
+    for f, d in read_pid_records() if records is None else records:
         if not isinstance(d, dict) or d.get("name") != name or not isinstance(d.get("pid"), int):
             continue
         if pid_alive(d["pid"], str(d.get("procStart") or "")):
@@ -1255,11 +1262,42 @@ def pid_records_readable() -> bool:
         return False
 
 
-def seats_declared_here() -> list[str] | None:
-    rc, out = decl("--canonicals")
+def decl_pairs(flag: str, key: str) -> list[tuple[str, str]] | None:
+    """(project, value) for each line of `fleet-decl --values KEY` or `--values-list KEY`: an empty
+    list when no project declares KEY (exit 1), None when the record cannot be read."""
+    rc, out = decl(flag, key)
+    if rc == 1:
+        return []
     if rc != 0:
         return None
-    return [n for n in out.splitlines() if n and declared_here(n)[0]]
+    return [(p, v) for p, _tab, v in (line.partition("\t") for line in out.splitlines()) if _tab]
+
+
+def seat_declarations(host: str) -> tuple[list[str], dict[str, str]] | None:
+    """The canonicals the fleet record declares for HOST, in the record's order, and each one's
+    declared launch model; None when the record cannot be read or declares no canonical.
+
+    The same test declared_here() makes one seat at a time (a launch directory, and HOST among the
+    canonicalMachines, with a name two projects declare left out), made with four reads of the
+    whole record. Seat by seat it cost 1 + 2N `fleet-decl` runs and N `hostname` runs per pass,
+    each `fleet-decl` several `yq` processes, called twice per snapshot: on a work machine with 29
+    seats about 15 s a pass under load, against a 45 s snapshot-max-age (2026-11-12)."""
+    canon = decl_pairs("--values", "canonical")
+    if not canon:
+        return None
+    dirs = decl_pairs("--values", "canonicalLaunchDir")
+    machines = decl_pairs("--values-list", "canonicalMachines")
+    models = decl_pairs("--values", "canonicalLaunchModel")
+    if dirs is None or machines is None or models is None:
+        return None
+    owners: dict[str, int] = {}
+    for _p, n in canon:
+        owners[n] = owners.get(n, 0) + 1
+    with_dir = {p for p, _d in dirs}
+    here = {p for p, m in machines if m == host}
+    model_of = dict(models)
+    seats = [n for p, n in canon if n and owners[n] == 1 and p in with_dir and p in here]
+    return seats, {n: model_of.get(p, "") for p, n in canon if n in seats}
 
 
 # ---- context use ----------------------------------------------------------------------------
@@ -1312,20 +1350,20 @@ def transcript_context(session_id: str) -> tuple[float, int, str] | None:
     return None
 
 
-def context_window(name: str, cfg: dict[str, str]) -> int:
-    rc, model = decl("--canonical", name, "canonicalLaunchModel")
-    if rc == 0 and model.strip().lower().endswith("[1m]"):
+def context_window(model: str, cfg: dict[str, str]) -> int:
+    """MODEL is the seat's declared canonicalLaunchModel, empty when it declares none."""
+    if model.strip().lower().endswith("[1m]"):
         return 1_000_000
     return as_int(cfg, "context-window")
 
 
-def seat_context(name: str, sids: set[str], cfg: dict[str, str]) -> dict | None:
+def seat_context(model: str, sids: set[str], cfg: dict[str, str]) -> dict | None:
     """The context use of the seat's most recently written transcript among its session ids."""
     found = [(c, sid) for sid in sids if (c := transcript_context(sid))]
     if not found:
         return None
     (_m, tokens, at), sid = max(found, key=lambda f: f[0][0])
-    window = context_window(name, cfg)
+    window = context_window(model, cfg)
     if tokens > window:
         # A prompt cannot exceed its window, so the window value is what is wrong. Measured
         # 2026-11-10: a seat launched as plain `opus` reached 291k tokens with no compaction while
@@ -1337,17 +1375,19 @@ def seat_context(name: str, sids: set[str], cfg: dict[str, str]) -> dict | None:
             "sessionId": sid, "at": at}
 
 
-def take_snapshot() -> dict:
+def take_snapshot(host: str, seat_list: list[str], models: dict[str, str]) -> dict:
+    """SEAT_LIST and MODELS are seat_declarations(HOST), read once by the caller."""
     t = now()
     cfg = config()
     live = agents()
     pids_ok = pid_records_readable()
+    records = read_pid_records() if pids_ok else []
     roster = roster_session_ids()
     roster_state = "ok" if roster is not None else ("absent" if not ROSTER.exists() else "error")
     seats: dict[str, dict] = {}
-    for name in seats_declared_here() or []:
+    for name in seat_list:
         row = newest_row(live, name) if live is not None else None
-        entries = live_pid_entries(name) if pids_ok else []
+        entries = live_pid_entries(name, records) if pids_ok else []
         sids = {sid for _p, sid, _d in entries if sid}
         if row and row.get("sessionId"):
             sids.add(str(row["sessionId"]))
@@ -1368,8 +1408,8 @@ def take_snapshot() -> dict:
             state, why = "dead", "not listed, no live pid record, no roster worker"
         seats[name] = {"state": state, "why": why, "listed": bool(row),
                        "pids": [p for p, _s, _d in entries], "sessionIds": sorted(sids),
-                       "context": seat_context(name, sids, cfg) if state == "live" else None}
-    return {"version": SNAPSHOT_VERSION, "takenAt": t, "takenAtIso": stamp(t), "host": hostname(),
+                       "context": seat_context(models.get(name, ""), sids, cfg) if state == "live" else None}
+    return {"version": SNAPSHOT_VERSION, "takenAt": t, "takenAtIso": stamp(t), "host": host,
             "sources": {"agents": "ok" if live is not None else "error",
                         "pidRecords": "ok" if pids_ok else "error", "roster": roster_state},
             "seats": seats}
@@ -1384,11 +1424,13 @@ def cmd_snapshot(argv: list[str]) -> int:
         die("snapshot: refusing inside a sandbox: other sessions' processes are hidden here, so every "
             "seat the sessions list omits would read as dead. The timer runs it outside "
             "(fleet-canonicals-snapshot.timer, or the LaunchAgent on macOS).")
-    if seats_declared_here() is None:
+    host = hostname()
+    found = seat_declarations(host)
+    if found is None:
         die("snapshot: the fleet record is unreadable (fleet-decl), so no seat can be named; "
             "the previous snapshot is left to age out")
     STATE.mkdir(parents=True, exist_ok=True)
-    write_atomic(SNAPSHOT, take_snapshot())
+    write_atomic(SNAPSHOT, take_snapshot(host, *found))
     return 0
 
 
