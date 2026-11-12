@@ -61,7 +61,18 @@ done
 
 A Mac that never loaded one leaves it unloaded: `bootout` fails for it and its `bootstrap` is skipped.
 The `machine-snapshot` agent stays at `Background`, with low-priority I/O, on purpose: it must not add
-to the load it measures.
+to the load it measures. An SSH shell on the Mac works as the terminal here (measured on a Mac, 2026-11-12).
+
+**Check it took**, with `machine-snapshot` as the control that is still `Background`:
+
+```sh
+for a in fleet-canonicals-snapshot machine-snapshot; do
+  printf '%s: ' "$a"; launchctl print "gui/$(id -u)/local.dotfiles.$a" | grep 'spawn type'
+done
+```
+
+A reloaded agent reads `spawn type = daemon (3)`, and the control `background (5)`. An agent still
+reading `background (5)` was not reloaded. Measured on a Mac, 2026-11-12.
 
 ## 2026-11-11
 
