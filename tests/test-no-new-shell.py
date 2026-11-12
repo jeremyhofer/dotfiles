@@ -75,9 +75,17 @@ def is_shell(root: Path, rel: str) -> bool:
         return False
     with open(path, "rb") as f:
         first = f.readline(256)
+        # A chezmoi template may open with template directives before its shebang, so in a
+        # .tmpl file the first line starting with #! within the first few lines is the shebang.
+        if rel.endswith(".tmpl") and not first.startswith(b"#!"):
+            for _ in range(5):
+                line = f.readline(256)
+                if not line or line.startswith(b"#!"):
+                    first = line
+                    break
     if first.startswith(b"#!"):
         return shebang_is_shell(first)
-    return rel.endswith(SHELL_SUFFIXES)
+    return rel.removesuffix(".tmpl").endswith(SHELL_SUFFIXES)
 
 
 def tracked(root: Path) -> list[str]:
