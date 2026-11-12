@@ -434,7 +434,7 @@ _totarget() {
 
 # Emit "target<TAB>attrs" per managed directory in a source tree (skip VCS + non-deployed meta dirs).
 # Both walks skip what a source tree holds but never deploys: tests/, setup/ and overlay-skeleton/,
-# and the development-only Nx workspace (node_modules/, tools/, package.json, package-lock.json,
+# and the Nx workspace, which runs from the source tree only (node_modules/, tools/, package.json, package-lock.json,
 # nx.json), each listed in .chezmoiignore. Walking node_modules/ also ran the per-file loop below
 # over thousands of files no apply ever writes.
 #

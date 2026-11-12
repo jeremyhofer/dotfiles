@@ -59,10 +59,11 @@ echo "ok:   no source comment depends on context this tree cannot carry"
 
 # CHECK 3 -- the Nx development files never deploy.
 #
-# The base is an Nx workspace for development only: applying it must never need Node, and nothing Nx
-# uses may land in $HOME, where a package.json or node_modules would sit as clutter at best and be
-# picked up as a workspace by tools run there at worst. .chezmoiignore is what keeps them out, and a
-# line dropped from it would fail silently, so this asks chezmoi itself which targets the source
+# The base is an Nx workspace that runs from the source tree (the apply's suites run through it,
+# from tests/apply-suites.py), and nothing Nx uses may land in $HOME, where a package.json or
+# node_modules would sit as clutter at best and be picked up as a workspace by tools run there at
+# worst. .chezmoiignore is what keeps them out, and a line dropped from it would fail silently, so
+# this asks chezmoi itself which targets the source
 # manages. It runs on a scratch copy without .chezmoiexternal*, whose downloads the question does not
 # need, under a scratch config, cache and destination, so nothing of this machine's is read or
 # written. Skipped where chezmoi is not installed.

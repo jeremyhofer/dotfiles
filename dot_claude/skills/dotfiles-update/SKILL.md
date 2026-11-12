@@ -156,10 +156,12 @@ what makes them safe to move off it.
 
 - **`chezmoi apply` does not apply the overlay.** Two instances, two commands. A clean `chezmoi diff`
   says nothing about the overlay.
-- **The base's apply runs every test suite first** (`tests/pre-apply.sh`, the generated config's
-  `hooks.apply.pre`), so it takes as long as the suite set, `--dry-run` included, unless this clean
-  tree already passed every suite on this OS, which it then says and skips (a ledger under the source's
-  git directory; macOS, not yet gating, always runs and records nothing). A failing suite
+- **The base's apply runs every test suite first, through Nx** (`tests/pre-apply.sh`, the generated
+  config's `hooks.apply.pre`), `--dry-run` included. A suite whose inputs did not change since it
+  last passed on this machine, in the same context (a terminal, or a Claude Code sandbox), replays
+  from Nx's cache, so an apply waits only on the suites the change reaches; the first apply after a
+  tool upgrade runs them all. It needs the Node `.nvmrc` pins (through `fnm`), and refuses the apply
+  without it, naming `fnm install <version>`. A failing suite
   aborts the apply before anything is written and names the suite, its log and the re-run command:
   fix the source, or stop and report, rather than look for a way past it. A machine whose config
   predates the hook needs `chezmoi init` once; until then its apply runs no suite.

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Test: every Python tool this repository deploys loads on Python 3.9, the python3 that macOS's
 # command-line tools ship and that a hook may meet first on PATH (a GUI git client, an IDE, launchd).
-# A tool that fails to load there fails every commit whose hook calls it, in every repository.
+# A tool that fails to load there fails every commit whose hook calls it, in every repository. The
+# same holds for tests/apply-suites.py, which chezmoi's apply hooks run with the python3 on PATH.
 #
 # It parses each tool with the python3 running the test and refuses two forms 3.9 cannot load:
 #   * an `X | Y` union in an annotation, unless the file has `from __future__ import annotations`
@@ -20,6 +21,7 @@ if [ -n "${PY39_FILES:-}" ]; then
   files=$PY39_FILES
 else
   files=$(grep -l '^#!/usr/bin/env python3' "$here"/private_dot_local/bin/executable_* 2>/dev/null || true)
+  files="$files $here/tests/apply-suites.py"
 fi
 [ -n "$files" ] || { echo "FAIL: no Python tools found to check" >&2; exit 1; }
 

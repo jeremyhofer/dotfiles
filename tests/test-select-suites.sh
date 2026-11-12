@@ -48,19 +48,10 @@ has "a staged suite selects itself" "$out" test-kb.sh
 echo "== the check, on a fixture repository with each defect planted"
 r="$tmp/repo"; mkdir -p "$r/tests" "$r/bin" "$r/skip"
 cp "$sel" "$r/tests/select-suites.sh"
-# The stand-in runner echoes its arguments; given RUN_ALL_PROFILE it also writes the profile run-all
-# would (suite, wall, cpu, exit), one line per suite named after --only, exiting RUNALL_RC. It also
-# writes the SUITE_CREDIT_RECORD it was given to runner-credit-env, beside the fixture's tests/.
+# The stand-in runner echoes its arguments.
 cat > "$r/tests/run-all.sh" <<'EOF'
 #!/bin/sh
 echo "run-all $*"
-printf '%s' "${SUITE_CREDIT_RECORD-unset}" > "${0%/*}/../runner-credit-env"
-rc=${RUNALL_RC:-0}
-if [ -n "${RUN_ALL_PROFILE:-}" ]; then
-  shift
-  for n in "$@"; do printf '%s\t0.1\t0.1\t%s\n' "$n" "$rc"; done > "$RUN_ALL_PROFILE"
-fi
-exit "$rc"
 EOF
 printf '#!/bin/sh\n# reads bin/a\nexit 0\n' > "$r/tests/test-a.sh"
 printf '#!/bin/sh\nexit 0\n' > "$r/tests/test-b.sh"
@@ -112,29 +103,6 @@ out=$(printf 'bin/a\n' | (cd "$r" && sh tests/select-suites.sh --run 2>/dev/null
 [ "$out" = "run-all --only test-a.sh" ] && ok "--run hands run-all.sh exactly the selection" || bad "--run" "$out"
 out=$(printf 'skip/x\n' | (cd "$r" && sh tests/select-suites.sh --run 2>&1)); rc=$?
 { [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -q run-all; } && ok "--run with nothing selected runs nothing, exit 0" || bad "--run empty" "rc=$rc $out"
-
-echo "== the commit gate's pass credit: SUITE_CREDIT_RECORD=1 --run records what passed"
-# One line per suite that passed, `<tree> <os> <suite> <utc time>`, in a machine-local file under the
-# state directory, against the tree git would commit (git write-tree).
-st="$tmp/state"; gl="$st/dotfiles/gate-passed"
-credrun() { # credrun [VAR=value ...]: select bin/a (test-a.sh) and run it, recording as the commit gate does;
-  # the caller's SUITE_CREDIT_RECORD is cleared first, so a hand run with it exported tests the same thing
-  printf 'bin/a\n' | (unset SUITE_CREDIT_RECORD; cd "$r" && env XDG_STATE_HOME="$st" SUITE_CREDIT_OS=Linux "$@" sh tests/select-suites.sh --run > "$tmp/out" 2>&1)
-}
-tree=$(git -C "$r" write-tree)
-credrun
-[ ! -e "$gl" ] && ok "without SUITE_CREDIT_RECORD nothing is recorded (a hand run is not the gate)" || bad "hand run recorded" "$(cat "$gl")"
-credrun SUITE_CREDIT_RECORD=1 RUNALL_RC=1
-[ ! -e "$gl" ] && ok "a FAILED run records nothing" || bad "failed run recorded" "$(cat "$gl")"
-credrun SUITE_CREDIT_RECORD=1
-grep -Eq "^$tree Linux test-a.sh [0-9T:Z-]+$" "$gl" 2>/dev/null && ok "a passing run records the staged tree, the OS and each suite" || bad "passing run recorded" "$(cat "$gl" 2>&1)"
-[ "$(wc -l < "$gl" | tr -d ' ')" = 1 ] && ok "only the suites selected (test-a.sh) are recorded" || bad "only the selection" "$(cat "$gl")"
-[ "$(cat "$r/runner-credit-env" 2>/dev/null)" != 1 ] && ok "the suites run do not inherit SUITE_CREDIT_RECORD (it is the gate's word to --run, not to them)" || bad "SUITE_CREDIT_RECORD leaked to the suites" "$(cat "$r/runner-credit-env" 2>&1)"
-grep -q '^run-all --only test-a.sh$' "$tmp/out" && ok "the run's output still passes through" || bad "output passes through" "$(cat "$tmp/out")"
-mkdir -p "$st/dotfiles"; i=0; while [ "$i" -lt 1100 ]; do printf 'oldtree%s Linux test-a.sh 2000-01-01T00:00:00Z\n' "$i"; i=$((i + 1)); done > "$gl"
-credrun SUITE_CREDIT_RECORD=1
-n=$(wc -l < "$gl" | tr -d ' ')
-{ [ "$n" -le 1000 ] && grep -q "^$tree Linux test-a.sh " "$gl" && ! grep -q '^oldtree0 ' "$gl" && grep -q '^oldtree1099 ' "$gl"; } && ok "the ledger is bounded to its newest 1000 lines" || bad "ledger bound" "lines=$n"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] && echo PASS

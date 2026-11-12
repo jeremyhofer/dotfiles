@@ -1,7 +1,7 @@
 {
   "name": "dotfiles-base",
   "private": true,
-  "description": "Development only: Nx runs the base's suites as cached tasks. Applying the base never needs Node; tests/run-all.sh is the path without it.",
+  "description": "Nx runs the base's suites as cached tasks: before and after every apply (tests/apply-suites.py), and by hand. So applying the base needs Node at the version .nvmrc pins.",
   "devDependencies": {
     "nx": "24.0.5"
   }

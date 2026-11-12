@@ -32,6 +32,50 @@ Entries are newest first.
 
 ---
 
+## 2026-11-11
+
+### The apply runs its suites through Nx; the hand-built pass records are retired
+
+`tests/pre-apply.sh` now runs every suite through Nx (`nx run-many -t test`, by way of the new
+`tests/apply-suites.py`) and aborts the apply on a failure, as before. Nx replays a suite from its
+cache when the suite's inputs did not change since it last passed on this machine, and runs every
+suite whose inputs did. A suite's inputs are its `tests/coverage.map` paths, the shared core, the
+tool versions it runs through, and `SANDBOX_RUNTIME`, which Claude Code sets in a sandboxed command:
+a pass recorded inside a session's sandbox therefore never replays in a terminal, nor the reverse.
+This replaces three records the pre hook kept or read: the full-pass ledger and the selection
+against it, the same-tree skip, and the commit gate's pass credit (the gate no longer writes one).
+`tests/post-apply.sh` runs every suite through Nx with `--skip-nx-cache`, detached, and alerts and
+writes `post-apply.last` as before; it no longer records a pass.
+
+What an apply needs now: **Node at the version `.nvmrc` pins (26.13.0).** With `fnm` on PATH every
+Node command runs as `fnm exec --using=<pin>`; without fnm, a `node` on PATH of the pin's major is
+used. Anything else refuses the apply with a line naming the fix. Before the suites, `npm ci` runs
+only when `node_modules` does not hold what `package-lock.json` names (the first apply in a checkout,
+or after a lockfile change); it reaches the npm registry, or the mirror the machine's own npm
+configuration names, and its failure refuses the apply.
+
+What the apply prints: one line as the run starts (the Node used, and whether `npm ci` ran or was
+skipped) and Nx's summary on a pass, including how many suites were read from the cache. A failure
+prints the same "apply ABORTED" block as before: the failing suites, the full log, a re-run command
+per suite. `DOTFILES_SKIP_PRE_APPLY=1`, `DOTFILES_SKIP_POST_APPLY=1` and the skip while a suite tool
+is missing are unchanged, and so are the hook paths, so no `chezmoi init` is needed. The first apply
+on each machine runs every suite, since no pass is recorded under the new key yet.
+
+**ACTION, on each machine, before the first apply of this change:** `fnm install 26.13.0`, then
+check it with `fnm exec --using=26.13.0 node --version`. Without it that apply is refused, naming the
+same command. A fresh Mac gets it from `bootstrap-mac.sh`, which now installs the pin.
+
+**ACTION, optional, after that apply:** these files are no longer read or written, and can be
+deleted (the first is under the base source's git directory; the others are under
+`${XDG_STATE_HOME:-$HOME/.local/state}`):
+
+- `~/.local/share/chezmoi/.git/pre-apply/passed`, and its directory `~/.local/share/chezmoi/.git/pre-apply/`
+- `~/.local/state/dotfiles/pre-apply.history`
+- `~/.local/state/dotfiles/pre-apply.last-profile.tsv`
+- `~/.local/state/dotfiles/gate-passed`, where a terminal commit wrote one
+
+`post-apply.last`, the `post-apply-*.log` files and `<git dir>/post-apply.lock` stay in use.
+
 ## 2026-11-10
 
 ### `kb project --domain` writes one capped `CLAUDE.local.md`

@@ -1,6 +1,7 @@
 'use strict';
 // suites.js -- an Nx plugin that makes each test suite in tests/ one Nx project with one cached
-// target, so a landing gate can replay a suite whose inputs did not change.
+// target, so an apply (tests/apply-suites.py) or a landing gate can replay a suite whose inputs did
+// not change, and runs every suite whose inputs did.
 //
 // THE MAP IS THE ONLY SOURCE OF TRUTH. tests/coverage.map says what each suite reads, and
 // tests/select-suites.sh already turns it into the commit-time selection. This file parses the
@@ -46,6 +47,13 @@ const RUNTIME_INPUTS = [
   'python3 --version',
   'chezmoi --version',
 ];
+
+// THE CONTEXT A SUITE RAN IN. A suite can pass inside a Claude Code session's sandbox and fail in a
+// terminal: one did, because the sandbox could not write /tmp, so the leak it checks for could not
+// happen there. Claude Code sets SANDBOX_RUNTIME in a sandboxed command, so hashing the variable
+// keeps a pass recorded in a sandbox from replaying in a terminal, and the reverse. Every suite's
+// target carries it, since which suites the sandbox changes cannot be known in advance.
+const ENV_INPUTS = ['SANDBOX_RUNTIME'];
 
 // The map's globs, as the selector's regex builder reads them (select-suites.sh glob2re). Kept
 // as a regex, not a Nx glob, for the one job a Nx glob cannot do here: telling whether a glob
@@ -188,7 +196,10 @@ function buildProjects(root) {
           options: { command: 'sh tests/run-all.sh --only ' + s },
           cache: !(s in UNCACHED),
           ...(isSerial(root, s) ? { parallelism: false } : {}),
-          inputs: unique.map((g) => '{workspaceRoot}/' + toNxGlob(g)).concat(RUNTIME_INPUTS.map((r) => ({ runtime: r }))),
+          inputs: unique
+            .map((g) => '{workspaceRoot}/' + toNxGlob(g))
+            .concat(RUNTIME_INPUTS.map((r) => ({ runtime: r })))
+            .concat(ENV_INPUTS.map((v) => ({ env: v }))),
           outputs: [],
         },
       },

@@ -52,7 +52,7 @@ echo "installed pre-push leak guard -> $hook"
 # SCOPED AGAIN, to the suites the staged paths select. This repository ships
 # tests/select-suites.sh and its map (tests/coverage.map), so the hook runs only the suites that
 # read a staged path, every suite when one is in the shared core or claimed by none. The whole set
-# runs around `chezmoi apply` instead (tests/pre-apply.sh and tests/post-apply.sh, from
+# runs around `chezmoi apply` instead, through Nx (tests/pre-apply.sh and tests/post-apply.sh, from
 # .chezmoi.toml.tmpl's hooks), the moment a change reaches a machine; nothing is dropped, only moved.
 #
 # Re-run when the generator changes, so a machine that applies a new install-test-gate gets the

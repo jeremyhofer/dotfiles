@@ -15,14 +15,15 @@
 # tree. Matching the resolved globs here in shell or awk would test this suite's matcher, not
 # Nx's, and the dialect gap is the thing to catch. A path must be an EXISTING tracked file.
 #
-# Needs node and node_modules/.bin/nx (an `npm ci` in a checkout); otherwise it SKIPs, since
-# applying the base never needs Node.
+# Needs node and node_modules/.bin/nx (an `npm ci` in a checkout); otherwise it SKIPs, so a hand
+# run of tests/run-all.sh on a machine without Node still runs the other suites. An apply always has
+# both: tests/apply-suites.py refuses to run the suites without them.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 sel="$here/select-suites.sh"
 
-command -v node >/dev/null 2>&1 || { echo "SKIP: node is not installed (Nx is a development-only tool)"; exit 0; }
+command -v node >/dev/null 2>&1 || { echo "SKIP: node is not installed"; exit 0; }
 [ -x "$root/node_modules/.bin/nx" ] || { echo "SKIP: no node_modules/.bin/nx (run npm ci in the checkout)"; exit 0; }
 command -v git >/dev/null 2>&1 && git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { echo "SKIP: not a git checkout"; exit 0; }
 
@@ -58,6 +59,24 @@ if nxq show projects; then
 else
   bad "nx show projects" "$(errs)"
 fi
+
+echo "== every suite's cache key holds the sandbox context"
+# A pass recorded inside a Claude Code sandbox must not replay in a terminal (tools/nx/suites.js,
+# THE CONTEXT A SUITE RAN IN), so every suite's target hashes SANDBOX_RUNTIME. Counted over the
+# whole graph, against the number of suite files, so one target without it fails.
+if nxq graph --file="$tmp/graph.json"; then
+  nenv=$(node -e '
+    const nodes = require(process.argv[1]).graph.nodes;
+    let n = 0;
+    for (const [name, p] of Object.entries(nodes)) {
+      const t = p.data.targets && p.data.targets.test;
+      if (name.startsWith("suite-") && t && (t.inputs || []).some((i) => i && i.env === "SANDBOX_RUNTIME")) n++;
+    }
+    // A string: under FORCE_COLOR (Nx sets it for its tasks) a logged number is printed in color.
+    console.log(String(n));' "$tmp/graph.json")
+  if [ "$nenv" = "$nwant" ]; then ok "all $nwant suite targets hash SANDBOX_RUNTIME"
+  else bad "suite targets hashing SANDBOX_RUNTIME" "$nenv of $nwant"; fi
+else bad "nx graph" "$(errs)"; fi
 
 echo "== the tracer's control target"
 # verify-task-io needs one nx:noop target to subtract Nx's own reads from each suite's trace.

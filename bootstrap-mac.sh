@@ -61,6 +61,14 @@ ensure_node() {
   fi
   ver="$(fnm ls 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)"
   [ -n "$ver" ] && fnm default "$ver" >/dev/null 2>&1 && echo "fnm: default -> $ver"
+  # The apply's suites run under the Node this repository's .nvmrc pins, and the pre-apply hook
+  # refuses the apply when fnm lacks it (tests/apply-suites.py), so it is installed before the
+  # guarded apply below.
+  pin="$(cat "$REPO_DIR/.nvmrc" 2>/dev/null || true)"
+  if [ -n "$pin" ] && ! fnm exec --using="$pin" node --version >/dev/null 2>&1; then
+    fnm install "$pin" || die "fnm could not install Node $pin (.nvmrc), which the apply's suites need"
+    echo "fnm: installed the .nvmrc pin $pin"
+  fi
 }
 
 # --- chezmoi: init/apply from THIS repo (its own location — no hardcoded source URL, so no

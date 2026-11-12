@@ -26,7 +26,7 @@ core run_onchange_install-git-hooks.sh.tmpl
 
 # --- whole-tree checks -------------------------------------------------------------------------
 tree test-shell-parse.sh        setup/** tests/*.sh private_dot_local/bin/**
-tree test-python39-syntax.sh    private_dot_local/bin/**
+tree test-python39-syntax.sh    private_dot_local/bin/** tests/apply-suites.py
 tree test-portability-lint.sh   private_dot_local/bin/** setup/** tests/*.sh tests/coverage.map
 tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
@@ -35,8 +35,7 @@ tree test-no-new-shell.py       private_dot_local/bin/** tests/**
 
 # --- the selector, the map and the apply-time runs ---------------------------------------------
 test-select-suites.sh  tests/coverage.map
-test-pre-apply.sh      tests/pre-apply.sh .chezmoi.toml.tmpl
-test-post-apply.sh     tests/post-apply.sh .chezmoi.toml.tmpl
+test-apply-suites.py   tests/apply-suites.py tests/pre-apply.sh tests/post-apply.sh .chezmoi.toml.tmpl
 
 # --- tools: private_dot_local/bin --------------------------------------------------------------
 test-adr-lint.sh                    private_dot_local/bin/executable_adr-lint

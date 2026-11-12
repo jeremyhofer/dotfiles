@@ -102,8 +102,6 @@ tests/test-ntfy-inbox.sh
 tests/test-nx-suites.sh
 tests/test-overlay-doctor.sh
 tests/test-portability-lint.sh
-tests/test-post-apply.sh
-tests/test-pre-apply.sh
 tests/test-pre-commit-trigger.sh
 tests/test-preserve-claude-md.sh
 tests/test-publish-check.sh

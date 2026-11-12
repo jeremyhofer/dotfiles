@@ -21,12 +21,13 @@
     dpi = {{ .dpi | quote }}
 {{- end }}
 
-{{- /* Before an apply, the suites that cover what it changes run, and a failure aborts it
-       (tests/pre-apply.sh); after it, every suite runs in the background, alerts on a failure and
-       records a full pass (tests/post-apply.sh). The commit gate runs only the suites a commit's
-       staged paths select (tests/select-suites.sh). Both scripts skip, saying so, while the tools
-       the suites need are not installed (a first apply). A config generated before these hooks
-       existed gets them at the next `chezmoi init`. */}}
+{{- /* Before an apply, every suite runs through Nx, replayed from its cache where the suite's
+       inputs did not change, and a failure aborts the apply (tests/pre-apply.sh); after it, every
+       suite runs uncached in the background and alerts on a failure (tests/post-apply.sh). Both
+       run tests/apply-suites.py, whose header has the rules. The commit gate runs only the suites
+       a commit's staged paths select (tests/select-suites.sh). Both hooks skip, saying so, while
+       the tools the suites need are not installed (a first apply). A config generated before these
+       hooks existed gets them at the next `chezmoi init`. */}}
 [hooks.apply.pre]
     command = "sh"
     args = [{{ printf "%s/tests/pre-apply.sh" .chezmoi.sourceDir | quote }}]
