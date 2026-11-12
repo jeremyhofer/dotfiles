@@ -6,7 +6,7 @@
 """Tests for claude-usage-override, the one switch and the one reader for standing down every
 usage-based throttle for a bounded time.
 
-Run: sh tests/run-all.sh --only test-claude-usage-override.py
+Run: npx nx run suite-claude-usage-override:test
  or: uv run --script tests/test-claude-usage-override.py [-k <pattern>]
 
 What is held: `status` is active (exit 0) only for a well-formed file whose `until` is still ahead;

@@ -6,7 +6,7 @@
 """Tests for bootstrap-mac.sh's default-Node stage, the one stage whose choice of tool depends on
 the machine: fnm, or mise on a machine switched to it.
 
-Run: sh tests/run-all.sh --only test-bootstrap-mac.py
+Run: npx nx run suite-bootstrap-mac:test
  or: uv run --script tests/test-bootstrap-mac.py [-k <pattern>]
 
 What is held: a machine is switched to mise only when the [data] of its generated base chezmoi

@@ -7,7 +7,7 @@
 both are one value each in the base's chezmoi data (.chezmoidata.yaml), and every file that puts
 them in a context's environment renders them from that value, behind the per-machine `miseActive`.
 
-Run: sh tests/run-all.sh --only test-mise-path.py
+Run: npx nx run suite-mise-path:test
  or: uv run --script tests/test-mise-path.py [-k <pattern>]
 
 What is held, for Linux and for macOS (rendered with the OS overridden in chezmoi's data):

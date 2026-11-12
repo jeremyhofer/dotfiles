@@ -6,7 +6,7 @@
 """Tests for image-bump: its frame and `validate`, `check` for a container image, `deploy`, the
 artifact descriptors that move an image build's pinned inputs, and `latest`.
 
-Run: sh tests/run-all.sh --only test-image-bump.py
+Run: npx nx run suite-image-bump:test
  or: uv run --script tests/test-image-bump.py [-k <pattern>]
 
 TWO KINDS OF TEST, AND WHY BOTH
@@ -63,8 +63,8 @@ been seen to fail is of unknown value; the table is how each behavior's test is 
 
 THE LANDING LANE. The mutants take ten times as long as every other test here (each starts a child
 pytest), so they run only before work lands on the integration branch, not on every run. They carry
-the `mutant` marker; a run through this file's own entry point (run-all.sh, `uv run --script`)
-deselects them unless RUN_MUTANTS=1, which the landing gate sets (tests/land-gate.sh). Running pytest
+the `mutant` marker; a run through this file's own entry point (its Nx target, `uv run --script`)
+deselects them unless RUN_MUTANTS=1, which the landing gate sets (`tests/apply-suites.py land`). Running pytest
 on this file directly bypasses that entry point and runs everything.
 """
 import gzip

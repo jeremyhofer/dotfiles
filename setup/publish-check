@@ -238,37 +238,17 @@ fi
 # 8. The test suite.
 if [ "$skip_tests" -eq 1 ]; then
   note "tests skipped (--skip-tests)"
-elif [ ! -f tests/run-all.sh ]; then
-  cannot "tests/run-all.sh is missing"
-elif sh tests/run-all.sh > "$work/tests" 2>&1; then
-  ok "tests/run-all.sh passes"
+elif [ ! -f tests/apply-suites.py ]; then
+  cannot "tests/apply-suites.py is missing"
+elif ! command -v python3 >/dev/null 2>&1; then
+  cannot "python3 is not installed, so the suites cannot run"
+elif python3 tests/apply-suites.py check > "$work/tests" 2>&1; then
+  ok "the suites pass (tests/apply-suites.py check)"
 else
-  # The runner replays each failed suite's output after a "FAIL   <suite>" header, every line
-  # prefixed "       | ". A tail of the whole output shows only the summary and drops the failing
-  # case, so print each failed suite's FAIL lines (at most 60, the rest counted), or its last 15
-  # lines when it printed none, then the summary.
-  bad tests "tests/run-all.sh failed. Failing suites:"
-  awk '
-    function flush(  i, s) {
-      if (name == "") return
-      print "        " hdr
-      if (nf > 0) {
-        for (i = 1; i <= nf && i <= 60; i++) print "        " fl[i]
-        if (nf > 60) print "        ... " (nf - 60) " more FAIL lines not shown"
-      } else {
-        s = (nl > 15) ? nl - 14 : 1
-        for (i = s; i <= nl; i++) print "        " last[i]
-      }
-      name = ""
-    }
-    /^FAIL   / { flush(); name = $2; hdr = $0; nf = 0; nl = 0; next }
-    name != "" && /^       \| / { nl++; last[nl] = $0; if (index($0, "FAIL")) { nf++; fl[nf] = $0 }; next }
-    { flush() }
-    END { flush() }
-  ' "$work/tests"
-  # No suite header (the runner itself failed): fall back to the tail.
-  if ! grep -q '^FAIL   ' "$work/tests"; then tail -15 "$work/tests" | sed 's/^/        /'; fi
-  grep -E '^[0-9]+ suite\(s\):|^failed:|^run-all:' "$work/tests" | sed 's/^/        /'
+  # The script's report already names each failing suite with an excerpt of its output (the lines
+  # that say FAIL, or its last lines), the full log and how to re-run one; it is shown as printed.
+  bad tests "the suites failed (tests/apply-suites.py check):"
+  sed 's/^/        /' "$work/tests"
 fi
 
 echo

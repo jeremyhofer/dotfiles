@@ -7,7 +7,7 @@
 queue, and for the session snapshot the same implementation writes (private_dot_local/bin/
 executable_fleet-canonicals-queue, run through executable_fleet-canonicals).
 
-Run: sh tests/run-all.sh --only test-fleet-canonicals-requests.py
+Run: npx nx run suite-fleet-canonicals-requests:test
  or: uv run --script tests/test-fleet-canonicals-requests.py [-k <pattern>]
 
 THE RUNNER'S CHECKS ARE ITS CONTAINMENT. It runs outside every sandbox, on a file anyone with write
@@ -47,7 +47,7 @@ MUTANTS (at the end of this file) lists each with the test that must fail agains
 runs that test against that copy in a child pytest, via FLEET_CANONICALS_QUEUE (the variable
 `fleet-canonicals` itself reads to find the queue, and that the cases here use to load it). A check
 whose test has never been seen to fail is of unknown value; the table is how each is seen to fail.
-The mutants run only in the landing lane (RUN_MUTANTS=1, tests/land-gate.sh); a normal run through
+The mutants run only in the landing lane (RUN_MUTANTS=1, `tests/apply-suites.py land`); a normal run through
 this file's own entry point deselects the tests marked `mutant`.
 """
 import contextlib

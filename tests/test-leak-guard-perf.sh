@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-all: serial
 # Test leak-guard's SPEED on a large added file, alone. The bound below is wall-clock, so this suite
-# runs serially (run-all's rule: a threshold is never loosened to cope with load; the suite moves
+# runs serially (the suites' rule: a threshold is never loosened to cope with load; the suite moves
 # off the loaded machine instead). It is its own file so that test-leak-guard.sh, which has no other
 # timing assertion, can run in the concurrent batch: a whole suite run alone for one case made every
 # selection that reaches leak-guard wait for all of it.

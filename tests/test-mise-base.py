@@ -6,7 +6,7 @@
 """Tests for the base's mise pieces: its conf.d drop-in, the apply step that creates mise's state
 directory, and the per-machine `miseActive` value that keeps both off a machine until it is set.
 
-Run: sh tests/run-all.sh --only test-mise-base.py
+Run: npx nx run suite-mise-base:test
  or: uv run --script tests/test-mise-base.py [-k <pattern>]
 
 What is held:

@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""apply-suites -- run this source tree's suites through Nx around `chezmoi apply`.
+"""apply-suites -- run this source tree's suites through Nx: at apply, at commit and at landing.
 
     python3 tests/apply-suites.py pre          before the apply; a failure aborts it
     python3 tests/apply-suites.py post         after it: start an uncached full run, detached
     python3 tests/apply-suites.py post --run   that run, in the foreground
+    python3 tests/apply-suites.py check        every suite, cached: the commit gate and publish-check
+    python3 tests/apply-suites.py land         every suite uncached with the mutant tests, then the
+                                               input audit: the landing gate (`land.gate`)
 
-chezmoi reaches this through tests/pre-apply.sh (`hooks.apply.pre`) and tests/post-apply.sh
-(`hooks.apply.post`), both wired in .chezmoi.toml.tmpl. chezmoi aborts the apply when a pre hook
-exits non-zero (measured with chezmoi 2.74: exit 1, no target written).
+chezmoi reaches `pre` and `post` through tests/pre-apply.sh (`hooks.apply.pre`) and
+tests/post-apply.sh (`hooks.apply.post`), both wired in .chezmoi.toml.tmpl. chezmoi aborts the apply
+when a pre hook exits non-zero (measured with chezmoi 2.74: exit 1, no target written). The commit
+hook install-test-gate writes runs `check` under git-staged-run, so it judges what is staged;
+setup/publish-check runs `check` too. Set the landing gate once per clone, from a terminal:
+`git config land.gate 'python3 tests/apply-suites.py land'`; `land check` then runs `land`.
 
 ONE PASS CACHE: NX'S. Each suite is an Nx target (tools/nx/suites.js) whose inputs are the paths
-tests/coverage.map says it reads, the shared core, the tool versions it runs through, and
-SANDBOX_RUNTIME. `pre` runs `nx run-many -t test`: a suite whose inputs did not change since it last
-passed is replayed from Nx's cache, and every suite whose inputs changed runs. So the apply waits on
-exactly what the change can break. The working tree is what Nx hashes, dirty edits and untracked
-files included, which is also what an apply deploys.
+tests/coverage.map says it reads, the shared core, the tool versions it runs through,
+SANDBOX_RUNTIME and RUN_MUTANTS. `pre` and `check` run `nx run-many -t test`: a suite whose inputs
+did not change since it last passed is replayed from Nx's cache, and every suite whose inputs changed
+runs. So the apply, or the commit, waits on exactly what the change can break. The working tree is
+what Nx hashes, dirty edits and untracked files included, which is also what an apply deploys; under
+the commit hook, git-staged-run has set the unstaged edits aside first.
 
 THE SANDBOX IS PART OF THE KEY. A suite can pass inside a Claude Code session's sandbox and fail in a
 terminal (one did: the sandbox could not write /tmp, so the leak the suite checks for could not
@@ -23,39 +30,47 @@ a pass recorded in a sandbox never replays in a terminal, nor the reverse.
 
 NODE COMES FROM THE REPOSITORY'S PIN. Nx is a repository dependency (package.json), run under the
 Node the repository pins. The pin is `[tools] node` in mise.toml, else .nvmrc while that file still
-exists; with both present they must agree, or the apply is refused naming both values. A mise.toml
+exists; with both present they must agree, or the run is refused naming both values. A mise.toml
 with no `[tools] node` leaves the pin to .nvmrc. Reading mise.toml needs tomllib (Python 3.11): under
-an older python3 a repository with a mise.toml refuses the apply, naming the fix. The pin is then
+an older python3 a repository with a mise.toml refuses the run, naming the fix. The pin is then
 selected by the first of these that applies:
   * where mise is active (DOTFILES_MISE_SHIMS set and not empty, which the base exports only on a
     machine whose chezmoi data sets miseActive) and `mise` is on PATH, every Node command runs as
     `mise exec node@<pin> --`, with mise's installing and network access switched off; a version
-    mise has not installed refuses the apply, naming `mise install node@<pin>`;
+    mise has not installed refuses the run, naming `mise install node@<pin>`;
   * with `fnm` on PATH, every Node command runs as `fnm exec --using=<pin>`; a version fnm has not
-    installed refuses the apply, naming `fnm install <version>`;
+    installed refuses the run, naming `fnm install <version>`;
   * otherwise the `node` on PATH is used only if its major version is the pin's; otherwise, or
-    with no node at all, the apply is refused, naming the fix.
+    with no node at all, the run is refused, naming the fix.
 The version is never installed from here: a download on the apply path is a side effect the apply
 should not have, and some machines must install through a mirror their owner configures.
 
-NPM CI ONLY WHEN THE INSTALL IS STALE. node_modules/.package-lock.json is npm's record of what is
+THE INSTALL MUST MATCH THE LOCKFILE. node_modules/.package-lock.json is npm's record of what is
 installed. It omits the root package and the optional packages for other platforms (Nx's native
 binary for each OS and CPU), so it is compared by entry rather than byte for byte: every installed
 entry must equal the lockfile's, and every lockfile entry that is not installed must be optional.
-Anything else, or a record that is missing or unreadable, runs `npm ci --no-audit --no-fund`; its
-failure refuses the apply. Residual: an optional package newly added for THIS platform alone, with
-no other entry changing, is not noticed; Nx fails loudly if its native binary is missing.
+Residual: an optional package newly added for THIS platform alone, with no other entry changing, is
+not noticed; Nx fails loudly if its native binary is missing. On a stale install (or a record that is
+missing or unreadable):
+  * `pre` and `post` run `npm ci --no-audit --no-fund`; its failure refuses the apply;
+  * `check` and `land` refuse, naming the `npm ci` to run. A commit or a landing that reaches the
+    network and rewrites node_modules would be a side effect of the gate, which a sandboxed session
+    may not even be allowed; refusing cannot skip a suite, and the fix is one command.
 
-UV RUNS OFFLINE. Nx runs each suite through tests/run-all.sh, which sets UV_OFFLINE=1 (a value the
-caller set stays), and nx_env sets it too, so a uv-script suite takes its packages from uv's cache.
-Both `pre` and `post --run` first run tests/seed-uv-cache.py, with the network, to fill that cache;
-a seed that fails is logged and the suites go ahead on what is cached.
+UV RUNS OFFLINE. nx_env gives Nx, and so every suite and `land`'s audit, UV_OFFLINE=1 (a value the
+caller set stays, whatever it is), so a uv-script suite takes its packages from uv's cache and never
+reaches a registry. Both `pre` and `post --run` first run tests/seed-uv-cache.py, with the network,
+to fill that cache; a seed that fails is logged and the suites go ahead on what is cached. A
+uv-script suite that fails on a package missing from that cache (uv says "was not found in the
+cache", "the network was disabled" or "Request failed after") gets one line naming the seed command:
+printed by `pre`, `check` and `land` with the failure, written into `post`'s log. Another failure,
+or a suite that is not a uv script, gets none.
 
 NX'S ENVIRONMENT. NX_DAEMON=false and NX_ISOLATE_PLUGINS=false, so Nx opens no socket: inside a
 sandbox no socket directory passes Nx's ownership walk (from Nx 24.0.3), and plugin workers need a
-socket as much as the daemon does. NX_TUI=false and --outputStyle=static, so the log is plain lines.
-NX_PARALLEL, unless the caller set it, is the CPU count up to 8, the concurrency tests/run-all.sh
-uses, so a cold apply is no slower than the runner it replaced.
+socket as much as the daemon does. NX_TUI=false and --outputStyle=static, so the log is plain lines,
+each task's output printed whole when it ends. NX_PARALLEL, unless the caller set it, is the CPU
+count up to 8.
 
 THE LEDGER. Every step below also appends a line to the machine's apply ledger,
 ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/apply.log, through the SOURCE copy of the
@@ -73,13 +88,35 @@ that is still going from one that died), then `post-pass` or
 `post-FAIL` (naming the failing suites and the log) when its run ends. A ledger failure of any kind
 is ignored here: it never changes a hook's exit code.
 
-SKIPS, loudly and with exit 0:
+THE REPORT. `pre` and `check` keep Nx's output in a log under $TMPDIR and print one summary line on a
+pass (how many suites ran, how many replayed from the cache), deleting the log. On a failure they
+name each failing suite, the log, and the command that re-runs one (`npx nx run <suite>:test`);
+`check` also prints an excerpt of each failing suite's output: its lines that say FAIL (at most 60,
+the rest counted), or its last 15 lines when none does. `land` prints Nx's output as it goes, since
+`land check` shows it to whoever runs it.
+
+LAND: THE SLOW TIER. `land` runs, in order, stopping at the first failure:
+  1. `nx run-many -t test --skip-nx-cache` with RUN_MUTANTS=1: every suite, none replayed, and the
+     suites that ship mutant tests (test-image-bump.py, test-fleet-canonicals-requests.py) run them;
+     every other run leaves them out, because each such suite deselects them unless RUN_MUTANTS=1;
+  2. verify-task-io (this tree's copy, private_dot_local/bin/executable_verify-task-io) over every
+     cached target, which is every suite but test-mise-installed.py (it checks the machine, so the
+     plugin never caches it): each suite run alone under an inotify watch, and every file
+     it reads or writes that its declared inputs do not cover reported, so a suite that reads a file
+     coverage.map does not give it cannot replay a stale pass. It runs without RUN_MUTANTS: the mutant
+     tests read the tool their suite already declares, and would multiply the audit's time.
+verify-task-io needs Linux and inotifywait (inotify-tools). Elsewhere `land` is refused before it
+runs anything, rather than landing with the audit skipped.
+
+SKIPS, loudly and with exit 0, for the apply only:
   * DOTFILES_SKIP_PRE_APPLY=1 (`pre`) or DOTFILES_SKIP_POST_APPLY=1 (`post`): for the apply a suite
     itself depends on, which cannot pass before that apply deploys what the suite needs;
   * a tool the suites need is not installed: on a fresh machine's first apply the tools arrive with
     or after that apply, and refusing it would leave the machine unable to bootstrap.
-Missing or mismatched Node is not a skip: Node is needed only to run the suites, so a machine with
-the other tools and no usable Node would otherwise apply untested every time.
+`check` and `land` never skip: a missing tool refuses them, naming it. The commit hook's own skip
+variable is the deliberate way past it. Missing or mismatched Node is never a skip: Node is needed
+only to run the suites, so a machine with the other tools and no usable Node would otherwise apply
+untested every time.
 
 A REFUSAL IS KEPT AND ANNOUNCED. `pre`'s report is moved from the temp directory into
 ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/pre-apply-<utc time>.log (the newest 5 are kept, apart
@@ -107,7 +144,9 @@ with one argument naming the failing suites and the log (the same hook, with its
 failing alert hook is ignored: the status file and the ledger hold the result.
 
 Exit: `pre` 0 the suites passed, or skipped; 1 a suite failed or the suites could not be run (the
-apply is aborted; the ledger and alert never change this). `post` 0 always. `post --run` 0 a pass (or another run holds the lock), 1 a failure.
+apply is aborted; the ledger and alert never change this). `post` 0 always. `post --run` 0 a pass
+(or another run holds the lock), 1 a failure. `check` and `land` 0 a pass; 1 a failure, or the suites
+could not be run.
 
 Standard library only, and Python 3.9 syntax: macOS's command-line tools ship that python3, and a
 hook may meet it first on PATH (tests/test-python39-syntax.sh checks this file).
@@ -383,23 +422,102 @@ def nx_summary(lines: list) -> str:
     return " ".join(keep) or (lines[-1].strip() if lines else "")
 
 
-def failures(lines: list) -> tuple:
-    """(runner lines, suite files): run-all's FAIL lines, and the suites Nx says failed."""
-    shown = [ln for ln in lines if ln.startswith("FAIL ") or ln.startswith("run-all:")]
-    suites = []
+TASK_START = re.compile(r"^> nx run (\S+):" + TARGET + r"\b")
+FAILED_TASK = re.compile(r"^\s*-\s+(\S+):" + TARGET + r"\b")
+
+
+def task_blocks(lines: list) -> dict:
+    """Each task's output, by project: static output prints a task's lines whole when it ends, after
+    a `> nx run <project>:test` line and the `> <command>` line Nx echoes."""
+    blocks, current = {}, None
     for ln in lines:
-        m = re.match(r"^FAIL +(test-\S+)", ln)
-        if m and m.group(1) not in suites:
-            suites.append(m.group(1))
-    for ln in lines:
-        m = re.match(r"^\s*-\s+suite-(\S+):" + TARGET + r"\b", ln)
-        if not m:
+        m = TASK_START.match(ln)
+        if m:
+            current = m.group(1)
+            blocks[current] = []
             continue
+        if current is None:
+            continue
+        if ln.startswith(" NX   "):
+            current = None
+            continue
+        if not any(x.strip() for x in blocks[current]) and ln.startswith("> "):
+            continue
+        blocks[current].append(ln)
+    return blocks
+
+
+def suite_file(project: str) -> str:
+    """The suite file a `suite-<name>` project runs, or the project name when no file matches."""
+    if project.startswith("suite-"):
         for ext in (".sh", ".py"):
-            name = f"test-{m.group(1)}{ext}"
-            if (HERE / name).exists() and name not in suites:
-                suites.append(name)
-    return shown, suites
+            name = "test-" + project[len("suite-"):] + ext
+            if (HERE / name).exists():
+                return name
+    return project
+
+
+def failures(lines: list) -> list:
+    """The projects Nx lists as failed, in its order."""
+    out = []
+    for ln in lines:
+        m = FAILED_TASK.match(ln)
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def excerpt(block: list) -> list:
+    """A failing suite's lines that say FAIL (at most 60, the rest counted), or its last 15."""
+    said = [ln for ln in block if "FAIL" in ln]
+    if not said:
+        return [ln for ln in block if ln.strip()][-15:]
+    if len(said) > 60:
+        return said[:60] + [f"... {len(said) - 60} more FAIL lines not shown"]
+    return said
+
+
+UV_CACHE_MISS = re.compile(r"was not found in the cache|network was disabled|Request failed after")
+
+
+def is_uv_suite(name: str) -> bool:
+    try:
+        with open(HERE / name, errors="replace") as f:
+            return "uv run --script" in f.readline()
+    except OSError:
+        return False
+
+
+def cache_misses(lines: list, failed: list) -> dict:
+    """{project: the line naming the seed command}, for each failed uv-script suite whose output
+    says a package was missing from uv's cache."""
+    blocks = task_blocks(lines)
+    out = {}
+    for project in failed:
+        name = suite_file(project)
+        if is_uv_suite(name) and any(UV_CACHE_MISS.search(ln) for ln in blocks.get(project, [])):
+            out[project] = (f"uv has no cached package for {name}; fill the cache with: "
+                            f"python3 tests/seed-uv-cache.py (needs the network)")
+    return out
+
+
+def rerun_hint(project: str) -> str:
+    return f"npx nx run {project}:{TARGET} --skip-nx-cache"
+
+
+def open_log(tag: str):
+    tmp = os.environ.get("TMPDIR") or "/tmp"
+    fd, name = tempfile.mkstemp(prefix=f"dotfiles-{tag}.", dir=tmp)
+    return os.fdopen(fd, "w"), Path(name)
+
+
+def require_install(prefix: list) -> None:
+    """Refuse a gate whose node_modules does not hold what package-lock.json names."""
+    current, why = install_is_current(SRC)
+    if not current:
+        cmd = " ".join(prefix + ["npm", "ci"]) if prefix else "npm ci"
+        raise Refused(f"node_modules does not hold what package-lock.json names ({why}). Install "
+                      f"it with `{cmd}` in {SRC}, then run this again")
 
 
 # --- pre -------------------------------------------------------------------------------------------
@@ -440,15 +558,13 @@ def pre() -> int:
             " packages) and the next apply runs the suites.")
         ledger("skipped", "suites tools not installed: " + " ".join(missing))
         return 0
-    tmp = os.environ.get("TMPDIR") or "/tmp"
     try:
-        fd, name = tempfile.mkstemp(prefix="dotfiles-pre-apply.", dir=tmp)
+        log, logpath = open_log("pre-apply")
     except OSError:
         say("pre-apply", "no temp file for the log; apply refused")
         refuse("none ran (no temp file for the log)", None)
         return 1
-    logpath = Path(name)
-    with os.fdopen(fd, "w") as log:
+    with log:
         try:
             prefix, node, env = select_node(env)
             installed = ensure_install(prefix, env, log)
@@ -468,17 +584,128 @@ def pre() -> int:
         say("pre-apply", nx_summary(lines))
         logpath.unlink()
         return 0
-    shown, suites = failures(lines)
+    failed = failures(lines)
     logpath = keep_report(logpath)
     print("", file=sys.stderr)
     say("pre-apply", "a suite failed -- apply ABORTED, nothing was deployed:")
-    for ln in shown or lines[-15:]:
-        print("  " + ln, file=sys.stderr)
+    misses = cache_misses(lines, failed)
+    for project in failed:
+        print(f"  FAIL   {suite_file(project)}", file=sys.stderr)
+        if project in misses:
+            print(f"         {misses[project]}", file=sys.stderr)
+    if not failed:
+        for ln in lines[-15:]:
+            print("  " + ln, file=sys.stderr)
     print(f"\n  why, in full: {logpath}", file=sys.stderr)
-    for s in suites:
-        print(f"  re-run one:   sh {HERE}/run-all.sh --only {s}", file=sys.stderr)
-    refuse("suites failed: " + (", ".join(suites) or "none named, see the report"), logpath)
+    for project in failed:
+        print(f"  re-run one:   {rerun_hint(project)}", file=sys.stderr)
+    refuse("suites failed: " + (", ".join(suite_file(p) for p in failed) or "none named, see the report"), logpath)
     return 1
+
+
+# --- check: the commit gate and publish-check -------------------------------------------------------
+
+def check() -> int:
+    env = hook_env()
+    missing = missing_tools(env)
+    if missing:
+        say("suites", "not installed: " + " ".join(missing) + ", which the suites need; refused."
+            " Install them (the Brewfile, or the distribution packages).")
+        return 1
+    try:
+        log, logpath = open_log("suites")
+    except OSError:
+        say("suites", "no temp file for the log; refused")
+        return 1
+    with log:
+        try:
+            prefix, node, env = select_node(env)
+            require_install(prefix)
+            say("suites", f"running the suites through Nx ({node}); a suite whose inputs are"
+                " unchanged replays from Nx's cache, and output shows only if one fails...")
+            rc = run_nx(prefix, env, [], log)
+        except Refused as e:
+            say("suites", f"{e}.")
+            log.close()
+            logpath.unlink()
+            return 1
+    lines = read_log(logpath)
+    if rc == 0:
+        say("suites", nx_summary(lines))
+        logpath.unlink()
+        return 0
+    failed = failures(lines)
+    blocks = task_blocks(lines)
+    print("", file=sys.stderr)
+    say("suites", "a suite failed:")
+    misses = cache_misses(lines, failed)
+    for project in failed:
+        print(f"  FAIL   {suite_file(project)}", file=sys.stderr)
+        for ln in excerpt(blocks.get(project, [])):
+            print("         | " + ln, file=sys.stderr)
+        if project in misses:
+            print(f"         {misses[project]}", file=sys.stderr)
+    if not failed:
+        for ln in lines[-15:]:
+            print("  " + ln, file=sys.stderr)
+    print(f"\n  why, in full: {logpath}", file=sys.stderr)
+    for project in failed:
+        print(f"  re-run one:   {rerun_hint(project)}", file=sys.stderr)
+    return 1
+
+
+# --- land: the landing gate --------------------------------------------------------------------------
+
+AUDIT = SRC / "private_dot_local" / "bin" / "executable_verify-task-io"
+
+
+def land() -> int:
+    env = hook_env()
+    if not sys.platform.startswith("linux"):
+        say("land", f"refused on {sys.platform}: the gate's input audit (verify-task-io) traces file"
+            " access with inotify, which is Linux only. Land from a Linux machine.")
+        return 1
+    missing = missing_tools(env)
+    if shutil.which("inotifywait", path=env.get("PATH", "")) is None:
+        missing.append("inotifywait (inotify-tools)")
+    if missing:
+        say("land", "not installed: " + " ".join(missing) + "; refused before running anything.")
+        return 1
+    try:
+        prefix, node, env = select_node(env)
+        require_install(prefix)
+    except Refused as e:
+        say("land", f"{e}.")
+        return 1
+    nx = SRC / "node_modules" / ".bin" / "nx"
+    say("land", f"1/2 every suite through Nx, uncached, with the mutant tests ({node})")
+    mutants = dict(nx_env(env), RUN_MUTANTS="1")
+    cmd = prefix + [str(nx), "run-many", "-t", TARGET, "--skip-nx-cache", "--outputStyle=static"]
+    # Nx's output is shown as it goes and kept, so a cache miss can be named after it.
+    proc = subprocess.Popen(cmd, env=mutants, cwd=str(SRC), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
+                            errors="replace")
+    lines = []
+    for ln in proc.stdout:
+        sys.stdout.write(ln)
+        sys.stdout.flush()
+        lines.append(ANSI.sub("", ln).rstrip())
+    rc = proc.wait()
+    if rc != 0:
+        for hint in cache_misses(lines, failures(lines)).values():
+            say("land", hint)
+        say("land", f"the suites failed (nx exit {rc}); the input audit did not run.")
+        return 1
+    say("land", "2/2 verify-task-io over every suite: does each declare every file it reads?")
+    audit_env = nx_env(env)
+    audit_env.pop("RUN_MUTANTS", None)
+    rc = subprocess.run(prefix + ["uv", "run", "--script", str(AUDIT), "--workspace", str(SRC)],
+                        env=audit_env, cwd=str(SRC), stdin=subprocess.DEVNULL).returncode
+    if rc != 0:
+        say("land", f"verify-task-io failed (exit {rc}; its header names each finding).")
+        return 1
+    say("land", "passed: every suite with its mutants, and every suite's inputs audited.")
+    return 0
 
 
 # --- post ------------------------------------------------------------------------------------------
@@ -601,7 +828,13 @@ def post_body(env: dict, sd: Path) -> int:
     if rc == 0:
         ledger("post-pass", f"log: {logpath}", head)
         return 0
-    _, suites = failures(read_log(logpath))
+    lines = read_log(logpath)
+    misses = cache_misses(lines, failures(lines))
+    if misses:
+        with open(logpath, "a") as log:
+            for hint in misses.values():
+                log.write(hint + "\n")
+    suites = [suite_file(p) for p in failures(lines)]
     what = ", ".join(suites) or (f"none ran ({refusal})" if refusal else "unknown")
     ledger("post-FAIL", f"suites: {what}; log: {logpath}", head)
     alert_hook(f"dotfiles post-apply: suites failed after the apply: {what}; log: {logpath}")
@@ -615,7 +848,11 @@ def main(argv: list) -> int:
         return post_detach()
     if argv == ["post", "--run"]:
         return post_run()
-    print("usage: apply-suites.py pre | post [--run]", file=sys.stderr)
+    if argv == ["check"]:
+        return check()
+    if argv == ["land"]:
+        return land()
+    print("usage: apply-suites.py pre | post [--run] | check | land", file=sys.stderr)
     return 2
 
 

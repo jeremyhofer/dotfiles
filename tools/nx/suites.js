@@ -1,34 +1,39 @@
 'use strict';
 // suites.js -- an Nx plugin that makes each test suite in tests/ one Nx project with one cached
-// target, so an apply (tests/apply-suites.py) or a landing gate can replay a suite whose inputs did
-// not change, and runs every suite whose inputs did.
+// target. Every run of the suites goes through it: the commit hook and publish-check (cached), the
+// apply (cached before, uncached after) and the landing gate (uncached, with the mutant tests), all
+// by way of tests/apply-suites.py. A suite whose inputs did not change since it last passed replays
+// from Nx's cache; every suite whose inputs changed runs.
 //
-// THE MAP IS THE ONLY SOURCE OF TRUTH. tests/coverage.map says what each suite reads, and
-// tests/select-suites.sh already turns it into the commit-time selection. This file parses the
-// SAME lines with the SAME glob semantics, so the commit tier and the cache can never disagree
-// about a suite's reach: a path that selects a suite at commit is an input that invalidates its
-// cache entry, and the reverse. tests/test-nx-suites.sh holds the two against each other.
+// THE MAP IS THE ONLY SOURCE OF TRUTH. tests/coverage.map says what each suite reads; this file
+// turns each line into the target's inputs, so a path a suite reads is a path whose edit re-runs it.
 //
 // A MALFORMED MAP THROWS. A partial graph would read as "this suite reads less than it does",
 // which replays a stale green from the cache. A hard failure of every Nx command is the cheaper
-// error, so each finding select-suites.sh --check refuses (and its exit 2 parse errors) throws here.
+// error, so a line naming no suite, a line with no globs, a glob matching no tracked file, a suite
+// with no line and a glob Nx would read differently all throw here.
+//
+// THE MAP MUST ALSO COVER THE TREE, and that is checked by `node tools/nx/suites.js --check`
+// (COVERAGE below), run by tests/test-coverage-map.py, rather than thrown: a tracked file that no
+// suite claims re-runs nothing when it changes, so it is refused until a line claims or exempts it,
+// and so is a suite that names a tracked path it does not claim.
 //
 // The map's glob dialect: `*` any run but `/`, `**` any run including `/`, `?` one character but
-// `/`; every other character is literal. The selector does that with an awk regex; Nx hashes
-// file inputs with a Rust glob matcher whose dialect differs, so GLOB TRANSLATION below is the
-// one place the two meet.
+// `/`; every other character is literal. The coverage check reads globs as regexes in that
+// dialect; Nx hashes file inputs with a Rust glob matcher whose dialect differs, so GLOB
+// TRANSLATION below is the one place the two meet, and tests/test-nx-suites.sh holds them together.
 //
-// SERIAL SUITES. tests/run-all.sh runs a suite marked `# run-all: serial` alone, after the others,
-// because it asserts on CPU or wall time and fails under load with no defect. The plugin reads the
-// marker the way the runner does (the exact line among the first 10) and gives that target
-// `parallelism: false`, which Nx's scheduler (tasks-schedule.js canBeScheduled, Nx 24.0.2) starts
-// only when nothing else runs and lets nothing start beside: the same "alone". This is not a
-// throttle on machine load: such a suite's verdict measures CPU or wall time, so the CPU is the
-// resource it needs to itself, as another target needs a fixed port. Task concurrency stays at
-// Nx's default (no `parallel` in nx.json); a machine that wants more sets NX_PARALLEL.
+// SERIAL SUITES. A suite marked `# run-all: serial` (the exact line among its first 10; the name is
+// the retired shell runner's, kept so no suite had to change) asserts on CPU or wall time and fails
+// under load with no defect. The plugin gives that target `parallelism: false`, which Nx's scheduler
+// (tasks-schedule.js canBeScheduled, Nx 24.0.2) starts only when nothing else runs and lets nothing
+// start beside. This is not a throttle on machine load: such a suite's verdict measures CPU or wall
+// time, so the CPU is the resource it needs to itself, as another target needs a fixed port. Task
+// concurrency stays at Nx's default (no `parallel` in nx.json); a machine that wants more sets
+// NX_PARALLEL.
 //
-// MAP_ENV exists for tests/test-nx-suites.sh alone: it points the plugin at a scratch map so a
-// broken map can be tried without touching the real one.
+// MAP_ENV exists for tests/test-nx-suites.sh and tests/test-coverage-map.py alone: it points the
+// plugin at a scratch map so a broken map can be tried without touching the real one.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -58,16 +63,70 @@ const RUNTIME_INPUTS = [
   MISE_INPUT,
 ];
 
+// THE SET OF TRACKED FILES. A whole-tree check (a `tree` line), and a suite named below, judges the
+// files git tracks, so its verdict can change when a file is added, deleted or staged while no
+// claimed file's content changes. Those targets also hash the index's file list. Under the commit
+// hook that is what is staged, which is what such a check reads.
+const TRACKED_LIST = 'git ls-files';
+const READS_TRACKED_LIST = {
+  'test-nx-suites.sh': 'the plugin refuses a glob matching no tracked file, and the suite copies every tracked file',
+  'test-npm-registry.py': 'refuses a tracked .npmrc anywhere',
+};
+
+// What else a suite's verdict depends on that no file glob can name, by suite. The plugin reads
+// the first 10 lines of every suite (its interpreter and the serial marker), so the suite that
+// tests the plugin hashes exactly those lines rather than every suite's whole text, which would
+// re-run it on every suite edit.
+const EXTRA_RUNTIME = {
+  'test-nx-suites.sh': ['for f in tests/test-*; do echo "$f"; head -n 10 "$f"; done'],
+};
+
 // THE CONTEXT A SUITE RAN IN. A suite can pass inside a Claude Code session's sandbox and fail in a
 // terminal: one did, because the sandbox could not write /tmp, so the leak it checks for could not
 // happen there. Claude Code sets SANDBOX_RUNTIME in a sandboxed command, so hashing the variable
-// keeps a pass recorded in a sandbox from replaying in a terminal, and the reverse. Every suite's
-// target carries it, since which suites the sandbox changes cannot be known in advance.
-const ENV_INPUTS = ['SANDBOX_RUNTIME'];
+// keeps a pass recorded in a sandbox from replaying in a terminal, and the reverse. RUN_MUTANTS
+// selects the slow mutant tests a suite ships (the landing gate sets it), so a pass without them
+// never replays for a run that asked for them. Every suite's target carries both, since which suites
+// they change cannot be known in advance.
+const ENV_INPUTS = ['SANDBOX_RUNTIME', 'RUN_MUTANTS'];
 
-// The map's globs, as the selector's regex builder reads them (select-suites.sh glob2re). Kept
-// as a regex, not a Nx glob, for the one job a Nx glob cannot do here: telling whether a glob
-// matches any tracked file, which is how a dead line is found.
+// HOW ONE SUITE RUNS. The interpreter comes from the suite's shebang: a zsh suite run through `sh`
+// fails on zsh-only syntax, which reads like a broken test rather than a broken runner, and a PEP
+// 723 suite (`#!/usr/bin/env -S uv run --script`) runs as `uv run --script`. A machine without the
+// interpreter fails the target (exit 127), never a silent pass. The suite's stdin is /dev/null.
+// The environment, for every suite:
+//   * git ignores the machine's global and system config (tests/git-isolated.gitconfig), so no
+//     suite can fire the machine's commit hooks or sign; TEST_GIT_ISOLATED tells
+//     tests/git-isolate.sh it is already done. The path is built from the task's working directory
+//     (the workspace root) in the command, never written into the graph, so every checkout of the
+//     repository computes the same task hash and shares one cache;
+//   * Python writes no bytecode and pytest no cache directory: written inside the checkout they are
+//     files one suite leaves for the next to read, which a cache hit cannot restore and Nx cannot hash.
+const SUITE_ENV = {
+  GIT_CONFIG_NOSYSTEM: '1',
+  TEST_GIT_ISOLATED: '1',
+  PYTHONDONTWRITEBYTECODE: '1',
+  PYTEST_ADDOPTS: '-p no:cacheprovider',
+};
+const SHELLS = ['sh', 'bash', 'zsh'];
+
+function suiteCommand(suite, head) {
+  const bang = head[0] || '';
+  let interp;
+  if (bang.startsWith('#!') && bang.includes('uv run --script')) interp = 'uv run --script';
+  else {
+    const m = bang.startsWith('#!') ? bang.trimEnd().match(/[/ ]([^/ ]+)$/) : null;
+    interp = m ? m[1] : '';
+    if (!SHELLS.includes(interp)) {
+      fail('tests/' + suite + ': its first line names no interpreter this plugin runs (sh, bash, zsh, or `uv run --script`): ' + (bang || '(empty)'));
+    }
+  }
+  return 'GIT_CONFIG_GLOBAL="$PWD/tests/git-isolated.gitconfig" exec ' + interp + ' tests/' + suite + ' < /dev/null';
+}
+
+// The map's globs as regexes in the map's own dialect. Kept as a regex, not a Nx glob, for the jobs
+// a Nx glob cannot do here: telling whether a glob matches any tracked file (a dead line), and the
+// coverage check.
 function globToRegExp(glob) {
   let out = '^';
   for (let i = 0; i < glob.length; i++) {
@@ -109,8 +168,8 @@ function fail(msg) {
   throw new Error('suites plugin: ' + msg);
 }
 
-// Parse the map the way the selector's awk does: `#` starts a comment anywhere on a line, fields
-// split on blanks and tabs, a leading keyword (or else a suite file name) picks the line form.
+// Parse the map: `#` starts a comment anywhere on a line, fields split on blanks and tabs, a
+// leading keyword (or else a suite file name) picks the line form.
 function parseMap(mapPath, suites) {
   const known = new Set(suites);
   const entries = [];
@@ -133,24 +192,20 @@ function parseMap(mapPath, suites) {
     if (owner !== '' && !known.has(owner)) fail(where + ': names no suite in tests/: ' + owner);
     if (f.length < first + 1) fail(where + ': a line with no globs');
     if (owner !== '') hasLine.add(owner);
-    for (const glob of f.slice(first)) entries.push({ kind, owner, glob, where });
+    for (const glob of f.slice(first)) entries.push({ kind, owner, glob, where, re: globToRegExp(glob) });
   });
   return { entries, hasLine };
 }
 
-// A suite whose verdict depends on something no file input can name runs every time, with its
-// reason here. test-nx-suites.sh depends on the SET of tracked files (the plugin refuses a glob
-// matching none, and the suite copies every tracked file into a scratch workspace), so adding or
-// deleting any file can change it while no claimed file's content changes.
+// A suite whose verdict depends on something no input can name at all runs every time, with its
+// reason here.
 const UNCACHED = {
-  'test-nx-suites.sh': 'reads the set of tracked files, which no input glob names',
   'test-mise-installed.py': "checks this machine's mise, its mise configuration and files under $HOME, which no input names",
 };
 
 const SERIAL_MARK = '# run-all: serial';
-function isSerial(root, suite) {
-  const lines = fs.readFileSync(path.join(root, 'tests', suite), 'utf8').split('\n').slice(0, 10);
-  return lines.includes(SERIAL_MARK);
+function suiteHead(root, suite) {
+  return fs.readFileSync(path.join(root, 'tests', suite), 'utf8').split('\n').slice(0, 10);
 }
 
 function listSuites(root) {
@@ -161,13 +216,16 @@ function listSuites(root) {
     .sort();
 }
 
-// Tracked files, as the selector's --check reads them (the index), so both judge the same tree.
+// Tracked files, as git's index lists them, so under the commit hook the map is judged against
+// what is staged.
 function trackedFiles(root) {
   const out = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 });
   return out.split('\0').filter((p) => p !== '');
 }
 
-function buildProjects(root) {
+// The map, read and held to the rules that throw. Returns what both the graph and the coverage
+// check need.
+function readMap(root) {
   const mapPath = process.env[MAP_ENV] || path.join(root, MAP_FILE);
   const suites = listSuites(root);
   const { entries, hasLine } = parseMap(mapPath, suites);
@@ -175,41 +233,48 @@ function buildProjects(root) {
   for (const e of entries) {
     // Translate first: a glob Nx would read differently is refused whether or not it matches a file.
     if (e.kind === 'suite' || e.kind === 'tree' || e.kind === 'core') toNxGlob(e.glob);
-    const re = globToRegExp(e.glob);
-    if (!tracked.some((p) => re.test(p))) fail(e.where + ': ' + e.kind + ' glob ' + e.glob + ' matches no tracked file');
+    if (!tracked.some((p) => e.re.test(p))) fail(e.where + ': ' + e.kind + ' glob ' + e.glob + ' matches no tracked file');
   }
   for (const s of suites) if (!hasLine.has(s)) fail(s + ' has no line in the map: every suite declares what it reads');
+  return { mapPath, suites, entries, tracked };
+}
 
+function projectName(suite) {
+  return 'suite-' + suite.replace(/^test-/, '').replace(/\.(sh|py)$/, '');
+}
+
+function buildProjects(root) {
+  const { suites, entries } = readMap(root);
   const core = entries.filter((e) => e.kind === 'core').map((e) => e.glob);
   const projects = {};
   // TWO SUITE FILES, ONE NAME: `test-x.sh` and `test-x.py` both become `suite-x`, and the second
-  // silently replaced the first, so one suite was neither run nor cached by Nx while run-all.sh still
-  // ran both. A port passes through exactly that state (the new suite lands beside the old), so it is
-  // refused here, naming both files.
+  // silently replaced the first, so one suite was neither run nor cached. A port passes through
+  // exactly that state (the new suite lands beside the old), so it is refused here, naming both.
   const named = {};
   for (const s of suites) {
-    const name = 'suite-' + s.replace(/^test-/, '').replace(/\.(sh|py)$/, '');
+    const name = projectName(s);
     if (named[name]) fail(named[name] + ' and ' + s + ' both name the project ' + name + ': rename one, or delete the one a port replaces');
     named[name] = s;
   }
   for (const s of suites) {
-    const name = 'suite-' + s.replace(/^test-/, '').replace(/\.(sh|py)$/, '');
+    const head = suiteHead(root, s);
+    const mine = entries.filter((e) => (e.kind === 'suite' || e.kind === 'tree') && e.owner === s);
     // A suite file claims itself; a `tree` line is a whole-tree check, whose globs are inputs too.
-    const globs = ['tests/' + s]
-      .concat(entries.filter((e) => (e.kind === 'suite' || e.kind === 'tree') && e.owner === s).map((e) => e.glob))
-      .concat(core);
-    const unique = Array.from(new Set(globs));
-    projects['tests/suites/' + name] = {
-      name,
+    const globs = Array.from(new Set(['tests/' + s].concat(mine.map((e) => e.glob)).concat(core)));
+    const runtime = RUNTIME_INPUTS.slice();
+    if (mine.some((e) => e.kind === 'tree') || s in READS_TRACKED_LIST) runtime.push(TRACKED_LIST);
+    runtime.push(...(EXTRA_RUNTIME[s] || []));
+    projects['tests/suites/' + projectName(s)] = {
+      name: projectName(s),
       targets: {
         test: {
           executor: 'nx:run-commands',
-          options: { command: 'sh tests/run-all.sh --only ' + s },
+          options: { command: suiteCommand(s, head), env: SUITE_ENV },
           cache: !(s in UNCACHED),
-          ...(isSerial(root, s) ? { parallelism: false } : {}),
-          inputs: unique
+          ...(head.includes(SERIAL_MARK) ? { parallelism: false } : {}),
+          inputs: globs
             .map((g) => '{workspaceRoot}/' + toNxGlob(g))
-            .concat(RUNTIME_INPUTS.map((r) => ({ runtime: r })))
+            .concat(runtime.map((r) => ({ runtime: r })))
             .concat(ENV_INPUTS.map((v) => ({ env: v }))),
           outputs: [],
         },
@@ -226,9 +291,77 @@ function buildProjects(root) {
   return projects;
 }
 
+// COVERAGE: does the map cover the tracked tree? Two findings, each a way a change could re-run
+// nothing that reads it:
+//   * unclaimed: a tracked file that no suite claims, the core does not hold and no exemption names
+//     (a suite file claims itself; a `tree` or `refs` line claims nothing);
+//   * unclaimed read: a suite whose text names a tracked path outside tests/ (`dir/file`, or a tool
+//     as `executable_<name>`) that its own lines and the core do not cover. A name that is only
+//     fixture text is declared with `refs`.
+// A name counts only whole: not inside a longer path or word.
+function namesWhole(text, word) {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(word, from);
+    if (at < 0) return false;
+    const before = at > 0 ? text[at - 1] : '';
+    const after = text[at + word.length] || '';
+    if (!/[A-Za-z0-9_.-]/.test(before) && !/[A-Za-z0-9_.-]/.test(after)) return true;
+    from = at + 1;
+  }
+}
+
+function coverageFindings(root) {
+  const { suites, entries, tracked } = readMap(root);
+  const findings = [];
+  const claims = entries.filter((e) => e.kind === 'core' || e.kind === 'suite' || e.kind === 'exempt');
+  for (const p of tracked) {
+    if (/^tests\/test-[^/]*$/.test(p)) continue;
+    if (!claims.some((e) => e.re.test(p))) findings.push('unclaimed: ' + p + ' -- no suite claims it and no exemption names it');
+  }
+  const named = tracked.filter((p) => p.includes('/') && !p.startsWith('tests/'));
+  for (const s of suites) {
+    const text = fs.readFileSync(path.join(root, 'tests', s), 'utf8');
+    const covers = entries.filter((e) => e.kind === 'core' || (e.owner === s && e.kind !== 'exempt'));
+    for (const p of named) {
+      const tool = p.startsWith('private_dot_local/bin/executable_') ? p.slice(p.lastIndexOf('/') + 1) : null;
+      if (!namesWhole(text, p) && !(tool && namesWhole(text, tool))) continue;
+      if (!covers.some((e) => e.re.test(p))) {
+        findings.push('unclaimed read: ' + s + ' names ' + p + ' but does not claim it (claim it, or `refs` if it is fixture text)');
+      }
+    }
+  }
+  return { findings, tracked: tracked.length };
+}
+
 const createNodes = [
   MAP_FILE,
   (_files, _options, context) => [[MAP_FILE, { projects: buildProjects(context.workspaceRoot) }]],
 ];
 
-module.exports = { createNodes, createNodesV2: createNodes, globToRegExp, MISE_INPUT };
+module.exports = { createNodes, createNodesV2: createNodes, globToRegExp, readMap, buildProjects, coverageFindings, projectName, MISE_INPUT };
+
+// `node tools/nx/suites.js --check [<workspace root>]`: the coverage check, run by
+// tests/test-coverage-map.py. Exit 0 the map covers the tree; 1 a finding (each printed); 2 the map
+// itself is refused (the error the plugin would throw).
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args[0] !== '--check' || args.length > 2) {
+    process.stderr.write('usage: node tools/nx/suites.js --check [<workspace root>]\n');
+    process.exit(2);
+  }
+  const root = path.resolve(args[1] || path.join(__dirname, '..', '..'));
+  let result;
+  try {
+    result = coverageFindings(root);
+  } catch (e) {
+    process.stderr.write(e.message + '\n');
+    process.exit(2);
+  }
+  for (const f of result.findings) process.stdout.write('  ' + f + '\n');
+  if (result.findings.length) {
+    process.stdout.write('suites --check: ' + result.findings.length + ' finding(s) in ' + MAP_FILE + '\n');
+    process.exit(1);
+  }
+  process.stdout.write('suites --check: the map covers all ' + result.tracked + ' tracked files\n');
+}

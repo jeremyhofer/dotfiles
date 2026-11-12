@@ -95,30 +95,37 @@ echo x >> "$tmp/s/bin/other"; git -C "$tmp/s" add bin/other
 PATH="/usr/bin:/bin" git -C "$tmp/s" commit -qm nohelper > "$tmp/out" 2>&1; rc=$?
 check "no git-staged-run on PATH: refused, never run on the working tree" '[ "$rc" != 0 ] && grep -q "git-staged-run is not installed" "$tmp/out"'
 
-# A repository that ships tests/select-suites.sh: the hook hands it the staged paths (deletions too)
-# and runs nothing else; run-all.sh here always fails, so calling it directly would refuse.
-mkrepo "$tmp/sel" 1
-cat > "$tmp/sel/tests/select-suites.sh" <<'EOF'
-#!/bin/sh
-[ "$1" = --run ] || exit 97
-cat > "$SEL_LOG"
-echo "select-suites: stand-in selector"
-exit "$(cat "$SEL_RC" 2>/dev/null || echo 0)"
+# A repository with an nx.json: the hook runs `python3 tests/apply-suites.py check` (here a stand-in
+# that records its arguments and what bin/tool held when it ran) and nothing else; run-all.sh here
+# always fails, so running it would refuse.
+mkrepo "$tmp/nx" 1
+echo '{}' > "$tmp/nx/nx.json"
+cat > "$tmp/nx/tests/apply-suites.py" <<'EOF'
+import os, sys
+with open(os.environ["NX_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + " " + open("bin/tool").read().strip() + "\n")
+print("suites: stand-in check", file=sys.stderr)
+sys.exit(int(open(os.environ["NX_RC"]).read()))
 EOF
-echo gone > "$tmp/sel/bin/old"; echo keep > "$tmp/sel/bin/tool"; git -C "$tmp/sel" add -A; git -C "$tmp/sel" commit -qm sel --no-verify
-sh "$tool" "$tmp/sel" --label sel --skip-var SKIP_SEL > /dev/null 2>&1
-export SEL_LOG="$tmp/sel.log" SEL_RC="$tmp/sel.rc"; echo 0 > "$SEL_RC"
-git -C "$tmp/sel" rm -q bin/old
-commit_one "$tmp/sel" bin/tool; rc=$?
-check "with a selector: its pass lets the commit through, run-all.sh is not run directly" '[ "$rc" = 0 ] && ! grep -q suite-ran "$tmp/out"'
-check "with a selector: it gets the staged paths, a deleted one included" 'grep -qx bin/tool "$SEL_LOG" && grep -qx bin/old "$SEL_LOG"'
-check "with a selector: its one-line summary is shown" 'grep -q "select-suites: stand-in selector" "$tmp/out"'
-echo 1 > "$SEL_RC"
-commit_one "$tmp/sel" bin/tool; rc=$?
-check "with a selector: its failure refuses the commit and names how to re-run" '[ "$rc" != 0 ] && grep -q "a selected suite failed" "$tmp/out" && grep -q "select-suites.sh --run" "$tmp/out"'
-git -C "$tmp/sel" reset -q; : > "$SEL_LOG"
-commit_one "$tmp/sel" docs/page.md; rc=$?
-check "with a selector: a documentation-only commit still skips everything" '[ "$rc" = 0 ] && [ ! -s "$SEL_LOG" ]'
+echo keep > "$tmp/nx/bin/tool"; git -C "$tmp/nx" add -A; git -C "$tmp/nx" commit -qm nx --no-verify
+sh "$tool" "$tmp/nx" --label nx --skip-var SKIP_NX > /dev/null 2>&1
+export NX_LOG="$tmp/nx.log" NX_RC="$tmp/nx.rc"; echo 0 > "$NX_RC"
+commit_one "$tmp/nx" bin/tool; rc=$?
+check "with an nx.json: a passing check lets the commit through, run-all.sh is not run" '[ "$rc" = 0 ] && ! grep -q suite-ran "$tmp/out"'
+check "with an nx.json: the hook runs apply-suites.py check, and its output is shown" 'grep -q "^check keep" "$NX_LOG" && grep -q "suites: stand-in check" "$tmp/out"'
+echo staged-version > "$tmp/nx/bin/tool"; git -C "$tmp/nx" add bin/tool; echo on-disk > "$tmp/nx/bin/tool"; : > "$NX_LOG"
+git -C "$tmp/nx" commit -qm staged > "$tmp/out" 2>&1
+check "with an nx.json: the check runs on what is staged (git-staged-run)" 'grep -qx "check staged-version" "$NX_LOG" && [ "$(cat "$tmp/nx/bin/tool")" = on-disk ]'
+git -C "$tmp/nx" checkout -q -- bin/tool
+echo 1 > "$NX_RC"
+commit_one "$tmp/nx" bin/tool; rc=$?
+check "with an nx.json: a failing check refuses the commit and names how to re-run" '[ "$rc" != 0 ] && grep -q "nx pre-commit: commit refused" "$tmp/out" && grep -q "python3 tests/apply-suites.py check" "$tmp/out" && grep -q SKIP_NX "$tmp/out"'
+git -C "$tmp/nx" reset -q; : > "$NX_LOG"
+commit_one "$tmp/nx" docs/page.md; rc=$?
+check "with an nx.json: a documentation-only commit still skips everything" '[ "$rc" = 0 ] && [ ! -s "$NX_LOG" ]'
+git -C "$tmp/nx" rm -q tests/apply-suites.py; echo 0 > "$NX_RC"
+commit_one "$tmp/nx" bin/tool; rc=$?
+check "an nx.json without tests/apply-suites.py is refused, not skipped" '[ "$rc" != 0 ] && grep -q "tests/apply-suites.py, which runs the suites" "$tmp/out"'
 
 # The timing slot (fleet-slot, stubbed on PATH): another holder draws a warning, never a refusal.
 mkrepo "$tmp/slot" 0

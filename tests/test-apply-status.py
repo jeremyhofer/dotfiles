@@ -5,7 +5,7 @@
 # ///
 """Tests for apply-status, the tool that owns the apply ledger (apply.log).
 
-Run: sh tests/run-all.sh --only test-apply-status.py
+Run: npx nx run suite-apply-status:test
  or: uv run --script tests/test-apply-status.py [-k <pattern>]
 
 What is held: `append` writes one tab-separated line (time, host, instance, event, source head with

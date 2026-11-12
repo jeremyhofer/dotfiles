@@ -5,23 +5,22 @@
 # ///
 """Tests for the base's own gates running uv offline, and for the step that fills uv's cache.
 
-Run: sh tests/run-all.sh --only test-hermetic-uv.py
+Run: npx nx run suite-hermetic-uv:test
  or: uv run --script tests/test-hermetic-uv.py [-k <pattern>]
 
-What is held: a gate (tests/run-all.sh, so also the commit hook's selector run and land-gate.sh,
-which both go through it; tests/apply-suites.py's Nx environment) gives every suite UV_OFFLINE=1
-unless the caller set UV_OFFLINE, whatever its value. tests/seed-uv-cache.py, the one step that may
-reach a registry, lists exactly the `uv run --script` files under tests/ and private_dot_local/bin/
-(by the first line), syncs each through uv with UV_OFFLINE removed from its environment, names every
-file that failed and exits 1 after trying them all. A uv-script suite that fails because a package
-is not in uv's cache gets one extra line naming the seed command, under the underlying error; a
-failure for any other reason gets none.
+What is held: tests/apply-suites.py's Nx environment, which every run of the suites goes through
+(the apply, the commit gate, the landing gate), gives every suite UV_OFFLINE=1 unless the caller set
+UV_OFFLINE, whatever its value. tests/seed-uv-cache.py, the one step that may reach a registry, lists
+exactly the `uv run --script` files under tests/ and private_dot_local/bin/ (by the first line),
+syncs each through uv with UV_OFFLINE removed from its environment, names every file that failed and
+exits 1 after trying them all. That each mode of apply-suites.py hands Nx this environment, and that a
+uv-script suite failing on a cache miss gets a line naming the seed command, is held end to end in
+tests/test-apply-suites.py.
 
 No test reaches the network: uv is a stand-in that records how it was called.
 """
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,42 +31,25 @@ HERE = Path(__file__).resolve().parent
 SEED = HERE / "seed-uv-cache.py"
 UVSH = "#!/usr/bin/env -S uv run --script\n"
 
-# What uv 0.13 prints for a package missing from its cache with the network disabled.
-OFFLINE_MISS = """error: No solution found when resolving script dependencies
-  cause: Because pytest was not found in the cache and you require pytest==8.4.2, we can conclude that your requirements are unsatisfiable.
-
-hint: Packages were unavailable because the network was disabled. When the network is disabled, registry packages may only be read from the cache.
-"""
-
-
 @pytest.fixture
 def rig(tmp_path):
     return Rig(tmp_path)
 
 
 class Rig:
-    """A scratch tests/ holding the runner and stand-in suites, and a stand-in uv first on PATH."""
+    """A stand-in uv first on PATH."""
 
     def __init__(self, root: Path):
         self.root = root
-        self.tests = root / "tests"
         self.bin = root / "bin"
-        self.tests.mkdir()
         self.bin.mkdir()
-        for name in ("run-all.sh", "land-gate.sh", "git-isolate.sh", "git-isolated.gitconfig"):
-            shutil.copy(HERE / name, self.tests / name)
         self.uvlog = root / "uv.log"
-        # `uv run --script FILE`: records UV_OFFLINE, prints the file's `# say=` text, exits with its
-        # `# exit=`. `uv sync --script FILE`: records UV_OFFLINE and the file, fails for `# syncfail`.
+        # `uv sync --script FILE`: records UV_OFFLINE and the file, fails for `# syncfail`.
         uv = self.bin / "uv"
         uv.write_text(f"""#!/bin/sh
 echo "$1 $2 $3 UV_OFFLINE=${{UV_OFFLINE-unset}}" >> {self.uvlog}
-if [ "$1" = sync ]; then
-  grep -q '^# syncfail' "$3" && {{ echo "sync failed for $3" >&2; exit 1; }}
-  exit 0
-fi
-[ -f "$3.say" ] && cat "$3.say"
-exit "$(sed -n 's/^# exit=//p' "$3")"
+grep -q '^# syncfail' "$3" && {{ echo "sync failed for $3" >&2; exit 1; }}
+exit 0
 """)
         uv.chmod(0o755)
 
@@ -78,41 +60,8 @@ exit "$(sed -n 's/^# exit=//p' "$3")"
         env.update(extra)
         return env
 
-    def suite(self, name, body, shebang="#!/bin/sh\n"):
-        p = self.tests / name
-        p.write_text(shebang + body)
-        return p
 
-    def runner(self, script, *args, **extra):
-        return subprocess.run(["sh", str(self.tests / script), *args], env=self.env(**extra),
-                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-
-
-# --- the default, in the runner and the landing gate ---------------------------------------------
-
-PROBE = 'printf "%s" "${UV_OFFLINE-unset}" > "$PROBE_OUT"\n'
-
-
-def seen(rig, script="run-all.sh", **extra):
-    rig.suite("test-probe.sh", PROBE)
-    out = rig.root / "probe.out"
-    r = rig.runner(script, "--only", "test-probe.sh", PROBE_OUT=str(out), **extra)
-    assert r.returncode == 0, r.stdout + r.stderr
-    return out.read_text()
-
-
-def test_run_all_gives_every_suite_offline_uv(rig):
-    assert seen(rig) == "1"
-
-
-def test_land_gate_gives_every_suite_offline_uv(rig):
-    assert seen(rig, "land-gate.sh") == "1"
-
-
-@pytest.mark.parametrize("value", ["0", "false", "1", ""])
-def test_a_callers_explicit_value_is_respected(rig, value):
-    assert seen(rig, UV_OFFLINE=value) == value
-
+# --- the default ----------------------------------------------------------------------------------
 
 def test_apply_suites_gives_nx_offline_uv_unless_the_caller_chose():
     spec = importlib.util.spec_from_file_location("apply_suites", HERE / "apply-suites.py")
@@ -121,34 +70,6 @@ def test_apply_suites_gives_nx_offline_uv_unless_the_caller_chose():
     assert mod.nx_env({"PATH": "/bin"})["UV_OFFLINE"] == "1"
     assert mod.nx_env({"PATH": "/bin", "UV_OFFLINE": "0"})["UV_OFFLINE"] == "0"
     assert mod.nx_env({"PATH": "/bin", "UV_OFFLINE": "false"})["UV_OFFLINE"] == "false"
-
-
-# --- the hint on a cache miss ---------------------------------------------------------------------
-
-def test_a_cache_miss_names_the_seed_command_and_keeps_the_error(rig):
-    s = rig.suite("test-miss.py", "# exit=1\n", UVSH)
-    (rig.tests / "test-miss.py.say").write_text(OFFLINE_MISS)
-    r = rig.runner("run-all.sh", "--only", "test-miss.py")
-    assert r.returncode == 1
-    assert "was not found in the cache" in r.stdout          # the underlying error is not hidden
-    hints = [ln for ln in r.stdout.splitlines() if "seed-uv-cache.py" in ln]
-    assert len(hints) == 1, r.stdout
-    assert s.name == "test-miss.py"
-
-
-def test_another_failure_gets_no_hint(rig):
-    rig.suite("test-other.py", "# exit=3\n", UVSH)
-    (rig.tests / "test-other.py.say").write_text("AssertionError: 1 != 2\n")
-    r = rig.runner("run-all.sh", "--only", "test-other.py")
-    assert r.returncode == 1
-    assert "AssertionError" in r.stdout
-    assert "seed-uv-cache" not in r.stdout
-
-
-def test_a_passing_suite_prints_no_hint(rig):
-    rig.suite("test-fine.py", "# exit=0\n", UVSH)
-    r = rig.runner("run-all.sh", "--only", "test-fine.py")
-    assert r.returncode == 0 and "seed-uv-cache" not in r.stdout
 
 
 # --- the seed step --------------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 """Tests for hook-launcher, which the global commit hooks run each basic Python tool through so a
 commit still goes through when mise's `python3` will not start in the repository.
 
-Run: sh tests/run-all.sh --only test-hook-launcher.py
+Run: npx nx run suite-hook-launcher:test
  or: uv run --script tests/test-hook-launcher.py [-k <pattern>]
 
 What is held. Where mise's shim directory comes first on PATH, mise's `python3` fails, with exit 1

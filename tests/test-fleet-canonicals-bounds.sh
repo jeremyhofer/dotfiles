@@ -2,8 +2,8 @@
 # run-all: serial
 # fleet-canonicals' cases under a wall-clock HANG GUARD, alone. Each runs a verb under a 15 s bound
 # (`timeout`, or perl's alarm where macOS has no coreutils) so that a regression in the delay clamp
-# fails instead of hanging the suite. A bound is wall-clock, so this suite runs serially (run-all's
-# rule: a threshold is never loosened to cope with load). It is its own file so that
+# fails instead of hanging the suite. A bound is wall-clock, so this suite runs serially (the
+# suites' rule: a threshold is never loosened to cope with load). It is its own file so that
 # test-fleet-canonicals.sh, which has no other bound, runs in the concurrent batch.
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 set -u

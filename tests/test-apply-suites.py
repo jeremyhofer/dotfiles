@@ -3,10 +3,11 @@
 # requires-python = ">=3.12"
 # dependencies = ["pytest==8.4.2"]
 # ///
-"""Tests for tests/apply-suites.py, which runs the suites through Nx around `chezmoi apply`, and for
-its two chezmoi hooks, tests/pre-apply.sh and tests/post-apply.sh.
+"""Tests for tests/apply-suites.py, which runs the suites through Nx around `chezmoi apply`, at
+commit (`check`) and at landing (`land`), and for its two chezmoi hooks, tests/pre-apply.sh and
+tests/post-apply.sh.
 
-Run: sh tests/run-all.sh --only test-apply-suites.py
+Run: npx nx run suite-apply-suites:test
  or: uv run --script tests/test-apply-suites.py [-k <pattern>]
 
 What is held: `pre` runs `nx run-many -t test` under the Node the repository pins (mise.toml's
@@ -18,6 +19,10 @@ aborts the apply on a failure, naming the suite, the log and how to re-run it. N
 or of the wrong version refuses the apply; a skip switch or a missing suite tool skips it, loudly.
 `post` returns at once while an uncached run goes on detached, one at a time, with a status file,
 a bounded set of logs and the alert hook on a failure. The generated chezmoi config names both hooks.
+`check` runs the same cached run but never skips and never installs: a missing tool or a stale
+node_modules refuses it, naming the fix, and a failure prints an excerpt of each failing suite.
+`land` refuses off Linux or without inotifywait before running anything, then runs every suite
+uncached with RUN_MUTANTS=1, then verify-task-io without it, stopping at the first failure.
 
 Everything runs in a scratch copy: the script beside a stand-in `node_modules/.bin/nx` that records
 how it was called and prints a canned Nx log, and a PATH of stand-ins for fnm, node, npm and the
@@ -53,12 +58,17 @@ Nx read the output from the cache instead of running the command for 1 out of 2 
 NX_FAIL = """
 > nx run suite-good:test
 
-PASS   test-good.sh
+> GIT_CONFIG_GLOBAL="$PWD/tests/git-isolated.gitconfig" exec sh tests/test-good.sh < /dev/null
+
+PASS
 
 > nx run suite-broken:test
 
-FAIL   test-broken.sh (exit 1)
-       | the reason it failed
+> GIT_CONFIG_GLOBAL="$PWD/tests/git-isolated.gitconfig" exec sh tests/test-broken.sh < /dev/null
+
+  ok    a case that passed
+  FAIL  the specific case XYZ
+        the reason it failed
 
  NX   Ran target test for 2 projects (1s)
 
@@ -374,8 +384,8 @@ def test_a_failing_suite_aborts_the_apply_naming_it_and_its_log(rig):
     out = rig.run("pre", NX_STUB_RC="1")
     assert out.returncode == 1
     assert "apply ABORTED, nothing was deployed" in out.stderr
-    assert "FAIL   test-broken.sh (exit 1)" in out.stderr
-    assert f"run-all.sh --only test-broken.sh" in out.stderr
+    assert "FAIL   test-broken.sh" in out.stderr
+    assert "npx nx run suite-broken:test --skip-nx-cache" in out.stderr
     assert "the reason it failed" not in out.stderr, "the suite's own output stays in the log"
     log = Path(out.stderr.split("why, in full: ")[1].split()[0])
     assert "the reason it failed" in log.read_text()
@@ -943,6 +953,249 @@ def test_the_post_result_records_the_head_from_before_the_run(rig):
     assert (started, event) == ("post-start", "post-pass")
     want = rig.git("rev-parse", "--short", "HEAD").strip()
     assert not head.endswith("-dirty") and head == want and start_head == want
+
+
+# --- check: the commit gate and publish-check -------------------------------------------------------
+
+def test_check_runs_every_suite_target_cached_under_the_pinned_node(rig):
+    out = rig.run("check")
+    assert out.returncode == 0, out.stderr
+    [call] = rig.nx_calls()
+    assert call["argv"] == ["run-many", "-t", "test", "--outputStyle=static"]
+    assert call["env"].get("FNM_USED") == PIN
+    assert call["env"]["NX_DAEMON"] == "false" and call["env"]["NX_ISOLATE_PLUGINS"] == "false"
+    assert "read the output from the cache instead of running the command for 1 out of 2" in out.stderr
+    assert not list((rig.root / "logs").iterdir()), "a passing run's log is removed"
+
+
+def test_check_failure_shows_each_failing_suite_s_fail_lines_and_how_to_re_run(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    out = rig.run("check", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert "FAIL   test-broken.sh" in out.stderr
+    assert "| " + "  FAIL  the specific case XYZ" in out.stderr
+    assert "a case that passed" not in out.stderr, "only the lines that say FAIL"
+    assert "test-good.sh" not in out.stderr.split("why, in full:")[0]
+    assert "npx nx run suite-broken:test --skip-nx-cache" in out.stderr
+    log = Path(out.stderr.split("why, in full: ")[1].split()[0])
+    assert "a case that passed" in log.read_text()
+
+
+def test_check_failure_without_fail_lines_shows_the_suite_s_last_lines(rig):
+    rig.nx_out.write_text(NX_FAIL.replace("  FAIL  the specific case XYZ\n", "")
+                          .replace("the reason it failed", "Traceback: boom"))
+    out = rig.run("check", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert "Traceback: boom" in out.stderr
+    assert "exec sh tests/test-broken.sh" not in out.stderr, "Nx's echo of the command is not output"
+
+
+def test_check_failure_with_a_huge_output_is_cut_and_the_cut_counted(rig):
+    many = "".join(f"  FAIL  case-{i}\n" for i in range(1, 101))
+    rig.nx_out.write_text(NX_FAIL.replace("  FAIL  the specific case XYZ\n", many))
+    out = rig.run("check", NX_STUB_RC="1")
+    assert "case-60\n" in out.stderr and "case-61\n" not in out.stderr
+    assert "40 more FAIL lines not shown" in out.stderr
+
+
+def test_check_failure_with_no_suite_named_shows_nx_s_last_lines(rig):
+    rig.nx_out.write_text("Error: suites plugin: tests/coverage.map:3: a line with no globs\n")
+    out = rig.run("check", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert "a line with no globs" in out.stderr
+
+
+def test_check_refuses_a_stale_install_naming_npm_ci_and_installs_nothing(rig):
+    lock = json.loads(json.dumps(LOCK))
+    lock["packages"]["node_modules/nx"]["version"] = "24.0.6"
+    rig.write_lock(lock)
+    out = rig.run("check")
+    assert out.returncode == 1
+    assert f"fnm exec --using={PIN} -- npm ci" in out.stderr
+    assert "node_modules/nx differs" in out.stderr
+    assert rig.npm_calls() == [] and rig.nx_calls() == []
+
+
+def test_check_never_skips(rig):
+    (rig.bin / "uv").unlink()
+    out = rig.run("check", DOTFILES_SKIP_PRE_APPLY="1")
+    assert out.returncode == 1
+    assert "not installed: uv" in out.stderr
+    assert rig.nx_calls() == []
+
+
+def test_check_refuses_a_missing_pin(rig):
+    out = rig.run("check", FNM_INSTALLED="24.18.0")
+    assert out.returncode == 1
+    assert f"fnm install {PIN}" in out.stderr
+    assert rig.nx_calls() == []
+
+
+# --- land: the landing gate --------------------------------------------------------------------------
+
+def land_rig(rig: Rig, audit_rc: int = 0) -> None:
+    """A stand-in inotifywait, and a uv that records how verify-task-io was run."""
+    stub(rig.bin / "inotifywait", "sys.exit(0)\n")
+    stub(rig.bin / "uv", f"""
+with open(os.path.join({str(rig.rec)!r}, "uv.calls"), "a") as f:
+    f.write(json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ)}}) + "\\n")
+sys.exit({audit_rc})
+""")
+
+
+def audit_calls(rig: Rig) -> list:
+    f = rig.rec / "uv.calls"
+    return [json.loads(line) for line in f.read_text().splitlines()] if f.exists() else []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="land runs on Linux only")
+def test_land_runs_every_suite_uncached_with_mutants_then_the_audit_without(rig):
+    land_rig(rig)
+    out = rig.run("land", RUN_MUTANTS="0")
+    assert out.returncode == 0, out.stdout + out.stderr
+    [call] = rig.nx_calls()
+    assert call["argv"] == ["run-many", "-t", "test", "--skip-nx-cache", "--outputStyle=static"]
+    assert call["env"]["RUN_MUTANTS"] == "1"
+    assert call["env"].get("FNM_USED") == PIN
+    [audit] = audit_calls(rig)
+    assert audit["argv"] == ["run", "--script",
+                             str(rig.src / "private_dot_local" / "bin" / "executable_verify-task-io"),
+                             "--workspace", str(rig.src)]
+    assert "RUN_MUTANTS" not in audit["env"]
+    assert audit["env"].get("FNM_USED") == PIN, "the audit's Nx runs under the pinned Node"
+    assert "Successfully ran target test" in out.stdout, "Nx's output is shown as it goes"
+    assert "passed" in out.stderr
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="land runs on Linux only")
+def test_land_stops_at_a_failing_suite_without_auditing(rig):
+    land_rig(rig)
+    out = rig.run("land", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert "the input audit did not run" in out.stderr
+    assert audit_calls(rig) == []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="land runs on Linux only")
+def test_land_fails_on_an_audit_finding(rig):
+    land_rig(rig, audit_rc=1)
+    out = rig.run("land")
+    assert out.returncode == 1
+    assert "verify-task-io failed (exit 1" in out.stderr
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="land runs on Linux only")
+def test_land_without_inotifywait_is_refused_before_running_anything(rig):
+    land_rig(rig)
+    (rig.bin / "inotifywait").unlink()
+    out = rig.run("land")
+    assert out.returncode == 1
+    assert "inotifywait (inotify-tools)" in out.stderr
+    assert rig.nx_calls() == [] and audit_calls(rig) == []
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="land runs on Linux only")
+def test_land_refuses_a_stale_install(rig):
+    land_rig(rig)
+    (rig.src / "node_modules" / ".package-lock.json").unlink()
+    out = rig.run("land")
+    assert out.returncode == 1
+    assert "npm ci" in out.stderr
+    assert rig.nx_calls() == [] and rig.npm_calls() == []
+
+
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="the refusal is for other systems")
+def test_land_is_refused_off_linux(rig):
+    out = rig.run("land")
+    assert out.returncode == 1
+    assert "Linux only" in out.stderr
+    assert rig.nx_calls() == []
+
+
+# --- uv offline, and the line a cache miss gets ---------------------------------------------------
+
+# What uv 0.13 prints for a package missing from its cache with the network disabled.
+UV_MISS = """error: No solution found when resolving script dependencies
+  cause: Because pytest was not found in the cache and you require pytest==8.4.2, we can conclude that your requirements are unsatisfiable.
+
+hint: Packages were unavailable because the network was disabled. When the network is disabled, registry packages may only be read from the cache.
+"""
+
+
+def nx_fail_with(project: str, suite: str, body: str) -> str:
+    """Nx's static output for one failing suite whose own output is `body`."""
+    return f"""
+> nx run {project}:test
+
+> GIT_CONFIG_GLOBAL="$PWD/tests/git-isolated.gitconfig" exec {suite} < /dev/null
+
+{body}
+ NX   Ran target test for 1 project (1s)
+
+   ✖  1/1 targets failed, including the following:
+
+      - {project}:test
+"""
+
+
+def seed_hints(text: str) -> list:
+    return [ln for ln in text.splitlines() if "seed-uv-cache.py" in ln and "apply-suites:" not in ln]
+
+
+@pytest.mark.parametrize("mode", ["pre", "check", "land"])
+def test_every_run_gives_nx_offline_uv_unless_the_caller_chose(rig, mode):
+    if mode == "land":
+        if not sys.platform.startswith("linux"):
+            pytest.skip("land runs on Linux only")
+        land_rig(rig)
+    for value, want in ((None, "1"), ("0", "0"), ("false", "false")):
+        (rig.rec / "nx.calls").unlink(missing_ok=True)
+        out = rig.run(mode, UV_OFFLINE=value)
+        assert out.returncode == 0, out.stdout + out.stderr
+        assert rig.nx_calls()[0]["env"]["UV_OFFLINE"] == want, (mode, value)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="land runs on Linux only")
+def test_land_s_audit_runs_uv_offline_too(rig):
+    land_rig(rig)
+    assert rig.run("land").returncode == 0
+    [audit] = audit_calls(rig)
+    assert audit["env"]["UV_OFFLINE"] == "1"
+
+
+@pytest.mark.parametrize("mode", ["pre", "check", "land", "post"])
+def test_a_uv_suite_failing_on_a_cache_miss_names_the_seed_command_once(rig, mode):
+    if mode == "land":
+        if not sys.platform.startswith("linux"):
+            pytest.skip("land runs on Linux only")
+        land_rig(rig)
+    rig.nx_out.write_text(nx_fail_with("suite-uv", "uv run --script tests/test-uv.py", UV_MISS))
+    out = rig.run(*(["post", "--run"] if mode == "post" else [mode]), NX_STUB_RC="1")
+    assert out.returncode == 1
+    text = out.stdout + out.stderr
+    if mode == "post":
+        text = Path(rig.status.read_text().split()[3]).read_text()
+    hints = seed_hints(text)
+    assert len(hints) == 1, text
+    assert "test-uv.py" in hints[0] and "python3 tests/seed-uv-cache.py" in hints[0]
+    if mode in ("check", "land", "post"):
+        assert "was not found in the cache" in text, "the underlying error is not hidden"
+
+
+@pytest.mark.parametrize("project,suite,body", [
+    ("suite-uv", "uv run --script tests/test-uv.py", "AssertionError: 1 != 2\n"),
+    ("suite-broken", "sh tests/test-broken.sh", UV_MISS),
+])
+def test_no_seed_line_for_another_failure_or_a_suite_that_is_not_uv(rig, project, suite, body):
+    rig.nx_out.write_text(nx_fail_with(project, suite, body))
+    out = rig.run("check", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert seed_hints(out.stdout + out.stderr) == [], out.stderr
+
+
+def test_a_pass_prints_no_seed_line(rig):
+    out = rig.run("check")
+    assert out.returncode == 0 and seed_hints(out.stdout + out.stderr) == []
 
 
 # --- the hooks -------------------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 allowances and surface verification. The tool runs as a subprocess, the way a session meets it, with
 HOME, the allowlist and the manifest all under a temp dir.
 
-Run: sh tests/run-all.sh --only test-lint-tasknames-allowances.py
+Run: npx nx run suite-lint-tasknames-allowances:test
  or: uv run --script tests/test-lint-tasknames-allowances.py [-k <pattern>]
 
 LINT_TASKNAMES_TOOL points the suite at another copy of the tool, so a deliberately broken copy can be

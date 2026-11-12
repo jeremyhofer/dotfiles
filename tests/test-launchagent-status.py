@@ -5,7 +5,7 @@
 # ///
 """Tests for launchagent-status, which reports LaunchAgent plists that are deployed but not loaded.
 
-Run: sh tests/run-all.sh --only test-launchagent-status.py
+Run: npx nx run suite-launchagent-status:test
  or: uv run --script tests/test-launchagent-status.py [-k <pattern>]
 
 The tool is Python for macOS; these tests run it on any machine by putting fake `uname`,

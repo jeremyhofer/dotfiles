@@ -8,7 +8,7 @@ on the allowlist `tests/shell-allowlist.txt`, and every allowlist line must name
 still exists. Python is the language for new tools and suites; shell stays only where it is already
 written, until it is ported.
 
-Run: sh tests/run-all.sh --only test-no-new-shell.py
+Run: npx nx run suite-no-new-shell:test
  or: uv run --script tests/test-no-new-shell.py [-k <pattern>]
 
 WHAT COUNTS AS SHELL. A tracked, non-symlink file under one of the two directories whose first line

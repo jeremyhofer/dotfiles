@@ -40,8 +40,7 @@ echo "installed pre-push leak guard -> $hook"
 #
 # WHY THIS EXISTS. The base ships 20 test suites and, until 2026-08-29, nothing ran them:
 # no runner, no CI, no hook. They were exercised only when someone remembered, one file at
-# a time. The whole suite takes ~10s, so cost was never the reason -- it simply had no
-# trigger. `tests/run-all.sh` is the runner; this is the trigger.
+# a time. Cost was never the reason -- they simply had no trigger; this is the trigger.
 #
 # SCOPED, deliberately: a commit that touches only documentation (docs/ and the repository's
 # own *.md files at the root) skips it. Everything else that deploys or runs has a suite that
@@ -49,11 +48,11 @@ echo "installed pre-push leak guard -> $hook"
 # and an earlier, narrower trigger let changes to those commit without the suites that cover
 # them. tests/test-pre-commit-trigger.sh pins the rule.
 #
-# SCOPED AGAIN, to the suites the staged paths select. This repository ships
-# tests/select-suites.sh and its map (tests/coverage.map), so the hook runs only the suites that
-# read a staged path, every suite when one is in the shared core or claimed by none. The whole set
-# runs around `chezmoi apply` instead, through Nx (tests/pre-apply.sh and tests/post-apply.sh, from
-# .chezmoi.toml.tmpl's hooks), the moment a change reaches a machine; nothing is dropped, only moved.
+# CACHED. This repository has an nx.json, so the hook runs every suite through Nx
+# (`tests/apply-suites.py check`), and Nx replays each suite whose inputs (its tests/coverage.map
+# paths) the commit did not change: the commit waits on what it can break. The same suites run
+# around `chezmoi apply` (tests/pre-apply.sh and tests/post-apply.sh, from .chezmoi.toml.tmpl's
+# hooks) and, uncached with the mutant tests, at landing (`tests/apply-suites.py land`).
 #
 # Re-run when the generator changes, so a machine that applies a new install-test-gate gets the
 # hook it writes: install-test-gate {{ include "private_dot_local/bin/executable_install-test-gate" | sha256sum }}

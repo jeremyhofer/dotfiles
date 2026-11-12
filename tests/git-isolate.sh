@@ -1,5 +1,6 @@
-# Sourced (`. "$(dirname "$0")/git-isolate.sh"`) by run-all.sh and by every suite that fires git
-# hooks (commit, merge, am, rebase, push), so each works the same alone as under the runner.
+# Sourced (`. "$(dirname "$0")/git-isolate.sh"`) by every suite that fires git hooks (commit,
+# merge, am, rebase, push), so each works the same run alone as through Nx, whose suite targets set the
+# same variables (tools/nx/suites.js, HOW ONE SUITE RUNS).
 # Makes git ignore the machine's global and system config; see git-isolated.gitconfig.
 #
 # A suite that builds its own scratch HOME or GIT_CONFIG_GLOBAL afterwards simply overrides these.

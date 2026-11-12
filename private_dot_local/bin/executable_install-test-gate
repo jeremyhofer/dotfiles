@@ -1,10 +1,13 @@
 #!/bin/sh
 # install-test-gate -- install a commit gate into a chezmoi source repository: a .git/hooks/pre-commit
-# that runs the repository's tests/run-all.sh when a staged change could break what it ships.
-# A repository that also ships tests/select-suites.sh gets only the suites its staged paths select
-# (tests/run-all.sh --only). The hook looks for the selector each time it runs: once a layer's hook
-# is written by this version, the layer opts in by adding the selector and its map, and until then
-# its gate is unchanged.
+# that runs the repository's suites when a staged change could break what it ships. Which runner,
+# decided each time the hook runs:
+#   * a repository with an nx.json runs `python3 tests/apply-suites.py check`: every suite through
+#     Nx, each replayed from Nx's cache when its inputs did not change, so a commit waits on what it
+#     can break (that script's header has the rules: the Node it runs under, and why a stale
+#     node_modules refuses the commit, naming the `npm ci` to run, rather than installing). An
+#     nx.json without that script is refused, never skipped;
+#   * otherwise it runs tests/run-all.sh, every suite.
 #
 #   usage: install-test-gate <source-repo> --label <name> --skip-var <VAR> [--paths <ERE>]
 #
@@ -86,7 +89,7 @@ if [ -n "$GATE_PATHS" ]; then
 else
   printf '%s\n' "$staged" | grep -qvE '^(docs/|[^/]+\.md$)' || exit 0
 fi
-[ -f "$root/tests/run-all.sh" ] || exit 0
+[ -f "$root/nx.json" ] || [ -f "$root/tests/run-all.sh" ] || exit 0
 # The suite judges what is staged, not the working tree (git-staged-run; this tool's header).
 staged_run=$(command -v git-staged-run 2>/dev/null || true)
 if [ -z "$staged_run" ]; then
@@ -108,20 +111,19 @@ if command -v fleet-slot >/dev/null 2>&1; then
     printf '%s pre-commit: warning: the timing slot is %s; the suites run anyway (fleet-slot status)\n' "$GATE_LABEL" "$slot_msg" >&2
   fi
 fi
-# A repository that ships tests/select-suites.sh runs only the suites its staged paths select (that
-# script's header has the rules, including why the fail-safe is every suite); one without it runs
-# them all. Deleted and renamed-away paths count, since a suite can read a file a commit removes.
-if [ -f "$root/tests/select-suites.sh" ]; then
-  printf '%s pre-commit: running the suites the staged paths select (tests/select-suites.sh); output shows only if one fails\n' "$GATE_LABEL" >&2
-  if ! out=$(cd "$root" && git diff --cached --name-only --no-renames \
-             | sh "$staged_run" sh tests/select-suites.sh --run 2>&1); then
-    printf '\n%s pre-commit: a selected suite failed -- commit refused:\n' "$GATE_LABEL" >&2
-    printf '%s\n' "$out" >&2
-    printf '\n  re-run with: git diff --cached --name-only --no-renames | sh tests/select-suites.sh --run\n' >&2
-    printf '  one suite: sh tests/run-all.sh --only <suite>\n  deliberate WIP commit: %s=1 git commit ...\n' "$GATE_SKIP_VAR" >&2
+# A repository with an nx.json runs its suites through Nx (this tool's header). The script prints
+# what it is doing as it starts, one summary line on a pass, and each failing suite on a failure.
+if [ -f "$root/nx.json" ]; then
+  if [ ! -f "$root/tests/apply-suites.py" ]; then
+    printf '%s pre-commit: %s/nx.json is present but tests/apply-suites.py, which runs the suites\n' "$GATE_LABEL" "$root" >&2
+    printf '  through Nx, is not; refused rather than skipped. Commit with %s=1 to bypass.\n' "$GATE_SKIP_VAR" >&2
     exit 1
   fi
-  printf '%s\n' "$out" | grep '^select-suites:' >&2 || true
+  if ! (cd "$root" && sh "$staged_run" python3 tests/apply-suites.py check); then
+    printf '\n%s pre-commit: commit refused (the suites failed, or could not run).\n' "$GATE_LABEL" >&2
+    printf '  re-run with: python3 tests/apply-suites.py check\n  deliberate WIP commit: %s=1 git commit ...\n' "$GATE_SKIP_VAR" >&2
+    exit 1
+  fi
   exit 0
 fi
 # Said before the suite starts, since its output is held until it ends: a slow suite must not read

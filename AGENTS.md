@@ -8,20 +8,32 @@ details of how any one machine is set up.
 
 ## Tasks
 
-No task runner; the commands are plain.
+No task runner beyond Nx; the commands are plain.
 
-- `sh tests/run-all.sh [filter]`: every suite, or those whose name contains the filter;
-  `--only <suite>...` runs exactly those. A suite asserting on CPU time or a wall-clock bound declares
-  `# run-all: serial` among its first lines and then runs alone, after the concurrent batch;
-  `RUN_ALL_PROFILE=<file>` writes each suite's wall and CPU seconds (header of `tests/run-all.sh`). The pre-commit hook runs the suites the staged paths
-  select (`tests/select-suites.sh`). Every suite runs through Nx before `chezmoi apply`, replayed from Nx's cache where its inputs did not change (`tests/pre-apply.sh`), and every suite runs uncached after it (`tests/post-apply.sh`); both run `tests/apply-suites.py`, so an apply needs the Node the repository pins (`[tools] node` in `mise.toml`), run through mise where mise is active (`DOTFILES_MISE_SHIMS` set), else through fnm, else a `node` on PATH of the pin's major. Both also append to the apply ledger through `apply-status` (`~/.local/state/dotfiles/apply.log`), which a session reads instead of the terminal.
-  The landing lane: slow checks (the mutant meta-tests of test-image-bump.py and test-fleet-canonicals-requests.py, `RUN_MUTANTS`) are left out of those
-  runs and run in `sh tests/land-gate.sh`, every suite with them included. Set it once per clone,
-  from a terminal: `git config land.gate 'sh tests/land-gate.sh'`; then `land check` runs it and
-  `land` merges only a tree that passed.
-  Every gate runs uv offline: `tests/run-all.sh` sets `UV_OFFLINE=1` unless the caller set it, so a `uv run --script` suite takes its pinned packages from uv's cache and a sandbox without network passes. `python3 tests/seed-uv-cache.py` fills that cache (the one step that needs the network; both apply hooks run it first); a suite that fails for a missing package says to run it.
-  A new file needs a line in `tests/coverage.map`, or every commit runs every suite and
-  `sh tests/select-suites.sh --check` refuses.
+- The suites run through Nx (`tools/nx/suites.js` makes each one a cached target), always by way
+  of `tests/apply-suites.py`, whose header has the rules (the Node the repository pins, and why a
+  stale `node_modules` refuses rather than installs at commit). Node is the pin in `mise.toml`
+  (`[tools] node`), run through mise where mise is active (`DOTFILES_MISE_SHIMS` set), else
+  through fnm, else a `node` on PATH of the pin's major:
+  - `python3 tests/apply-suites.py check`: every suite, each replayed from Nx's cache when its
+    inputs did not change. The pre-commit hook runs this on what is staged.
+  - `npx nx run suite-<name>:test` (add `--skip-nx-cache` to force it): one suite. A suite asserting
+    on CPU time or a wall-clock bound declares `# run-all: serial` among its first lines and runs alone.
+  - Around `chezmoi apply`: every suite before it, cached (`tests/pre-apply.sh`), and uncached after
+    it (`tests/post-apply.sh`). Both also append to the apply ledger through `apply-status`
+    (`~/.local/state/dotfiles/apply.log`), which a session reads instead of the terminal.
+  - The landing lane, `python3 tests/apply-suites.py land`: every suite uncached with the slow
+    mutant tests (`RUN_MUTANTS=1`; test-image-bump.py and test-fleet-canonicals-requests.py), then
+    `verify-task-io` over every cached suite; Linux only. Set it once per clone, from a terminal:
+    `git config land.gate 'python3 tests/apply-suites.py land'`; then `land check` runs it and
+    `land` merges only a tree that passed.
+  - Every run of the suites is uv-offline: `apply-suites.py` gives Nx `UV_OFFLINE=1` unless the
+    caller set it, so a `uv run --script` suite takes its pinned packages from uv's cache and a
+    sandbox without network passes. `python3 tests/seed-uv-cache.py` fills that cache (the one step
+    that needs the network; both apply hooks run it first); a uv suite that fails for a missing
+    package gets a line naming it.
+  - A new file needs a line in `tests/coverage.map` (a suite's input, or `exempt`): a path no line
+    claims re-runs nothing when it changes, so `test-coverage-map.py` refuses it.
 - `chezmoi diff`, then `chezmoi apply`: deploy this source to the machine. The private layer is a
   second instance: `chezmoi-overlay diff`, `chezmoi-overlay apply`.
 - `sh setup/overlay-doctor`: is this machine's private layer complete and disjoint from the base;

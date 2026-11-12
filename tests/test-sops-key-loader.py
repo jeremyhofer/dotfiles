@@ -6,7 +6,7 @@
 """Tests for sops-key-loader, which decrypts a machine's SOPS age key from its systemd credential
 into the file SOPS_AGE_KEY_FILE names, inside $XDG_RUNTIME_DIR, and for the templates that deploy it.
 
-Run: sh tests/run-all.sh --only test-sops-key-loader.py
+Run: npx nx run suite-sops-key-loader:test
  or: uv run --script tests/test-sops-key-loader.py [-k <pattern>]
 
 The real `systemd-creds` is never run: a stub first on PATH plays it, its behavior chosen per case

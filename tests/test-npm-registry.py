@@ -5,7 +5,7 @@
 # ///
 """The repository installs from the public npm registry and nothing else.
 
-Run: sh tests/run-all.sh --only test-npm-registry.py
+Run: npx nx run suite-npm-registry:test
  or: uv run --script tests/test-npm-registry.py [-k <pattern>]
 
 Two refusals, both about what a machine's own configuration may rewrite:

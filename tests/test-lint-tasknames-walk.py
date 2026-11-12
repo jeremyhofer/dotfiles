@@ -7,7 +7,7 @@
 directories are skipped and counted, and a triad word is faulted only on positive evidence that the
 task reads the wrong subject. The tool runs as a subprocess against a temp repository.
 
-Run: sh tests/run-all.sh --only test-lint-tasknames-walk.py
+Run: npx nx run suite-lint-tasknames-walk:test
  or: uv run --script tests/test-lint-tasknames-walk.py [-k <pattern>]
 
 LINT_TASKNAMES_TOOL points the suite at another copy of the tool, so a deliberately broken copy can be

@@ -5,7 +5,7 @@
 # ///
 """tuicr's deployed config is read the way tuicr reads it.
 
-Run: sh tests/run-all.sh --only test-tuicr-config.py
+Run: npx nx run suite-tuicr-config:test
  or: uv run --script tests/test-tuicr-config.py [-k <pattern>]
 
 Why this exists: TOML puts every key that follows a `[table]` header inside that table. A

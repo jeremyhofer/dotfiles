@@ -579,7 +579,7 @@ applied and nothing downstream moves. `overlay-doctor` (Tier T) checks each row 
 | `Devel/mani.yaml.tmpl`, declaring `claudeLocalSettings:` or `claudeDirSettings:`, and the files they point at | `run_onchange_after_apply-project-claude-settings.sh.tmpl`, hashing the manifest and every project file, and calling the base's `claude-project-settings` | `overlay-skeleton/opt-in/` | opt-in |
 | `dot_dotlocal/skill-externals.yaml` | `run_onchange_after_sync-skill-externals.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
 | `Devel/mani.yaml.tmpl` declaring `miseTrust:`, or `dot_dotlocal/mise/miserc.extra.toml` | `run_onchange_after_trust-mise-configs.sh.tmpl`, hashing both and calling the base's `mise-fleet-trust`, rendered empty until the layer's own `miseActive` is true (chezmoi data is per instance, so set it with the base's) | `overlay-skeleton/opt-in/` | opt-in |
-| `tests/run-all.sh` (and, to scope the gate to the staged paths, `tests/select-suites.sh` with its `tests/coverage.map`) | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
+| `tests/run-all.sh`, or an `nx.json` with `tests/apply-suites.py` to run the suites through Nx | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
 
 **Opt-in means the layer adds the trigger itself.** `setup/scaffold-overlay` copies the skeleton but
 not `opt-in/`, because a plugin installer and a commit gate (which writes a custom git hook into the

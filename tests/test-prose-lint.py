@@ -14,7 +14,7 @@ config, so a pass is shown to come from the exemption and not from a rule that n
 PROSE_LINT_TOOL points the suite at another copy of the tool, so a deliberately broken copy can be run
 to see the suite fail.
 
-Run: sh tests/run-all.sh --only test-prose-lint.py
+Run: npx nx run suite-prose-lint:test
  or: uv run --script tests/test-prose-lint.py [-k <pattern>]
 """
 import importlib.machinery

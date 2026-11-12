@@ -41,11 +41,8 @@ private_dot_local/bin/executable_wt-bootstrap
 private_dot_local/bin/executable_wt-config-gen
 private_dot_local/bin/executable_wt-fetch-base
 tests/git-isolate.sh
-tests/land-gate.sh  # exec-only
 tests/post-apply.sh
 tests/pre-apply.sh
-tests/run-all.sh
-tests/select-suites.sh
 tests/test-adopt-audit.sh
 tests/test-adr-lint.sh
 tests/test-alert-digest.sh
@@ -113,10 +110,8 @@ tests/test-python39-syntax.sh
 tests/test-register-lint.sh
 tests/test-register.sh
 tests/test-repo-hygiene.sh
-tests/test-run-all.sh
 tests/test-run-repo-gates.sh
 tests/test-scaffold-overlay.sh
-tests/test-select-suites.sh
 tests/test-shell-parse.sh
 tests/test-skill-externals-sync.sh
 tests/test-skip-skills.sh

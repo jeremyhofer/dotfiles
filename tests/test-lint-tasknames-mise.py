@@ -13,7 +13,7 @@ mise runs against scratch config, data, state and cache directories under the te
 the machine's own, and the fixture is trusted through MISE_TRUSTED_CONFIG_PATHS, because a sandboxed
 session cannot write mise's trust records. Without mise on PATH the suite SKIPs.
 
-Run: sh tests/run-all.sh --only test-lint-tasknames-mise.py
+Run: npx nx run suite-lint-tasknames-mise:test
  or: uv run --script tests/test-lint-tasknames-mise.py [-k <pattern>]
 
 LINT_TASKNAMES_TOOL points the suite at another copy of the tool, so a deliberately broken copy can be

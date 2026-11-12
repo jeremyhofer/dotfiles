@@ -5,7 +5,7 @@
 # ///
 """The installed mise, checked on this machine: the suite every apply runs where mise is active.
 
-Run: sh tests/run-all.sh --only test-mise-installed.py
+Run: npx nx run suite-mise-installed:test
  or: uv run --script tests/test-mise-installed.py [-k <pattern>]
 
 WHY IT EXISTS. mise is not pinned: it moves with the package manager. The base's drop-in sets a

@@ -3,9 +3,9 @@
 
     python3 tests/seed-uv-cache.py [--list] [--root DIR]
 
-The gates run uv offline (tests/run-all.sh sets UV_OFFLINE=1), so a script's pinned packages must
-already be in uv's cache. This is the one step that reaches a registry. For each file under tests/
-and private_dot_local/bin/ whose first line is a `uv run --script` shebang it runs
+The gates run uv offline (tests/apply-suites.py gives Nx UV_OFFLINE=1), so a script's pinned
+packages must already be in uv's cache. This is the one step that reaches a registry. For each file
+under tests/ and private_dot_local/bin/ whose first line is a `uv run --script` shebang it runs
 `uv sync --script <file>`, which resolves the file's inline dependencies and installs them into the
 script environment `uv run --script` then reuses, without running the script. It removes UV_OFFLINE
 from uv's environment, since reaching the registry is its purpose. It tries every file, names each
