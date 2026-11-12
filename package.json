@@ -3,6 +3,6 @@
   "private": true,
   "description": "Development only: Nx runs the base's suites as cached tasks. Applying the base never needs Node; tests/run-all.sh is the path without it.",
   "devDependencies": {
-    "nx": "24.0.2"
+    "nx": "24.0.5"
   }
 }

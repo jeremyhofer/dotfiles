@@ -69,6 +69,7 @@ No task runner; the commands are plain.
 - **One owner per target.** The base and a private layer never manage the same file. Run
   `sh setup/overlay-doctor` after adding a target; it reports a collision with the layer it can see.
 - **Edit the source, never the deployed copy**; the next apply overwrites it.
+- **New tools and suites are Python, not shell.** `tests/test-no-new-shell.py` refuses a shell script under `private_dot_local/bin/` or `tests/` that is not on `tests/shell-allowlist.txt`; a port deletes its line there.
 - **A change an adopted machine must act on gets a `CHANGELOG.md` entry**, marked ACTION when a
   private layer has to change, in the same commit. A change that adds a seam (a config file a tool
   reads, a skill that reads a domain fragment) also updates `docs/reference/private-layer.md`, and a

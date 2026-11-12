@@ -31,6 +31,7 @@ tree test-portability-lint.sh   private_dot_local/bin/** setup/** tests/*.sh tes
 tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
 tree test-select-suites.sh      **
+tree test-no-new-shell.py       private_dot_local/bin/** tests/**
 
 # --- the selector, the map and the apply-time runs ---------------------------------------------
 test-select-suites.sh  tests/coverage.map
@@ -53,7 +54,7 @@ test-claude-usage-report.sh         private_dot_local/bin/executable_claude-usag
 test-claude-worklog-hook.sh         private_dot_local/bin/executable_claude-worklog-hook
 test-claude-worktree-hook.sh        private_dot_local/bin/executable_claude-worktree-hook
 test-comment-lint.sh                private_dot_local/bin/executable_comment-lint
-test-repo-hygiene.sh                private_dot_local/bin/executable_comment-lint .chezmoiignore package.json package-lock.json nx.json
+test-repo-hygiene.sh                private_dot_local/bin/executable_comment-lint .chezmoiignore package.json package-lock.json nx.json .nvmrc
 test-context-footprint.sh           private_dot_local/bin/executable_context-footprint
 test-context-lint.sh                private_dot_local/bin/executable_context-lint
 test-doc-lint.sh                    private_dot_local/bin/executable_doc-lint
@@ -133,6 +134,10 @@ test-statusline-usage.sh            dot_claude/statusline-command.sh
 test-tooling-inventory.sh           dot_claude/tooling.md
 test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map
+# A tracked .npmrc has no line on purpose: a glob matching no tracked file is refused as dead, and a
+# staged path nothing claims runs every suite (the fail-safe), this one included.
+test-npm-registry.py               package.json package-lock.json
+test-no-new-shell.py                tests/shell-allowlist.txt
 test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-spell-tier-name.sh             dot_config/nvim/lua/config/spell.lua
 test-run-all.sh                     tests/run-all.sh

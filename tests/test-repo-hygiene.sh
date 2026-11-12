@@ -81,7 +81,7 @@ if command -v chezmoi >/dev/null 2>&1; then
     echo "FAIL: chezmoi could not list the managed files: $(head -n 3 "$hyg/err")"; exit 1
   fi
   [ -n "$managed" ] || { echo "FAIL: chezmoi listed no managed files, so this check would see nothing"; exit 1; }
-  leaked=$(printf '%s\n' "$managed" | grep -E '^(package\.json|package-lock\.json|nx\.json|node_modules/|tools/|\.nx/)' || true)
+  leaked=$(printf '%s\n' "$managed" | grep -E '^(package\.json|package-lock\.json|nx\.json|\.nvmrc|node_modules/|tools/|\.nx/)' || true)
   if [ -n "$leaked" ]; then
     echo "FAIL: Nx development files would deploy to \$HOME (add them to .chezmoiignore):"
     printf '%s\n' "$leaked" | sed 's/^/      /'
