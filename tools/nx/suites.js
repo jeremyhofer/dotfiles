@@ -101,12 +101,19 @@ const ENV_INPUTS = ['SANDBOX_RUNTIME', 'RUN_MUTANTS'];
 //     (the workspace root) in the command, never written into the graph, so every checkout of the
 //     repository computes the same task hash and shares one cache;
 //   * Python writes no bytecode and pytest no cache directory: written inside the checkout they are
-//     files one suite leaves for the next to read, which a cache hit cannot restore and Nx cannot hash.
+//     files one suite leaves for the next to read, which a cache hit cannot restore and Nx cannot hash;
+//   * no color. Nx sets FORCE_COLOR=true for every task, so a child pytest colored its summary and a
+//     suite matching `\b1 failed\b` in it found an escape code where the word boundary was: every
+//     mutant meta-test failed under Nx while passing outside it (measured with Nx 24.0.5). A suite
+//     reads its tools' output as plain text, as it did when no runner forced color.
 const SUITE_ENV = {
   GIT_CONFIG_NOSYSTEM: '1',
   TEST_GIT_ISOLATED: '1',
   PYTHONDONTWRITEBYTECODE: '1',
   PYTEST_ADDOPTS: '-p no:cacheprovider',
+  FORCE_COLOR: '0',
+  NO_COLOR: '1',
+  PY_COLORS: '0',
 };
 const SHELLS = ['sh', 'bash', 'zsh'];
 
