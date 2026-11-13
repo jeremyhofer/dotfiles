@@ -1,0 +1,274 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""fleet-wait -- block until something in the fleet changes, or a heartbeat deadline passes.
+
+  usage: fleet-wait --heartbeat DURATION [--interval DURATION] [--ci] [--ci-every DURATION] [--once]
+
+A heartbeat for a coordinating session on a machine with no cron and no /loop. The session runs this
+through its Bash tool's background mode; a background command that exits wakes its session, even
+an idle one. On each wake the session sweeps, then arms the next wait.
+
+It exits 0 at the earliest of the heartbeat deadline or a change since it started, and prints one
+line per reason:
+
+  event request-result <id> <outcome>   a lifecycle request result appeared, or its outcome changed
+  event slot-queued <name>[,<name>...]  a timing-slot request is queued while the slot is free
+  event staged <file>                   a new file in handoff staging
+  event seat-missing <name> <state>     a seat the snapshot showed live is now dead, unknown or gone
+  event snapshot-stale <age>s           the session snapshot is older than snapshot-max-age
+  event ci <run id> <status>            `ci-trigger status` changed its run or status (--ci only)
+  heartbeat <duration>                  the deadline passed with no change
+
+The first line printed, before it waits, says what is watched and what is not, so a wake can be
+read as "nothing happened" only for what was actually watched.
+
+WHAT IT READS, all files other tools already write, so a poll starts no process except the CI read:
+$FLEET_STATE/requests/*.result.json, $FLEET_STATE/handoff-staging/, $FLEET_STATE/sessions.json (the
+snapshot `fleet-canonicals snapshot` writes from its timer; seats are named from it, so no fleet
+record read is made here), and the slot's slot.json ($FLEET_SLOT_STATE, else $FLEET_STATE/slot).
+
+THE CI READ IS OPT-IN, AND IS USUALLY UNAVAILABLE INSIDE A SANDBOX. `ci-trigger` reaches the node by
+ssh, and an agent sandbox lets that through only when `ci-trigger` is the whole command, never as a
+child of this one. With --ci it runs `ci-trigger status` (or $FLEET_WAIT_CI_CMD) at the start; if
+that fails, the first line says CI is not watched and why, and the session reads CI itself, bare,
+on each wake. It is polled every --ci-every (default 2m), not every interval.
+
+--once checks once, one interval after the start: exit 0 with the events, or exit 1 with none. It
+is for tests and scripts that must not block. SIGTERM or SIGINT ends the wait with "stopped" and
+exit 0. Exit 2: a usage error.
+
+The defaults: --interval 30s. Config: snapshot-max-age, read from the fleet-canonicals config
+($FLEET_CANONICALS_CONFIG, else ~/.config/fleet-canonicals/config), default 45.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+STATE = Path(os.environ.get("FLEET_STATE") or
+             Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state") / "fleet-canonicals")
+SLOT = Path(os.environ.get("FLEET_SLOT_STATE") or STATE / "slot") / "slot.json"
+REQUESTS = STATE / "requests"
+STAGING = STATE / "handoff-staging"
+SNAPSHOT = STATE / "sessions.json"
+CONFIG = Path(os.environ.get("FLEET_CANONICALS_CONFIG") or
+              Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fleet-canonicals" / "config")
+CI_CMD = (os.environ.get("FLEET_WAIT_CI_CMD") or "ci-trigger status").split()
+
+
+def usage(msg: str) -> None:
+    print(f"fleet-wait: {msg}", file=sys.stderr)
+    print(__doc__.splitlines()[2], file=sys.stderr)
+    sys.exit(2)
+
+
+def duration(text: str) -> float:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", text.strip())
+    if not m or float(m.group(1)) <= 0:
+        usage(f"not a duration: {text!r} (a number of seconds, or e.g. 90s, 30m, 1h)")
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
+def snapshot_max_age() -> int:
+    try:
+        for line in CONFIG.read_text(encoding="utf-8").splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k.strip() == "snapshot-max-age" and v.strip().isdigit():
+                return int(v.strip())
+    except OSError:
+        pass
+    return 45
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+# ---- the sources: each returns comparable state, and a function lists what changed -------------
+
+def results() -> dict[str, str]:
+    """Request id -> outcome. A result being rewritten with the same outcome (a waiting request,
+    every runner pass) is no change; a new id or a new outcome is."""
+    out: dict[str, str] = {}
+    try:
+        files = list(REQUESTS.glob("*.result.json"))
+    except OSError:
+        return out
+    for f in files:
+        d = read_json(f)
+        out[f.name.removesuffix(".result.json")] = str(d.get("outcome")) if isinstance(d, dict) else "?"
+    return out
+
+
+def staged() -> set[str]:
+    try:
+        return {p.name for p in STAGING.iterdir() if p.is_file()}
+    except OSError:
+        return set()
+
+
+def slot_waiting() -> tuple[str, ...]:
+    """The names queued for the slot while nobody holds it; empty when held or nobody waits."""
+    st = read_json(SLOT)
+    if not isinstance(st, dict) or st.get("holder") or not isinstance(st.get("queue"), list):
+        return ()
+    return tuple(str(e.get("name")) for e in st["queue"] if isinstance(e, dict))
+
+
+def snapshot() -> tuple[dict[str, str], float | None]:
+    """(seat -> state, age in seconds) from the session snapshot; ({}, None) when it is unreadable."""
+    d = read_json(SNAPSHOT)
+    if not isinstance(d, dict) or not isinstance(d.get("seats"), dict):
+        return {}, None
+    taken = d.get("takenAt")
+    age = time.time() - taken if isinstance(taken, (int, float)) else None
+    return {n: str(s.get("state")) for n, s in d["seats"].items() if isinstance(s, dict)}, age
+
+
+def ci_read() -> tuple[str | None, str]:
+    """(run id + status, or None on failure; the failure's first line)."""
+    try:
+        p = subprocess.run(CI_CMD, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, str(e)
+    if p.returncode != 0:
+        return None, ((p.stderr or p.stdout).strip().splitlines() or [f"exit {p.returncode}"])[0]
+    run = re.search(r"^run:\s*(\S+)", p.stdout, re.M)
+    status = re.search(r"^status:\s*(\S+)", p.stdout, re.M)
+    if not run or not status:
+        return None, "its output has no run: and status: lines"
+    return f"{run.group(1)} {status.group(1)}", ""
+
+
+class Watch:
+    def __init__(self, ci: bool):
+        self.max_age = snapshot_max_age()
+        self.results = results()
+        self.staged = staged()
+        self.waiting = slot_waiting()
+        self.seats, age = snapshot()
+        self.live = {n for n, s in self.seats.items() if s == "live"}
+        self.stale_at_start = age is None or age > self.max_age
+        self.ci = None
+        self.ci_note = "not watched (no --ci)"
+        if ci:
+            self.ci, why = ci_read()
+            self.ci_note = f"watched ({self.ci})" if self.ci else f"NOT watched: {why}"
+
+    def header(self, heartbeat: str) -> str:
+        if not self.seats:
+            seats = "seats NOT watched (no readable snapshot at " + str(SNAPSHOT) + ")"
+        elif self.stale_at_start:
+            seats = f"seats NOT watched (the snapshot was already older than {self.max_age}s)"
+        else:
+            seats = f"seats watched ({len(self.live)} live)"
+        return (f"fleet-wait: watching request results, the slot queue, handoff staging, {seats}; "
+                f"CI {self.ci_note}; heartbeat {heartbeat}")
+
+    def changes(self, with_ci: bool) -> list[str]:
+        out: list[str] = []
+        for rid, outcome in sorted(results().items()):
+            if self.results.get(rid) != outcome:
+                out.append(f"event request-result {rid} {outcome}")
+        now_waiting = slot_waiting()
+        if now_waiting and now_waiting != self.waiting:
+            out.append("event slot-queued " + ",".join(now_waiting))
+        for f in sorted(staged() - self.staged):
+            out.append(f"event staged {f}")
+        if self.seats and not self.stale_at_start:
+            seats, age = snapshot()
+            if age is None or age > self.max_age:
+                out.append(f"event snapshot-stale {'unreadable' if age is None else f'{int(age)}'}"
+                           + ("" if age is None else "s"))
+            else:
+                for n in sorted(self.live):
+                    if seats.get(n) != "live":
+                        out.append(f"event seat-missing {n} {seats.get(n, 'absent')}")
+        if with_ci and self.ci:
+            now, _why = ci_read()
+            if now and now != self.ci:
+                out.append(f"event ci {now}")
+        return out
+
+
+def main(argv: list[str]) -> int:
+    heartbeat = interval = None
+    ci_every, ci, once = 120.0, False, False
+    hb_text = ""
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a in ("--heartbeat", "--interval", "--ci-every"):
+            if not args:
+                usage(f"{a} needs a duration")
+            v = args.pop(0)
+            if a == "--heartbeat":
+                heartbeat, hb_text = duration(v), v
+            elif a == "--interval":
+                interval = duration(v)
+            else:
+                ci_every = duration(v)
+        elif a == "--ci":
+            ci = True
+        elif a == "--once":
+            once = True
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        else:
+            usage(f"unknown argument {a!r}")
+    if heartbeat is None:
+        usage("--heartbeat is required: the wait must end on its own")
+    interval = interval or 30.0
+
+    stop = {"sig": None}
+
+    def on_signal(signum, _frame):
+        stop["sig"] = signum
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    start = time.monotonic()
+    w = Watch(ci)
+    print(w.header(hb_text), flush=True)
+    next_ci = start + ci_every
+    while True:
+        deadline = start + heartbeat
+        wake = min(time.monotonic() + interval, deadline)
+        while stop["sig"] is None and time.monotonic() < wake:
+            time.sleep(min(1.0, max(0.0, wake - time.monotonic())))
+        if stop["sig"] is not None:
+            print(f"stopped ({signal.Signals(stop['sig']).name})", flush=True)
+            return 0
+        t = time.monotonic()
+        with_ci = once or t >= next_ci
+        if with_ci:
+            next_ci = t + ci_every
+        events = w.changes(with_ci)
+        if events:
+            print("\n".join(events), flush=True)
+            return 0
+        if once:
+            print("no change", flush=True)
+            return 1
+        if t >= deadline:
+            print(f"heartbeat {hb_text}", flush=True)
+            return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

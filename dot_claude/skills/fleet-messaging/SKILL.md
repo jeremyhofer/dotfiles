@@ -88,6 +88,18 @@ A session's temp directory goes away when that session ends, so a `$TMPDIR` path
 
 When the hub relays a cross-project question it asks the human once, carries at most one open ask at a time, and returns the answer to every canonical that needed it. When the hub **receives** a single-project item it does not relay it: it tells the sender, in one line, to take it to the human in its own session.
 
+### Staying awake: the hub's heartbeat
+
+An idle session does nothing until something wakes it. Where a session has neither a scheduling tool (CronCreate) nor `/loop`, the hub keeps **one** `fleet-wait` armed through its Bash tool's background mode, since a background command that exits wakes its session, idle or not:
+
+```sh
+fleet-wait --heartbeat 30m          # run with run_in_background: true
+```
+
+It exits at the earliest of 30 minutes or a fleet change since it started (a request result, a slot request waiting on a free slot, a staged handoff, a live seat gone, the session snapshot going stale, and with `--ci` the CI run), one line per reason. On each wake: read its lines, sweep what they name (a heartbeat line means a routine sweep), then arm the next one. Exactly one at a time: arm the next only after reading the last, and stop it (TaskStop) before a park or refresh. Its first line says what it watches and what it does not; read it on the first arm on a machine. Inside a sandbox `--ci` is usually unavailable, because `ci-trigger` reaches the node only when it is the whole command, so the first line says CI is not watched, and the hub runs `ci-trigger status` bare on each wake instead. Where the hub has a scheduling tool, this still replaces a hand-rolled watcher loop.
+
+Not yet measured (2026-11-12): whether a session waiting on a background command still counts as idle for Claude Code's idle stop of an unattached session after about an hour, and whether a managed machine allows background Bash at all. A pinned session (Ctrl+T in the agents view) is exempt from the idle stop either way.
+
 ---
 
 If `~/.dotlocal/skills/fleet-messaging.md` exists, read it: it is this domain's half (the hub's name, any seat it splits off, and the roster, where cross-project items go in practice, the handoff directory and its aging, and the dated incidents behind the rules). If it does not, the generic content above is the whole picture.

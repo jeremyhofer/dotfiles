@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-12
 
+### `fleet-wait`: a heartbeat for a coordinating session with no cron or `/loop`
+
+New tool. `fleet-wait --heartbeat 30m`, run through the Bash tool's background mode, exits at the
+earliest of the deadline or a fleet change since it started, and the exit wakes its session. Skill
+`fleet-messaging` ("Staying awake") says how the hub arms it; `fleet-wait --help` lists the events.
+It reads only files other tools already write. Nothing to do on adopting it. A seat-missing or
+stale-snapshot event needs the snapshot timer running (`fleet-canonicals-snapshot`).
+
 ### The session snapshot reads the fleet record in bulk; two LaunchAgents leave Background
 
 `fleet-canonicals snapshot` named its seats by asking `fleet-decl` about one seat at a time, twice a
