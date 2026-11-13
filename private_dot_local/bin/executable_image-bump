@@ -252,12 +252,14 @@ Targets Python 3.9, standard library only.
 """
 
 import argparse
+import atexit
 import datetime
 import hashlib
 import importlib.util
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -1167,8 +1169,19 @@ def resolve_cosign(desc, directory, version, work):
     return resolved, note
 
 
+# gpg-agent keeps its sockets in the home directory on macOS, and a Unix socket path is capped at
+# 104 bytes there (108 on Linux). Under a long $TMPDIR the work directory's own gnupg/ passes that and
+# gpg fails with "File name too long" (measured on a work Mac, 2026-11-13), so a home that would be
+# too long goes to a short directory instead, removed when the process exits.
+GPG_SOCKET_TAIL = "/S.gpg-agent.browser"
+
+
 def gpg_home(work):
     home = os.path.join(work, "gnupg")
+    if len(home) + len(GPG_SOCKET_TAIL) >= 100:
+        base = "/tmp" if os.access("/tmp", os.W_OK) else None
+        home = tempfile.mkdtemp(prefix="ibg-", dir=base)
+        atexit.register(shutil.rmtree, home, True)
     os.makedirs(home, mode=0o700, exist_ok=True)
     return home
 

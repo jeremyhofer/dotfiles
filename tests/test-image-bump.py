@@ -137,8 +137,11 @@ def expect(r, status, text=None, label="", stream="any"):
 
 @pytest.fixture
 def work():
-    """This test's directory, under $TMPDIR as given (not resolved), removed afterwards."""
-    d = Path(tempfile.mkdtemp(prefix="image-bump-test-", dir=ORIGINAL_TMP))
+    """This test's directory, under $TMPDIR as given (not resolved), removed afterwards. Under a long
+    $TMPDIR (macOS's /var/folders/<..>/T/) it goes to /tmp instead, where writable: the tool nests its
+    own directories under this one's tmp/, and gpg's socket path must stay under 104 bytes."""
+    short = len(ORIGINAL_TMP) < 40 or not os.access("/tmp", os.W_OK)
+    d = Path(tempfile.mkdtemp(prefix="image-bump-test-", dir=ORIGINAL_TMP if short else "/tmp"))
     yield d
     shutil.rmtree(d, ignore_errors=True)
 

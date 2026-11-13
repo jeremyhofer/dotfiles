@@ -113,7 +113,9 @@ case "$1" in
            # the fixture says the respawn brought no process up.
            sid=$(jq -r --arg i "$2" '.[] | select(.id == $i) | .sessionId' "$AGENTS")
            [ -n "${RESPAWN_NO_PROCESS:-}" ] || { jq --arg sid "$sid" '.workers[$sid] = {pid: 1, sessionId: $sid}' "$ROSTER" > "$ROSTER.n" && mv "$ROSTER.n" "$ROSTER"; } ;;
-  rm)      # The removed session's process exits too: drop its fixture pid records and /proc entries.
+  rm)      # A slow stop, for the case that reproduces a loaded machine (seconds; default none).
+           sleep "${CLAUDE_STUB_RM_DELAY:-0}"
+           # The removed session's process exits too: drop its fixture pid records and /proc entries.
            sid=$(jq -r --arg i "$2" '.[] | select(.id == $i) | .sessionId' "$AGENTS")
            for r in "$FLEET_PID_RECORD_DIR"/*.json; do
              [ -f "$r" ] && [ "$(jq -r .sessionId "$r")" = "$sid" ] && { p=$(jq -r .pid "$r"); rm -f "$r"; rm -f "$FLEET_PROC_ROOT/$p/stat"; }
@@ -1632,13 +1634,49 @@ def test_refresh_a_pre_stop_snapshot_listing_the_stopped_pid_does_not_block_the_
         "refresh: a snapshot from before the stop that lists the stopped pid does not block the relaunch (rc=%s): %s" % (r.status, r.out)
 
 
-def test_refresh_a_post_stop_snapshot_that_still_shows_the_seat_running_refuses(fleet):
+def _snap_seat_live_after_the_stop(fleet, done):
+    """Once the stub has removed gamma's row (the stop), write a fresh snapshot showing it live every
+    half second until `done` is set, as the snapshot timer would. A single write on a fixed delay
+    raced the stop on a loaded machine (2026-11-13): written before refresh's stop, it predated it."""
+    def write():
+        deadline = time.time() + LOADED_WAIT
+        while time.time() < deadline and not done.is_set():
+            try:
+                rows = json.loads(fleet.agents.read_text())
+            except (OSError, ValueError):
+                rows = None
+            if rows is not None and not any(r.get("name") == "gamma-canonical" for r in rows):
+                break
+            time.sleep(0.1)
+        while not done.is_set() and time.time() < deadline:
+            tmp = Path(str(fleet.snap) + ".n")
+            tmp.write_text(json.dumps({"version": 1, "takenAt": int(time.time()), "seats": {"gamma-canonical": {
+                "state": "live", "why": "fixture, after the stop", "pids": []}}}))
+            tmp.replace(fleet.snap)
+            time.sleep(0.5)
+    t = threading.Thread(target=write)
+    t.start()
+    return t
+
+
+def test_refresh_a_post_stop_snapshot_that_still_shows_the_seat_running_refuses(fleet, slow_stop=None):
     _refresh_fixture(fleet)
-    t = _snap_seat_after(fleet, 3, "live")
-    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)})
+    done = threading.Event()
+    t = _snap_seat_live_after_the_stop(fleet, done)
+    env = {"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)}
+    if slow_stop:
+        env["CLAUDE_STUB_RM_DELAY"] = str(slow_stop)
+    r = fleet.fc("refresh", "gamma-canonical", env=env)
+    done.set()
     t.join()
     assert r.status != 0 and re.search(r"REFUSED.*snapshot shows it running", r.out, re.S) and "started 1" not in r.out, \
         "refresh: a snapshot taken AFTER the stop that still shows the seat running refuses (control) (rc=%s): %s" % (r.status, r.out)
+
+
+def test_refresh_a_post_stop_snapshot_still_running_refuses_under_a_slow_stop(fleet):
+    """The same control with the stop taking 4 s, as on a loaded work Mac (2026-11-13), where a
+    snapshot written on a fixed 3 s delay predated the stop and the refusal never came."""
+    test_refresh_a_post_stop_snapshot_that_still_shows_the_seat_running_refuses(fleet, slow_stop=4)
 
 
 def test_refresh_with_no_snapshot_after_the_stop_refuses_naming_the_next_step(fleet):
