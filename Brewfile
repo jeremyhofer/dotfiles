@@ -55,6 +55,7 @@ brew "yq"                # YAML processor. REQUIRED, not optional: the publish-b
                          # syntax, so the two platforms declare different package NAMES for the
                          # same tool.
 brew "watch"             # periodic command re-runner (not shipped on macOS)
+brew "btop"              # system resource monitor (CPU, memory, disks, network, processes); Arch declares it too
 brew "shellcheck"        # shell script linter
 brew "shfmt"             # shell script formatter
 brew "findutils"         # GNU find/xargs (gfind/gxargs; macOS ships only BSD find)
