@@ -128,11 +128,12 @@ def slot_waiting() -> tuple[str, ...]:
     return tuple(str(e.get("name")) for e in st["queue"] if isinstance(e, dict))
 
 
-def snapshot() -> tuple[dict[str, str], float | None]:
-    """(seat -> state, age in seconds) from the session snapshot; ({}, None) when it is unreadable."""
+def snapshot() -> tuple[dict[str, str] | None, float | None]:
+    """(seat -> state, age in seconds) from the session snapshot; (None, None) when it is unreadable.
+    An empty map is a readable snapshot of a machine with no seats declared for it."""
     d = read_json(SNAPSHOT)
     if not isinstance(d, dict) or not isinstance(d.get("seats"), dict):
-        return {}, None
+        return None, None
     taken = d.get("takenAt")
     age = time.time() - taken if isinstance(taken, (int, float)) else None
     return {n: str(s.get("state")) for n, s in d["seats"].items() if isinstance(s, dict)}, age
@@ -160,7 +161,7 @@ class Watch:
         self.staged = staged()
         self.waiting = slot_waiting()
         self.seats, age = snapshot()
-        self.live = {n for n, s in self.seats.items() if s == "live"}
+        self.live = {n for n, s in (self.seats or {}).items() if s == "live"}
         self.stale_at_start = age is None or age > self.max_age
         self.ci = None
         self.ci_note = "not watched (no --ci)"
@@ -169,12 +170,13 @@ class Watch:
             self.ci_note = f"watched ({self.ci})" if self.ci else f"NOT watched: {why}"
 
     def header(self, heartbeat: str) -> str:
-        if not self.seats:
+        if self.seats is None:
             seats = "seats NOT watched (no readable snapshot at " + str(SNAPSHOT) + ")"
         elif self.stale_at_start:
             seats = f"seats NOT watched (the snapshot was already older than {self.max_age}s)"
         else:
-            seats = f"seats watched ({len(self.live)} live)"
+            seats = f"seats watched ({len(self.live)} live" + (
+                "; the snapshot names no seat for this machine)" if not self.seats else ")")
         return (f"fleet-wait: watching request results, the slot queue, handoff staging, {seats}; "
                 f"CI {self.ci_note}; heartbeat {heartbeat}")
 
@@ -188,15 +190,15 @@ class Watch:
             out.append("event slot-queued " + ",".join(now_waiting))
         for f in sorted(staged() - self.staged):
             out.append(f"event staged {f}")
-        if self.seats and not self.stale_at_start:
+        if self.seats is not None and not self.stale_at_start:
             seats, age = snapshot()
             if age is None or age > self.max_age:
                 out.append(f"event snapshot-stale {'unreadable' if age is None else f'{int(age)}'}"
                            + ("" if age is None else "s"))
             else:
                 for n in sorted(self.live):
-                    if seats.get(n) != "live":
-                        out.append(f"event seat-missing {n} {seats.get(n, 'absent')}")
+                    if (seats or {}).get(n) != "live":
+                        out.append(f"event seat-missing {n} {(seats or {}).get(n, 'absent')}")
         if with_ci and self.ci:
             now, _why = ci_read()
             if now and now != self.ci:

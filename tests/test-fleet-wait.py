@@ -169,6 +169,24 @@ def test_a_stale_snapshot_at_the_start_is_said_and_not_watched(fl):
     assert finish(p) == (0, "heartbeat 1s")
 
 
+def test_a_snapshot_with_no_seats_is_watched_and_said(fl):
+    """A machine with no seats declared has a readable, empty snapshot: not "no readable snapshot",
+    and its going stale still ends the wait."""
+    fl.snapshot({})
+    p, header = start(*FAST)
+    assert "seats watched (0 live; the snapshot names no seat for this machine)" in header, header
+    fl.snapshot({}, age=100)
+    rc, out = finish(p)
+    assert rc == 0 and out.startswith("event snapshot-stale"), (rc, out)
+
+
+def test_an_unreadable_snapshot_is_said(fl):
+    (fl.state / "sessions.json").write_text("{not json")
+    p, header = start("--heartbeat", "1s", "--interval", "0.2s")
+    assert "seats NOT watched (no readable snapshot at" in header, header
+    assert finish(p) == (0, "heartbeat 1s")
+
+
 def test_snapshot_max_age_comes_from_the_config(fl):
     (fl.tmp / "config").write_text("snapshot-max-age = 200\n")
     fl.snapshot({"alpha-canonical": "live"}, age=100)
