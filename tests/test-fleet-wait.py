@@ -82,7 +82,7 @@ def finish(p, timeout=8):
 
 def run(*args, timeout=30):
     p = subprocess.run([str(TOOL), *args], capture_output=True, text=True, timeout=timeout, env=dict(os.environ))
-    return p.returncode, (p.stdout + p.stderr).strip()
+    return p.returncode, p.stdout.strip()
 
 
 FAST = ("--heartbeat", "20s", "--interval", "0.2s")
