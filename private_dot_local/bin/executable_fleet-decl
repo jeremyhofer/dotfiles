@@ -51,6 +51,13 @@ DEVEL_ROOT="${FLEET_DEVEL_ROOT:-$HOME/Devel}"
 
 die_unusable() { printf 'fleet-decl: %s\n' "$1" >&2; exit 2; }
 
+# Letters spelled out, never as a range. In a case pattern a range such as a-z follows the locale's
+# collation in some shells: macOS's /bin/sh under en_US.UTF-8 interleaves the cases, so [!a-z]
+# admitted `Alpha` as a lowercase slug (measured on a work Mac, 2026-11-12), and A-Z can admit
+# accented letters. The sets below mean the same thing in every locale.
+_LOWER=abcdefghijklmnopqrstuvwxyz
+_UPPER=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+
 command -v yq >/dev/null 2>&1 || die_unusable "yq is not installed; the per-repo record cannot be read"
 # Identify the implementation rather than trusting the command name.
 yq --version 2>&1 | grep -q 'mikefarah' \
@@ -175,7 +182,7 @@ kb_findings() {
       printf '[kbDomain-value] %s: kbDomain must be a single domain name (a string)\n' "$_kp"
     else
       case "$_kv" in
-        ''|*[!a-z0-9-]*) printf '[kbDomain-value] %s: kbDomain %s is not a slug (lowercase letters, digits and hyphens)\n' "$_kp" "'$_kv'" ;;
+        ''|*[!${_LOWER}0123456789-]*) printf '[kbDomain-value] %s: kbDomain %s is not a slug (lowercase letters, digits and hyphens)\n' "$_kp" "'$_kv'" ;;
       esac
     fi
   done
@@ -197,7 +204,7 @@ kb_findings() {
 
 valid_key() {
   case "$1" in
-    ""|*[!A-Za-z0-9_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$1" >&2; exit 2 ;;
+    ""|*[!${_UPPER}${_LOWER}0123456789_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$1" >&2; exit 2 ;;
   esac
 }
 
@@ -308,7 +315,7 @@ case "${1:-}" in
     # held to the characters a manifest key actually uses; anything else could escape the quoting.
     [ $# -eq 3 ] || { printf 'usage: fleet-decl --entry <project> <key>\n' >&2; exit 2; }
     case "$2" in
-      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+      ""|*[!${_UPPER}${_LOWER}0123456789_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
     esac
     valid_key "$3"
     _out=$(yq -e -r ".projects.\"$2\".$3" "$RECORD" 2>/dev/null) || exit 1
@@ -326,7 +333,7 @@ case "${1:-}" in
     { [ $# -eq 3 ] || [ $# -eq 4 ]; } \
       || { printf 'usage: fleet-decl --entry-list <project> <key> [<item-key>]\n' >&2; exit 2; }
     case "$2" in
-      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+      ""|*[!${_UPPER}${_LOWER}0123456789_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
     esac
     valid_key "$3"
     if [ $# -eq 4 ]; then
@@ -346,7 +353,7 @@ case "${1:-}" in
     # caller that reads paths must refuse those; this reader passes them through unchanged.
     [ $# -eq 3 ] || { printf 'usage: fleet-decl --entry-map <project> <key>\n' >&2; exit 2; }
     case "$2" in
-      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+      ""|*[!${_UPPER}${_LOWER}0123456789_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
     esac
     valid_key "$3"
     _out=$(yq -e -r ".projects.\"$2\".$3 | select(tag == \"!!map\") | to_entries | .[] | .key + \"\t\" + (.value | tostring)" \
@@ -370,7 +377,7 @@ case "${1:-}" in
     # an unreadable record for "standard" would build the wrong shape.
     [ $# -eq 2 ] || { printf 'usage: fleet-decl --layout <project>\n' >&2; exit 2; }
     case "$2" in
-      ""|*[!A-Za-z0-9_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
+      ""|*[!${_UPPER}${_LOWER}0123456789_.-]*) printf 'fleet-decl: project name %s is not a manifest key\n' "$2" >&2; exit 2 ;;
     esac
     # Each read either answers or ends the program with exit 2. Falling through on a failed read
     # would make that clause silently absent, and the entry would read as standard.
@@ -567,7 +574,7 @@ esac
 # unquoted so its dots act as path separators, so it is constrained to identifier characters --
 # an unconstrained key would be an injection point into the query language.
 case "$2" in
-  *[!A-Za-z0-9_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$2" >&2; exit 2 ;;
+  *[!${_UPPER}${_LOWER}0123456789_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$2" >&2; exit 2 ;;
 esac
 proj=$(project_for "$1")
 [ -n "$proj" ] || exit 1

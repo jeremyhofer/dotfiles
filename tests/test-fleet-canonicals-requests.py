@@ -1345,6 +1345,11 @@ def test_contract_serve_requests_prints_one_line_per_request(fleet):
         lines[1].startswith("refused  up beta-canonical (from alpha-canonical) -- requester:"), r.out
 
 
+# Upper bounds, not durations: each returns as soon as its condition holds, so a generous bound costs
+# nothing on an idle machine. 15 s and 20 s failed on a work Mac at load 40-55 (2026-11-12).
+LOADED_WAIT = 90
+
+
 def _waitfor(seconds, fn):
     for _ in range(int(seconds * 10)):
         if fn():
@@ -1377,9 +1382,9 @@ def test_contract_loop_serves_each_pass_and_ends_on_sigterm(fleet):
         def served(rid):
             return (fleet.Q / (rid + ".result.json")).is_file()
         debug = lambda: (fleet.T / "loop.out").read_text() + (fleet.T / "loop.err").read_text()
-        assert _waitfor(15, lambda: served("l-1")), "--loop serves the queue on its first pass: %s" % debug()
+        assert _waitfor(LOADED_WAIT, lambda: served("l-1")), "--loop serves the queue on its first pass: %s" % debug()
         fleet.plant("l-2", "up", "beta-canonical", "beta-canonical")
-        assert _waitfor(15, lambda: served("l-2")), "--loop serves a request that arrives after the first pass (a second pass ran): %s" % debug()
+        assert _waitfor(LOADED_WAIT, lambda: served("l-2")), "--loop serves a request that arrives after the first pass (a second pass ran): %s" % debug()
     finally:
         rc = _stop_loop(proc)
     assert rc == 0, "SIGTERM ends --loop with status 0 (99: had to be killed; got %s)" % rc
@@ -1397,10 +1402,10 @@ def test_contract_loop_survives_a_failed_pass(fleet):
     proc = _start_loop(fleet)
     try:
         err = fleet.T / "loop.err"
-        assert _waitfor(15, lambda: "pass failed" in err.read_text()), "a failing pass is reported on stderr: %s" % err.read_text()
+        assert _waitfor(LOADED_WAIT, lambda: "pass failed" in err.read_text()), "a failing pass is reported on stderr: %s" % err.read_text()
         assert proc.poll() is None, "the loop is still running after a failed pass"
         (fleet.Q / ".serve.lock").rmdir()
-        assert _waitfor(15, lambda: (fleet.Q / "l-3.result.json").is_file()), "a later pass serves once the fault clears: %s" % err.read_text()
+        assert _waitfor(LOADED_WAIT, lambda: (fleet.Q / "l-3.result.json").is_file()), "a later pass serves once the fault clears: %s" % err.read_text()
     finally:
         rc = _stop_loop(proc)
     assert rc == 0, "SIGTERM after a failed pass still ends the loop with status 0 (got %s)" % rc
@@ -1621,7 +1626,7 @@ def _snap_seat_after(fleet, delay, state):
 def test_refresh_a_pre_stop_snapshot_listing_the_stopped_pid_does_not_block_the_relaunch(fleet):
     _refresh_fixture(fleet)
     t = _snap_seat_after(fleet, 3, "dead")
-    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": "20"})
+    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)})
     t.join()
     assert r.status == 0 and "started 1" in r.out and "REFUSED" not in r.out, \
         "refresh: a snapshot from before the stop that lists the stopped pid does not block the relaunch (rc=%s): %s" % (r.status, r.out)
@@ -1630,7 +1635,7 @@ def test_refresh_a_pre_stop_snapshot_listing_the_stopped_pid_does_not_block_the_
 def test_refresh_a_post_stop_snapshot_that_still_shows_the_seat_running_refuses(fleet):
     _refresh_fixture(fleet)
     t = _snap_seat_after(fleet, 3, "live")
-    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": "20"})
+    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)})
     t.join()
     assert r.status != 0 and re.search(r"REFUSED.*snapshot shows it running", r.out, re.S) and "started 1" not in r.out, \
         "refresh: a snapshot taken AFTER the stop that still shows the seat running refuses (control) (rc=%s): %s" % (r.status, r.out)

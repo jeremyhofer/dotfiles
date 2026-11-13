@@ -66,7 +66,9 @@ def fl(tmp_path, monkeypatch):
 
 
 def start(*args):
-    p = subprocess.Popen([str(TOOL), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    # stdout alone: what the tool prints there is the contract. stderr may carry the runner's own
+    # warnings (uv warned of a deprecated variable on a work Mac and failed every comparison).
+    p = subprocess.Popen([str(TOOL), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          env=dict(os.environ))
     header = p.stdout.readline()
     assert header.startswith("fleet-wait: watching"), header
@@ -74,7 +76,7 @@ def start(*args):
 
 
 def finish(p, timeout=8):
-    out, _ = p.communicate(timeout=timeout)
+    out, _err = p.communicate(timeout=timeout)
     return p.returncode, out.strip()
 
 

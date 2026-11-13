@@ -1117,7 +1117,11 @@ def keys():
             if sys.platform == "darwin":
                 pytest.skip("%s is not installed (brew install gnupg to run these tests)" % prog)
             pytest.fail("%s is required" % prog)
-    base = Path(tempfile.mkdtemp(prefix="image-bump-keys-", dir=ORIGINAL_TMP))
+    # gpg-agent puts its sockets in the home directory on macOS, and a Unix socket path is capped at
+    # 104 bytes there. macOS's $TMPDIR (/var/folders/<..>/T/) plus these names passes that, and gpg
+    # fails with "File name too long" (measured on a work Mac, 2026-11-12), so a long one is not used.
+    short = len(ORIGINAL_TMP) + len("/image-bump-keys-XXXXXXXX/evil/S.gpg-agent.browser") < 100
+    base = Path(tempfile.mkdtemp(prefix="image-bump-keys-", dir=ORIGINAL_TMP if short else "/tmp"))
     made, homes = {}, []
     try:
         for name in ("good", "evil"):
