@@ -13,8 +13,12 @@
 # this file be wrong on another machine, or for another person? Per-user permission grants and
 # harness-created worktrees are; shared agent context (CLAUDE.md, AGENTS.md,
 # .claude/settings.json, authored project skills) is committed instead.
-.claude/settings.local.json
-.claude/*.local.json
+# `**/` because a pattern with a slash in it is anchored to the repository root, and a directory
+# inside a repository can carry its own .claude/ (claude-project-settings' claudeDirSettings).
+# Claude Code appends the `**/` form to this file itself when a path it writes is not ignored,
+# which the next apply then reverted (2026-11-12).
+**/.claude/settings.local.json
+**/.claude/*.local.json
 .claude/worktrees/
 CLAUDE.local.md
 AGENTS.local.md

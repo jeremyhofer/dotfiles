@@ -34,6 +34,17 @@ Entries are newest first.
 
 ## 2026-11-12
 
+### The global gitignore defaults for local agent settings match at any depth
+
+The skeleton's defaults `.claude/settings.local.json` and `.claude/*.local.json` are now
+`**/.claude/settings.local.json` and `**/.claude/*.local.json`. A pattern with a slash in it is
+anchored to the repository root, so a directory's own `.claude/` inside a repository was not
+covered. Claude Code then appended the `**/` form to the global ignore file itself, and the next
+apply removed it again.
+
+**ACTION, in the private overlay:** in `dot_gitignore_global`, replace those two lines with the `**/`
+forms, then apply. Until then `overlay-doctor` reports both as `MISSING`.
+
 ### `fleet-wait`: a heartbeat for a coordinating session with no cron or `/loop`
 
 New tool. `fleet-wait --heartbeat 30m`, run through the Bash tool's background mode, exits at the
