@@ -659,7 +659,11 @@ def check_scenario_files_clean(decl, scenarios):
     """Refuse to start when a scenario file already differs from HEAD."""
     bad = []
     for s in scenarios:
-        r = subprocess.run(["git", "-C", str(decl.root), "status", "--porcelain", "--", s.file],
+        # Asked in the file's own directory, not the declaration root: a root may be a plain
+        # directory holding several checkouts, where git at the root fails and every file would
+        # read as untracked (the same class as the per-loop git state in run_loop).
+        path = Path(decl.root) / s.file
+        r = subprocess.run(["git", "-C", str(path.parent), "status", "--porcelain", "--", path.name],
                            capture_output=True, text=True)
         if r.returncode != 0 or r.stdout.strip():
             bad.append(s.file)

@@ -1173,6 +1173,40 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
+def _tree_under_plain_root(tmp_path):
+    """A plain directory (not a repository) holding one checkout `t`, as a declaration whose root
+    collects throwaway clones has it."""
+    root = tmp_path / "plain"
+    t = root / "t"
+    (t / "lib").mkdir(parents=True)
+    (t / "lib" / "a.txt").write_text("OK\n")
+    (t / "check.sh").write_text("#!/bin/sh\n! grep -q BUG lib/a.txt\n")
+    git(t, "init", "-q")
+    git(t, "add", "-A")
+    git(t, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init")
+    body = ('[[loop]]\nid="c"\ncwd="t"\ncommand="sh check.sh"\n[[scenario]]\nname="leaf"\n'
+            'file="t/lib/a.txt"\nedit={append="x"}\nplant={find="OK", replace="BUG"}\nloops=["c"]\n')
+    return root, t, write_decl(tmp_path, root, body)
+
+
+def test_scenario_file_check_works_when_the_root_is_not_a_repository(tmp_path):
+    """Measured 2026-11-14 by finmodel: a root holding `git clone --shared` trees refused every
+    scenario file as "differs from HEAD", because git ran at the root, which is no repository."""
+    root, t, p = _tree_under_plain_root(tmp_path)
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", p, "c", "--mode", "scenario:leaf", "--samples", "1", "--results", res,
+                    "--max-load", "9999") == 0
+    assert (t / "lib" / "a.txt").read_text() == "OK\n"
+
+
+def test_scenario_file_check_still_refuses_a_dirty_file_under_a_plain_root(tmp_path, capsys):
+    root, t, p = _tree_under_plain_root(tmp_path)
+    (t / "lib" / "a.txt").write_text("OK\nlocal change\n")
+    rc = run_main("run", p, "c", "--mode", "scenario:leaf", "--samples", "1", "--results", tmp_path / "r.jsonl",
+                  "--max-load", "9999")
+    assert rc == 2 and "differs from HEAD" in capsys.readouterr().err
+
+
 def test_git_state_is_read_from_each_loops_own_cwd(tmp_path):
     """A root holding several checkouts (a directory of worktrees inside a repository, as finmodel
     declares `root = <repo>/.worktrees`) must record each loop's own tree. Measured 2026-11-10: two
