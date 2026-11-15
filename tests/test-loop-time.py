@@ -1361,6 +1361,9 @@ def test_sampler_survives_a_reader_that_raises():
 # ---- pressure: in the records ------------------------------------------------------------
 
 def test_every_record_carries_the_pressure_series_and_the_idle_io_baseline(tmp_path, decl_path, monkeypatch):
+    """The PSI reader, on any machine: the platform is pinned to Linux, since on macOS the tool
+    reads top and memory_pressure and never the PSI files this test supplies."""
+    monkeypatch.setattr(lt.platform, "system", lambda: "Linux")
     monkeypatch.setenv("LOOP_TIME_PRESSURE_DIR", str(write_psi(tmp_path / "psi")))
     res = tmp_path / "r.jsonl"
     assert run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999",
@@ -1368,8 +1371,36 @@ def test_every_record_carries_the_pressure_series_and_the_idle_io_baseline(tmp_p
     r = records(res)[0]
     assert r["pressure"]["source"] == "psi" and r["pressure"]["n"] >= 2
     assert r["pressure"]["series"]["io_some"]["peak"] == 75.6
-    assert r["pressure"]["series"]["mem_available"]["min"] > 0
     assert r["io_baseline"] == {"io_some": 75.6, "io_full": 73.5}
+
+
+def test_every_record_carries_available_memory_from_the_real_platform(tmp_path, decl_path):
+    """No stand-in files: /proc/meminfo on Linux, vm_stat on macOS."""
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999",
+                    "--pressure-interval", "0.05") == 0
+    assert records(res)[0]["pressure"]["series"]["mem_available"]["min"] > 0
+
+
+def test_started_at_is_the_commands_start_even_when_a_pressure_reading_is_slow(tmp_path, project, monkeypatch):
+    """On macOS a reading runs `top -l 2`, about a second. The sampler's first reading is taken
+    before started_at, so started_at, and with it a group's barrier, marks the command's start."""
+    def slow():
+        time.sleep(0.6)
+        return {"source": "none", "reason": "slow", "values": {}}
+
+    real = lt.PressureSampler
+    monkeypatch.setattr(lt, "PressureSampler", lambda **kw: real(reader=slow, **kw))
+    stamp = tmp_path / "stamp"
+    decl = write_decl(tmp_path, project, f'''[[loop]]
+id = "stamp"
+command = "python3 -c 'import time; print(time.time())' > {stamp}"
+''')
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl, "stamp", "--samples", "1", "--results", res, "--max-load", "9999",
+                    "--pressure-interval", "30") == 0
+    began = float(stamp.read_text())
+    assert abs(began - records(res)[0]["started_at"]) < 0.3
 
 
 def test_a_high_io_pressure_never_refuses_or_marks_a_sample(tmp_path, decl_path, monkeypatch):
@@ -1461,7 +1492,9 @@ def group(decl, loops, *extra, res=None):
 def test_run_group_starts_the_loops_at_a_barrier_and_they_overlap(tmp_path, group_decl):
     res = tmp_path / "r.jsonl"
     t0 = time.monotonic()
-    assert group(group_decl, "nap,nap,nap", "--samples", "2", res=res) == 0
+    # --no-pressure: this tests the barrier. A pressure reading on macOS costs about a second
+    # outside the measured interval, which would push a serial-versus-parallel bound past 5.5 s.
+    assert group(group_decl, "nap,nap,nap", "--samples", "2", "--no-pressure", res=res) == 0
     took = time.monotonic() - t0
     recs = records(res)
     assert len(recs) == 6

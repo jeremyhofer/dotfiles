@@ -999,12 +999,15 @@ class Session:
         try:
             self.hooks("setup", loop, env, strict=True)
             start = machine_state()
-            if self.before_measure:
-                self.before_measure()
-            started_at = time.time()
+            # The sampler's first reading comes before the barrier and started_at: on macOS a
+            # reading runs `top -l 2`, about a second, which would otherwise sit between the two
+            # and leave started_at, and a group's common start, ahead of the command's real start.
             if sampler:
                 sampler.start()
             try:
+                if self.before_measure:
+                    self.before_measure()
+                started_at = time.time()
                 rc, wall, cpu = measure(command_argv(loop.command), cwd, outp, env)
             finally:
                 if sampler:
