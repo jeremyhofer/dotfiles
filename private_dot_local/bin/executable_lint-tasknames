@@ -606,6 +606,16 @@ def main():
         print(f"lint-tasknames: manifest unreadable: {env_manifest} (from LINT_TASKNAMES_MANIFEST)",
               file=sys.stderr)
         return 2
+    # A usage error is exit 2, never a lint result: an unknown option or a path that is not a
+    # directory once printed "clean." and exited 0, so a mistyped path read as a clean repository.
+    unknown = [a for a in argv if a.startswith("-") and a != "--fleet"]
+    if unknown:
+        print(f"lint-tasknames: unknown option {unknown[0]}; usage: lint-tasknames [--strict] "
+              "[REPO | --fleet [MANIFEST]]", file=sys.stderr)
+        return 2
+    if argv and argv[0] != "--fleet" and not Path(argv[0]).is_dir():
+        print(f"lint-tasknames: not a directory: {argv[0]}", file=sys.stderr)
+        return 2
     if argv and argv[0] == "--fleet":
         manifest = Path(argv[1]) if len(argv) > 1 else Path(env_manifest) if env_manifest else DEFAULT_MANIFEST
         rc, seen = 0, set()

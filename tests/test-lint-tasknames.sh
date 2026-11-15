@@ -32,6 +32,14 @@ printf '%s\n' "$out" | grep -q 'separator' || { echo "FAIL: finding does not nam
 out=$(lint "$tmp/no-skill-home" "$tmp/clean") && rc=0 || rc=$?
 [ "$rc" -eq 2 ] || { echo "FAIL: expected exit 2 with no skill, got $rc"; echo "$out"; exit 1; }
 
+# A path that is not a directory, or an option the tool does not know, is a usage error (exit 2).
+# Both once printed "clean." and exited 0, so a mistyped path in a hook read as a clean repository.
+out=$(lint "$h" "$tmp/does-not-exist") && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || { echo "FAIL: expected exit 2 for a missing path, got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'clean' && { echo "FAIL: a missing path still reads clean"; echo "$out"; exit 1; }
+out=$(lint "$h" "--bogus") && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || { echo "FAIL: expected exit 2 for an unknown option, got $rc"; echo "$out"; exit 1; }
+
 # The repo's own skill parses into the vocabulary (both row shapes).
 cats=$(python3 -B - "$tool" "$skill_src" <<'PY'
 import importlib.machinery, importlib.util, sys
