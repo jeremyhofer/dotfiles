@@ -35,7 +35,8 @@ tree test-no-new-shell.py       private_dot_local/bin/** tests/**
 
 # --- the selector, the map and the apply-time runs ---------------------------------------------
 test-select-suites.sh  tests/coverage.map
-test-apply-suites.py   tests/apply-suites.py tests/pre-apply.sh tests/post-apply.sh .chezmoi.toml.tmpl
+test-apply-suites.py   tests/apply-suites.py tests/pre-apply.sh tests/post-apply.sh .chezmoi.toml.tmpl private_dot_local/bin/executable_apply-status
+test-apply-status.py   private_dot_local/bin/executable_apply-status
 
 # --- tools: private_dot_local/bin --------------------------------------------------------------
 test-adr-lint.sh                    private_dot_local/bin/executable_adr-lint

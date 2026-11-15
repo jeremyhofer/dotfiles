@@ -34,6 +34,24 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### The apply leaves a ledger: `apply-status`, a kept refusal report, an alert on refusal
+
+Nothing to do on adopting it; the hook paths are unchanged, so no `chezmoi init` is needed for the
+base. The base's two apply hooks (`tests/apply-suites.py`) now append one line per event to
+`~/.local/state/dotfiles/apply.log` through the new `apply-status` tool (`start`, `skipped`,
+`refused`, `deployed`, `post-pass`, `post-FAIL`, each with the source head), so a session can learn
+what an apply did on a machine without anyone pasting the terminal. `apply-status` shows this
+machine's latest apply per instance; `apply-status wait --since <time>` blocks until both instances
+deployed (exit 0), one was refused (1) or it timed out (3).
+A refused apply's report moves from the temp directory to `~/.local/state/dotfiles/pre-apply-<time>.log`
+(newest 5 kept), and the alert hook (`~/.config/dotfiles/alert`) is now also called on a refusal,
+with a message beginning `dotfiles pre-apply: apply REFUSED: `. The first apply that ships this uses
+the source copy of the tool, so it works before the tool is installed. A private layer may append its
+own `start` and `deployed` lines with `apply-status append --hook`; its hooks never need to refuse.
+A `chezmoi apply -n` preview and a hook script run by hand are recorded as `dry-run` and `by-hand`
+and ignored by `apply-status` and `wait`. The alert hook is started detached, so a slow notifier
+never holds up a refused apply. `wait --since` needs a time with a zone (`Z`, `+HH:MM` or epoch).
+
 ### `lint-tasknames`: fixture directories are skipped, and `validate` is faulted only on evidence
 
 Nothing to do on adopting it. Directories named `fixture`, `fixtures` or `__fixtures__`, or starting

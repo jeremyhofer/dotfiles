@@ -44,6 +44,21 @@ socket as much as the daemon does. NX_TUI=false and --outputStyle=static, so the
 NX_PARALLEL, unless the caller set it, is the CPU count up to 8, the concurrency tests/run-all.sh
 uses, so a cold apply is no slower than the runner it replaced.
 
+THE LEDGER. Every step below also appends a line to the machine's apply ledger,
+${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/apply.log, through the SOURCE copy of the
+apply-status tool (private_dot_local/bin/executable_apply-status, run with this Python: the first
+apply that ships the tool has no installed copy), so a session that cannot watch the terminal can
+read what happened. The tool owns the line format and the event names. The lines are written with
+the tool's --hook flag, which reads chezmoi's own CHEZMOI and CHEZMOI_ARGS: a dry run
+(`chezmoi apply -n`, `--dry-run`) is recorded as `dry-run`, and a hook script run by hand (no
+CHEZMOI) as `by-hand`, each with the real event in its detail, and `apply-status` ignores both.
+`post --run` records the head from BEFORE its run, not after. `pre` writes `start` first,
+before any skip check, then `skipped` (with the reason) on each skip path, or `refused` (naming the
+failing suites and the report) when it aborts the apply. `post` writes `deployed` before it
+detaches, also on its skip paths, since the apply did deploy; `post --run` writes `post-pass` or
+`post-FAIL` (naming the failing suites and the log) when its run ends. A ledger failure of any kind
+is ignored here: it never changes a hook's exit code.
+
 SKIPS, loudly and with exit 0:
   * DOTFILES_SKIP_PRE_APPLY=1 (`pre`) or DOTFILES_SKIP_POST_APPLY=1 (`post`): for the apply a suite
     itself depends on, which cannot pass before that apply deploys what the suite needs;
@@ -51,6 +66,13 @@ SKIPS, loudly and with exit 0:
     or after that apply, and refusing it would leave the machine unable to bootstrap.
 Missing or mismatched Node is not a skip: Node is needed only to run the suites, so a machine with
 the other tools and no usable Node would otherwise apply untested every time.
+
+A REFUSAL IS KEPT AND ANNOUNCED. `pre`'s report is moved from the temp directory into
+${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/pre-apply-<utc time>.log (the newest 5 are kept, apart
+from the post logs), and the path printed and recorded is that one, so it survives a reboot. The
+alert hook (below) is also called, with a message beginning `dotfiles pre-apply: apply REFUSED: `
+that names the failing suites and the report: the refusal is the case a person is not watching.
+The alert hook is started detached and never waited for, here and after a post failure.
 
 The CHEZMOI_* variables chezmoi sets for a hook are removed first, so the suites run as they do at
 commit time rather than inside chezmoi's environment.
@@ -64,12 +86,14 @@ finds a live holder exits without testing, and a lock whose pid is gone is recla
 under ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/:
   post-apply-<utc time>.log   the run's full output; the newest 5 are kept
   post-apply.last             one line: time, HEAD's tree (or `dirty`), `pass` or `FAIL`, log path
+  apply.log                   the ledger, shared with `pre` and the private layer's hooks
 On a failure ${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/alert, when it is an executable file, is run
-with one argument naming the failing suites and the log. This base knows no notification service; a
-private layer supplies the file. A failing alert hook is ignored: the status file holds the result.
+with one argument naming the failing suites and the log (the same hook, with its own message, on a
+`pre` refusal). This base knows no notification service; a private layer supplies the file. A
+failing alert hook is ignored: the status file and the ledger hold the result.
 
 Exit: `pre` 0 the suites passed, or skipped; 1 a suite failed or the suites could not be run (the
-apply is aborted). `post` 0 always. `post --run` 0 a pass (or another run holds the lock), 1 a failure.
+apply is aborted; the ledger and alert never change this). `post` 0 always. `post --run` 0 a pass (or another run holds the lock), 1 a failure.
 
 Standard library only, and Python 3.9 syntax: macOS's command-line tools ship that python3, and a
 hook may meet it first on PATH (tests/test-python39-syntax.sh checks this file).
@@ -92,6 +116,7 @@ SRC = HERE.parent
 REQUIRED = ("git", "python3", "uv", "jq", "yq", "gitleaks", "wt")
 TARGET = "test"
 KEEP_LOGS = 5
+LEDGER_TOOL = SRC / "private_dot_local" / "bin" / "executable_apply-status"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
@@ -105,6 +130,46 @@ def say(tag: str, msg: str) -> None:
 
 def hook_env() -> dict:
     return {k: v for k, v in os.environ.items() if not k.startswith("CHEZMOI")}
+
+
+def ledger(event: str, detail: str = "", head: str = "") -> None:
+    """Append one ledger line through the source copy of apply-status. Never raises, never changes
+    a hook's exit code: a ledger that cannot be written costs a line on stderr and nothing else.
+    `--hook` makes the tool read chezmoi's own CHEZMOI and CHEZMOI_ARGS (so this runs with the
+    whole environment, not hook_env's): a dry run or a hand run is recorded as such, not as an apply."""
+    cmd = [sys.executable, str(LEDGER_TOOL), "append", "--source", str(SRC), "--hook"]
+    if head:
+        cmd += ["--head", head]
+    try:
+        subprocess.run(cmd + ["base", event, detail], env=dict(os.environ), stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, timeout=120)
+    except Exception as e:  # noqa: BLE001 -- a ledger problem must never abort an apply
+        say("apply-status", f"the ledger line {event!r} was not written ({e})")
+
+
+def source_head() -> str:
+    """The head string the ledger would record now ("" when the tool cannot say)."""
+    try:
+        out = subprocess.run([sys.executable, str(LEDGER_TOOL), "head", str(SRC)], env=hook_env(),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             universal_newlines=True, timeout=60)
+    except Exception:  # noqa: BLE001
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def alert_hook(message: str) -> None:
+    """Start the machine's alert hook with one message, when it is an executable file, and do not
+    wait for it: a slow notifier (fleet-notify's retries on a degraded link take about 90 s) must not
+    hold up a refused apply or the chain behind it. Detached, no descriptors, its failure ignored."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    alert = Path(base) / "dotfiles" / "alert"
+    if alert.is_file() and os.access(alert, os.X_OK):
+        try:
+            subprocess.Popen([str(alert), message], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        except OSError:
+            pass
 
 
 def missing_tools(env: dict) -> list:
@@ -244,9 +309,33 @@ def failures(lines: list) -> tuple:
 
 # --- pre -------------------------------------------------------------------------------------------
 
+def keep_report(logpath: Path) -> Path:
+    """Move a refusal's report from the temp directory into the state directory, keeping the newest
+    KEEP_LOGS; the path to quote. The report stays where it is when it cannot be moved."""
+    sd = state_dir()
+    dest = sd / ("pre-apply-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + ".log")
+    try:
+        sd.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(logpath), str(dest))
+        for old in sorted(sd.glob("pre-apply-*.log"), reverse=True)[KEEP_LOGS:]:
+            old.unlink()
+    except OSError:
+        return logpath if logpath.exists() else dest
+    return dest
+
+
+def refuse(what: str, report: Path | None) -> None:
+    """Record a refusal in the ledger and announce it through the alert hook."""
+    tail = f"; report: {report}" if report else ""
+    ledger("refused", f"{what}{tail}")
+    alert_hook(f"dotfiles pre-apply: apply REFUSED: {what}{tail}")
+
+
 def pre() -> int:
+    ledger("start")
     if os.environ.get("DOTFILES_SKIP_PRE_APPLY") == "1":
         say("pre-apply", "SKIPPED by DOTFILES_SKIP_PRE_APPLY=1; the apply goes ahead untested.")
+        ledger("skipped", "DOTFILES_SKIP_PRE_APPLY=1")
         return 0
     env = hook_env()
     missing = missing_tools(env)
@@ -254,12 +343,14 @@ def pre() -> int:
         say("pre-apply", "suites SKIPPED, not installed: " + " ".join(missing)
             + ". The apply goes ahead untested;\n  install them (the Brewfile, or the distribution"
             " packages) and the next apply runs the suites.")
+        ledger("skipped", "suites tools not installed: " + " ".join(missing))
         return 0
     tmp = os.environ.get("TMPDIR") or "/tmp"
     try:
         fd, name = tempfile.mkstemp(prefix="dotfiles-pre-apply.", dir=tmp)
     except OSError:
         say("pre-apply", "no temp file for the log; apply refused")
+        refuse("none ran (no temp file for the log)", None)
         return 1
     logpath = Path(name)
     with os.fdopen(fd, "w") as log:
@@ -271,7 +362,10 @@ def pre() -> int:
             rc = run_nx(prefix, env, [], log)
         except Refused as e:
             log.write(f"apply-suites: refused: {e}\n")
+            log.flush()
+            logpath = keep_report(logpath)
             say("pre-apply", f"{e}.\n  Apply ABORTED, nothing was deployed. Setup output: {logpath}")
+            refuse(f"none ran ({e})", logpath)
             return 1
     lines = read_log(logpath)
     if rc == 0:
@@ -279,6 +373,7 @@ def pre() -> int:
         logpath.unlink()
         return 0
     shown, suites = failures(lines)
+    logpath = keep_report(logpath)
     print("", file=sys.stderr)
     say("pre-apply", "a suite failed -- apply ABORTED, nothing was deployed:")
     for ln in shown or lines[-15:]:
@@ -286,6 +381,7 @@ def pre() -> int:
     print(f"\n  why, in full: {logpath}", file=sys.stderr)
     for s in suites:
         print(f"  re-run one:   sh {HERE}/run-all.sh --only {s}", file=sys.stderr)
+    refuse("suites failed: " + (", ".join(suites) or "none named, see the report"), logpath)
     return 1
 
 
@@ -347,6 +443,7 @@ def clean_tree(env: dict) -> str:
 
 
 def post_detach() -> int:
+    ledger("deployed")
     if os.environ.get("DOTFILES_SKIP_POST_APPLY") == "1":
         say("post-apply", "SKIPPED by DOTFILES_SKIP_POST_APPLY=1; the suites do not run after this apply.")
         return 0
@@ -384,6 +481,7 @@ def post_run() -> int:
 
 def post_body(env: dict, sd: Path) -> int:
     tree = clean_tree(env)
+    head = source_head()
     logpath = sd / ("post-apply-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + ".log")
     with open(logpath, "w") as log:
         try:
@@ -403,18 +501,12 @@ def post_body(env: dict, sd: Path) -> int:
     tmp.write_text(f"{now} {tree or 'dirty'} {result} {logpath}\n")
     os.replace(tmp, sd / "post-apply.last")
     if rc == 0:
+        ledger("post-pass", f"log: {logpath}", head)
         return 0
     _, suites = failures(read_log(logpath))
     what = ", ".join(suites) or (f"none ran ({refusal})" if refusal else "unknown")
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    alert = Path(base) / "dotfiles" / "alert"
-    if alert.is_file() and os.access(alert, os.X_OK):
-        try:
-            subprocess.run([str(alert), f"dotfiles post-apply: suites failed after the apply: {what};"
-                            f" log: {logpath}"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-        except OSError:
-            pass
+    ledger("post-FAIL", f"suites: {what}; log: {logpath}", head)
+    alert_hook(f"dotfiles post-apply: suites failed after the apply: {what}; log: {logpath}")
     return 1
 
 

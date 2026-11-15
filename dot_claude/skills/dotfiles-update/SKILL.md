@@ -163,7 +163,17 @@ what makes them safe to move off it.
   tool upgrade runs them all. It needs the Node `.nvmrc` pins (through `fnm`), and refuses the apply
   without it, naming `fnm install <version>`. A failing suite
   aborts the apply before anything is written and names the suite, its log and the re-run command:
-  fix the source, or stop and report, rather than look for a way past it. A machine whose config
+  fix the source, or stop and report, rather than look for a way past it. The report is kept in
+  `~/.local/state/dotfiles/pre-apply-<time>.log` and the alert hook is called. Each hook also
+  appends to the machine's apply ledger, `~/.local/state/dotfiles/apply.log`: `apply-status` shows
+  the latest apply per instance (and whether this machine's source checkout is ahead of the deployed
+  head, a local comparison, not against the pushed head), and `apply-status wait --since <time>`
+  blocks until both instances deployed (exit 0; `--instances base` on a machine with no overlay), one
+  was refused and not retried (1) or it timed out (3). The time needs a zone: `Z`, `+HH:MM` or epoch
+  seconds (`date -u +%Y-%m-%dT%H:%M:%SZ`); a zoneless time is exit 2. A `chezmoi apply -n` preview
+  and a hook script run by hand are recorded as `dry-run` and `by-hand` and ignored. It reads only
+  the local file; for another machine run `ssh <host> apply-status wait --since <time>` as the whole
+  command. A machine whose config
   predates the hook needs `chezmoi init` once; until then its apply runs no suite.
 - **A failing external aborts the whole apply, part-way.** `.chezmoiexternal` fetches third-party
   content; if one fails (network down, a bad URL), the apply stops and later files are simply not

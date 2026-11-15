@@ -106,6 +106,9 @@ class Rig:
         shutil.copy(HERE / "apply-suites.py", self.src / "tests" / "apply-suites.py")
         shutil.copy(HERE / "pre-apply.sh", self.src / "tests" / "pre-apply.sh")
         shutil.copy(HERE / "post-apply.sh", self.src / "tests" / "post-apply.sh")
+        tool = self.src / "private_dot_local" / "bin"
+        tool.mkdir(parents=True)
+        shutil.copy(SRC / "private_dot_local" / "bin" / "executable_apply-status", tool)
         for name in ("test-good.sh", "test-broken.sh"):
             (self.src / "tests" / name).write_text("#!/bin/sh\nexit 0\n")
         (self.src / ".nvmrc").write_text(PIN + "\n")
@@ -120,6 +123,8 @@ class Rig:
 rec = {str(self.rec)!r}
 with open(os.path.join(rec, "nx.calls"), "a") as f:
     f.write(json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ)}}) + "\\n")
+if os.environ.get("NX_STUB_DIRTY"):
+    open({str(self.src / "dirtied")!r}, "w").write("x")
 if os.environ.get("NX_STUB_HOLD"):
     while not os.path.exists({str(root / "release")!r}):
         time.sleep(0.05)
@@ -185,6 +190,8 @@ if sys.argv[1:2] == ["ci"]:
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "FNM_INSTALLED": PIN,
+            "CHEZMOI": "1",
+            "CHEZMOI_ARGS": "chezmoi apply",
         }
         env.update(extra)
         return {k: v for k, v in env.items() if v is not None}
@@ -208,6 +215,39 @@ if sys.argv[1:2] == ["ci"]:
     @property
     def status(self) -> Path:
         return self.root / "state" / "dotfiles" / "post-apply.last"
+
+    @property
+    def ledger_file(self) -> Path:
+        return self.root / "state" / "dotfiles" / "apply.log"
+
+    def ledger(self) -> list:
+        """The apply ledger as (instance, event, head, detail) rows."""
+        if not self.ledger_file.exists():
+            return []
+        rows = [ln.split("\t") for ln in self.ledger_file.read_text().splitlines()]
+        return [(r[2], r[3], r[4], r[6]) for r in rows]
+
+    def events(self) -> list:
+        return [r[1] for r in self.ledger()]
+
+    def alert_stub(self) -> Path:
+        alert = self.root / "cfg" / "dotfiles" / "alert"
+        stub(alert, f"open({str(self.rec / 'alert')!r}, 'a').write(sys.argv[1] + '\\n')\n")
+        return self.rec / "alert"
+
+    def slow_alert(self) -> None:
+        """An alert hook that does not return until the test releases it (or 15 s pass)."""
+        alert = self.root / "cfg" / "dotfiles" / "alert"
+        stub(alert, f"for _ in range(300):\n    if os.path.exists({str(self.root / 'release')!r}): break\n"
+                    f"    time.sleep(0.05)\n")
+
+    def wait_text(self, path: Path, seconds: float = 20) -> str:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if path.exists() and path.read_text():
+                return path.read_text()
+            time.sleep(0.05)
+        return path.read_text() if path.exists() else ""
 
     @property
     def lock(self) -> Path:
@@ -411,7 +451,7 @@ def test_post_failure_calls_the_alert_hook_with_the_suites_and_the_log(rig):
     stub(alert, f"open({str(rig.rec / 'alert')!r}, 'w').write(sys.argv[1])\n")
     out = rig.run("post", "--run", NX_STUB_RC="1")
     assert out.returncode == 1
-    msg = (rig.rec / "alert").read_text()
+    msg = rig.wait_text(rig.rec / "alert")
     log = rig.status.read_text().split()[3]
     assert "test-broken.sh" in msg and log in msg
     assert " FAIL " in rig.status.read_text()
@@ -424,6 +464,7 @@ def test_post_without_an_alert_hook_fails_quietly_and_a_plain_file_is_not_run(ri
     alert = rig.root / "cfg" / "dotfiles" / "alert"
     alert.write_text(f"#!/bin/sh\necho ran > {rig.rec / 'alert'}\n")
     rig.run("post", "--run", NX_STUB_RC="1")
+    time.sleep(0.5)
     assert not (rig.rec / "alert").exists()
 
 
@@ -432,7 +473,7 @@ def test_post_names_a_refused_setup_in_the_alert(rig):
     stub(alert, f"open({str(rig.rec / 'alert')!r}, 'w').write(sys.argv[1])\n")
     out = rig.run("post", "--run", FNM_INSTALLED="")
     assert out.returncode == 1
-    assert f"fnm install {PIN}" in (rig.rec / "alert").read_text()
+    assert f"fnm install {PIN}" in rig.wait_text(rig.rec / "alert")
 
 
 def test_a_dirty_tree_is_tested_and_labelled_dirty(rig):
@@ -483,6 +524,200 @@ def test_post_skips_loudly(rig, why):
     assert "SKIPPED" in out.stderr
     time.sleep(0.3)
     assert rig.nx_calls() == []
+
+
+# --- the apply ledger ------------------------------------------------------------------------------
+
+def test_a_passing_pre_records_only_a_start_with_the_source_head(rig):
+    out = rig.run("pre")
+    assert out.returncode == 0, out.stderr
+    assert rig.ledger() == [("base", "start", rig.git("rev-parse", "--short", "HEAD").strip(), "")]
+
+
+def test_a_dirty_source_is_recorded_dirty(rig):
+    (rig.src / ".nvmrc").write_text(PIN + "\n\n")
+    rig.run("pre")
+    assert rig.ledger()[0][2].endswith("-dirty")
+
+
+def test_the_skip_switch_records_a_start_and_a_skipped_with_its_reason(rig):
+    rig.run("pre", DOTFILES_SKIP_PRE_APPLY="1")
+    assert rig.events() == ["start", "skipped"]
+    assert "DOTFILES_SKIP_PRE_APPLY" in rig.ledger()[1][3]
+
+
+def test_a_missing_suite_tool_records_a_skipped_naming_it(rig):
+    (rig.bin / "uv").unlink()
+    rig.run("pre")
+    assert rig.events() == ["start", "skipped"]
+    assert "uv" in rig.ledger()[1][3]
+
+
+def test_a_failing_suite_records_a_refusal_naming_the_suite_and_the_kept_report(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    out = rig.run("pre", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert rig.events() == ["start", "refused"]
+    detail = rig.ledger()[1][3]
+    [report] = (rig.root / "state" / "dotfiles").glob("pre-apply-*.log")
+    assert "test-broken.sh" in detail and str(report) in detail
+    assert "the reason it failed" in report.read_text()
+    assert f"why, in full: {report}" in out.stderr
+    assert not list((rig.root / "logs").iterdir()), "the report left the temp directory"
+
+
+def test_a_refused_setup_records_a_refusal_and_keeps_its_report(rig):
+    out = rig.run("pre", FNM_INSTALLED="24.18.0")
+    assert out.returncode == 1
+    assert rig.events() == ["start", "refused"]
+    [report] = (rig.root / "state" / "dotfiles").glob("pre-apply-*.log")
+    assert str(report) in rig.ledger()[1][3]
+    assert str(report) in out.stderr
+    assert f"fnm install {PIN}" in rig.ledger()[1][3]
+
+
+def test_a_refusal_calls_the_alert_hook_naming_the_suites_and_the_report(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    alert = rig.alert_stub()
+    rig.run("pre", NX_STUB_RC="1")
+    [msg] = rig.wait_text(alert).splitlines()
+    assert msg.startswith("dotfiles pre-apply: apply REFUSED: ")
+    [report] = (rig.root / "state" / "dotfiles").glob("pre-apply-*.log")
+    assert "test-broken.sh" in msg and str(report) in msg
+
+
+def test_a_pass_and_a_skip_do_not_call_the_alert_hook(rig):
+    alert = rig.alert_stub()
+    rig.run("pre")
+    rig.run("pre", DOTFILES_SKIP_PRE_APPLY="1")
+    time.sleep(0.5)
+    assert not alert.exists()
+
+
+def test_a_refusal_without_an_alert_hook_still_refuses(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    assert rig.run("pre", NX_STUB_RC="1").returncode == 1
+
+
+def test_pre_keeps_the_newest_five_reports_apart_from_the_post_logs(rig):
+    d = rig.root / "state" / "dotfiles"
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(1, 8):
+        (d / f"pre-apply-2020010{i}T000000Z.log").touch()
+    (d / "post-apply-20200101T000000Z.log").touch()
+    rig.nx_out.write_text(NX_FAIL)
+    rig.run("pre", NX_STUB_RC="1")
+    reports = sorted(p.name for p in d.glob("pre-apply-*.log"))
+    assert len(reports) == 5
+    assert "pre-apply-20200101T000000Z.log" not in reports
+    assert (d / "post-apply-20200101T000000Z.log").exists()
+
+
+def test_a_ledger_that_cannot_be_written_changes_no_exit_code(rig):
+    (rig.root / "state").rmdir()
+    (rig.root / "state").write_text("a file where the state directory must go\n")
+    assert rig.run("pre").returncode == 0
+    rig.nx_out.write_text(NX_FAIL)
+    out = rig.run("pre", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert "why, in full: " in out.stderr, "the report stays where it was"
+    assert rig.run("post").returncode == 0
+
+
+def test_a_missing_ledger_tool_changes_no_exit_code(rig):
+    (rig.src / "private_dot_local" / "bin" / "executable_apply-status").unlink()
+    assert rig.run("pre").returncode == 0
+    assert rig.run("post", "--run").returncode == 0
+    rig.nx_out.write_text(NX_FAIL)
+    assert rig.run("pre", NX_STUB_RC="1").returncode == 1
+
+
+def test_post_records_deployed_before_the_run_it_detaches(rig):
+    rig.run("post", NX_STUB_HOLD="1")
+    assert rig.wait_for(rig.rec / "nx.calls"), "the run did not start"
+    assert rig.events() == ["deployed"], "deployed is written before the run's result"
+    (rig.root / "release").touch()
+    assert rig.wait_for(rig.status)
+    rig.wait_idle()
+    assert rig.events() == ["deployed", "post-pass"]
+
+
+@pytest.mark.parametrize("why", ["switch", "tool"])
+def test_post_records_deployed_even_when_its_suites_are_skipped(rig, why):
+    extra = {"DOTFILES_SKIP_POST_APPLY": "1"} if why == "switch" else {}
+    if why == "tool":
+        (rig.bin / "gitleaks").unlink()
+    rig.run("post", **extra)
+    assert rig.events() == ["deployed"]
+
+
+def test_a_post_pass_names_its_log(rig):
+    rig.run("post", "--run")
+    [(inst, event, _head, detail)] = rig.ledger()
+    log = rig.status.read_text().split()[3]
+    assert (inst, event) == ("base", "post-pass") and log in detail
+
+
+def test_a_post_failure_records_post_fail_with_the_suites_and_the_log(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    rig.run("post", "--run", NX_STUB_RC="1")
+    [(inst, event, _head, detail)] = rig.ledger()
+    log = rig.status.read_text().split()[3]
+    assert (inst, event) == ("base", "post-FAIL")
+    assert "test-broken.sh" in detail and log in detail
+
+
+def test_a_second_run_that_finds_the_lock_held_records_nothing(rig):
+    rig.lock.mkdir()
+    (rig.lock / "pid").write_text(f"{os.getpid()}\n")
+    rig.run("post", "--run")
+    assert rig.ledger() == []
+
+
+# --- review fixes ----------------------------------------------------------------------------------
+
+def test_a_slow_alert_hook_does_not_hold_up_a_refusal(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    rig.slow_alert()
+    started = time.monotonic()
+    out = rig.run("pre", NX_STUB_RC="1")
+    assert out.returncode == 1
+    assert time.monotonic() - started < 8, "the refusal waited on the alert hook"
+    assert rig.events() == ["start", "refused"]
+
+
+def test_a_slow_alert_hook_does_not_hold_up_post_run(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    rig.slow_alert()
+    started = time.monotonic()
+    assert rig.run("post", "--run", NX_STUB_RC="1").returncode == 1
+    assert time.monotonic() - started < 8, "post --run waited on the alert hook"
+
+
+@pytest.mark.parametrize("args", ["chezmoi apply --dry-run", "chezmoi apply -n", "chezmoi apply -vn"])
+def test_a_dry_run_is_recorded_as_a_dry_run_not_an_apply(rig, args):
+    rig.run("pre", CHEZMOI_ARGS=args)
+    rig.run("post", "--run", CHEZMOI_ARGS=args)
+    assert rig.events() == ["dry-run", "dry-run"]
+    assert [r[3] for r in rig.ledger()] == ["start", "post-pass: log: " + rig.status.read_text().split()[3]]
+
+
+def test_a_refusal_in_a_dry_run_is_not_recorded_as_a_refusal(rig):
+    rig.nx_out.write_text(NX_FAIL)
+    rig.run("pre", NX_STUB_RC="1", CHEZMOI_ARGS="chezmoi apply --dry-run")
+    assert "refused" not in rig.events()
+
+
+def test_a_hook_run_by_hand_is_recorded_as_by_hand(rig):
+    rig.run("post", CHEZMOI=None, CHEZMOI_ARGS=None)
+    assert rig.events() == ["by-hand"]
+
+
+def test_the_post_result_records_the_head_from_before_the_run(rig):
+    rig.run("post", "--run", NX_STUB_DIRTY="1")
+    [(_inst, event, head, _detail)] = rig.ledger()
+    assert event == "post-pass"
+    assert not head.endswith("-dirty") and head == rig.git("rev-parse", "--short", "HEAD").strip()
 
 
 # --- the hooks -------------------------------------------------------------------------------------

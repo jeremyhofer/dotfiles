@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+"""apply-status -- the ledger of a machine's dotfiles applies, and a read of it.
+
+WHAT IT IS. The hooks that run around `chezmoi apply` (the base's tests/apply-suites.py and the
+private layer's hook script) append one line per event to a ledger on that machine. A session that
+cannot watch the terminal reads the ledger instead: `apply-status` for this machine's view,
+`apply-status wait` to block until an apply lands. This tool owns the line format; the hooks call
+`apply-status append` and never write the file themselves.
+
+    apply-status append --source DIR [--hook] [--head H] <instance> <event> [detail]
+    apply-status [status] [--json]
+    apply-status wait --since <time> [--instances base[,overlay]] [--timeout D] [--interval D]
+    apply-status head DIR
+
+LEDGER. ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/apply.log, newest last, trimmed to its
+newest 1000 lines on each append (under an flock on apply.log.lock, so concurrent appends and the
+trim cannot lose a line). One line per event, seven tab-separated columns:
+
+    1 time      UTC, ISO 8601 (2026-11-15T10:09:00Z)
+    2 host      the short hostname
+    3 instance  base | overlay
+    4 event     start | skipped | refused | deployed | post-pass | post-FAIL | dry-run | by-hand
+    5 head      the source checkout's short HEAD, `-dirty` appended when its working tree has
+                changes (what an apply deploys), or `unknown` when git cannot say
+    6 source    the source checkout's directory (so `status` can compare its HEAD now)
+    7 detail    free text; tabs and newlines are replaced by spaces
+
+EVENTS. `start`: the pre-apply hook began. `skipped`: the pre-apply suites did not run (detail says
+why) and the apply goes ahead. `refused`: the suites failed or could not run, so chezmoi aborted
+the apply (detail names the suites and the report). `deployed`: chezmoi wrote the targets (the
+post-apply hook ran). `post-pass`, `post-FAIL`: the after-apply suite run's result (detail names
+the failing suites and the log). The private layer's hooks write only `start` and `deployed`.
+
+HOOKS AND `--hook`. A hook passes --hook, and the tool then reads chezmoi's context from its own
+environment: with CHEZMOI unset the hook script was run by hand, so the event is recorded as
+`by-hand`; with CHEZMOI_ARGS holding --dry-run (or --dry-run=true, or a short-flag cluster with n,
+as -n or -vn) the apply is a preview, recorded as `dry-run`. Either way the real event moves into the
+detail ("deployed: ...") and `status` and `wait` ignore the line. Without --hook the event is
+recorded as given. --head H records H instead of reading the checkout's head (a hook that wants the
+head from before a long run). `apply-status head DIR` prints the head string a line would carry.
+
+STATUS. For each instance: the events since its latest `start`, the deployed head, whether the
+source checkout's HEAD now differs from it ("source is ahead of what is deployed"), and the latest
+post result. A `start` with neither `deployed` nor `refused` after it is `incomplete`, with its age:
+still running, or aborted for another reason. `--json` prints one stable object.
+
+WAIT. Polls THIS machine's ledger every --interval (default 30s), prints each new event as it
+lands and one `waiting` line per poll, so silence never looks like waiting correctly. It exits 0
+once every instance named by --instances (default `base,overlay`; `base` for a machine with no
+overlay) has a `deployed` after --since, 1 on a `refused` (an overlay never starts after a base
+refusal), 3 on --timeout (default 30m). Each instance is judged from its LATEST `start` after
+--since, so a refusal that a retry superseded does not fail the wait. --since is `YYYY-MM-DDTHH:MM[:SS]`
+with Z or a +HH:MM offset (`date -u +%Y-%m-%dT%H:%M:%SZ` prints one), or epoch seconds; a time with
+no zone is a usage error (exit 2), since local wall-clock time read as UTC lands hours off. The
+same hand-written parser reads the ledger's own times on every Python. DURATION is a number with an
+optional s, m or h (bare seconds). It reads only the local file and builds in no ssh: a session
+reaches another machine by running `ssh <host> apply-status wait --since T` as the WHOLE command (a
+sandbox exempts only a bare ssh, nothing piped or redirected around it).
+
+EXIT. append: 0 always, including when the ledger cannot be written (one line on stderr says so, so
+a hook can never abort an apply); 2 a usage error. status: 0. wait: 0, 1, 3 as above; 2 usage.
+
+WHAT IT CANNOT TELL. The ledger records what the hooks saw, not that the owner ran the full
+command: a targeted apply writes the same lines, and shows as an apply whose head differs from the
+pushed one. A `start` is not a deploy. A hook that never ran leaves no line: a machine whose generated
+chezmoi config predates the hooks (it gets them at the next `chezmoi init`) writes nothing. Another machine's ledger is not read here.
+
+ENVIRONMENT. XDG_STATE_HOME moves the ledger. APPLY_STATUS_NOW (epoch seconds) fixes the clock
+`status` ages a start against, for tests.
+
+Standard library only, and Python 3.9 syntax: macOS's command-line tools ship that python3
+(tests/test-python39-syntax.sh checks this file).
+"""
+import argparse
+import calendar
+import fcntl
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+INSTANCES = ("base", "overlay")
+EVENTS = ("start", "skipped", "refused", "deployed", "post-pass", "post-FAIL", "dry-run", "by-hand")
+IGNORED = ("dry-run", "by-hand")
+MAX_LINES = 1000
+COLUMNS = 7
+DEFAULT_TIMEOUT = 30 * 60
+DEFAULT_INTERVAL = 30
+
+
+class Usage(Exception):
+    pass
+
+
+def ledger_path():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "dotfiles", "apply.log")
+
+
+def now():
+    fixed = os.environ.get("APPLY_STATUS_NOW")
+    return float(fixed) if fixed else time.time()
+
+
+def iso(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+TIME_RE = re.compile(r"(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::(\d\d)(\.\d+)?)?(Z|[+-]\d\d:\d\d)")
+ZONE_HELP = ("give the time with a zone: Z or a +HH:MM offset (`date -u +%Y-%m-%dT%H:%M:%SZ` prints "
+             "one), or epoch seconds")
+
+
+def parse_time(text):
+    """Epoch seconds from `YYYY-MM-DDTHH:MM[:SS[.f]]` plus Z or +HH:MM, or from epoch seconds; None
+    for anything else. Parsed by hand, not by fromisoformat, whose accepted forms differ between
+    Python 3.9 and 3.12 (one input must not be fine on one machine and an error on the other)."""
+    text = text.strip()
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        return float(text)
+    m = TIME_RE.fullmatch(text)
+    if not m:
+        return None
+    y, mo, d, h, mi = (int(m.group(k)) for k in range(1, 6))
+    sec = int(m.group(6) or 0)
+    if not (1 <= mo <= 12 and 1 <= d <= 31 and h < 24 and mi < 60 and sec < 61):
+        return None
+    try:
+        epoch = calendar.timegm((y, mo, d, h, mi, sec, 0, 0, 0))
+    except (ValueError, OverflowError):
+        return None
+    zone = m.group(8)
+    if zone != "Z":
+        offset = (int(zone[1:3]) * 60 + int(zone[4:6])) * 60
+        epoch -= offset if zone[0] == "+" else -offset
+    return epoch + float(m.group(7) or 0)
+
+
+def parse_duration(text):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", text.strip())
+    if not m:
+        raise Usage("not a duration (a number with an optional s, m or h): %r" % text)
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
+def git_head(source):
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+
+    def git(*args):
+        out = subprocess.run(["git", "-C", source] + list(args), env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True,
+                             timeout=30)
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    try:
+        head = git("rev-parse", "--short", "HEAD")
+        dirty = git("status", "--porcelain")
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if not head or dirty is None:
+        return "unknown"
+    return head + "-dirty" if dirty else head
+
+
+def flat(text):
+    return re.sub(r"[\t\r\n]", " ", text)
+
+
+def read_ledger():
+    """The ledger's well-formed lines as dicts, oldest first; a missing file is an empty ledger."""
+    try:
+        with open(ledger_path(), encoding="utf-8", errors="replace") as f:
+            raw = f.read().splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in raw:
+        cols = line.split("\t")
+        if len(cols) < COLUMNS - 1:
+            continue
+        at = parse_time(cols[0])
+        if at is None:
+            continue
+        if cols[3] in IGNORED:
+            continue
+        cols += [""] * (COLUMNS - len(cols))
+        rows.append({"at": at, "time": cols[0], "host": cols[1], "instance": cols[2],
+                     "event": cols[3], "head": cols[4], "source": cols[5], "detail": cols[6]})
+    return rows
+
+
+# --- append ----------------------------------------------------------------------------------------
+
+def cmd_append(argv):
+    p = argparse.ArgumentParser(prog="apply-status append", add_help=False)
+    p.add_argument("--source", required=True)
+    p.add_argument("--hook", action="store_true")
+    p.add_argument("--head")
+    p.add_argument("instance", choices=INSTANCES)
+    p.add_argument("event", choices=EVENTS)
+    p.add_argument("detail", nargs="*")
+    args = p.parse_args(argv)
+    try:
+        write_line(args)
+    except Exception as e:  # never abort an apply for a ledger problem
+        print("apply-status: the apply ledger %s could not be written (%s); this apply leaves no trace"
+              % (ledger_path(), flat(str(e))), file=sys.stderr)
+    return 0
+
+
+def is_dry_run(chezmoi_args):
+    """True when chezmoi's command line (CHEZMOI_ARGS, space-joined) asks for a dry run: --dry-run,
+    --dry-run=true, or a short-flag cluster holding n (-n, -vn). Nothing after a bare -- counts."""
+    for word in chezmoi_args.split():
+        if word == "--":
+            return False
+        if word == "--dry-run" or word == "--dry-run=true":
+            return True
+        if word.startswith("-") and not word.startswith("--") and "n" in word:
+            return True
+    return False
+
+
+def hook_context(event, detail):
+    """What a hook's event is worth. Under chezmoi (CHEZMOI is set) a real apply keeps its event; a
+    dry run, or a hook script run by hand (no CHEZMOI), is recorded as `dry-run` or `by-hand` with
+    the event in the detail, and status and wait ignore both."""
+    if not os.environ.get("CHEZMOI"):
+        kind = "by-hand"
+    elif is_dry_run(os.environ.get("CHEZMOI_ARGS", "")):
+        kind = "dry-run"
+    else:
+        return event, detail
+    return kind, (event + ": " + detail) if detail else event
+
+
+def write_line(args):
+    path = ledger_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    host = socket.gethostname().split(".")[0]
+    event, detail = args.event, " ".join(args.detail)
+    if args.hook:
+        event, detail = hook_context(event, detail)
+    line = "\t".join([iso(now()), host, args.instance, event, args.head or git_head(args.source),
+                      flat(args.source), flat(detail)]) + "\n"
+    lock = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # one append-and-trim at a time: a trim must not eat a line
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines(True)
+        if len(lines) > MAX_LINES:
+            tmp = "%s.%d" % (path, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.writelines(lines[-MAX_LINES:])
+            os.replace(tmp, path)
+    finally:
+        os.close(lock)
+
+
+def cmd_head(argv):
+    if len(argv) != 1:
+        raise Usage("head takes one directory")
+    print(git_head(argv[0]))
+    return 0
+
+
+# --- status ----------------------------------------------------------------------------------------
+
+def instance_view(rows, inst, at_now):
+    mine = [r for r in rows if r["instance"] == inst]
+    starts = [i for i, r in enumerate(mine) if r["event"] == "start"]
+    since = mine[starts[-1]:] if starts else []
+    deployed = [r for r in mine if r["event"] == "deployed"]
+    posts = [r for r in mine if r["event"] in ("post-pass", "post-FAIL")]
+    ends = [r for r in since if r["event"] in ("deployed", "refused")]
+    if not since:
+        state = "deployed" if deployed else "none"
+    elif any(r["event"] == "refused" for r in since):
+        state = "refused"
+    elif ends:
+        state = "deployed"
+    else:
+        state = "incomplete"
+    view = {"state": state, "events": [event_dict(r) for r in since],
+            "age_seconds": int(at_now - since[0]["at"]) if state == "incomplete" else None,
+            "deployed_head": deployed[-1]["head"] if deployed else None,
+            "deployed_at": deployed[-1]["time"] if deployed else None,
+            "source": mine[-1]["source"] if mine else None,
+            "source_head": None, "source_ahead": None,
+            "post": event_dict(posts[-1]) if posts else None}
+    if deployed and view["source"]:
+        view["source_head"] = git_head(view["source"])
+        if view["source_head"] != "unknown":
+            view["source_ahead"] = view["source_head"] != view["deployed_head"]
+    return view
+
+
+def event_dict(r):
+    return {"time": r["time"], "event": r["event"], "head": r["head"], "detail": r["detail"]}
+
+
+def cmd_status(argv):
+    p = argparse.ArgumentParser(prog="apply-status status", add_help=False)
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+    rows = read_ledger()
+    at_now = now()
+    data = {"host": socket.gethostname().split(".")[0], "ledger": ledger_path(), "now": iso(at_now),
+            "instances": {i: instance_view(rows, i, at_now) for i in INSTANCES}}
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return 0
+    print("apply status on %s (%s)" % (data["host"], data["ledger"]))
+    for inst in INSTANCES:
+        print(human(inst, data["instances"][inst]))
+    return 0
+
+
+def human(inst, v):
+    if v["state"] == "none":
+        return "%-8s no apply recorded" % inst
+    if v["events"]:
+        first = v["events"][0]
+        out = ["%-8s apply at %s: %s" % (inst, first["time"], " > ".join(e["event"] for e in v["events"]))]
+    else:
+        out = ["%-8s deployed (its start was not recorded)" % inst]
+    if v["state"] == "incomplete":
+        out.append("         incomplete: started %ds ago with no deployed or refused after it (still"
+                   " running, or aborted for another reason)" % v["age_seconds"])
+    for e in v["events"]:
+        if e["event"] in ("refused", "skipped", "post-FAIL") and e["detail"]:
+            out.append("         %s: %s" % (e["event"], e["detail"]))
+    if v["deployed_head"]:
+        if v["source_ahead"]:
+            tail = "source is ahead of what is deployed (source now %s)" % v["source_head"]
+        elif v["source_ahead"] is False:
+            tail = "source matches"
+        else:
+            tail = "source head unknown"
+        out.append("         deployed head %s at %s; %s" % (v["deployed_head"], v["deployed_at"], tail))
+    if v["post"]:
+        out.append("         latest post result: %s at %s%s" % (
+            v["post"]["event"], v["post"]["time"], " (" + v["post"]["detail"] + ")" if v["post"]["detail"] else ""))
+    return "\n".join(out)
+
+
+# --- wait ------------------------------------------------------------------------------------------
+
+def parse_instances(text):
+    names = [n.strip() for n in text.split(",") if n.strip()]
+    if not names or any(n not in INSTANCES for n in names):
+        raise Usage("--instances takes base, overlay or base,overlay: %r" % text)
+    return names
+
+
+def outcome(rows, inst):
+    """'refused', 'deployed' or None for one instance, from its LATEST start in rows (a retry after
+    a refusal supersedes it); with no start at all, from every row."""
+    mine = [r for r in rows if r["instance"] == inst]
+    starts = [i for i, r in enumerate(mine) if r["event"] == "start"]
+    mine = mine[starts[-1]:] if starts else mine
+    if any(r["event"] == "refused" for r in mine):
+        return "refused"
+    if any(r["event"] == "deployed" for r in mine):
+        return "deployed"
+    return None
+
+
+def cmd_wait(argv):
+    p = argparse.ArgumentParser(prog="apply-status wait", add_help=False)
+    p.add_argument("--since", required=True)
+    p.add_argument("--timeout", default="30m")
+    p.add_argument("--interval", default="30s")
+    p.add_argument("--instances", default="base,overlay")
+    args = p.parse_args(argv)
+    since = parse_time(args.since)
+    if since is None:
+        raise Usage("--since %r is not a time: %s" % (args.since, ZONE_HELP))
+    timeout, interval = parse_duration(args.timeout), parse_duration(args.interval)
+    if interval <= 0:
+        raise Usage("--interval must be above zero")
+    wanted = parse_instances(args.instances)
+    deadline = time.monotonic() + timeout
+    seen = 0
+    print("apply-status wait: watching %s for %s to deploy since %s (timeout %s, poll %s)"
+          % (ledger_path(), " and ".join(wanted), iso(since), args.timeout, args.interval), flush=True)
+    while True:
+        rows = [r for r in read_ledger() if r["at"] >= since]
+        for r in rows[seen:]:
+            print("%s %s %s %s %s%s" % (r["time"], r["host"], r["instance"], r["event"], r["head"],
+                                        "  " + r["detail"] if r["detail"] else ""), flush=True)
+        seen = len(rows)
+        got = {i: outcome(rows, i) for i in wanted}
+        if "refused" in got.values():
+            print("apply-status wait: an apply was REFUSED; nothing further will deploy", flush=True)
+            return 1
+        landed = {i: got[i] == "deployed" for i in wanted}
+        if all(landed.values()):
+            print("apply-status wait: %s deployed" % " and ".join(wanted), flush=True)
+            return 0
+        left = deadline - time.monotonic()
+        if left <= 0:
+            print("apply-status wait: timed out after %s; deployed so far: %s; still missing: %s" % (
+                args.timeout, ", ".join(i for i in wanted if landed[i]) or "neither",
+                ", ".join(i for i in wanted if not landed[i])), flush=True)
+            return 3
+        print("apply-status wait: waiting, %s; %s; %ds left" % (
+            iso(time.time()), "; ".join("%s %s" % (i, "deployed" if landed[i] else "not yet") for i in wanted),
+            left), flush=True)
+        time.sleep(min(interval, left))
+
+
+# --- main ------------------------------------------------------------------------------------------
+
+def main(argv):
+    try:
+        if argv and argv[0] in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        if argv and argv[0] == "append":
+            return cmd_append(argv[1:])
+        if argv and argv[0] == "head":
+            return cmd_head(argv[1:])
+        if argv and argv[0] == "wait":
+            return cmd_wait(argv[1:])
+        if argv and argv[0] == "status":
+            return cmd_status(argv[1:])
+        if not argv or argv[0].startswith("-"):
+            return cmd_status(argv)
+        raise Usage("unknown subcommand %r (append, head, status, wait)" % argv[0])
+    except Usage as e:
+        print("apply-status: %s" % e, file=sys.stderr)
+        return 2
+    except SystemExit as e:  # argparse's usage errors
+        return e.code if isinstance(e.code, int) else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
