@@ -664,6 +664,7 @@ projects:
     canonicalLaunchModel: m
     canonicalMachines: [h]
     canonicalContext: context/seats/alpha-canonical.md
+    canonicalLaunchSettings: seats/alpha-canonical.json
   beta:
     scope: internal/beta
     leakPolicy: private
@@ -676,6 +677,8 @@ out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --canonical a
 [ "$rc" -eq 0 ] && [ "$out" = context/seats/alpha-canonical.md ] && ok "--canonical reads canonicalContext" || bad "--canonical canonicalContext" "rc=$rc out=[$out]"
 out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --projects-with kbDomain 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ "$out" = alpha ] && ok "--projects-with kbDomain lists the declaring projects" || bad "--projects-with kbDomain" "rc=$rc out=[$out]"
+out=$(FLEET_RECORD="$TMP/kb.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --canonical alpha-canonical canonicalLaunchSettings 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = seats/alpha-canonical.json ] && ok "--canonical reads canonicalLaunchSettings" || bad "--canonical canonicalLaunchSettings" "rc=$rc out=[$out]"
 while IFS='|' read -r label key value finding; do
   printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n    %s: %s\n' "$key" "$value" > "$TMP/kb-bad.yaml"
   out=$(FLEET_RECORD="$TMP/kb-bad.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
@@ -695,6 +698,14 @@ a glob|canonicalContext|a/*.md|[canonicalContext-value] alpha: canonicalContext
 no .md ending|canonicalContext|a/b.txt|[canonicalContext-value] alpha: canonicalContext
 an empty string|canonicalContext|""|[canonicalContext-value] alpha: canonicalContext
 a list|canonicalContext|[a.md]|[canonicalContext-value] alpha: canonicalContext
+an absolute path|canonicalLaunchSettings|/etc/x.json|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+a home path|canonicalLaunchSettings|"~/x.json"|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+a parent reference|canonicalLaunchSettings|a/../b.json|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+a dot component|canonicalLaunchSettings|a/./b.json|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+a glob|canonicalLaunchSettings|a/*.json|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+no .json ending|canonicalLaunchSettings|a/b.md|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+an empty string|canonicalLaunchSettings|""|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
+a list|canonicalLaunchSettings|[a.json]|[canonicalLaunchSettings-value] alpha: canonicalLaunchSettings
 CASES
 printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\n    kbDomains: x\n' > "$TMP/kb-typo.yaml"
 out=$(FLEET_RECORD="$TMP/kb-typo.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?

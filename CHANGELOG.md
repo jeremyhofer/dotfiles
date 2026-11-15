@@ -34,6 +34,18 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### `canonicalLaunchSettings`: a seat's own Claude Code settings, merged at launch
+
+A new fleet-record key. A canonical may declare `canonicalLaunchSettings: <path>`, relative to
+`${FLEET_SEAT_SETTINGS_ROOT:-~/.dotlocal}`, naming a JSON file in settings.json's shape. Every launch
+`fleet-canonicals` composes (up, refresh, resume and the request runner) deep-merges it into the
+`--settings` JSON it passes, keeping its own `env.CLAUDE_CODE_TMPDIR`. A declared file that is missing,
+is not a JSON object, or sets `env.CLAUDE_CODE_TMPDIR` refuses the launch, and `refresh` refuses
+before it stops the old session. A seat that declares nothing launches exactly as before. Lists merge
+across Claude Code's settings scopes, so such a file narrows a seat by denying, not by listing less.
+`fleet-decl --check` reports `[canonicalLaunchSettings-value]` for a bad path. Nothing to do on a
+machine whose record declares none.
+
 ### macOS: a tmux server started in the Aqua session (ACTION, once per Mac)
 
 A new LaunchAgent, `~/Library/LaunchAgents/local.dotfiles.tmux-server.plist`, runs the tmux server as

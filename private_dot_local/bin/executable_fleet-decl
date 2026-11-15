@@ -173,6 +173,11 @@ live_findings() {
 # cannot know the kb config's domain list, so for kbDomain it checks SHAPE only (a lowercase slug);
 # the linker checks membership. A canonicalContext that were absolute, `~`-relative, globbed or
 # climbing out through `..` would name a file outside the knowledge base, so each is refused here.
+# canonicalLaunchSettings: a path, relative to the seat-settings root (default ~/.dotlocal), to a JSON
+# file of Claude Code settings (sandbox, permissions) that fleet-canonicals merges into the --settings
+# it passes at launch. The same shape rules as canonicalContext apply, ending in .json: a value that
+# were absolute, `~`-relative, globbed or climbing out through `..` would name a file outside the
+# root. fleet-canonicals re-checks the shape and refuses the launch when the file cannot be used.
 # kb_findings -- print one finding per invalid declaration, nothing when all are valid.
 kb_findings() {
   for _kp in $(yq -r '.projects | to_entries[] | select(.value | has("kbDomain")) | .key' "$RECORD" 2>/dev/null || true); do
@@ -199,6 +204,20 @@ kb_findings() {
     case "$_kv" in *'*'*|*'?'*|*'['*) _bad=${_bad:-"has a glob character"} ;; esac
     case "$_kv" in *.md) ;; *) _bad=${_bad:-"does not end in .md"} ;; esac
     [ -z "$_bad" ] || printf '[canonicalContext-value] %s: canonicalContext %s %s\n' "$_kp" "'$_kv'" "$_bad"
+  done
+  for _kp in $(yq -r '.projects | to_entries[] | select(.value | has("canonicalLaunchSettings")) | .key' "$RECORD" 2>/dev/null || true); do
+    _kt=$(yq -r ".projects.\"$_kp\".canonicalLaunchSettings | tag" "$RECORD" 2>/dev/null)
+    _kv=$(yq -r ".projects.\"$_kp\".canonicalLaunchSettings | tostring" "$RECORD" 2>/dev/null)
+    _bad=""
+    [ "$_kt" = '!!str' ] || _bad="is not a string"
+    case "$_kv" in
+      '') _bad=${_bad:-"is empty"} ;;
+      /*|'~'*) _bad=${_bad:-"is not relative to the seat-settings root"} ;;
+    esac
+    case "/$_kv/" in */../*|*/./*|*//*) _bad=${_bad:-"has an empty, . or .. component"} ;; esac
+    case "$_kv" in *'*'*|*'?'*|*'['*) _bad=${_bad:-"has a glob character"} ;; esac
+    case "$_kv" in *.json) ;; *) _bad=${_bad:-"does not end in .json"} ;; esac
+    [ -z "$_bad" ] || printf '[canonicalLaunchSettings-value] %s: canonicalLaunchSettings %s %s\n' "$_kp" "'$_kv'" "$_bad"
   done
 }
 
@@ -448,6 +467,7 @@ case "${1:-}" in
           liveDataPaths) ;;            # read through --live-data-paths by the settings layer
           kbDomain) ;;                 # read by fleet-repo link (shape checked below)
           canonicalContext) ;;         # read by fleet-canonicals (shape checked below)
+          canonicalLaunchSettings) ;;  # read by fleet-canonicals (shape checked below)
           leak*|canonical*|container*|claude*|Claude*|live*|Live*|kb*|Kb*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac

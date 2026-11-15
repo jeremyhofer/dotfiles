@@ -22,7 +22,8 @@
 # THE MODEL IS THE FLEET RECORD. A canonical exists because a project in the per-repo record
 # (~/Devel/mani.yaml, read only through `fleet-decl`) declares `canonical: <name>` with its
 # companions -- canonicalIdentity, canonicalLaunchDir, canonicalLaunchModel, canonicalMachines, and
-# optionally canonicalContext, the seat's standing-context record, see prepare_context -- and
+# optionally canonicalContext, the seat's standing-context record, see prepare_context, and
+# canonicalLaunchSettings, its own Claude Code settings, see compose_settings -- and
 # this machine runs it because its `hostname` is in canonicalMachines. Every launch is composed from
 # those declarations; nothing per repository stores a launch. $CANONICAL_ROSTER, a file of one name
 # per line, replaces the list of EXPECTED names (status, up, dedupe, down --all) and nothing else:
@@ -621,6 +622,46 @@ prepare_context() {
   fi
 }
 
+# compose_settings NAME ROOT prints the JSON for --settings: the launch's env block alone when the
+# seat declares no `canonicalLaunchSettings`, else that file (a path relative to
+# ${FLEET_SEAT_SETTINGS_ROOT:-~/.dotlocal}) deep-merged with it, the launcher's CLAUDE_CODE_TMPDIR
+# winning. A declared file that cannot be used REFUSES the launch (stderr reason, return 1): a seat
+# launched without its sandbox and permissions looks right and is not, the same reason as
+# canonicalContext. A file that sets env.CLAUDE_CODE_TMPDIR is refused too: the launcher owns it.
+compose_settings() {
+  local name=$1 root=$2 rel rc base file
+  rel=$(fleet-decl --canonical "$name" canonicalLaunchSettings 2>/dev/null); rc=$?
+  if [ "$rc" -eq 1 ]; then
+    printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root"
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf 'the fleet record could not be read for canonicalLaunchSettings (fleet-decl exit %s)\n' "$rc" >&2
+    return 1
+  fi
+  case "$rel" in
+    ''|/*|'~'*|..|../*|*/..|*/../*)
+      printf 'canonicalLaunchSettings %s must be a path inside the seat-settings root, with no leading / or ~ or ..\n' "$rel" >&2
+      return 1 ;;
+  esac
+  base=${FLEET_SEAT_SETTINGS_ROOT:-$HOME/.dotlocal}
+  file="$base/$rel"
+  if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+    printf 'the seat settings file %s is missing or unreadable (canonicalLaunchSettings %s under %s)\n' "$file" "$rel" "$base" >&2
+    return 1
+  fi
+  if ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+    printf 'the seat settings file %s is not valid JSON with an object at the top (canonicalLaunchSettings %s)\n' "$file" "$rel" >&2
+    return 1
+  fi
+  if jq -e '(.env | type == "object") and (.env | has("CLAUDE_CODE_TMPDIR"))' "$file" >/dev/null 2>&1; then
+    printf 'the seat settings file %s sets env.CLAUDE_CODE_TMPDIR, which the launcher owns (canonicalLaunchSettings %s)\n' "$file" "$rel" >&2
+    return 1
+  fi
+  jq -c -n --slurpfile f "$file" --arg root "$root" '$f[0] * {env:{CLAUDE_CODE_TMPDIR:$root}}' \
+    || { printf 'could not merge the seat settings file %s (canonicalLaunchSettings %s)\n' "$file" "$rel" >&2; return 1; }
+}
+
 # ---- per-launch temp root ----------------------------------------------------
 # Every session this tool starts gets its OWN scratch root, passed via `--settings`'s env block
 # rather than exported into the launching shell: a `claude --bg` session does NOT inherit the
@@ -741,7 +782,7 @@ launch_canonical() {
   prepare_context "$name" 2>/dev/null || return 1
   root=$(new_tmproot "$name")
   mkdir -p "$root" 2>/dev/null
-  settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
+  settings=$(compose_settings "$name" "$root" 2>/dev/null) || { rmdir "$root" 2>/dev/null; return 1; }
   record_tmproot "$name" "$root" || return 1
   while IFS= read -r l; do rc_args+=("$l"); done < <(remote_control_args "$name" </dev/null)
   ( cd "$FLEET_ROOT/$dir" \
@@ -1036,6 +1077,11 @@ cmd_up() {
       continue
     fi
     if ! why=$(prepare_context "$name" 2>&1); then
+      printf 'REFUSED %-24s %s\n' "$name" "$why" >&2
+      refused=1
+      continue
+    fi
+    if ! why=$(compose_settings "$name" /unused 2>&1 >/dev/null); then
       printf 'REFUSED %-24s %s\n' "$name" "$why" >&2
       refused=1
       continue
@@ -2386,6 +2432,10 @@ cmd_refresh() {
     die "refresh: $why
   Refusing to stop a session whose successor cannot be launched."
   fi
+  if ! why=$(compose_settings "$name" /unused 2>&1 >/dev/null); then
+    die "refresh: $why
+  Refusing to stop a session whose successor cannot be launched."
+  fi
 
   json=$(agents_json)
   rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
@@ -2793,6 +2843,7 @@ cmd_resume() {
   fi
 
   prepare_context "$name" 2>/dev/null || { why=$(prepare_context "$name" 2>&1); die "resume: $why"; }
+  why=$(compose_settings "$name" /unused 2>&1 >/dev/null) || die "resume: $why"
   [ -n "$prompt" ] || prompt="Resumed by fleet-canonicals. Your handoff may be stale -- rely on your own context. Confirm in one line what you were working on before this resume."
   [ -z "$CTX_NOTE" ] || prompt="$prompt $CTX_NOTE"
 
@@ -2820,7 +2871,7 @@ cmd_resume() {
   local root settings
   root=$(new_tmproot "$name")
   mkdir -p "$root" 2>/dev/null
-  settings=$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$root")
+  settings=$(compose_settings "$name" "$root" 2>&1) || die "resume: $settings"
   record_tmproot "$name" "$root" || die "resume: could not record temp root for '$name'"
   local rc_args=() l
   while IFS= read -r l; do rc_args+=("$l"); done < <(remote_control_args "$name" </dev/null)

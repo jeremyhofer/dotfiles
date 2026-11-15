@@ -38,6 +38,7 @@ projects:
     canonicalLaunchDir: alpha
     canonicalLaunchModel: opus
     canonicalContext: seats/alpha.md
+    canonicalLaunchSettings: seats/alpha.json
     canonicalMachines: [$host]
   beta:
     scope: beta
@@ -63,6 +64,28 @@ projects:
     canonicalContext: ../outside.md
     canonicalMachines: [$host]
 YAML
+for n in ls-missing ls-badjson ls-array ls-tmpdir ls-abs ls-dotdot; do
+  case $n in
+    ls-missing) v=seats/nothere.json ;; ls-badjson) v=seats/badjson.json ;; ls-array) v=seats/array.json ;;
+    ls-tmpdir) v=seats/tmpdir.json ;; ls-abs) v=/etc/x.json ;; ls-dotdot) v=../x.json ;;
+  esac
+  mkdir -p "$ROOT/$n"
+  cat >> "$T/rec.yaml" <<YAML
+  $n:
+    scope: $n
+    canonical: $n-canonical
+    canonicalIdentity: "the canonical session for $n"
+    canonicalLaunchDir: $n
+    canonicalLaunchModel: opus
+    canonicalLaunchSettings: $v
+    canonicalMachines: [$host]
+YAML
+done
+SEATSET="$T/seatset"; mkdir -p "$SEATSET/seats"
+print '{"sandbox":{"enabled":true},"permissions":{"deny":["Read(~/.ssh)"]},"env":{"KEEP_ME":"1"}}' > "$SEATSET/seats/alpha.json"
+print '{not json' > "$SEATSET/seats/badjson.json"
+print '[1,2]' > "$SEATSET/seats/array.json"
+print '{"env":{"CLAUDE_CODE_TMPDIR":"/elsewhere"}}' > "$SEATSET/seats/tmpdir.json"
 print 'outside the KB' > "$T/outside.md"
 
 # The stub answers --help like a claude that offers the flag (unless STUB_NOFLAG) and records every
@@ -106,9 +129,9 @@ export FLEET_CANONICALS_CONFIG="$T/no-config" FLEET_PID_RECORD_DIR="$T/pids" FLE
 export FLEET_HANDOFFS_SEARCH="$T"
 fc() { FLEET_RECORD="$T/rec.yaml" FLEET_ROOT="$ROOT" FLEET_STATE="$STATE" FLEET_CLAUDE_CMD="$T/claude-stub" \
        FLEET_TMPROOT_PREFIX="$T/tmproots" FLEET_TRANSCRIPT_DIR="$T/transcripts" \
-       FLEET_AGENTS_JSON_CMD="$T/agents-cmd" KB_ROOT="${KB_ROOT-$KB}" XDG_CONFIG_HOME="$T/xdg" \
+       FLEET_AGENTS_JSON_CMD="$T/agents-cmd" KB_ROOT="${KB_ROOT-$KB}" XDG_CONFIG_HOME="$T/xdg" FLEET_SEAT_SETTINGS_ROOT="${FLEET_SEAT_SETTINGS_ROOT-$SEATSET}" \
        bash "$TOOL" "$@" 2>&1 }
-for n in alpha beta gamma delta; do
+for n in alpha beta gamma delta ls-missing ls-badjson ls-array ls-tmpdir ls-abs ls-dotdot; do
   print "handoff for $n" > "$T/$n.md"
   fc handoff "$n-canonical" --set "$T/$n.md" >/dev/null
 done
@@ -202,5 +225,49 @@ out=$(fc list)
 [[ "$out" == *"alpha-canonical"*"seats/alpha.md"* ]] && ok "list shows each seat's record" || bad "list: $out"
 [[ "$(print -r -- "$out" | grep beta-canonical)" != *"context"* ]] \
   && ok "list shows no record for a seat that declares none" || bad "list beta: $out"
+
+
+# ---- canonicalLaunchSettings ----------------------------------------------------------------------
+# The settings JSON passed with --settings: env-only when nothing is declared (byte-identical to
+# before), else the declared file with the launcher's CLAUDE_CODE_TMPDIR merged in. A declared file
+# that cannot be used refuses the launch.
+setting_of() { grep -o -- '--settings [^ ]*' "$1" | head -n1 | sed 's/^--settings //' }
+reset
+out=$(fc up beta-canonical)
+s=$(setting_of $LAUNCHLOG); r=$(print -r -- "$s" | jq -r '.env.CLAUDE_CODE_TMPDIR')
+[[ -n $r && "$r" == "$T/tmproots"* && "$s" == "$(printf '{"env":{"CLAUDE_CODE_TMPDIR":"%s"}}' "$r")" ]] \
+  && ok "no canonicalLaunchSettings: --settings is the env-only JSON, byte-identical" \
+  || bad "env-only settings changed: [$s] / $out"
+
+reset
+out=$(fc up alpha-canonical)
+s=$(setting_of $LAUNCHLOG)
+[[ "$(print -r -- "$s" | jq -c '[.sandbox.enabled, .permissions.deny[0], .env.KEEP_ME]')" == '[true,"Read(~/.ssh)","1"]' ]] \
+  && ok "a declared file's keys reach --settings, and its other env keys survive" \
+  || bad "file keys missing: [$s] / $out"
+r=$(print -r -- "$s" | jq -r '.env.CLAUDE_CODE_TMPDIR')
+[[ -n $r && "$r" == "$T/tmproots"* && "$(print -r -- "$s" | jq -r '.sandbox.enabled')" == true ]] \
+  && ok "env.CLAUDE_CODE_TMPDIR in the merged settings is the launch's own root" \
+  || bad "TMPDIR wrong: [$s]"
+
+for n in ls-missing ls-badjson ls-array ls-tmpdir ls-abs ls-dotdot; do
+  reset
+  out=$(fc up $n-canonical); rc=$?
+  (( rc != 0 )) && [[ ! -s $LAUNCHLOG && "$out" == *"canonicalLaunchSettings"* ]] \
+    && ok "up refuses the launch for $n, naming canonicalLaunchSettings" \
+    || bad "$n launched or silent: rc=$rc log=$(cat $LAUNCHLOG) out=$out"
+done
+
+reset
+out=$(FORK_MODE=1 fc resume alpha-canonical --fork); rc=$?
+s=$(setting_of $LAUNCHLOG)
+[[ "$(grep -- '--resume' $LAUNCHLOG)" == *"--settings "* && "$(print -r -- "$s" | jq -r '.sandbox.enabled')" == true ]] \
+  && ok "resume --fork carries the merged settings" || bad "resume settings: rc=$rc [$s] / $out"
+
+reset
+out=$(FLEET_SEAT_SETTINGS_ROOT=$T/empty fc up alpha-canonical); rc=$?
+(( rc != 0 )) && [[ ! -s $LAUNCHLOG ]] \
+  && ok "FLEET_SEAT_SETTINGS_ROOT moves the root: the file is then missing and the launch refused" \
+  || bad "settings root ignored: rc=$rc $(cat $LAUNCHLOG)"
 
 [[ $fail == 0 ]] && { print "ALL PASS"; exit 0 } || { print "FAILURES"; exit 1 }
