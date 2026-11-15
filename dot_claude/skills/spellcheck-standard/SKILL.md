@@ -88,6 +88,13 @@ Run it on **staged files at commit time**; a whole-tree run in a lint lane is a 
 only run (a gate behind a lane goes dark when an earlier step in the lane fails). In a monorepo the
 choice is the repository's, with one configuration at its root.
 
+**Run the checker once, as its own task, through its CLI** (`lint-spelling`, skill `naming-build-tasks`),
+never also as a linter plugin such as `@cspell/spellchecker` in ESLint. The same checker run twice over the
+same files reports every finding twice, from two configurations that drift apart, and adds its cost to
+every lint run. Measured in one project: dropping the ESLint rule took its ESLint task from 17.9 s to 14.8 s,
+and on that day's files it found nothing the CLI task did not. Spelling feedback in the editor is advisory (section 4), and
+comes from the checker's own editor integration, not the linter.
+
 cspell fragment (keys as used in a working `cspell.config.mjs`):
 
 ```js
