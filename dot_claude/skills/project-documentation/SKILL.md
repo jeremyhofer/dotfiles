@@ -292,6 +292,12 @@ Skill `project-context-file` covers the always-loaded half of a project's contex
   context. `doc-lint` catches part of it.
 - **No volatile figures** that an edit elsewhere will make false; name the command that measures it.
 - **A check is evidence only once it has been seen to fail** on a planted defect, then pass.
+- **Cite a commit by its hash where the claim is about an exact state** (what was measured, built, decided or
+  fixed). A hash is the one pointer that cannot silently come to mean something else; a path, a date or "the
+  current script" drifts. A hash breaks only when history is rewritten, so keep rewrites rare and deliberate
+  (prefer forward-only fixes), and when one is done, commit `git filter-repo`'s old-to-new map
+  (`.git/filter-repo/commit-map`) beside the repository's documents in the same sitting, so every old citation
+  still resolves. Pages that describe current state (reference, architecture) cite no hashes, as above.
 
 ## Adopting this in an existing notes repository
 
