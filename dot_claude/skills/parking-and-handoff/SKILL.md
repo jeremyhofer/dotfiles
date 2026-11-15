@@ -1,6 +1,6 @@
 ---
 name: parking-and-handoff
-description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, why every turn of a background session ends with a statement rather than a question, what the coordinating seat tells its peers before its own refresh, and the timestamp and kickoff-block shape a successor reads.
+description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, why every turn of a background session ends with a statement rather than a question, what the coordinating seat tells its peers before its own refresh, the timestamp and kickoff-block shape a successor reads, and why a handoff cites no scratch path for anything its successor needs (the `scratch-ok:` marker).
 ---
 
 # Parking, checkpointing and handoff
@@ -234,6 +234,22 @@ successor that the sitting is the work; it then re-derives program state from di
 
 **The test:** a successor that reads only the handoff can say which phase of each live program it is
 in and what the next gate is, without searching the tracker.
+
+### Nothing the successor needs lives in scratch
+
+A handoff cites no scratch path for anything its successor needs: not a session's scratch area, an
+exchange folder between sessions, nor `$TMPDIR`. Those are cleaned on a schedule the handoff's
+author does not control, and a committed pointer to them reads as safe while the file behind it is
+gone. A draft, review note, result or measurement the successor will read goes into a committed
+document first (its initiative's `research/`, the register entry, the decision record), and the
+handoff cites that.
+
+What a handoff may still say about scratch is what nothing depends on: "scratch to clear once this
+is filed", or a directory a command writes to. Such a line carries the acknowledgment marker
+`scratch-ok: <why nothing depends on it>` (in prose as `<!-- scratch-ok: … -->`). "Held for
+approval" is not a reason: it is the case the rule exists for. Where the handoffs repository's
+`.doc-lint` sets `scratch-path:`, `doc-lint` refuses an unmarked citation, and a configured
+`stage-check` refuses it at `stage`, before it can hold up a `place` run.
 
 ### The kickoff block
 

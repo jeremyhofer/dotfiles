@@ -18,6 +18,10 @@ WHAT IT CHECKS
     Enabled by the repository's config (CONFIG below), because each needs a vocabulary that
     is itself private or repo-specific:
     session-path    a concrete per-machine agent-state path, BARE in running prose.
+    scratch-path    a path into an area that is cleaned automatically (a session's scratch,
+                    an exchange folder), anywhere on a line: prose, code span or fenced
+                    block. Nothing may depend on such a path, so a line citing one is refused
+                    unless it carries the acknowledgment marker (SCRATCH below).
     bare-adr        `ADR-0009` / `ADR 0009` with no owner prefix, where the repository cites
                     decision records from more than one log and the bare form is ambiguous.
     bare-adr-decision
@@ -39,6 +43,11 @@ CONFIG
 
         session-path: <regex>     a per-machine agent-state path. Group 1, if present, is
                                   reported as the concrete slug.
+        scratch-path: <regex>     the scratch areas. Enables the scratch check; without it
+                                  doc-lint says the check is off.
+        scratch-defines: a.md d/  paths (a file, or a prefix ending in `/`) exempt from the
+                                  scratch check: the documents that define the areas, which
+                                  must name them. A mistyped `scratch…` key is reported.
         adr-owners: A B C         prefixes that own decision logs cited here (`A-ADR-0012`).
                                   Setting it declares that a BARE form is ambiguous in this
                                   repository and enables bare-adr and bare-adr-decision. A
@@ -89,6 +98,18 @@ SPECS
     decisions untouched. Ids with another owner's prefix, and `<repo>:<path>` homes, are
     accepted by their form: another repository's index is not visible from here.
 
+SCRATCH
+    A document must not lean on a scratch path: a draft, result or note anything depends on
+    goes into a committed document, and the line cites that instead. The path is deleted on a
+    schedule its citer does not control, and a committed pointer to it reads as safe.
+    The marker is for a citation NOTHING depends on: a record that a file once lived there, or
+    a directory a command writes to. It is the literal `scratch-ok:` followed by a reason, on
+    the same line as the path, in any dress (`<!-- scratch-ok: … -->` in prose, a `#` comment in
+    a fenced block). A marker with no reason is refused. The reason says why nothing depends on
+    the path; "held for approval" is the case the check exists to stop, not a reason.
+    Fenced blocks are read too, unlike every other check here: a command that reads a file in
+    scratch depends on it exactly as a sentence does.
+
     WHY CONFIGURED, NOT BUILT IN: a private tree name or a tracker's id scheme is itself the
     kind of token a publish guard blocks, so a built-in list would make this tool
     uninstallable in exactly the places it is meant to guard.
@@ -101,6 +122,10 @@ WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets o
       bare parenthesized word is ordinary English prose.
     * A memory pointer that WRAPS across a line break (`memory` at the end of one line, the
       slug on the next): the check reads one line at a time.
+    * A scratch citation SPLIT across words: the area named in prose and the path beside it
+      without the area's own segment ("the brief in the exchange folder, `peer-a/x.md`"). Only
+      what scratch-path: matches is seen; a pattern loose enough to catch the bare area name
+      also fires on every sentence ABOUT the area.
     * A decision record cited by bare number with no decision after it (`0073 states
       that...`), or a bare `D4` whose owning record is not on the line.
     * Prose that is self-contained in form and incomprehensible in substance.
@@ -165,6 +190,9 @@ HEADING = re.compile(r"^(#{1,6})\s+(\S+)")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 ADVISORY = {"dangling-path", "id-shorthand", "spec-undated"}
 SPEC_KEYS = {"spec-dirs", "spec-cutover"}
+SCRATCH_KEYS = {"scratch-path", "scratch-defines"}
+# The acknowledgment marker. The reason is required: group 1 is empty when it is missing.
+SCRATCH_OK = re.compile(r"scratch-ok:[ \t]*((?:(?!-->)[^\s])+)?")
 SPEC_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 # A status line once list markers, blockquote marks and emphasis are stripped from its start:
 # `- **Status:**`, `> **Status (date):**`, `**Status**:` and plain `Status:` all read the same.
@@ -199,8 +227,13 @@ class Config:
         self.own_prefix = raw.get("own-prefix", "").strip()
         self.adr_dir = raw.get("adr-dir", "").strip().rstrip("/")
         self.register_dir = raw.get("register-dir", "").strip().rstrip("/")
-        # A mistyped key is otherwise ignored in silence, and for this check silence means "off".
+        sc = raw.get("scratch-path", "").strip()
+        self.scratch_path = re.compile(sc) if sc else None
+        self.scratch_defines = tuple(raw.get("scratch-defines", "").split())
+        # A mistyped key is otherwise ignored in silence, and for these checks silence means "off".
         self.unknown_spec_keys = sorted(k for k in raw if k.startswith("spec") and k not in SPEC_KEYS)
+        self.unknown_scratch_keys = sorted(k for k in raw
+                                           if k.startswith("scratch") and k not in SCRATCH_KEYS)
 
 
 def load_config(root: pathlib.Path, explicit: str | None) -> tuple[Config, str | None]:
@@ -291,13 +324,37 @@ def path_candidates(line: str) -> list[str]:
     return out
 
 
+def scratch_defines(rel: str, cfg: Config) -> bool:
+    return any(rel == d or (d.endswith("/") and rel.startswith(d)) for d in cfg.scratch_defines)
+
+
+def check_scratch(raw: str, rel: str, n: int, cfg: Config) -> list[tuple[str, str, int, str]]:
+    """The scratch check for one line, fenced or not."""
+    m = cfg.scratch_path.search(raw)
+    if not m:
+        return []
+    ok = SCRATCH_OK.search(raw)
+    if ok and ok.group(1):
+        return []
+    if ok:
+        return [("scratch-path", rel, n,
+            "`scratch-ok:` with no reason — say why nothing depends on the path")]
+    return [("scratch-path", rel, n,
+        f"cites `{m.group(0)}`, an area cleaned automatically — nothing may depend on it. Move "
+        "what it holds into a committed document and cite that; if nothing depends on the path, "
+        "add `scratch-ok: <why>` to the line")]
+
+
 def check_file(text, rel, files, dirs, tops, cfg: Config):
     findings = []
     in_fence = False
+    scratch = cfg.scratch_path is not None and not scratch_defines(rel, cfg)
     frozen = bool(cfg.frozen) and rel.startswith(cfg.frozen)
     owners = ", ".join("`%s-ADR-`" % o for o in cfg.adr_owners)
     ledger_level = 0  # >0 while inside a ledger section opened by a heading of that level
     for n, raw in enumerate(text.splitlines(), 1):
+        if scratch:
+            findings.extend(check_scratch(raw, rel, n, cfg))
         if FENCE.match(raw):
             in_fence = not in_fence
             continue
@@ -542,6 +599,12 @@ def main(argv: list[str]) -> int:
               "module docstring). This is not full coverage.", file=sys.stderr)
     if not cfg.spec_dirs:
         print("doc-lint: the spec check is off (no spec-dirs: in config).", file=sys.stderr)
+    if cfg.scratch_path is None:
+        print("doc-lint: the scratch check is off (no scratch-path: in config).", file=sys.stderr)
+    for key in cfg.unknown_scratch_keys:
+        print(f"doc-lint: unknown config key {key}: — did you mean one of "
+              f"{', '.join(sorted(SCRATCH_KEYS))}? Until it is spelled right the scratch check "
+              "ignores it.", file=sys.stderr)
     for key in cfg.unknown_spec_keys:
         print(f"doc-lint: unknown config key {key}: — did you mean one of "
               f"{', '.join(sorted(SPEC_KEYS))}? Until it is spelled right the spec check "

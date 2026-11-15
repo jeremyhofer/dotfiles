@@ -104,6 +104,55 @@ assert_has "a bare configured session path is reported" "[session-path]" "$(run 
 put "$r" "Run \`ls /agent-state/some-machine-slug\` to see it."
 assert_lacks "a code-formatted session path is an operand, not a defect" "[session-path]" "$(run "$r")"
 
+# --- scratch-path: nothing may depend on an area that is cleaned automatically ------------
+# Unlike session-path it fires inside code spans and fenced blocks, because a code-formatted
+# pointer to a draft in scratch is the common shape of the defect. The marker is the only way
+# past it, and only with a reason.
+r=$(repo scratch)
+mkdir -p "$r/docs/adr"
+printf 'scratch-path: \\.cache/agent-scratch|\\.local/state/fleet-exchange\nscratch-defines: docs/adr/0001-scratch.md docs/defs/\n' > "$r/.doc-lint"
+put "$r" "The draft is in ~/.cache/agent-scratch/review/note.md for now."
+assert_has "a scratch path in prose is reported" "[scratch-path]" "$(run "$r")"
+put "$r" "The draft is in \`~/.local/state/fleet-exchange/x/draft.md\`."
+assert_has "a code-formatted scratch path is reported, unlike session-path" "[scratch-path]" "$(run "$r")"
+put "$r" "$(printf 'Read it:\n\n```sh\ncat ~/.cache/agent-scratch/run/out.txt\n```')"
+assert_has "a scratch path inside a fenced block is reported" "[scratch-path]" "$(run "$r")"
+put "$r" "Runs wrote to \`~/.cache/agent-scratch/loop/\`. <!-- scratch-ok: the command's output directory; nothing reads it later -->"
+assert_lacks "a marked line with a reason passes" "[scratch-path]" "$(run "$r")"
+put "$r" "$(printf '```sh\nloop-time run x  # scratch-ok: writes ~/.cache/agent-scratch/loop-time, read by nothing later\n```')"
+assert_lacks "a marker in a fenced block's comment passes" "[scratch-path]" "$(run "$r")"
+put "$r" "The draft is at \`~/.cache/agent-scratch/d.md\`. <!-- scratch-ok: -->"
+out=$(run "$r")
+assert_has "a marker with no reason is refused" "[scratch-path]" "$out"
+assert_has "the refusal says the reason is missing" "no reason" "$out"
+put "$r" "The draft is at \`~/.cache/agent-scratch/d.md\`. scratch-ok:"
+assert_has "a bare marker at the end of a line is refused" "no reason" "$(run "$r")"
+put "$r" "Scratch is cleaned after three days; the agent-scratch area is for working files."
+assert_lacks "naming the area without its path is not a citation" "[scratch-path]" "$(run "$r")"
+echo "Areas: ~/.cache/agent-scratch/ and ~/.local/state/fleet-exchange/." > "$r/docs/adr/0001-scratch.md"
+mkdir -p "$r/docs/defs"; echo "Also ~/.cache/agent-scratch/." > "$r/docs/defs/a.md"
+git -C "$r" add -A
+put "$r" "Plain text."
+out=$(run "$r")
+assert_lacks "a file named in scratch-defines is exempt" "0001-scratch.md" "$out"
+assert_lacks "a prefix in scratch-defines exempts what is under it" "defs/a.md" "$out"
+echo "Also ~/.cache/agent-scratch/." > "$r/docs/adr/0002-other.md"; git -C "$r" add -A
+assert_has "a file beside a defined one is still checked" "0002-other.md" "$(run "$r")"
+git -C "$r" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m base
+printf 'Also ~/.cache/agent-scratch/.\nA new clean line.\n' > "$r/docs/adr/0002-other.md"; git -C "$r" add -A
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only docs/adr/0002-other.md 2>&1) || true)
+assert_lacks "--added-only ignores an inherited scratch citation" "[scratch-path]" "$out"
+printf 'Also ~/.cache/agent-scratch/.\nNow see ~/.local/state/fleet-exchange/a/b.md.\n' > "$r/docs/adr/0002-other.md"; git -C "$r" add -A
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only docs/adr/0002-other.md 2>&1) || true)
+assert_has "--added-only reports an added scratch citation" "0002-other.md:2" "$out"
+r2=$(repo noscratch)
+put "$r2" "The draft is in ~/.cache/agent-scratch/x.md."
+out=$(run "$r2")
+assert_lacks "without scratch-path the check does not run" "[scratch-path]" "$out"
+assert_has "with no scratch-path, doc-lint says the scratch check is off" "scratch check is off" "$out"
+printf 'scratch-paths: x\n' > "$r2/.doc-lint"
+assert_has "a mistyped scratch- key is reported" "scratch-paths" "$(run "$r2")"
+
 # --- ledger sections: a memory named in a ledger of absorbed memories is an identifier ------
 r=$(repo ledger)
 printf 'ledger-sections: Provenance\n' > "$r/.doc-lint"
