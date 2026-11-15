@@ -29,7 +29,11 @@ Always escalate (stop and confirm before acting) on:
 
 - An architecture fork between a hack and a principled approach.
 - An irreversible or outward-facing action that has not been durably authorized.
-- Web-verified figures, before they ship to a committed file.
+- Web-verified figures that no research has cross-checked and corroborated, before they ship to a
+  committed file as settled fact: a decision record, a plan, a config or any other value something
+  will act on. Research itself is not gated: a dated research note that cites each source and the
+  date it was read is committed without asking, and a figure it has cross-checked and corroborated
+  may be cited from it by any document, as any other research or reference is.
 - Audit-grade claims.
 - Signing keys, `~/.ssh`, global git or Claude Code configuration, or a repository's Claude Code
   permission-gating configuration, including editing a `.claude/settings.local.json`
