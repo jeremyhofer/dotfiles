@@ -60,9 +60,17 @@ tuicr review comments --session <slug-or-path>
   from `list`**: a JSON path resolves on its own, from anywhere.
 - **`--session <path>` is a LOCATOR, not a sandbox.** Copying a session file somewhere and writing to
   the copy still mutates the **canonical** session — the path identifies which session, it does not
-  redirect the write. There is no scratch mode, and no `remove` subcommand, so a comment added by
-  mistake has to be edited out of the store's JSON by hand. Treat every `add` as landing in the real
-  review.
+  redirect the write. There is no scratch mode. Treat every `add` as landing in the real review.
+- **Removing comments: `review delete` takes one comment, `clearc` and `clear` take all of them.**
+  As of tuicr 0.28.0 (`tuicr review --help`, read 2026-11-15), `review delete --session <s>
+  --comment-id <id>` removes one draft comment, using the id that `review comments` prints. `clearc`
+  removes every comment and keeps the review marks; `clear` removes the comments and the marks. The
+  three verbs arrived in 0.27.0; before that, a comment had to be edited out of the store's JSON by
+  hand. **Deleting a session's last comment can delete the session file**, review marks included.
+  Another session saw this on 0.28.0. The 0.28.0 release notes say tuicr keeps "an emptied session
+  that a running tuicr has open", which implies it removes an emptied session that no running tuicr
+  has open. Not yet reproduced here. So delete a lone comment only while the human's tuicr has the
+  session open, or leave it in place and reply to it instead.
 
 ## What each classification obliges you to do
 
