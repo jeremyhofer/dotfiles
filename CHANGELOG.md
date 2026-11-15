@@ -32,6 +32,20 @@ Entries are newest first.
 
 ---
 
+## 2026-11-15
+
+### `prose-lint`: a repository's mechanical prose rules as a gate
+
+Nothing to do on adopting it; a repository without a `.prose-lint.toml` is checked against nothing,
+and the tool says so on stderr and exits 0. It is the words-level sibling of `doc-lint`: pattern rules
+(a regex per line of prose, with message, optional corpus and context exemptions, and the source sets
+and paths it applies to), three structural checks (a contrastive-phrase count per file, runs of
+clipped sentences, paired unescaped dollar signs in a paragraph), report-only rules shown with
+`--report`, and reviewed known exceptions. Everything repository-specific lives in the repository's
+own TOML config (`--config`, `$PROSE_LINT_CONFIG`, else `.prose-lint.toml` at the root); a bad or
+mistyped key, an unreadable file or frontmatter that is not YAML is exit 2, naming the key or path. Frontmatter is read with PyYAML, pinned in the tool's `uv` header,
+so it needs `uv` and a first run that can fetch the package.
+
 ## 2026-11-14
 
 ### `register-lint --citations`: do the ids a repository cites resolve to register entries

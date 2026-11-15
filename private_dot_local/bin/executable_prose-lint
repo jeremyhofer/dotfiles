@@ -1,0 +1,704 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pyyaml==6.0.3"]
+# ///
+"""prose-lint — mechanical voice and markdown-hazard rules for a repository's prose, from its own config.
+
+WHY THIS EXISTS
+    A writing-style review (a voice profile, a house style guide) usually ends with a short list of
+    rules that are mechanical: a character the author never uses, a phrase that marks machine-
+    written text, a spelling normalized one way. Left to a human re-reading every file they decay
+    into vigilance. This tool runs those rules as a gate. Its sibling `doc-lint` checks references;
+    this checks the words themselves, and it adds a few markdown hazards (text that makes a
+    renderer or an editor misbehave) that fail as cryptic tool crashes rather than lint messages.
+
+    The ENGINE here is generic: text preparation (code, HTML, entities and link destinations
+    blanked, line numbers kept) and the checks. Every rule, threshold and path comes from the
+    repository's config, because the rules are one author's and one site's, not the base's.
+
+WHAT IT CHECKS
+    Pattern rules      a regex per line of prose, with a message, optional exemptions (below)
+                       and the source sets and paths it applies to.
+    Structural checks  three the engine implements in code, each enabled and tuned per source set:
+        contrastive-density   the "X isn't A, it's B" punchline: counted per file (more than `max`
+                              is flagged from the later hits) and optionally never allowed in a
+                              heading.
+        clipped-triplets      N consecutive short sentences in one line of prose.
+        paired-dollars        two or more unescaped `$<digit>` in one paragraph (an editor may
+                              render the pair as inline math and mangle the text between them).
+    Findings in rules listed under `report-only` are shown only with --report and never fail.
+
+CONFIG
+    TOML, read from --config FILE, then $PROSE_LINT_CONFIG, then `.prose-lint.toml` at the
+    repository root (--root, else the git top level, else the working directory). Without one
+    there is nothing to check: the tool says so on stderr and exits 0, never implying coverage.
+    Every key below is validated, and a problem is exit 2 naming the key: an unknown or mistyped
+    key, a value of the wrong type, a regex that does not compile, a missing required key, and an
+    EMPTY string or list where emptiness would silently disable a rule (an empty regex, a
+    `sets`, `include` or `paths` list, a field name or a rule id). Empty is allowed only where it
+    means nothing: `footer`, and the lists `exclude`, `exclude-paths`, `skip-dirs`, `alt-paths`,
+    `report-only`.
+
+        context-window = 6            characters either side of a match that a rule's
+                                      `context-exempt` is tested against
+        report-only = ["id", ...]     rule ids (pattern or structural) shown only with --report
+        footer = "text"               printed after a failing run's findings
+
+        [[source-set]]                which files, and how to read each
+        name = "posts"                required, unique
+        include = ["content/*.md"]    required globs relative to the root: `*` and `?` stay in one
+        exclude = ["**/_*.md"]          path segment, `**` crosses segments, `**/` may be empty
+        skip-dirs = [".git", "node_modules"]   directory NAMES never entered while walking
+                                      (default: these two)
+        skip-field = "ported"         a frontmatter field whose PRESENCE (any non-null value)
+                                      puts the file out of scope: text the author did not write
+                                      with these rules in mind, such as posts ported from an
+                                      earlier site
+        corpus-field = "transcript"   a frontmatter field whose text is the file's exemption corpus
+                                      (a pattern rule with `corpus-exempt` drops a hit whose
+                                      lower-cased text appears in it: words the author actually
+                                      said); a non-string value is no corpus
+        scope = "body"                "body" (frontmatter removed, lines keep their file number)
+                                      or "file" (the whole file, frontmatter included)
+
+        [[rule]]                      a pattern rule
+        id = "no-em-dash"             required
+        pattern = "—"                 required, a Python `re` regex, searched in each prose line
+        message = "..."               required
+        sets = ["posts"]              source sets it runs on (default: all)
+        paths = ["docs/**"]           when given, only files matching one of these globs
+        exclude-paths = ["**/old/**"] files matching one of these are skipped
+        ignore-case = false
+        corpus-exempt = false
+        context-exempt = "regex"      a hit is dropped when this matches the window around it
+        report-only = false           same as listing the id under the top-level `report-only`
+
+        [[check]]                     a structural check; `kind` picks the parameters
+        kind = "contrastive-density"  pattern (required), ignore-case, max = 1,
+                                      density-rule + density-message (required; `{count}` in the
+                                      message is replaced by the number of hits),
+                                      heading-rule + heading-message (optional; both or neither)
+        kind = "clipped-triplets"     rule + message (required), max-words = 8, run = 3,
+                                      skip-lines = "regex" (lines not examined)
+        kind = "paired-dollars"       pattern (required), rule + message (required), min = 2,
+                                      alt-paths = [globs] + alt-rule: files matching are reported
+                                      under `alt-rule` instead (so it can be report-only)
+        (every check also takes `sets = [...]`, default: all)
+
+        [[exception]]                 a reviewed, known finding: shown only with --report
+        file = "a.md"  rule = "id"  reason = "why"   required; `match = "text"` narrows it to
+                                      findings whose matched text is exactly that
+
+    Checks run in config order after the pattern rules, per file, so a file's findings keep that
+    order in the output.
+
+WHAT IT CANNOT CHECK
+    * Meaning. A regex finds a phrase, not whether the phrase is wrong here; that is the author's
+      judgment, which is why a rule can be corpus- or context-exempt or report-only.
+    * Sentence boundaries. `clipped-triplets` splits on `.`, `!` and `?` followed by space, so an
+      abbreviation reads as a sentence end.
+    * Anything inside code. Fenced blocks, inline code, HTML tags and entities, and link
+      destinations are blanked before any rule sees a line (link TEXT is kept).
+    * Symlinked directories: the walk does not follow them, so a file reached only through one is
+      never read (a symlinked FILE is read).
+    * An unclosed code fence: as in CommonMark it runs to the end of the file, so prose after a
+      stray fence is not checked.
+    * Regex dialect drift. Patterns are Python `re`, so `\\w`, `\\s` and `\\b` are Unicode-aware
+      and a pattern ported from another engine may need `[A-Za-z0-9_]` where that matters.
+
+USAGE
+    prose-lint [--config FILE] [--root DIR] [--report] [PATH ...]
+    No PATH lints every file the source sets select. PATHs (relative to the working directory)
+    narrow that; one no source set selects is skipped, and says so on stderr.
+    Exit 0 clean (advisory findings never fail), 1 findings, 2 a config or usage error.
+    Output: `path:line: [rule] "match"` then the message, grouped by file.
+"""
+from __future__ import annotations  # PEP 604 unions in annotations, on older Python
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+TOOL = "prose-lint"
+DEFAULT_SKIP_DIRS = (".git", "node_modules")
+
+
+class ConfigError(Exception):
+    """A config or usage problem: exit 2, message names the key."""
+
+
+class ContentError(ConfigError):
+    """A problem in a file being linted, not in the config: still exit 2, message names the file."""
+
+
+def one_line(e: object) -> str:
+    return " ".join(str(e).split())
+
+
+# --- globs ------------------------------------------------------------------------------------
+
+def glob_to_regex(glob: str) -> re.Pattern[str]:
+    out, i = [], 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def matches_any(rel: str, globs: list[re.Pattern[str]]) -> bool:
+    return any(g.match(rel) for g in globs)
+
+
+# --- config -----------------------------------------------------------------------------------
+
+@dataclass
+class SourceSet:
+    name: str
+    include: list[re.Pattern[str]]
+    exclude: list[re.Pattern[str]]
+    skip_dirs: tuple[str, ...]
+    skip_field: str | None
+    corpus_field: str | None
+    scope: str
+
+
+@dataclass
+class Rule:
+    id: str
+    pattern: re.Pattern[str]
+    message: str
+    sets: list[str] | None
+    paths: list[re.Pattern[str]]
+    exclude_paths: list[re.Pattern[str]]
+    corpus_exempt: bool
+    context_exempt: re.Pattern[str] | None
+
+
+@dataclass
+class Check:
+    kind: str
+    sets: list[str] | None
+    params: dict
+
+
+@dataclass
+class Exception_:
+    file: str
+    rule: str
+    reason: str
+    match: str | None
+
+
+@dataclass
+class Config:
+    path: Path
+    context_window: int = 6
+    report_only: set[str] = field(default_factory=set)
+    footer: str = ""
+    sets: list[SourceSet] = field(default_factory=list)
+    rules: list[Rule] = field(default_factory=list)
+    checks: list[Check] = field(default_factory=list)
+    exceptions: list[Exception_] = field(default_factory=list)
+
+
+class Reader:
+    """Typed, checked access to one TOML table; every key read is marked, leftovers are errors."""
+
+    def __init__(self, table: object, where: str):
+        if not isinstance(table, dict):
+            raise ConfigError(f"{where}: must be a table")
+        self.t, self.where, self.seen = table, where, set()
+
+    def _get(self, key: str, required: bool):
+        self.seen.add(key)
+        if key in self.t:
+            return self.t[key]
+        if required:
+            raise ConfigError(f"{self.where}: missing required key '{key}'")
+        return None
+
+    def str(self, key: str, required=False, default=None, allow_empty=False):
+        v = self._get(key, required)
+        if v is None:
+            return default
+        if not isinstance(v, str) or (v == "" and not allow_empty):
+            raise ConfigError(f"{self.where}: key '{key}' must be a non-empty string")
+        return v
+
+    def int(self, key: str, default: int, minimum=0):
+        v = self._get(key, False)
+        if v is None:
+            return default
+        if isinstance(v, bool) or not isinstance(v, int) or v < minimum:
+            raise ConfigError(f"{self.where}: key '{key}' must be an integer >= {minimum}")
+        return v
+
+    def bool(self, key: str, default=False):
+        v = self._get(key, False)
+        if v is None:
+            return default
+        if not isinstance(v, bool):
+            raise ConfigError(f"{self.where}: key '{key}' must be true or false")
+        return v
+
+    def strs(self, key: str, required=False, default=None, nonempty=False):
+        v = self._get(key, required)
+        if v is None:
+            return default
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v) or (nonempty and not v):
+            raise ConfigError(f"{self.where}: key '{key}' must be a "
+                              f"{'non-empty ' if nonempty else ''}list of strings")
+        return v
+
+    def regex(self, key: str, required=False, ignore_case=False):
+        v = self.str(key, required)
+        if v is None:
+            return None
+        try:
+            return re.compile(v, re.IGNORECASE if ignore_case else 0)
+        except re.error as e:
+            raise ConfigError(f"{self.where}: key '{key}' is not a valid regex: {e}")
+
+    def globs(self, key: str, required=False, nonempty=False):
+        v = self.strs(key, required, [], nonempty or required)
+        return [glob_to_regex(g) for g in v]
+
+    def done(self):
+        extra = sorted(set(self.t) - self.seen)
+        if extra:
+            raise ConfigError(f"{self.where}: unknown key '{extra[0]}'")
+
+
+def _array(raw: dict, key: str) -> list:
+    v = raw.get(key, [])
+    if not isinstance(v, list):
+        raise ConfigError(f"config: '{key}' must be an array of tables ([[{key}]])")
+    return v
+
+
+CHECK_KINDS = ("contrastive-density", "clipped-triplets", "paired-dollars")
+
+
+def parse_config(raw: dict, path: Path) -> Config:
+    top = Reader(raw, "config")
+    cfg = Config(path=path)
+    cfg.context_window = top.int("context-window", 6)
+    cfg.report_only = set(top.strs("report-only", default=[]))
+    cfg.footer = top.str("footer", default="", allow_empty=True)
+    for key in ("source-set", "rule", "check", "exception"):
+        top.seen.add(key)
+    top.done()
+
+    for i, t in enumerate(_array(raw, "source-set"), 1):
+        r = Reader(t, f"[[source-set]] #{i}")
+        name = r.str("name", required=True)
+        r.where = f"[[source-set]] '{name}'"
+        scope = r.str("scope", default="body")
+        if scope not in ("body", "file"):
+            raise ConfigError(f"{r.where}: key 'scope' must be \"body\" or \"file\"")
+        if any(s.name == name for s in cfg.sets):
+            raise ConfigError(f"{r.where}: key 'name' is used twice")
+        cfg.sets.append(SourceSet(
+            name=name, include=r.globs("include", required=True), exclude=r.globs("exclude"),
+            skip_dirs=tuple(r.strs("skip-dirs", default=list(DEFAULT_SKIP_DIRS))),
+            skip_field=r.str("skip-field"), corpus_field=r.str("corpus-field"), scope=scope))
+        r.done()
+    names = {s.name for s in cfg.sets}
+
+    def set_list(r: Reader):
+        sets = r.strs("sets", nonempty=True)
+        for s in sets or []:
+            if s not in names:
+                raise ConfigError(f"{r.where}: key 'sets' names '{s}', which no [[source-set]] declares")
+        return sets
+
+    for i, t in enumerate(_array(raw, "rule"), 1):
+        r = Reader(t, f"[[rule]] #{i}")
+        rid = r.str("id", required=True)
+        r.where = f"[[rule]] '{rid}'"
+        ic = r.bool("ignore-case")
+        rule = Rule(id=rid, pattern=r.regex("pattern", True, ic), message=r.str("message", True),
+                    sets=set_list(r), paths=r.globs("paths", nonempty=True), exclude_paths=r.globs("exclude-paths"),
+                    corpus_exempt=r.bool("corpus-exempt"), context_exempt=r.regex("context-exempt"))
+        if r.bool("report-only"):
+            cfg.report_only.add(rid)
+        r.done()
+        cfg.rules.append(rule)
+
+    for i, t in enumerate(_array(raw, "check"), 1):
+        r = Reader(t, f"[[check]] #{i}")
+        kind = r.str("kind", required=True)
+        if kind not in CHECK_KINDS:
+            raise ConfigError(f"{r.where}: key 'kind' must be one of {', '.join(CHECK_KINDS)}")
+        r.where = f"[[check]] #{i} ({kind})"
+        sets = set_list(r)
+        if kind == "contrastive-density":
+            p = {"pattern": r.regex("pattern", True, r.bool("ignore-case")), "max": r.int("max", 1),
+                 "density_rule": r.str("density-rule", True), "density_message": r.str("density-message", True),
+                 "heading_rule": r.str("heading-rule"), "heading_message": r.str("heading-message")}
+            if (p["heading_rule"] is None) != (p["heading_message"] is None):
+                raise ConfigError(f"{r.where}: keys 'heading-rule' and 'heading-message' go together")
+        elif kind == "clipped-triplets":
+            p = {"rule": r.str("rule", True), "message": r.str("message", True),
+                 "max_words": r.int("max-words", 8, 1), "run": r.int("run", 3, 1),
+                 "skip_lines": r.regex("skip-lines")}
+        else:
+            p = {"pattern": r.regex("pattern", True), "rule": r.str("rule", True),
+                 "message": r.str("message", True), "min": r.int("min", 2, 1),
+                 "alt_paths": r.globs("alt-paths"), "alt_rule": r.str("alt-rule")}
+            if bool(p["alt_paths"]) != (p["alt_rule"] is not None):
+                raise ConfigError(f"{r.where}: keys 'alt-paths' and 'alt-rule' go together")
+        r.done()
+        cfg.checks.append(Check(kind, sets, p))
+
+    for i, t in enumerate(_array(raw, "exception"), 1):
+        r = Reader(t, f"[[exception]] #{i}")
+        cfg.exceptions.append(Exception_(file=r.str("file", True), rule=r.str("rule", True),
+                                         reason=r.str("reason", True), match=r.str("match")))
+        r.done()
+    return cfg
+
+
+def find_config(explicit: str | None, root: Path) -> Path | None:
+    if explicit:
+        p = Path(explicit)
+        if not p.is_file():
+            raise ConfigError(f"--config {explicit}: no such file")
+        return p
+    env = os.environ.get("PROSE_LINT_CONFIG")
+    if env:
+        p = Path(env)
+        if not p.is_file():
+            raise ConfigError(f"$PROSE_LINT_CONFIG={env}: no such file")
+        return p
+    p = root / ".prose-lint.toml"
+    return p if p.is_file() else None
+
+
+def load_config(path: Path) -> Config:
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: not valid TOML: {e}")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"{path}: cannot read the config: {one_line(e)}")
+    return parse_config(raw, path)
+
+
+# --- text preparation -------------------------------------------------------------------------
+
+def blank_inert(line: str) -> str:
+    """Blank a line's inert regions, keeping its length so columns and numbers stay usable:
+    inline code, raw HTML tags, HTML entities, link and image destinations, bare URLs. Link TEXT
+    is kept, because it is authored prose."""
+    def blank(s: str) -> str:
+        return " " * len(s)
+
+    line = re.sub(r"!\[([^\]]*)\]\(([^)]*)\)", lambda m: f"![{m[1]}]({blank(m[2])})", line)
+    line = re.sub(r"\[([^\]]*)\]\(([^)]*)\)", lambda m: f"[{m[1]}]({blank(m[2])})", line)
+    line = re.sub(r"`[^`]*`", lambda m: blank(m[0]), line)
+    line = re.sub(r"<[^>]*>", lambda m: blank(m[0]), line)
+    line = re.sub(r"&[a-zA-Z#0-9]+;", lambda m: blank(m[0]), line)
+    return re.sub(r"https?://\S+", lambda m: blank(m[0]), line)
+
+
+def prose_lines(body: str, offset: int) -> list[tuple[int, str]]:
+    """Prose lines with their file line numbers: fenced code dropped, inert spans blanked.
+    A fence follows CommonMark: it opens on 3 or more backticks or tildes (a backtick fence's info
+    string holds no backtick), and closes on the same character, at least as many, with only
+    whitespace after. An unclosed fence runs to the end of the text."""
+    out, fence = [], None  # fence: (character, length) of the open one
+    for i, raw in enumerate(body.split("\n")):
+        if fence:
+            if re.fullmatch(rf"[ \t]*{re.escape(fence[0])}{{{fence[1]},}}[ \t]*", raw):
+                fence = None
+            continue
+        opener = re.match(r"[ \t]*(`{3,}|~{3,})(.*)", raw)
+        if opener and not (opener[1][0] == "`" and "`" in opener[2]):
+            fence = (opener[1][0], len(opener[1]))
+            continue
+        out.append((offset + i, blank_inert(raw)))
+    return out
+
+
+@dataclass
+class Source:
+    file: str
+    body: str
+    offset: int
+    corpus: str
+
+
+@dataclass
+class Finding:
+    file: str
+    line: int
+    rule: str
+    message: str
+    match: str
+
+
+def split_frontmatter(raw: str) -> tuple[dict, str, int]:
+    """(frontmatter mapping, body, file line of body line 1). No `---` first line, or no closing
+    `---` line: no frontmatter, the whole text is the body."""
+    first = re.match(r"---[ \t]*\r?\n", raw)
+    if not first:
+        return {}, raw, 1
+    close = re.compile(r"^---[ \t]*\r?$", re.MULTILINE).search(raw, first.end())
+    if not close:
+        return {}, raw, 1
+    text = raw[first.end():close.start()]
+    nl = raw.find("\n", close.end())
+    start = len(raw) if nl == -1 else nl + 1
+    data = yaml.safe_load(text)
+    return (data if isinstance(data, dict) else {}), raw[start:], raw.count("\n", 0, start) + 1
+
+
+def read_source(root: Path, rel: str, sset: SourceSet) -> Source | None:
+    """The file as a Source, or None when the set's skip field puts it out of scope."""
+    try:
+        raw = (root / rel).read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as e:
+        raise ContentError(f"{rel}: cannot read the file: {e.strerror or one_line(e)}")
+    data: dict = {}
+    body, offset = raw, 1
+    if sset.skip_field or sset.corpus_field or sset.scope == "body":
+        try:
+            data, fm_body, fm_offset = split_frontmatter(raw)
+        except yaml.YAMLError as e:
+            raise ContentError(f"{rel}: content error: the frontmatter is not valid YAML: {one_line(e)}")
+        if sset.scope == "body":
+            body, offset = fm_body, fm_offset
+    if sset.skip_field and data.get(sset.skip_field) is not None:
+        return None
+    corpus = ""
+    if sset.corpus_field and isinstance(data.get(sset.corpus_field), str):
+        corpus = data[sset.corpus_field].lower()
+    return Source(rel, body, offset, corpus)
+
+
+# --- the checks -------------------------------------------------------------------------------
+
+def check_rules(src: Source, rules: list[Rule], window: int) -> list[Finding]:
+    findings = []
+    for line, text in prose_lines(src.body, src.offset):
+        for rule in rules:
+            if rule.paths and not matches_any(src.file, rule.paths):
+                continue
+            if matches_any(src.file, rule.exclude_paths):
+                continue
+            for m in rule.pattern.finditer(text):
+                hit = m[0]
+                if not (rule.corpus_exempt and hit.lower() in src.corpus):
+                    near = text[max(0, m.start() - window):m.end() + window]
+                    if not (rule.context_exempt and rule.context_exempt.search(near)):
+                        findings.append(Finding(src.file, line, rule.id, rule.message, hit))
+                if hit == "":
+                    break  # an empty match cannot advance; one is all a line can report
+    return findings
+
+
+def check_contrastive(src: Source, p: dict) -> list[Finding]:
+    findings, hits = [], []
+    for line, text in prose_lines(src.body, src.offset):
+        for m in p["pattern"].finditer(text):
+            hit = m[0].strip()
+            hits.append((line, hit))
+            if p["heading_rule"] and re.match(r"\s*#{1,6}\s", text):
+                findings.append(Finding(src.file, line, p["heading_rule"], p["heading_message"], hit))
+    if len(hits) > p["max"]:
+        message = p["density_message"].replace("{count}", str(len(hits)))
+        for line, hit in hits[p["max"]:]:
+            findings.append(Finding(src.file, line, p["density_rule"], message, hit))
+    return findings
+
+
+def check_triplets(src: Source, p: dict) -> list[Finding]:
+    findings = []
+    for line, text in prose_lines(src.body, src.offset):
+        if p["skip_lines"] and p["skip_lines"].search(text):
+            continue
+        sentences = [s for s in (x.strip() for x in re.split(r"(?<=[.!?])\s+", text)) if s]
+        run = 0
+        for s in sentences:
+            if len(re.split(r"\s+", s)) <= p["max_words"] and s[-1] in ".!?":
+                run += 1
+                if run >= p["run"]:
+                    findings.append(Finding(src.file, line, p["rule"], p["message"], s))
+                    break
+            else:
+                run = 0
+    return findings
+
+
+def check_dollars(src: Source, p: dict) -> list[Finding]:
+    """Per paragraph (a run of non-blank prose lines), every hit once the paragraph has `min`."""
+    findings, para = [], []
+
+    def flush():
+        if len(para) >= p["min"]:
+            alt = p["alt_rule"] and matches_any(src.file, p["alt_paths"])
+            for line, hit in para:
+                findings.append(Finding(src.file, line, p["alt_rule"] if alt else p["rule"],
+                                        p["message"], hit))
+        para.clear()
+
+    for line, text in prose_lines(src.body, src.offset):
+        if text.strip() == "":
+            flush()
+            continue
+        para.extend((line, m[0]) for m in p["pattern"].finditer(text))
+    flush()
+    return findings
+
+
+CHECKS = {"contrastive-density": check_contrastive, "clipped-triplets": check_triplets,
+          "paired-dollars": check_dollars}
+
+
+def check_source(src: Source, sset: SourceSet, cfg: Config) -> list[Finding]:
+    rules = [r for r in cfg.rules if r.sets is None or sset.name in r.sets]
+    out = check_rules(src, rules, cfg.context_window)
+    for c in cfg.checks:
+        if c.sets is None or sset.name in c.sets:
+            out.extend(CHECKS[c.kind](src, c.params))
+    return out
+
+
+# --- files ------------------------------------------------------------------------------------
+
+def select_files(root: Path, sset: SourceSet) -> list[str]:
+    found = []
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in sset.skip_dirs)
+        base = Path(dirpath).relative_to(root)
+        for name in sorted(files):
+            rel = (base / name).as_posix()
+            if matches_any(rel, sset.include) and not matches_any(rel, sset.exclude):
+                found.append(rel)
+    return found
+
+
+def allowed(f: Finding, cfg: Config) -> bool:
+    return any(e.file == f.file and e.rule == f.rule and (e.match is None or e.match == f.match)
+               for e in cfg.exceptions)
+
+
+def report_lines(findings: list[Finding], label: str) -> list[str]:
+    out = [f"\n{TOOL}: {len(findings)} {label}:"]
+    by_file: dict[str, list[Finding]] = {}
+    for f in findings:
+        by_file.setdefault(f.file, []).append(f)
+    for file in sorted(by_file):
+        out.append("")
+        for f in by_file[file]:
+            out.append(f'{f.file}:{f.line}: [{f.rule}] "{f.match}"')
+            out.append(f"    {f.message}")
+    return out
+
+
+def run(root: Path, cfg: Config, report: bool, only: set[str] | None) -> int:
+    all_findings: list[Finding] = []
+    counts: list[tuple[str, int]] = []
+    for sset in cfg.sets:
+        n = 0
+        for rel in select_files(root, sset):
+            if only is not None and rel not in only:
+                continue
+            src = read_source(root, rel, sset)
+            if src is None:
+                continue
+            n += 1
+            all_findings.extend(check_source(src, sset, cfg))
+        counts.append((sset.name, n))
+    def is_advisory(f: Finding) -> bool:
+        return f.rule in cfg.report_only or allowed(f, cfg)
+
+    advisory = [f for f in all_findings if is_advisory(f)]
+    gating = [f for f in all_findings if not is_advisory(f)]
+    if report and advisory:
+        for line in report_lines(advisory, "advisory finding(s) (report-only, never fails)"):
+            print(line, file=sys.stderr)
+    if gating:
+        for line in report_lines(gating, "prose finding(s)"):
+            print(line, file=sys.stderr)
+        if cfg.footer:
+            print(f"\n{cfg.footer}", file=sys.stderr)
+        return 1
+    read = ", ".join(f"{n} in {name}" for name, n in counts)
+    note = f" ({len(advisory)} advisory, run with --report to see them)" if advisory and not report else ""
+    print(f"{TOOL}: OK: files read: {read or 'none'}; 0 findings{note}")
+    return 0
+
+
+def repo_root(start: Path) -> Path:
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=start, capture_output=True,
+                             text=True, check=True).stdout.strip()
+        return Path(top)
+    except (OSError, subprocess.CalledProcessError):
+        return start
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog=TOOL, description="Mechanical prose rules from the repository's config.")
+    ap.add_argument("--config", help="config file (default: $PROSE_LINT_CONFIG, then .prose-lint.toml at the root)")
+    ap.add_argument("--root", help="repository root (default: the git top level, else the working directory)")
+    ap.add_argument("--report", action="store_true", help="also show report-only findings")
+    ap.add_argument("paths", nargs="*", help="limit to these files")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as e:
+        return 2 if e.code else 0
+    start = Path.cwd()
+    try:
+        root = Path(args.root).resolve() if args.root else repo_root(start)
+        if not root.is_dir():
+            raise ConfigError(f"--root {args.root}: not a directory")
+        cfg_path = find_config(args.config, root)
+        if cfg_path is None:
+            print(f"{TOOL}: no config found (--config, $PROSE_LINT_CONFIG or .prose-lint.toml at "
+                  f"{root}): nothing was checked. This is not a clean result.", file=sys.stderr)
+            return 0
+        cfg = load_config(cfg_path)
+        only = None
+        if args.paths:
+            only = set()
+            for a in args.paths:
+                try:
+                    only.add((start / a).resolve().relative_to(root).as_posix())
+                except ValueError:
+                    print(f"{TOOL}: SKIPPED {a}: outside {root}, so nothing was checked.", file=sys.stderr)
+            selected = {rel for s in cfg.sets for rel in select_files(root, s)}
+            for rel in sorted(only - selected):
+                print(f"{TOOL}: SKIPPED {rel}: no source set selects it, so nothing was checked.",
+                      file=sys.stderr)
+        return run(root, cfg, args.report, only)
+    except ConfigError as e:
+        print(f"{TOOL}: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
