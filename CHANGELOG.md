@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### Two new skills: `test-independence` and `visual-baselines`
+
+Nothing to do on adopting them; an apply deploys them. `test-independence` (no test depends on another test or
+on run order) and `visual-baselines` (keeping visual-regression screenshot baselines from bloating git history:
+batch commits, a commit-path size guard, per-section images, measuring growth, and what Git LFS needs first).
+`visual-baselines` reads a domain half at `~/.dotlocal/skills/visual-baselines.md` where the private layer
+supplies one; without it the generic skill stands alone.
+
 ### The apply leaves a ledger: `apply-status`, a kept refusal report, an alert on refusal
 
 Nothing to do on adopting it; the hook paths are unchanged, so no `chezmoi init` is needed for the
