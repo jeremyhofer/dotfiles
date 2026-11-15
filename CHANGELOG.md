@@ -34,6 +34,16 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### `lint-tasknames`: fixture directories are skipped, and `validate` is faulted only on evidence
+
+Nothing to do on adopting it. Directories named `fixture`, `fixtures` or `__fixtures__`, or starting
+`fixture-` or `fixture_`, are no longer walked: a build file there is input a test hands to the code
+under test, so its names are not the repository's tasks, and renaming them would change what the test
+measures. The header counts the skipped directories, so the skip never reads as coverage. The triad
+rule for `validate` no longer fires when a task's own body shows no live target, which faulted every
+`validate` that hands off to a runner script; it now fires only when the body inspects the machine
+with nothing live in sight, the same positive-evidence rule `check` and `verify` follow.
+
 ### `lint-tasknames`: an allowance file for names an upstream tool dictates
 
 Nothing to do on adopting it; with no allowance file every run says `allowances: none` in its header

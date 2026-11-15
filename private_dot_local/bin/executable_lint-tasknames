@@ -19,7 +19,10 @@ Makefile is read too (node_modules, .git, dist and similar are pruned), because 
 single-directory read once hid an entire frontend/package.json of 32 scripts and
 under-reported a repo's true naming scope by half. Nx stays root-only on purpose:
 the workspace graph already enumerates every nested project. Findings from a
-nested dir are labeled with its relative path. A build tool with no marker file
+nested dir are labeled with its relative path. Test-fixture directories (`fixture`,
+`fixtures`, `__fixtures__`, and names starting `fixture-` or `fixture_`) are not walked:
+their build files are test input, not this repository's tasks. The header counts
+them. A build tool with no marker file
 anywhere in the tree is a skip, not an error; the per-source tally line makes
 skips visible so coverage is never implied.
 
@@ -253,8 +256,11 @@ def triad_finding(name, body):
         return "triad: `check` reads the TREE, but this task inspects the MACHINE/history -- `verify`"
     if head == "verify" and live:
         return "triad: `verify` reads this machine and history, but this task reaches a live target -- `validate`"
-    if head == "validate" and not live:
-        return "triad: `validate` reads a DEPLOYED target, but this task reaches none"
+    # Positive evidence only, as above: a `validate` that hands off to another tool (a CI trigger, a
+    # runner script) shows no live signal in its own body and is still correct, so the absence of one
+    # is no finding. Inspecting the machine with nothing live in sight is.
+    if head == "validate" and machine and not live:
+        return "triad: `validate` reads a DEPLOYED target, but this task inspects the MACHINE/history -- `verify`"
     return None
 
 
@@ -307,11 +313,32 @@ EXCLUDE_DIRS = {
 }
 
 
+# Test fixtures are input a test hands to the code under test, shaped however that test needs (a
+# sample app's `test:e2e` script, a deliberately broken build file), so their task names are not this
+# repository's interface and renaming them would change what the test measures. Their directories are
+# not walked, and the header counts them, so the skip never reads as coverage.
+FIXTURE_DIRS = {"fixture", "fixtures", "__fixtures__"}
+SKIPPED_FIXTURES = set()
+
+
+def is_fixture_dir(name):
+    n = name.lower()
+    return n in FIXTURE_DIRS or n.startswith(("fixture-", "fixture_"))
+
+
 def find_dirs(repo, markers):
     """Yield every dir under repo (repo first) containing one of the marker files."""
     hits = []
     for dirpath, dirnames, filenames in os.walk(repo):
-        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_DIRS)
+        keep = []
+        for d in sorted(dirnames):
+            if d in EXCLUDE_DIRS:
+                continue
+            if is_fixture_dir(d):
+                SKIPPED_FIXTURES.add(Path(dirpath, d))
+                continue
+            keep.append(d)
+        dirnames[:] = keep
         if any(m in filenames for m in markers):
             hits.append(Path(dirpath))
     return hits
@@ -609,6 +636,7 @@ def main():
 
 def lint_one(repo, key=None, why="", base=None):
     base = base or repo
+    SKIPPED_FIXTURES.clear()
     categories, skill = load_categories()
 
     violations, tally, reader_errors, all_names = [], [], [], []
@@ -691,6 +719,11 @@ def lint_one(repo, key=None, why="", base=None):
                   + ("" if base == repo else "; run from a subdirectory, so the stale check is skipped"))
     print(f"lint-tasknames: {repo.name}  sources: {' '.join(tally)}  (vocabulary: {skill})")
     print(f"  {astate}")
+    if SKIPPED_FIXTURES:
+        rels = sorted(str(d.relative_to(repo)) for d in SKIPPED_FIXTURES)
+        shown = ", ".join(rels[:3]) + (f" and {len(rels) - 3} more" if len(rels) > 3 else "")
+        print(f"  skipped: {len(rels)} fixture director{'y' if len(rels) == 1 else 'ies'}, test input "
+              f"rather than this repository's tasks: {shown}")
     # ERROR first: severity ordering is the whole point of the split, and a reader who stops after
     # the first few lines should have seen the findings that actually mean something.
     order = {ERROR: 0, WARN: 1, INFO: 2}
