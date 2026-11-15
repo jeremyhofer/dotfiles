@@ -98,6 +98,7 @@ test-verify-task-io.py              private_dot_local/bin/executable_verify-task
 test-leak-guard.sh                  private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_run-repo-gates private_dot_local/bin/executable_fleet-decl
 test-leak-guard-perf.sh             private_dot_local/bin/executable_leak-guard private_dot_local/bin/executable_fleet-decl
 test-lint-tasknames.sh              private_dot_local/bin/executable_lint-tasknames dot_claude/skills/naming-build-tasks/SKILL.md
+test-lint-tasknames-allowances.py  private_dot_local/bin/executable_lint-tasknames
 test-loop-time.py                   private_dot_local/bin/executable_loop-time private_dot_local/bin/executable_fleet-slot
 test-fleet-slot.py                  private_dot_local/bin/executable_fleet-slot
 test-fleet-wait.py                  private_dot_local/bin/executable_fleet-wait

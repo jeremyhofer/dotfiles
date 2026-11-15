@@ -278,6 +278,60 @@ the default. A file that is empty, or whose first value is not a positive intege
 stderr and the default is used; the tool does not guess. Without the file the default applies.
 Check it with `context-footprint --no-delta`: the `budget` row shows the value in force.
 
+## Task-name allowances: `~/.dotlocal/lint-tasknames/allowances.toml`
+
+`lint-tasknames` warns about a task name outside the shared vocabulary. A domain that has a project
+whose names an upstream tool dictates (a wrapper whose recipes copy the wrapped tool's subcommands)
+lists them here, so they show as INFO instead of WARN. The path is `$LINT_TASKNAMES_ALLOWANCES`, else
+the file above; with neither there are no allowances, and the run header says so. A path named by the
+variable that does not exist is exit 2. The file is one place for the whole set, so a reader sees every
+allowance with one `cat`; a project's repository carries none.
+
+```toml
+# ~/.dotlocal/lint-tasknames/allowances.toml
+[[allowance]]
+repo    = "example-project"        # the manifest's project name: the same on every machine
+path    = "tools/justfile"         # optional: the build file the names live in, relative to the repository
+mirror  = "example-tool"           # the upstream tool whose subcommands the names copy
+surface = "example-tool --help"    # the mirrored tool itself, from PATH, printing every claimed name
+names   = ["apply", "diff"]        # non-empty
+reason  = "the recipes wrap example-tool one for one"
+```
+
+Unknown keys, a missing or empty `surface`, empty `names` and a wrong type are exit 2, naming the
+allowance and the key: an allowance with nothing to run is refused by construction. So is a `surface`
+whose first word contains a slash (a repository's own script cannot vouch for its own names) or is not
+equal to `mirror` (the build tool being linted cannot verify itself), and a `path` that is absolute,
+holds `..` or is not normalized (`./x`, `a//b`, a trailing slash). `path` is the build file's real
+on-disk name, from a directory listing; for Nx it is always `nx.json`, because Nx has no build file
+per project.
+
+An allowance never lowers an ERROR (a colon, a misused `check`/`verify`/`validate`). One that names no
+current task is reported as stale at WARN, so it fails only under `--strict`; the stale check is
+skipped when a reader errored or the run started in a subdirectory, because the task list is then
+incomplete. A `--fleet` run also reports an allowance whose repository the fleet lacks (not in the
+manifest, tagged `upstream` or missing on disk) as a stale WARN, and `--strict` makes it fail.
+
+Under `--strict`, and only then, each allowance for the repository being linted has its `surface`
+run in that repository's top directory: no shell, stdin closed, `NO_COLOR=1`, a 10 second timeout and a
+1 MiB cap on output, the process group killed at either. ANSI escapes are stripped, and every claimed
+name must appear in stdout or stderr as a whole word (`apply` does not match `apply-yolo`). A name
+missing, a nonzero exit, a timeout, an overrun or a missing command is an ERROR naming the allowance;
+the header says `surfaces run (--strict)`, or `surfaces NOT run` without it. **The residual:** a name
+that merely appears in the tool's prose passes, so the surface proves the tool exists and mentions
+the name, not that it is a subcommand. The writer's review of each allowance remains the control.
+`LINT_TASKNAMES_SURFACE_TIMEOUT` and `LINT_TASKNAMES_SURFACE_MAX_BYTES` override the bounds (a value
+that is not a positive number is exit 2).
+
+A repository is identified by its manifest project name (`mani.yaml`, the key under `projects:`),
+looked up from the manifest at `$LINT_TASKNAMES_MANIFEST` (exit 2 if it names a missing file), else
+`~/Devel/mani.yaml`, or the one named to `--fleet`. The run's repository is its git top level, and a
+linked worktree is matched through its main checkout, so a worktree or a subdirectory gets the same
+allowances as the checkout; `.worktrees` directories are never linted as part of the main checkout. A
+repository with no manifest entry, a manifest that cannot be read, or two keys sharing its path gets
+no allowances, and the header says which. An entry the manifest reader cannot parse is exit 2, naming
+the line, rather than being attributed to a neighbor.
+
 ## Worktrees
 
 ### `~/.dotlocal/worktrunk.toml`

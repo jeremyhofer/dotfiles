@@ -23,6 +23,26 @@ nested dir are labeled with its relative path. A build tool with no marker file
 anywhere in the tree is a skip, not an error; the per-source tally line makes
 skips visible so coverage is never implied.
 
+Allowances. A domain may list, in ONE allowlist file, names a project did not choose because they
+mirror an upstream tool's own subcommands. The file is `$LINT_TASKNAMES_ALLOWANCES`, else
+`~/.dotlocal/lint-tasknames/allowances.toml`; with neither there are no allowances and the run
+header says so. One `[[allowance]]` table per entry: `repo` (the manifest's project name, which is
+the same on every machine; a linked worktree or a subdirectory run is matched to its main checkout),
+`path` (optional: the build file the names live in, relative to the repository root, normalized, with
+no `..`; for Nx the build file is always `nx.json`), `mirror` (the upstream tool), `surface` (the
+command that proves it), `names` (non-empty list) and `reason`. A covered name is reported INFO
+instead of WARN; an allowance never lowers an ERROR (a colon, a triad misuse). An allowance naming no
+current task is a stale allowance (WARN).
+
+The surface is the mirrored tool itself: its first word must equal `mirror` and carry no slash, so a
+repository's own script, or the build tool being linted, cannot vouch for its own names. Under
+--strict only, each surface for the repository being linted is run in that repository's top
+directory, with no shell, stdin closed, NO_COLOR=1, a timeout and an output cap; ANSI escapes are
+stripped, and every claimed name must appear in the output (stdout and stderr) as a whole word. A
+surface that fails, times out, exceeds the cap or is not found is an ERROR. RESIDUAL, stated plainly:
+a name that merely appears in the tool's prose passes, so the writer's review of each allowance
+remains the control. A malformed allowlist is exit 2.
+
 Ecosystem-mandated names are exempt, not violations: npm lifecycle scripts
 (prepare, install, version, …, and pre<X>/post<X> of another script), npm's
 reserved `start`/`test` (kept as thin delegating aliases by convention), and
@@ -32,8 +52,12 @@ just's `default` listing idiom.
 import json
 import os
 import re
+import shlex
+import signal
 import subprocess
 import sys
+import threading
+import tomllib
 from pathlib import Path
 
 SKILL_CANDIDATES = [
@@ -59,6 +83,153 @@ NX_PROVIDED = {"nx-release-publish", "watch-deps"}
 # to prevent -- and treating them at identical weight is what trained readers to skim this tool.
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 STRICT = False
+
+# --- allowances ----------------------------------------------------------------------------------
+ALLOWANCE_KEYS = {"repo", "path", "mirror", "surface", "names", "reason"}
+ALLOWANCE_REQUIRED = ("repo", "mirror", "surface", "names", "reason")
+SURFACE_TIMEOUT = 10.0  # seconds a surface command may run; LINT_TASKNAMES_SURFACE_TIMEOUT overrides (tests)
+SURFACE_MAX_BYTES = 1 << 20  # output a surface may print before it is killed; LINT_TASKNAMES_SURFACE_MAX_BYTES overrides (tests)
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+DEFAULT_ALLOWANCES = Path.home() / ".dotlocal/lint-tasknames/allowances.toml"
+DEFAULT_MANIFEST = Path.home() / "Devel" / "mani.yaml"
+ALLOWANCES = None       # (file, [allowance dict]) when a file was read, else None
+ALLOWANCES_LOOKED_AT = None
+
+def allowance_error(msg):
+    print(f"lint-tasknames: allowances: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def load_allowances():
+    """Read the allowlist; sets ALLOWANCES. A malformed file is exit 2, never a quiet no-op."""
+    global ALLOWANCES, ALLOWANCES_LOOKED_AT
+    env = os.environ.get("LINT_TASKNAMES_ALLOWANCES")
+    path = Path(env) if env else DEFAULT_ALLOWANCES
+    ALLOWANCES_LOOKED_AT = path
+    if not path.is_file():
+        if env:  # an explicitly named file that is missing is a mistake, not "no allowances"
+            allowance_error(f"{path} (from LINT_TASKNAMES_ALLOWANCES) does not exist")
+        ALLOWANCES = None
+        return
+    try:
+        data = tomllib.loads(path.read_text())
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
+        allowance_error(f"{path} unreadable: {e}")
+    extra = set(data) - {"allowance"}
+    if extra:
+        allowance_error(f"{path}: unknown top-level key(s) {sorted(extra)}; only [[allowance]] tables are read")
+    entries = data.get("allowance", [])
+    if not isinstance(entries, list):
+        allowance_error(f"{path}: `allowance` must be an array of tables ([[allowance]])")
+    out = []
+    for i, a in enumerate(entries, 1):
+        label = f"allowance #{i}" + (f" ({a.get('mirror')})" if isinstance(a, dict) and isinstance(a.get("mirror"), str) else "")
+        if not isinstance(a, dict):
+            allowance_error(f"{label}: must be a table")
+        for k in sorted(set(a) - ALLOWANCE_KEYS):
+            allowance_error(f"{label}: unknown key '{k}'")
+        for k in ALLOWANCE_REQUIRED:
+            if k not in a:
+                allowance_error(f"{label}: missing key '{k}'")
+        for k in ("repo", "mirror", "surface", "reason", "path"):
+            if k in a and (not isinstance(a[k], str) or not a[k].strip()):
+                allowance_error(f"{label}: key '{k}' must be a non-empty string")
+        if not isinstance(a["names"], list) or not a["names"] or not all(isinstance(n, str) and n.strip() for n in a["names"]):
+            allowance_error(f"{label}: key 'names' must be a non-empty list of non-empty strings")
+        try:
+            argv = shlex.split(a["surface"])
+        except ValueError as e:
+            allowance_error(f"{label}: key 'surface' is not a parseable command: {e}")
+        if "path" in a:
+            pth = a["path"]
+            if Path(pth).is_absolute() or ".." in Path(pth).parts or pth == "." or os.path.normpath(pth) != pth:
+                allowance_error(f"{label}: key 'path' must be a normalized path relative to the repository root "
+                                "(no leading './', '//', trailing '/', or '..')")
+        if not argv:
+            allowance_error(f"{label}: key 'surface' is empty")
+        if "/" in argv[0]:
+            allowance_error(f"{label}: key 'surface' must name the mirrored tool from PATH, not a path "
+                            f"('{argv[0]}'): a repository's own script cannot be its own surface")
+        if argv[0] != a["mirror"]:
+            allowance_error(f"{label}: key 'surface' must run the mirrored tool: its first word is "
+                            f"'{argv[0]}', not '{a['mirror']}'")
+        out.append(dict(a, _label=label, _argv=argv))
+    ALLOWANCES = (path, out)
+
+
+def env_number(name, default):
+    """A positive number from the environment, else `default`; anything else is exit 2, not a traceback."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0
+    if not v > 0:
+        print(f"lint-tasknames: {name}={raw!r} is not a positive number", file=sys.stderr)
+        sys.exit(2)
+    return v
+
+
+def kill_group(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+
+
+def verify_surface(a, repo):
+    """Run one allowance's surface in `repo`; return a list of ERROR reason strings (empty = verified)."""
+    timeout = env_number("LINT_TASKNAMES_SURFACE_TIMEOUT", SURFACE_TIMEOUT)
+    cap = int(env_number("LINT_TASKNAMES_SURFACE_MAX_BYTES", SURFACE_MAX_BYTES))
+    what = f"surface `{a['surface']}`"
+    try:
+        proc = subprocess.Popen(a["_argv"], cwd=repo, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, env=dict(os.environ, NO_COLOR="1"),
+                                start_new_session=True)
+    except FileNotFoundError:
+        return [f"{what} was not found"]
+    except OSError as e:
+        return [f"{what} could not run: {e}"]
+    buf, over = bytearray(), []
+
+    def pump():
+        while True:
+            chunk = proc.stdout.read1(65536)
+            if not chunk:
+                return
+            buf.extend(chunk)
+            if len(buf) > cap:
+                over.append(True)
+                kill_group(proc)
+                return
+
+    t = threading.Thread(target=pump, daemon=True)
+    t.start()
+    t.join(timeout)
+    try:
+        if t.is_alive():
+            kill_group(proc)
+            t.join()
+            return [f"{what} timed out after {timeout:g}s"]
+        if over:
+            return [f"{what} printed more than {cap} bytes (mirror {a['mirror']}); killed"]
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_group(proc)
+            return [f"{what} timed out after {timeout:g}s"]
+    finally:
+        kill_group(proc)
+        proc.wait()
+        proc.stdout.close()
+    if proc.returncode != 0:
+        return [f"{what} exited {proc.returncode}"]
+    text = ANSI_RE.sub("", buf.decode("utf-8", "replace"))
+    missing = [n for n in a["names"] if not re.search(r"(?<![A-Za-z0-9_-])" + re.escape(n) + r"(?![A-Za-z0-9_-])", text)]
+    return [f"{what} output lacks the claimed name '{n}' (mirror {a['mirror']})" for n in missing]
+
 
 # What each triad word READS, per the vocabulary skill:
 #   check    the tree -- source, config, generated or built output   "is it well-formed?"
@@ -131,6 +302,8 @@ EXCLUDE_DIRS = {
     # ours to name, and their errors made the tool announce its own coverage was incomplete. A
     # reader error has to mean "a repo you own could not be enumerated" or it stops meaning anything.
     "gopath", "target", ".cargo", ".gradle", ".m2",
+    # A linked worktree is a separate checkout of the same repository, never part of the main one.
+    ".worktrees",
 }
 
 
@@ -142,6 +315,21 @@ def find_dirs(repo, markers):
         if any(m in filenames for m in markers):
             hits.append(Path(dirpath))
     return hits
+
+
+def real_build_file(d, markers):
+    """The build file's on-disk name in `d`, from a directory listing: on a case-insensitive
+    filesystem `(d / "justfile").is_file()` is true for `Justfile`, and an allowance's `path` is
+    matched against the name that is actually there."""
+    listing = os.listdir(d)
+    for m in markers:
+        if m in listing:
+            return m
+    for m in markers:
+        for real in sorted(listing):
+            if real.lower() == m.lower() and (d / real).is_file():
+                return real
+    return markers[0]
 
 
 class ReaderError(Exception):
@@ -256,29 +444,125 @@ READERS = [
 # filesystem. If the manifest is unreadable this REFUSES rather than falling back to
 # a shorter list, for the same reason: the degraded reading is wrong in the direction that invites a
 # false all-clear.
-def fleet_paths(manifest):
+def manifest_refuse(manifest, lineno, line, why):
+    print(f"lint-tasknames: manifest {manifest}:{lineno}: {why}: {line.strip()!r} -- refusing to guess "
+          "which project this is", file=sys.stderr)
+    sys.exit(2)
+
+
+PROJECT_KEY = re.compile(r"""^  (?:([A-Za-z0-9_.-]+)|"([^"]+)"|'([^']+)')\s*:\s*(?:#.*)?$""")
+PROJECT_PATH = re.compile(r"""^    path:\s*(?:"([^"]+)"|'([^']+)'|([^\s#"']+))\s*(?:#.*)?$""")
+
+
+def manifest_projects(manifest):
+    """[(project name, absolute path, is_upstream)] from the manifest, in file order.
+
+    The project NAME (the key under `projects:`) is what identifies a repository to an allowance:
+    unique by construction (a YAML key), and the same on every machine, which an absolute path is not.
+    An entry this reader cannot parse is refused (exit 2, naming the line) and never attributed to
+    its neighbor: a `path:` that lands on the wrong project would lint one repository under another's
+    allowances. Blank lines and comments, at any column, do not end the `projects:` section.
+    """
     if not manifest.is_file():
         print(f"lint-tasknames: manifest unreadable: {manifest} -- refusing to lint a partial fleet",
               file=sys.stderr)
         sys.exit(2)
-    # Skip projects tagged `upstream`: they are somebody else's source, recorded in the manifest so
-    # the inventory is complete, and linting their task names measures nothing about this fleet while
-    # burying the real figure. Measured: sweeping them turns ~76 findings into ~1590, almost all from
-    # vendored build trees. NOT `external` — that tag also covers our own AUR package repos.
-    out, root, pending, is_up = [], manifest.parent, None, False
-    for line in manifest.read_text().splitlines():
-        m = re.match(r"^    path:\s*(\S+)", line)
-        if m:
-            if pending is not None and not is_up:
-                out.append(pending)
-            pending, is_up = Path(m.group(1)), False
+    # Skip projects tagged `upstream` (callers decide): they are somebody else's source, recorded in the
+    # manifest so the inventory is complete, and linting their task names measures nothing about this
+    # fleet while burying the real figure. Measured: sweeping them turns ~76 findings into ~1590, almost
+    # all from vendored build trees. NOT `external` -- that tag also covers our own AUR package repos.
+    out, root, names = [], manifest.parent, set()
+    cur = None  # [name, path, is_up, lineno]
+    in_projects = False
+
+    def flush():
+        if cur is None:
+            return
+        name, path, is_up, lineno = cur
+        if path is None:  # a seat, not a repository: nothing to lint, and it must not inherit a neighbor's path
+            return
+        out.append((name, path if path.is_absolute() else root / path, is_up))
+
+    for n, line in enumerate(manifest.read_text().splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if re.match(r"^    tags:", line) and "upstream" in line:
-            is_up = True
-    if pending is not None and not is_up:
-        out.append(pending)
-    out = [p if p.is_absolute() else (root / p) for p in out]
-    return [p for p in out if p.is_dir()]
+        if not line[0].isspace():
+            flush(); cur = None
+            in_projects = re.match(r"^projects:\s*(#.*)?$", line) is not None
+            continue
+        if not in_projects:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent < 4:
+            m = PROJECT_KEY.match(line)
+            if not m:
+                manifest_refuse(manifest, n, line, "a project key this reader cannot parse")
+            flush()
+            name = next(g for g in m.groups() if g)
+            if name in names:
+                manifest_refuse(manifest, n, line, f"project '{name}' is defined twice")
+            names.add(name)
+            cur = [name, None, False, n]
+        elif indent == 4:
+            if cur is None:
+                manifest_refuse(manifest, n, line, "a property outside any project")
+            if line.startswith("    path:"):
+                m = PROJECT_PATH.match(line)
+                if not m or cur[1] is not None:
+                    manifest_refuse(manifest, n, line, "a `path:` this reader cannot parse, or a second one")
+                cur[1] = Path(next(g for g in m.groups() if g))
+            elif line.startswith("    tags:") and "upstream" in line:
+                cur[2] = True
+    flush()
+    return out
+
+
+def fleet_paths(manifest):
+    return [p for _, p, up in manifest_projects(manifest) if not up and p.is_dir()]
+
+
+def git_roots(path):
+    """(top level, main checkout) of the repository holding `path`, or (None, None).
+
+    Plain `git` from PATH. A linked worktree's main checkout is the parent of the common git
+    directory, so a worktree is matched to the project the manifest declares.
+    """
+    def g(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+    top = g("rev-parse", "--show-toplevel")
+    if not top:
+        return None, None
+    main = Path(top)
+    common = g("rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common and Path(common).name == ".git":
+        main = Path(common).parent
+    return Path(top), main
+
+
+def identify(repo, manifest):
+    """(project key or None, why not, top directory) for the repository being linted."""
+    top, main = git_roots(repo)
+    base = top.resolve() if top else repo
+    try:
+        repo.relative_to(base)
+    except ValueError:
+        base = repo
+    if not manifest.is_file():
+        return None, f"the manifest could not be read ({manifest})", base
+    wanted = [x.resolve() for x in (main, top) if x is not None] or [repo.resolve()]
+    projects = [(n, p.resolve()) for n, p, _ in manifest_projects(manifest) if p.is_dir()]
+    for w in wanted:
+        hits = sorted({n for n, p in projects if p == w})
+        if len(hits) == 1:
+            return hits[0], "", base
+        if hits:
+            return None, f"manifest keys {' and '.join(hits)} share this repository's path", base
+    return None, f"this repository is not in the manifest ({manifest})", base
 
 
 def main():
@@ -287,24 +571,59 @@ def main():
     if "--strict" in argv:
         STRICT = True
         argv = [a for a in argv if a != "--strict"]
+    env_number("LINT_TASKNAMES_SURFACE_TIMEOUT", SURFACE_TIMEOUT)
+    env_number("LINT_TASKNAMES_SURFACE_MAX_BYTES", SURFACE_MAX_BYTES)
+    load_allowances()
+    env_manifest = os.environ.get("LINT_TASKNAMES_MANIFEST")
+    if env_manifest and not Path(env_manifest).is_file():
+        print(f"lint-tasknames: manifest unreadable: {env_manifest} (from LINT_TASKNAMES_MANIFEST)",
+              file=sys.stderr)
+        return 2
     if argv and argv[0] == "--fleet":
-        manifest = Path(argv[1]) if len(argv) > 1 else Path.home() / "Devel" / "mani.yaml"
-        rc = 0
-        for p in fleet_paths(manifest):
-            rc = max(rc, lint_one(p))
+        manifest = Path(argv[1]) if len(argv) > 1 else Path(env_manifest) if env_manifest else DEFAULT_MANIFEST
+        rc, seen = 0, set()
+        projects = manifest_projects(manifest)
+        for name, p, up in projects:
+            if up or not p.is_dir():
+                continue
+            seen.add(name)
+            rc = max(rc, lint_one(p, key=name))
+        # An allowance naming a repository the fleet does not have is stale in the same sense as one
+        # naming a task that no longer exists, and nothing else would ever report it.
+        if ALLOWANCES:
+            known = {n for n, _, _ in projects}
+            for a in ALLOWANCES[1]:
+                if a["repo"] not in seen:
+                    why = "is tagged upstream or missing on disk" if a["repo"] in known else "is not in the manifest"
+                    print(f"  WARN  [{a['_label']}] repo '{a['repo']}' {why}: stale allowance")
+                    if STRICT:
+                        rc = max(rc, 1)
         return rc
-    return lint_one(Path(argv[0] if argv else ".").resolve())
+    repo = Path(argv[0] if argv else ".").resolve()
+    manifest = Path(env_manifest) if env_manifest else DEFAULT_MANIFEST
+    if ALLOWANCES is None:  # nothing to attribute: do not read the manifest at all
+        return lint_one(repo)
+    key, why, base = identify(repo, manifest)
+    return lint_one(repo, key=key, why=why, base=base)
 
 
-def lint_one(repo):
+def lint_one(repo, key=None, why="", base=None):
+    base = base or repo
     categories, skill = load_categories()
 
-    violations, tally, reader_errors = [], [], []
+    violations, tally, reader_errors, all_names = [], [], [], []
+    mine = [a for a in ALLOWANCES[1] if key is not None and a["repo"] == key] if ALLOWANCES else []
     for tool, reader, markers in READERS:
         dirs = [repo] if markers is None else find_dirs(repo, markers)
         tasks, errored, applicable = [], False, 0
         for d in dirs:
             rel = None if d == repo else str(d.relative_to(repo))
+            if markers is None:
+                bfile = "nx.json"  # Nx has no build file per project; allowances use the workspace file
+            else:
+                bfile = real_build_file(d, markers)
+                dr = d.relative_to(base).as_posix()
+                bfile = bfile if dr == "." else f"{dr}/{bfile}"
             try:
                 found = reader(d)
             except ReaderError as e:
@@ -318,7 +637,7 @@ def lint_one(repo):
             for item in found:
                 name, ctx = item[0], item[1]
                 body = item[2] if len(item) > 2 else ""
-                tasks.append((name, ctx if ctx is not None else rel, body))
+                tasks.append((name, ctx if ctx is not None else rel, body, bfile))
         if errored:
             tally.append(f"{tool}(ERROR)")
             continue
@@ -326,24 +645,52 @@ def lint_one(repo):
             tally.append(f"{tool}(-)")
             continue
         tally.append(f"{tool}({len(tasks)})" + (f"@{len(dirs)}d" if len(dirs) > 1 else ""))
-        for name, ctx, body in tasks:
+        for name, ctx, body, bfile in tasks:
             if tool == "just" and name in JUST_IDIOM:
                 continue
             if tool == "nx" and name in NX_PROVIDED:
                 continue
+            all_names.append((name, bfile))
             where = f"{tool}:{ctx}" if ctx else tool
             if ":" in name:
                 violations.append((ERROR, where, name, "separator: colon (the shape is verb-qualifier, hyphen)"))
                 head = name.split(":")[0]
             else:
                 head = name.split("-")[0]
-            if head not in categories:
+            allowed = [a for a in mine if name in a["names"] and a.get("path", bfile) == bfile]
+            if allowed:
+                a = allowed[0]
+                violations.append((INFO, where, name, f"allowed: mirrors {a['mirror']} ({a['reason']})"))
+            elif head not in categories:
                 violations.append((WARN, where, name, f"verb: leading token '{head}' is not a vocabulary category"))
             t = triad_finding(name, body)
             if t:
                 violations.append((ERROR, where, name, t))
 
+    # Stale allowances: a claimed name no current task carries. Skipped when a reader errored, because
+    # the task list is then incomplete and "no such task" would be a guess.
+    if not reader_errors and base == repo:
+        present = set(all_names)
+        for a in mine:
+            for n in a["names"]:
+                if not any(nm == n and a.get("path", bf) == bf for nm, bf in present):
+                    where_ = a.get("path", "the repository")
+                    violations.append((WARN, a["_label"], n, f"stale allowance: no task of that name in {where_} ({repo.name})"))
+    # Surface verification runs only under --strict: it executes a command, so a default run stays read-only.
+    if STRICT:
+        for a in mine:
+            for reason in verify_surface(a, base):
+                violations.append((ERROR, a["_label"], "surface", reason))
+    if ALLOWANCES is None:
+        astate = f"allowances: none (no file at {ALLOWANCES_LOOKED_AT})"
+    elif key is None:
+        astate = f"allowances: {len(ALLOWANCES[1])} in {ALLOWANCES[0]}, but {why}, so none apply"
+    else:
+        astate = (f"allowances: {len(mine)} for {key} ({len(ALLOWANCES[1])} in {ALLOWANCES[0]}); "
+                  + ("surfaces run (--strict)" if STRICT else "surfaces NOT run (no --strict)")
+                  + ("" if base == repo else "; run from a subdirectory, so the stale check is skipped"))
     print(f"lint-tasknames: {repo.name}  sources: {' '.join(tally)}  (vocabulary: {skill})")
+    print(f"  {astate}")
     # ERROR first: severity ordering is the whole point of the split, and a reader who stops after
     # the first few lines should have seen the findings that actually mean something.
     order = {ERROR: 0, WARN: 1, INFO: 2}
@@ -354,13 +701,14 @@ def lint_one(repo):
 
     n_err = sum(1 for v in violations if v[0] == ERROR)
     n_warn = sum(1 for v in violations if v[0] == WARN)
+    n_info = sum(1 for v in violations if v[0] == INFO)
 
     if reader_errors:
         print(f"{n_err} ERROR, {n_warn} WARN; {len(reader_errors)} READER ERROR(S) — "
               "coverage is incomplete, this run proves nothing for those sources", file=sys.stderr)
         return 2
     if violations:
-        print(f"{n_err} ERROR, {n_warn} WARN.")
+        print(f"{n_err} ERROR, {n_warn} WARN, {n_info} INFO.")
     else:
         print("clean.")
     # Gates on ERROR only: a leading token outside the vocabulary is worth SEEING,

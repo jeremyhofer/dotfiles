@@ -34,6 +34,24 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### `lint-tasknames`: an allowance file for names an upstream tool dictates
+
+Nothing to do on adopting it; with no allowance file every run says `allowances: none` in its header
+and behaves as before. A domain may now list names that mirror an upstream tool's subcommands in ONE
+file, `~/.dotlocal/lint-tasknames/allowances.toml` (or `$LINT_TASKNAMES_ALLOWANCES`), one
+`[[allowance]]` table each with `repo` (the manifest project name), optional `path`, `mirror`,
+`surface`, `names` and `reason`; `docs/reference/private-layer.md` has the schema. A covered name is
+INFO instead of WARN; a colon or a triad misuse stays an ERROR; an allowance that names no current
+task is a stale WARN, and a `--fleet` run reports one whose repository the fleet lacks.
+
+Under `--strict` each surface is run, and it must be the mirrored tool itself (first word equal to
+`mirror`, no slash): no shell, stdin closed, `NO_COLOR=1`, 10 seconds, 1 MiB of output, ANSI stripped,
+every name a whole word in stdout or stderr. A name merely mentioned in the tool's prose passes, so the
+writer's review stays the control. A worktree or subdirectory run is matched to its main checkout by
+git, `.worktrees` is no longer linted as part of a repository, and a manifest entry the reader cannot
+parse is exit 2 rather than misattributed. A malformed file, a `path` not normalized, or a
+non-numeric `LINT_TASKNAMES_SURFACE_TIMEOUT` or `LINT_TASKNAMES_SURFACE_MAX_BYTES` is exit 2.
+
 ### `prose-lint`: a repository's mechanical prose rules as a gate
 
 Nothing to do on adopting it; a repository without a `.prose-lint.toml` is checked against nothing,

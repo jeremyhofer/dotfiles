@@ -145,6 +145,15 @@ capability is missing is the fix.
 - **A colon reappearing in a name.** Usually copied in from an ecosystem example. It is the one
   separator this vocabulary does not use, and in Nx it is actively taken.
 
+## Requesting an allowance
+
+A name that mirrors an upstream tool's own subcommands can be listed in the private layer's allowance
+file so `lint-tasknames` shows it as INFO instead of WARN. A project's session never adds one: it asks
+the writer of the private layer, and the human approves. The request names the mirror and a **surface**,
+the mirrored tool's own command, whose output contains every name claimed (`<tool> --help`); a repository's
+own script is never a surface. A request with no surface is
+refused, and so is a name that only fills a gap in the vocabulary above: that goes to the vocabulary.
+
 ---
 
 If `~/.dotlocal/skills/naming-build-tasks.md` exists, read it: it is this domain's half (where the
