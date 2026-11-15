@@ -1233,3 +1233,417 @@ def test_git_state_is_read_from_each_loops_own_cwd(tmp_path):
         assert run_main("run", p, loop, "--samples", "1", "--results", res, "--max-load", "9999") == 0
     got = {r["loop"]: (r["git_head"], r["tree_dirty"]) for r in records(res)}
     assert got == {"la": (heads["a"], False), "lb": (heads["b"], False)}
+
+
+# ---- percentile --------------------------------------------------------------------------
+
+def test_percentile_is_nearest_rank_so_p90_of_three_is_the_maximum():
+    assert lt.percentile([3.0, 1.0, 2.0], 90) == 3.0
+    assert lt.percentile([float(i) for i in range(1, 11)], 90) == 9.0
+    assert lt.percentile([float(i) for i in range(1, 11)], 100) == 10.0
+    assert lt.percentile([5.0], 90) == 5.0
+    assert lt.percentile([], 90) is None
+
+
+def test_percentile_rank_is_the_max_only_when_the_sample_is_too_small_to_tell():
+    assert lt.percentile_is_max(3, 90) is True
+    assert lt.percentile_is_max(9, 90) is True       # ceil(8.1) = 9
+    assert lt.percentile_is_max(10, 90) is False
+    assert lt.percentile_is_max(1, 90) is False       # one sample: nothing to be the max of
+
+
+# ---- pressure: parsing -------------------------------------------------------------------
+
+PSI_IO = ("some avg10=75.60 avg60=60.00 avg300=40.00 total=111\n"
+          "full avg10=73.50 avg60=50.00 avg300=30.00 total=222\n")
+PSI_CPU_NOFULL = "some avg10=0.20 avg60=0.10 avg300=0.05 total=333\n"
+
+
+def test_parse_psi_reads_some_and_full_and_tolerates_a_missing_full():
+    got = lt.parse_psi(PSI_IO)
+    assert got["some"]["avg10"] == 75.6 and got["full"]["avg10"] == 73.5 and got["full"]["total"] == 222
+    got = lt.parse_psi(PSI_CPU_NOFULL)
+    assert got["some"]["avg10"] == 0.2 and got["full"] is None
+    assert lt.parse_psi("garbage\n") == {"some": None, "full": None}
+
+
+def write_psi(d, cpu=PSI_CPU_NOFULL, io=PSI_IO, memory=PSI_CPU_NOFULL):
+    d.mkdir(parents=True, exist_ok=True)
+    for name, text in (("cpu", cpu), ("io", io), ("memory", memory)):
+        (d / name).write_text(text)
+    return d
+
+
+def test_read_pressure_from_a_psi_directory(tmp_path):
+    d = write_psi(tmp_path / "psi")
+    got = lt.read_pressure(system="Linux", psi_dir=d)
+    assert got["source"] == "psi" and got["reason"] is None
+    v = got["values"]
+    assert v["io_some"] == 75.6 and v["io_full"] == 73.5 and v["cpu_some"] == 0.2
+    assert "cpu_full" not in v            # an absent line is absent, not zero
+    assert "load1" in v
+
+
+def test_read_pressure_without_psi_says_it_has_none_and_still_gives_load(tmp_path):
+    got = lt.read_pressure(system="Linux", psi_dir=tmp_path / "nope")
+    assert got["source"] == "none" and "no pressure files" in got["reason"]
+    assert "io_some" not in got["values"] and "load1" in got["values"]
+
+
+TOP_OUT = """Processes: 400 total
+CPU usage: 9.00% user, 6.00% sys, 85.00% idle
+Processes: 401 total
+CPU usage: 12.50% user, 7.50% sys, 80.00% idle
+"""
+
+
+def test_darwin_parsers_read_the_last_top_sample_and_memory_pressure():
+    assert lt.parse_top_cpu_busy(TOP_OUT) == 20.0
+    assert lt.parse_top_cpu_busy("nothing") is None
+    assert lt.parse_memory_pressure_free("System-wide memory free percentage: 52%\n") == 52.0
+    assert lt.parse_memory_pressure_free("") is None
+
+
+def test_read_pressure_on_darwin_reports_no_psi_and_uses_what_the_platform_has():
+    runs = {"top": TOP_OUT, "memory_pressure": "System-wide memory free percentage: 52%\n"}
+    got = lt.read_pressure(system="Darwin", run=lambda argv: runs.get(argv[0], ""))
+    assert got["source"] == "darwin" and "no /proc/pressure" in got["reason"]
+    assert got["values"]["cpu_busy"] == 20.0 and got["values"]["mem_free_pct"] == 52.0
+    assert not any(k.endswith("_some") for k in got["values"])
+
+
+# ---- pressure: the sampler ---------------------------------------------------------------
+
+def test_sampler_summarizes_a_series_as_peak_median_p90_and_min():
+    readings = iter([{"io_some": v} for v in (10.0, 30.0, 20.0, 90.0)])
+    s = lt.PressureSampler(lambda: {"source": "psi", "reason": None, "values": next(readings)},
+                           interval=0.0, max_readings=4)
+    s.start()
+    s.stop()
+    out = s.summary()
+    ser = out["series"]["io_some"]
+    assert out["source"] == "psi" and out["n"] == 4
+    assert ser == {"peak": 90.0, "median": 25.0, "p90": 90.0, "min": 10.0}
+
+
+def test_sampler_takes_a_reading_at_start_and_at_stop_even_for_an_instant_run():
+    n = []
+
+    def reader():
+        n.append(1)
+        return {"source": "psi", "reason": None, "values": {"cpu_some": float(len(n))}}
+
+    s = lt.PressureSampler(reader, interval=60.0)
+    s.start()
+    s.stop()
+    assert s.summary()["n"] >= 2 and len(n) >= 2
+
+
+def test_sampler_that_cannot_read_says_why_and_carries_no_series():
+    s = lt.PressureSampler(lambda: {"source": "none", "reason": "no pressure files", "values": {}},
+                           interval=0.0, max_readings=2)
+    s.start()
+    s.stop()
+    out = s.summary()
+    assert out["source"] == "none" and out["reason"] == "no pressure files" and out["series"] == {}
+
+
+def test_sampler_survives_a_reader_that_raises():
+    def boom():
+        raise OSError("gone")
+
+    s = lt.PressureSampler(boom, interval=0.0, max_readings=2)
+    s.start()
+    s.stop()
+    assert s.summary()["series"] == {} and "OSError" in s.summary()["reason"]
+
+
+# ---- pressure: in the records ------------------------------------------------------------
+
+def test_every_record_carries_the_pressure_series_and_the_idle_io_baseline(tmp_path, decl_path, monkeypatch):
+    monkeypatch.setenv("LOOP_TIME_PRESSURE_DIR", str(write_psi(tmp_path / "psi")))
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999",
+                    "--pressure-interval", "0.05") == 0
+    r = records(res)[0]
+    assert r["pressure"]["source"] == "psi" and r["pressure"]["n"] >= 2
+    assert r["pressure"]["series"]["io_some"]["peak"] == 75.6
+    assert r["pressure"]["series"]["mem_available"]["min"] > 0
+    assert r["io_baseline"] == {"io_some": 75.6, "io_full": 73.5}
+
+
+def test_a_high_io_pressure_never_refuses_or_marks_a_sample(tmp_path, decl_path, monkeypatch):
+    """No guard reads I/O pressure: it is 75 at idle on the machine this was built for, so a guard on
+    it would refuse every run. It is recorded only."""
+    io = "some avg10=99.00 avg60=99.00 avg300=99.00 total=1\nfull avg10=99.00 avg60=99.00 avg300=99.00 total=1\n"
+    monkeypatch.setenv("LOOP_TIME_PRESSURE_DIR", str(write_psi(tmp_path / "psi", io=io)))
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "listy", "--samples", "2", "--results", res, "--max-load", "9999") == 0
+    assert all(r["under_load"] is False for r in records(res))
+
+
+def test_no_pressure_switches_the_sampler_off(tmp_path, decl_path):
+    res = tmp_path / "r.jsonl"
+    assert run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999",
+                    "--no-pressure") == 0
+    assert records(res)[0]["pressure"] is None
+
+
+# ---- per-child CPU -----------------------------------------------------------------------
+
+def test_cpu_seconds_is_the_childs_own_not_the_process_wide_children_total(tmp_path):
+    """Concurrent samples share one process, so a before/after difference of the children's total
+    would charge each sample with its neighbors' CPU. wait4 gives each child's own."""
+    import threading
+    burn = ["python3", "-c", "import time\nt=time.process_time()\nwhile time.process_time()-t<0.6: pass"]
+    idle = ["sleep", "0.8"]
+    out = {}
+
+    def go(name, argv):
+        out[name] = lt.measure(argv, tmp_path, tmp_path / f"{name}.log")
+
+    ts = [threading.Thread(target=go, args=(n, a)) for n, a in (("burn", burn), ("idle", idle))]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert out["burn"][2] >= 0.5
+    assert out["idle"][2] < 0.2, out
+    assert out["burn"][0] == 0 and out["idle"][0] == 0
+
+
+def test_measure_still_reports_a_failing_exit_code(tmp_path):
+    assert lt.measure(["sh", "-c", "exit 7"], tmp_path, tmp_path / "o.log")[0] == 7
+
+
+# ---- run-group ---------------------------------------------------------------------------
+
+GROUP_DECL = """\
+[[loop]]
+id = "nap"
+command = "sleep 1"
+
+[[loop]]
+id = "quick"
+command = "true"
+
+[[loop]]
+id = "bad"
+command = "exit 3"
+
+[[loop]]
+id = "scr"
+command = "pwd >> {out}; echo $SCR >> {out}"
+env = {{ SCR = "{{scratch}}" }}
+cold = "fresh-scratch"
+
+[[loop]]
+id = "slowsetup"
+command = "true"
+setup = ["sleep 1.5"]
+
+[[loop]]
+id = "badsetup"
+command = "true"
+setup = ["exit 1"]
+"""
+
+
+@pytest.fixture
+def group_decl(tmp_path, project):
+    return write_decl(tmp_path, project, GROUP_DECL.format(out=tmp_path / "out.txt"))
+
+
+def group(decl, loops, *extra, res=None):
+    return run_main("run-group", decl, "--loops", loops, "--max-load", "9999", "--results", res, *extra)
+
+
+def test_run_group_starts_the_loops_at_a_barrier_and_they_overlap(tmp_path, group_decl):
+    res = tmp_path / "r.jsonl"
+    t0 = time.monotonic()
+    assert group(group_decl, "nap,nap,nap", "--samples", "2", res=res) == 0
+    took = time.monotonic() - t0
+    recs = records(res)
+    assert len(recs) == 6
+    assert took < 5.5          # serial would be at least 6 s of sleeping
+    for rnd in (0, 1):
+        starts = [r["started_at"] for r in recs if r["sample"] == rnd]
+        assert len(starts) == 3 and max(starts) - min(starts) < 1.0
+    ends = sorted((r["started_at"], r["started_at"] + r["wall_seconds"]) for r in recs if r["sample"] == 0)
+    assert ends[1][0] < ends[0][1]          # the second began before the first ended
+
+
+def test_run_group_records_share_a_group_id_and_are_concurrent_not_under_load(tmp_path, group_decl):
+    res = tmp_path / "r.jsonl"
+    assert group(group_decl, "nap,quick", "--samples", "2", res=res) == 0
+    recs = records(res)
+    assert len({r["group"] for r in recs}) == 1
+    assert all(r["concurrent"] is True and r["under_load"] is False and r["group_size"] == 2 for r in recs)
+    assert sorted(r["group_index"] for r in recs if r["sample"] == 0) == [0, 1]
+    assert all(r["group_loops"] == ["nap", "quick"] for r in recs)
+    assert {r["loop"] for r in recs} == {"nap", "quick"}
+
+
+def test_solo_records_are_not_marked_concurrent(tmp_path, decl_path):
+    res = tmp_path / "r.jsonl"
+    run_main("run", decl_path, "listy", "--samples", "1", "--results", res, "--max-load", "9999")
+    r = records(res)[0]
+    assert r.get("concurrent") is False and r.get("group") is None
+
+
+def test_each_group_member_gets_its_own_scratch_directory(tmp_path, group_decl):
+    res = tmp_path / "r.jsonl"
+    assert group(group_decl, "scr,scr", "--samples", "1", "--mode", "cold", res=res) == 0
+    scratches = [l for l in (tmp_path / "out.txt").read_text().splitlines() if "/" in l and "proj" not in l]
+    assert len(scratches) == 2 and len(set(scratches)) == 2
+    assert all(Path(s).is_dir() for s in scratches)
+
+
+def test_group_members_running_the_same_loop_write_separate_logs(tmp_path, group_decl):
+    res = tmp_path / "r.jsonl"
+    assert group(group_decl, "quick,quick,quick", "--samples", "1", res=res) == 0
+    outs = [r["output"] for r in records(res)]
+    assert len(set(outs)) == 3 and all(Path(o).is_file() for o in outs)
+
+
+def test_one_failing_member_fails_the_group_but_every_member_is_recorded(tmp_path, group_decl):
+    res = tmp_path / "r.jsonl"
+    assert group(group_decl, "quick,bad", "--samples", "2", res=res) == 1
+    recs = records(res)
+    assert len(recs) == 4
+    assert sorted((r["loop"], r["exit_code"]) for r in recs if r["sample"] == 1) == [("bad", 3), ("quick", 0)]
+
+
+def test_a_member_whose_setup_fails_aborts_the_group_without_a_deadlock(tmp_path, group_decl, capsys):
+    res = tmp_path / "r.jsonl"
+    t0 = time.monotonic()
+    rc = group(group_decl, "nap,badsetup", "--samples", "1", res=res)
+    assert rc == 1 and time.monotonic() - t0 < 10
+    assert "setup failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra,needle", [
+    (["--loops", "nope"], "unknown loop 'nope'"),
+    (["--loops", "nap", "--mode", "sequence"], "warm or cold"),
+    (["--loops", "nap", "--mode", "scenario:x"], "warm or cold"),
+    (["--loops", "nap", "--samples", "0"], "at least 1"),
+    (["--loops", ""], "--loops"),
+])
+def test_run_group_refuses_bad_arguments(tmp_path, group_decl, capsys, extra, needle):
+    rc = run_main("run-group", group_decl, "--max-load", "9999", "--results", tmp_path / "r.jsonl", *extra)
+    assert rc == 2 and needle in capsys.readouterr().err
+    assert not (tmp_path / "r.jsonl").exists()
+
+
+def test_run_group_refuses_a_busy_machine_once_before_starting(tmp_path, group_decl, monkeypatch, capsys):
+    monkeypatch.setattr(lt, "read_loadavg", lambda: 50.0)
+    rc = run_main("run-group", group_decl, "--loops", "quick,quick", "--max-load", "1", "--load-wait", "0",
+                  "--results", tmp_path / "r.jsonl")
+    assert rc == 4 and not (tmp_path / "r.jsonl").exists()
+
+
+def test_run_group_refuses_while_another_session_holds_the_slot(tmp_path, group_decl, monkeypatch):
+    monkeypatch.setenv("LOOP_TIME_SLOT_CMD", "false")
+    rc = group(group_decl, "quick,quick", res=tmp_path / "r.jsonl")
+    assert rc == 6 and not (tmp_path / "r.jsonl").exists()
+
+
+# ---- report: percentile and cells --------------------------------------------------------
+
+def rec(loop, wall, **kw):
+    base = {"project": "demo", "loop": loop, "mode": "warm", "step": None, "exit_code": 0,
+            "wall_seconds": wall, "cpu_seconds": wall}
+    base.update(kw)
+    return base
+
+
+def test_summarize_adds_a_percentile_only_when_asked():
+    recs = [rec("a", w) for w in (1.0, 2.0, 3.0)]
+    assert "wall_p90" not in lt.summarize(recs)[0]
+    g = lt.summarize(recs, percentile=90)[0]
+    assert g["wall_p90"] == 3.0 and g["wall_median"] == 2.0 and g["percentile_is_max"] is True
+
+
+def test_percentile_leaves_out_failed_runs_like_the_median_does():
+    recs = [rec("a", 1.0), rec("a", 2.0), rec("a", 99.0, exit_code=1)]
+    assert lt.summarize(recs, percentile=90)[0]["wall_p90"] == 2.0
+
+
+def test_summarize_keeps_a_concurrent_cell_apart_from_a_solo_one_and_from_another_composition():
+    solo = [rec("a", 1.0)]
+    g2 = [rec("a", 2.0, concurrent=True, group="g1", group_loops=["a", "a"]),
+          rec("a", 4.0, concurrent=True, group="g1", group_loops=["a", "a"])]
+    g3 = [rec("a", 9.0, concurrent=True, group="g2", group_loops=["a", "a", "a"])]
+    out = lt.summarize(solo + g2 + g3)
+    cells = {g["cell"]: g for g in out}
+    assert set(cells) == {None, "a+a", "a+a+a"}
+    assert cells["a+a"]["wall_median"] == 3.0 and cells["a+a"]["samples"] == 2
+    assert cells[None]["wall_median"] == 1.0 and cells["a+a+a"]["wall_median"] == 9.0
+
+
+def test_two_groups_of_the_same_composition_pool_into_one_cell():
+    recs = [rec("a", 1.0, concurrent=True, group="g1", group_loops=["a", "a"]),
+            rec("a", 3.0, concurrent=True, group="g2", group_loops=["a", "a"])]
+    out = lt.summarize(recs)
+    assert len(out) == 1 and out[0]["samples"] == 2
+
+
+def test_report_percentile_prints_a_column_and_says_when_it_is_the_maximum(tmp_path, capsys):
+    res = tmp_path / "r.jsonl"
+    res.write_text("".join(json.dumps(rec("a", w)) + "\n" for w in (1.0, 2.0, 3.0)))
+    assert run_main("report", "--results", res, "--percentile", "90") == 0
+    out = capsys.readouterr().out
+    assert "wall p90" in out and "3.00" in out and "p90 is the max of 3" in out
+
+
+def test_report_json_carries_the_percentile_and_the_cell(tmp_path, capsys):
+    res = tmp_path / "r.jsonl"
+    res.write_text("".join(json.dumps(rec("a", w, concurrent=True, group="g", group_loops=["a", "a"])) + "\n"
+                           for w in (1.0, 2.0, 3.0)))
+    assert run_main("report", "--results", res, "--percentile", "90", "--json") == 0
+    g = json.loads(capsys.readouterr().out)[0]
+    assert g["wall_p90"] == 3.0 and g["cell"] == "a+a"
+
+
+@pytest.mark.parametrize("bad", ["0", "101", "-5", "x"])
+def test_report_refuses_a_percentile_outside_1_to_100(tmp_path, capsys, bad):
+    res = tmp_path / "r.jsonl"
+    res.write_text(json.dumps(rec("a", 1.0)) + "\n")
+    with pytest.raises(SystemExit) as e:
+        run_main("report", "--results", res, "--percentile", bad)
+    assert e.value.code == 2
+
+
+def test_report_without_percentile_prints_no_percentile_column(tmp_path, capsys):
+    res = tmp_path / "r.jsonl"
+    res.write_text(json.dumps(rec("a", 1.0)) + "\n")
+    run_main("report", "--results", res)
+    assert "p90" not in capsys.readouterr().out
+
+
+def test_interrupting_a_group_kills_every_members_command(tmp_path, project):
+    """An interrupted group must not leave K gates running unwatched."""
+    pids = tmp_path / "pids"
+    d = write_decl(tmp_path, project,
+                   f'[[loop]]\nid="long"\ncommand="echo $$ >> {pids}; exec sleep 30"\n')
+    p = subprocess.Popen([sys.executable, str(TOOL), "run-group", str(d), "--loops", "long,long",
+                          "--max-load", "9999", "--no-pressure", "--results", str(tmp_path / "r.jsonl")],
+                         env={**os.environ, "LOOP_TIME_SLOT_CMD": "true"}, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and not (pids.exists() and len(pids.read_text().split()) == 2):
+        time.sleep(0.1)
+    started = pids.read_text().split()
+    assert len(started) == 2
+    p.send_signal(signal.SIGTERM)
+    assert p.wait(timeout=20) == 130
+    for pid in started:
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(pid), 0)
+
+
+def test_the_barrier_holds_a_fast_member_until_a_slow_one_is_ready(tmp_path, group_decl):
+    """A member whose setup takes 1.5 s must not let the others start 1.5 s ahead of it."""
+    res = tmp_path / "r.jsonl"
+    assert group(group_decl, "slowsetup,quick,quick", "--samples", "1", res=res) == 0
+    starts = [r["started_at"] for r in records(res)]
+    assert max(starts) - min(starts) < 0.5

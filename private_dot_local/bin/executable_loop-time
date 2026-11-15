@@ -12,7 +12,9 @@ appends one JSON line per sample to a results file; `report` summarizes. Standar
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import os
 import platform
 import re
@@ -24,6 +26,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -88,6 +91,29 @@ each record says so; --slot-holder names the holder to check as (default: the ca
 fleet-slot names it: the status line's usage file, else $FLEET_SLOT_AS, else the agents listing).
 Every record carries `slot`: its state (free, own, other, error, or unchecked when fleet-slot is not
 installed), the holder's name, and whether it was overridden.
+
+run-group: `run-group <decl> --loops a,a,b --samples n [--mode warm|cold]` runs K loops at once, one
+member per id (repeat an id for same-kind gates). Each round every member runs its setup, then all
+start their command together at a barrier, each with its own {scratch} directory (a subdirectory of
+the project's). Records share a `group` id, carry `concurrent` = true and the group's `group_loops`,
+and are not marked under_load because of one another: the load guard is asked once, before round one.
+A failing member fails the group (exit 1) and the rest are still recorded; a failing setup aborts the
+group; an interrupt kills every member's command. Scenarios and sequences are not offered: members
+would edit the same file. cpu_seconds is each command's own, so concurrent members do not charge
+one another.
+
+pressure: while each sample's command runs, a thread reads the machine's pressure about once a second
+(--pressure-interval, --no-pressure) and the record's `pressure` gives, per series, peak, median, p90
+and min, with the reading count. On Linux the series are the avg10 of /proc/pressure's cpu_some,
+io_some, io_full, mem_some and so on, plus load1 and mem_available. On macOS there is no pressure
+file: cpu_busy (top), mem_free_pct (memory_pressure) and load1 stand in, and `pressure.reason` says
+so; there are no I/O numbers. `io_baseline` is the I/O pressure read just before the sample. Pressure is
+recorded only. No guard reads it: I/O pressure is high on some machines at idle, so a threshold on
+it would refuse every run; the load guard stays on the load average.
+
+report --percentile P adds the P-th percentile of wall time (nearest rank, so p90 of three samples
+is the largest and the report says so), over the passing runs. Concurrent records are grouped by cell,
+the group's composition (a+a+b), apart from solo runs and from other compositions.
 
 exit status: 0 ok; 1 a loop exited non-zero; 2 invalid declaration or arguments; 3 a scenario was
 blind; 4 refused under load; 5 a file could not be restored; 6 refused: another session holds the
@@ -419,6 +445,162 @@ def machine_state():
             "tmp_bytes": tmp, "tmp_reason": tmp_reason}
 
 
+# ---- percentile and pressure -------------------------------------------------------------
+
+def _rank(n, p):
+    return max(1, math.ceil(round(p * n / 100.0, 9)))
+
+
+def percentile(values, p):
+    """Nearest-rank percentile: the smallest value with at least p percent of the values at or
+    below it. No interpolation, so with few samples it is a value that was measured (p90 of three
+    samples is the largest). None for an empty list."""
+    vs = sorted(values)
+    return vs[min(_rank(len(vs), p), len(vs)) - 1] if vs else None
+
+
+nearest_rank = percentile
+
+
+def percentile_is_max(n, p):
+    """True when the p-th percentile of n samples is just the largest one: too few to tell them apart."""
+    return n > 1 and _rank(n, p) >= n
+
+
+PSI_LINE = re.compile(r"^(some|full)\s+avg10=([\d.]+)\s+avg60=([\d.]+)\s+avg300=([\d.]+)\s+total=(\d+)", re.M)
+PSI_FILES = (("cpu", "cpu"), ("io", "io"), ("memory", "mem"))
+
+
+def parse_psi(text):
+    """A /proc/pressure file as {'some': {...}, 'full': {...} or None}. A kernel may omit `full`."""
+    out = {"some": None, "full": None}
+    for m in PSI_LINE.finditer(text):
+        out[m.group(1)] = {"avg10": float(m.group(2)), "avg60": float(m.group(3)),
+                           "avg300": float(m.group(4)), "total": int(m.group(5))}
+    return out
+
+
+def default_psi_dir():
+    return Path(os.environ.get("LOOP_TIME_PRESSURE_DIR") or "/proc/pressure")
+
+
+def parse_top_cpu_busy(text):
+    """Busy CPU percent from the LAST `CPU usage:` line of `top -l 2 -n 0` (the first is since boot)."""
+    found = re.findall(r"CPU usage:.*?([\d.]+)% idle", text)
+    return round(100.0 - float(found[-1]), 2) if found else None
+
+
+def parse_memory_pressure_free(text):
+    m = re.search(r"free percentage:\s*([\d.]+)%", text)
+    return float(m.group(1)) if m else None
+
+
+def _run_text(argv):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def read_pressure(system=None, psi_dir=None, run=None):
+    """One reading: {'source': 'psi' | 'darwin' | 'none', 'reason': why not psi, 'values': {name: float}}.
+    Linux: avg10 of each pressure file's `some` and `full` lines (cpu_some, io_full, mem_some ...).
+    macOS has no /proc/pressure: CPU busy percent and free memory percent stand in, and there is no
+    I/O pressure at all. Load and available memory are added where they can be read. Never raises."""
+    system = system or platform.system()
+    run = run or _run_text
+    values, source, reason = {}, "none", None
+    if system == "Linux":
+        d = Path(psi_dir) if psi_dir is not None else default_psi_dir()
+        try:
+            for fname, short in PSI_FILES:
+                got = parse_psi((d / fname).read_text())
+                for kind in ("some", "full"):
+                    if got[kind] is not None:
+                        values[f"{short}_{kind}"] = got[kind]["avg10"]
+            source = "psi" if values else "none"
+            reason = None if values else f"no pressure files in {d}"
+        except OSError:
+            reason = f"no pressure files in {d}"
+    elif system == "Darwin":
+        source = "darwin"
+        reason = ("no /proc/pressure on macOS: cpu_busy is from top, mem_free_pct from memory_pressure; "
+                  "there is no I/O pressure")
+        busy = parse_top_cpu_busy(run(["top", "-l", "2", "-n", "0"]))
+        free = parse_memory_pressure_free(run(["memory_pressure"]))
+        if busy is not None:
+            values["cpu_busy"] = busy
+        if free is not None:
+            values["mem_free_pct"] = free
+    else:
+        reason = f"no pressure reader for {system}"
+    load = read_loadavg()
+    if load is not None:
+        values["load1"] = load
+    mem, _ = read_free_memory(system)
+    if mem is not None:
+        values["mem_available"] = mem
+    return {"source": source, "reason": reason, "values": values}
+
+
+def io_baseline():
+    """The idle I/O pressure just before a sample: {io_some, io_full} (empty without PSI). Recorded,
+    never gated on: it is not quiet at idle on every machine, so a threshold would refuse every run."""
+    got = read_pressure()
+    return {k: v for k, v in got["values"].items() if k in ("io_some", "io_full")}
+
+
+class PressureSampler:
+    """Reads the machine's pressure about every `interval` seconds on a thread while a sample runs,
+    once at start and once at stop, and summarizes each series as peak, median, p90 and min.
+    A reading that fails is recorded as the reason, never raised into the measurement."""
+
+    def __init__(self, reader=read_pressure, interval=1.0, max_readings=None):
+        self.reader, self.interval, self.max_readings = reader, interval, max_readings
+        self.readings, self.error = [], None
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _full(self):
+        return self.max_readings is not None and len(self.readings) >= self.max_readings
+
+    def _take(self):
+        if self._full():
+            return
+        try:
+            self.readings.append(self.reader())
+        except Exception as e:
+            self.error = f"pressure unreadable: {type(e).__name__}"
+
+    def _loop(self):
+        while not self._stop.wait(self.interval):
+            if self._full():
+                return
+            self._take()
+
+    def start(self):
+        self._take()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self._take()
+
+    def summary(self):
+        series = {}
+        for r in self.readings:
+            for k, v in r.get("values", {}).items():
+                series.setdefault(k, []).append(v)
+        out = {name: {"peak": max(vs), "median": statistics.median(vs), "p90": percentile(vs, 90),
+                      "min": min(vs)} for name, vs in series.items()}
+        first = self.readings[0] if self.readings else {}
+        return {"source": first.get("source", "none"), "reason": first.get("reason") or self.error,
+                "interval_seconds": self.interval, "n": len(self.readings), "series": out}
+
+
 # ---- load guard --------------------------------------------------------------------------
 
 def wait_for_load(max_load, force, getload=read_loadavg, sleep=time.sleep, wait=120, interval=5):
@@ -527,25 +709,33 @@ def caller_env():
     return env
 
 
+_LIVE_PROCS = set()
+
+
 def measure(argv, cwd, out_path, env=None):
-    """Run argv with output captured to out_path. Returns (exit code, wall s, children CPU s)."""
+    """Run argv with output captured to out_path. Returns (exit code, wall s, the child's own CPU s).
+
+    The CPU is read from wait4 for this child alone. A before/after difference of the process-wide
+    children total would charge a sample with every other sample's CPU when several run at once in
+    one group."""
     env = env if env is not None else caller_env()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.monotonic()
+    cpu = 0.0
     with open(out_path, "wb") as out:
         proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 env=env)
+        _LIVE_PROCS.add(proc)
         try:
-            rc = proc.wait()
+            _, status, usage = os.wait4(proc.pid, 0)
+            proc.returncode = os.waitstatus_to_exitcode(status)
+            cpu = usage.ru_utime + usage.ru_stime
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-    wall = time.monotonic() - t0
-    after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
-    return rc, wall, cpu
+            _LIVE_PROCS.discard(proc)
+    return proc.returncode, time.monotonic() - t0, cpu
 
 
 def run_quiet(command, cwd, env=None):
@@ -746,10 +936,18 @@ def empty_scratch(scratch, base):
             shutil.rmtree(child)
 
 
+_RESULTS_LOCK = threading.Lock()
+
+
 class Session:
-    def __init__(self, decl, results, max_load, force, wait=120, slot_holder=None, ignore_slot=False):
+    def __init__(self, decl, results, max_load, force, wait=120, slot_holder=None, ignore_slot=False,
+                 pressure_interval=1.0):
         self.decl, self.results, self.max_load, self.force, self.wait = decl, Path(results), max_load, force, wait
         self.slot_holder, self.ignore_slot = slot_holder, ignore_slot
+        self.pressure_interval = pressure_interval
+        # A group member: its identity in the records, a hook run just before the command starts (the
+        # barrier), and whether the machine was already busy before the group began.
+        self.tag, self.group, self.before_measure, self.pre_under = "", None, None, False
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         # Git state per loop cwd, not per root: a root may hold several checkouts (a directory of
         # worktrees), and each record must name the tree its loop ran in. Measured 2026-11-10:
@@ -790,16 +988,27 @@ class Session:
 
     def sample(self, loop, mode, sample, step=None, scenario=None, caught_if_failing=False):
         slot = slot_check(self.slot_holder, self.ignore_slot)
-        under = wait_for_load(self.max_load, self.force, wait=self.wait)
+        under = wait_for_load(self.max_load, self.force, wait=self.wait) or self.pre_under
         self.counter += 1
         outp = self.results.parent / "output" / (
-            f"{self.run_id}-{self.counter:03d}-{_slug(loop.id)}-{_slug(mode)}-{_slug(step or 'run')}.log")
+            f"{self.run_id}-{self.tag}{self.counter:03d}-{_slug(loop.id)}-{_slug(mode)}-{_slug(step or 'run')}.log")
         cwd = self.decl.root / loop.cwd
         env, env_keys = self.env_for(loop)
+        sampler = PressureSampler(interval=self.pressure_interval) if self.pressure_interval else None
+        baseline = io_baseline() if sampler else None
         try:
             self.hooks("setup", loop, env, strict=True)
             start = machine_state()
-            rc, wall, cpu = measure(command_argv(loop.command), cwd, outp, env)
+            if self.before_measure:
+                self.before_measure()
+            started_at = time.time()
+            if sampler:
+                sampler.start()
+            try:
+                rc, wall, cpu = measure(command_argv(loop.command), cwd, outp, env)
+            finally:
+                if sampler:
+                    sampler.stop()
             end = machine_state()
         except BaseException:
             self.hooks("teardown", loop, env, strict=False)
@@ -811,7 +1020,12 @@ class Session:
                "wall_seconds": round(wall, 4), "cpu_seconds": round(cpu, 4),
                "git_head": self.git[loop.cwd][0], "tree_dirty": self.git[loop.cwd][1], "start": start, "end": end,
                "under_load": under, "slot": slot, "versions": self.versions, "runner": loop.runner,
-               "env_keys": env_keys, "output": str(outp)}
+               "env_keys": env_keys, "output": str(outp), "started_at": round(started_at, 4),
+               "pressure": sampler.summary() if sampler else None, "io_baseline": baseline,
+               "concurrent": self.group is not None, "group": None}
+        if self.group is not None:
+            rec.update(group=self.group["id"], group_size=self.group["size"],
+                       group_index=self.group["index"], group_loops=self.group["loops"])
         if caught_if_failing:
             rec["caught"] = rc != 0
         if loop.runner == "nx":
@@ -820,7 +1034,7 @@ class Session:
             except OSError:
                 rec["nx"] = parse_nx_output("")
         self.results.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.results, "a") as f:
+        with _RESULTS_LOCK, open(self.results, "a") as f:
             f.write(json.dumps(rec) + "\n")
         return rec
 
@@ -835,8 +1049,8 @@ class Session:
 
 
 def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120, slot_holder=None,
-             ignore_slot=False):
-    s = Session(decl, results, max_load, force, wait, slot_holder, ignore_slot)
+             ignore_slot=False, pressure_interval=1.0):
+    s = Session(decl, results, max_load, force, wait, slot_holder, ignore_slot, pressure_interval)
     scenarios = decl.scenarios_for(loop.id)
     if mode.startswith("scenario:"):
         scenarios = [decl.scenario(mode.split(":", 1)[1])]
@@ -891,6 +1105,65 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120, slot
     return s
 
 
+def run_group(decl, loops, mode, samples, results, max_load, force, wait=120, slot_holder=None,
+              ignore_slot=False, pressure_interval=1.0):
+    """Run K loops at once, `samples` rounds. Each round every member starts its command at a
+    barrier, in its own scratch directory, and all K records carry one group id. The load guard is
+    asked once, before the first round: from then on the members are each other's load, so it is
+    recorded as `concurrent`, not `under_load`. Returns the first member's Session with `.failed`
+    and `.counter` summed over the group."""
+    k = len(loops)
+    first = Session(decl, results, float("inf"), False, wait, slot_holder, ignore_slot, pressure_interval)
+    first.pre_under = wait_for_load(max_load, force, wait=wait)
+    gid = f"{first.run_id}-g"
+    barrier = threading.Barrier(k)
+    members = []
+    for i, loop in enumerate(loops):
+        m = copy.copy(first)
+        m.counter, m.failed, m.blind = 0, False, []
+        m.tag = f"m{i}-"
+        m.group = {"id": gid, "size": k, "index": i, "loops": sorted(l.id for l in loops)}
+        m.scratch = first.scratch / f"member-{i}"
+        m.before_measure = barrier.wait
+        members.append((m, loop))
+    errors = [None] * k
+
+    def member(i):
+        m, loop = members[i]
+        try:
+            for n in range(samples):
+                if mode == "cold":
+                    m.cold_prep(loop)
+                if m.sample(loop, mode, n)["exit_code"] != 0:
+                    m.failed = True
+        except BaseException as e:
+            errors[i] = e
+            barrier.abort()
+
+    threads = [threading.Thread(target=member, args=(i,), daemon=True) for i in range(k)]
+    for t in threads:
+        t.start()
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(0.5)
+    except KeyboardInterrupt:
+        # The members' commands are children of this process: stop them, or an interrupted group
+        # leaves K gates running unwatched.
+        barrier.abort()
+        for proc in list(_LIVE_PROCS):
+            proc.kill()
+        for t in threads:
+            t.join(30)
+        raise
+    real = [e for e in errors if e is not None and not isinstance(e, threading.BrokenBarrierError)]
+    if real:
+        raise real[0]
+    first.counter = sum(m.counter for m, _ in members)
+    first.failed = any(m.failed for m, _ in members)
+    return first
+
+
 # ---- report ------------------------------------------------------------------------------
 
 def load_records(path):
@@ -909,13 +1182,20 @@ def load_records(path):
     return recs, bad
 
 
-def summarize(recs):
+def cell_of(r):
+    """The cell a record belongs to: the composition of its concurrent group ('a+a+b'), or None for a
+    solo run. Records of the same loops run together pool into one cell, whichever group they came from."""
+    loops = r.get("group_loops")
+    return "+".join(loops) if r.get("concurrent") and loops else None
+
+
+def summarize(recs, percentile=None):
     groups = {}
     for r in recs:
-        key = (r.get("project"), r.get("loop"), r.get("mode"), r.get("step"))
+        key = (r.get("project"), r.get("loop"), r.get("mode"), r.get("step"), cell_of(r))
         groups.setdefault(key, []).append(r)
     out = []
-    for (project, loop, mode, step), every in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+    for (project, loop, mode, step, cell), every in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
         # A failed run times a gate that stopped early, not the loop, so it is counted and left out of
         # the timings. A planted run is meant to fail: there the failure is the result.
         rs = every if step == "plant" else [r for r in every if r.get("exit_code", 0) == 0]
@@ -924,7 +1204,12 @@ def summarize(recs):
         tasks = sum(len(r["nx"]["tasks"]) for r in rs if r.get("nx"))
         hits = sum(len(r["nx"]["cache_hits"]) for r in rs if r.get("nx"))
         plants = [r for r in rs if r.get("step") == "plant"]
-        out.append({"project": project, "loop": loop, "mode": mode, "step": step, "samples": len(rs),
+        extra = {}
+        if percentile is not None:
+            extra = {f"wall_p{percentile:g}": nearest_rank(walls, percentile),
+                     "percentile_is_max": percentile_is_max(len(walls), percentile)}
+        out.append({"project": project, "loop": loop, "mode": mode, "step": step, "cell": cell,
+                    "samples": len(rs), **extra,
                     "failed": len(every) - len(rs),
                     "wall_median": statistics.median(walls) if walls else None,
                     "wall_min": min(walls) if walls else None, "wall_max": max(walls) if walls else None,
@@ -941,20 +1226,26 @@ def cmd_report(args):
         print(f"loop-time: no results at {path}", file=sys.stderr)
         return EXIT_INVALID
     recs, bad = load_records(path)
-    groups = summarize(recs)
+    groups = summarize(recs, args.percentile)
     if bad:
         print(f"loop-time: skipped {bad} unreadable line(s)", file=sys.stderr)
     if args.json:
         print(json.dumps(groups, indent=2))
         return 0
-    rows = [("project", "loop", "mode", "n", "wall med", "wall min-max", "cpu med", "cache hit", "note")]
+    pct = args.percentile
+    pcol = None if pct is None else f"wall p{pct:g}"
+    head = ["project", "loop", "mode", "n", "wall med"] + ([pcol] if pct is not None else []) + [
+        "wall min-max", "cpu med", "cache hit", "note"]
+    rows = [tuple(head)]
 
     def f(v):
         return "-" if v is None else f"{v:.2f}"
 
     for g in groups:
-        label = g["mode"] + (f"/{g['step']}" if g["step"] else "")
+        label = g["mode"] + (f"/{g['step']}" if g["step"] else "") + (f" [{g['cell']}]" if g["cell"] else "")
         note = []
+        if pct is not None and g["percentile_is_max"]:
+            note.append(f"p{pct:g} is the max of {g['samples']}")
         if g["caught"] is False:
             note.append("BLIND")
         if g["failed"]:
@@ -962,6 +1253,7 @@ def cmd_report(args):
         if g["under_load"]:
             note.append(f"{g['under_load']} under load")
         rows.append((str(g["project"]), str(g["loop"]), label, str(g["samples"]), f(g["wall_median"]),
+                     *([f(g[f"wall_p{pct:g}"])] if pct is not None else []),
                      f"{f(g['wall_min'])}-{f(g['wall_max'])}", f(g["cpu_median"]),
                      "-" if g["cache_hit_share"] is None else f"{g['cache_hit_share'] * 100:.0f}%",
                      ",".join(note)))
@@ -1021,6 +1313,96 @@ def cmd_plan(args):
 
 # ---- run command -------------------------------------------------------------------------
 
+def _results_writable(results):
+    """Checked before the first sample, not at its first append: an agent sandbox cannot write the
+    default under ~/.local/state, and finding that out after a twenty-minute gate loses the gate.
+    The probe leaves nothing behind, so a run refused later creates no results file."""
+    try:
+        results.parent.mkdir(parents=True, exist_ok=True)
+        if results.exists():
+            with open(results, "a"):
+                pass
+        else:
+            tempfile.TemporaryFile(dir=results.parent).close()
+    except OSError as e:
+        print(f"loop-time: cannot write results at {results} ({e.strerror}); nothing was run. "
+              "Name a writable file with --results or LOOP_TIME_RESULTS "
+              "(inside an agent sandbox, under ~/.cache).", file=sys.stderr)
+        return False
+    return True
+
+
+def _pressure_interval(args):
+    return None if args.no_pressure else args.pressure_interval
+
+
+def _run_errors(fn):
+    """Run fn(); (exit code, None) when it ends in one of the engine's refusals, else (None, result)."""
+    try:
+        return None, fn()
+    except SlotError as e:
+        print(f"loop-time: refused mid-run: {e}; the samples before it were recorded", file=sys.stderr)
+        return EXIT_SLOT, None
+    except DeclError as e:
+        _print_problems(e)
+        return EXIT_INVALID, None
+    except LoadError as e:
+        print(f"loop-time: refused: {e}", file=sys.stderr)
+        return EXIT_LOAD, None
+    except RestoreError as e:
+        print(f"loop-time: {e}", file=sys.stderr)
+        return EXIT_RESTORE, None
+    except RuntimeError as e:
+        print(f"loop-time: {e}", file=sys.stderr)
+        return EXIT_LOOP_FAILED, None
+    except KeyboardInterrupt:
+        print("loop-time: interrupted; files restored", file=sys.stderr)
+        return 130, None
+
+
+def cmd_run_group(args):
+    try:
+        d = load_decl(args.declaration)
+    except DeclError as e:
+        _print_problems(e)
+        return EXIT_INVALID
+    names = [n.strip() for n in args.loops.split(",")]
+    problems = []
+    if not args.loops.strip() or "" in names:
+        problems.append("--loops needs a comma-separated list of loop ids, e.g. --loops a,a,b")
+    loops = []
+    for n in names:
+        if n and d.loop(n) is None:
+            problems.append(f"unknown loop '{n}' (declared: {', '.join(l.id for l in d.loops)})")
+        elif n:
+            loops.append(d.loop(n))
+    if args.mode not in ("warm", "cold"):
+        problems.append(f"run-group takes --mode warm or cold, not '{args.mode}': a scenario edits a file "
+                        "and concurrent members would edit the same one")
+    if args.samples < 1:
+        problems.append("--samples must be at least 1")
+    if problems:
+        _print_problems(DeclError(problems))
+        return EXIT_INVALID
+    max_load = args.max_load if args.max_load is not None else (os.cpu_count() or 2) / 2
+    results = Path(args.results) if args.results else default_results()
+    if not _results_writable(results):
+        return EXIT_INVALID
+    try:
+        slot_check(args.slot_holder, args.ignore_slot)
+    except SlotError as e:
+        print(f"loop-time: refused: {e}; nothing was run", file=sys.stderr)
+        return EXIT_SLOT
+    _install_signal_handlers()
+    rc, s = _run_errors(lambda: run_group(d, loops, args.mode, args.samples, results, max_load, args.force,
+                                          args.load_wait, args.slot_holder, args.ignore_slot,
+                                          _pressure_interval(args)))
+    if rc is not None:
+        return rc
+    print(f"loop-time: {s.counter} record(s) appended to {results}")
+    return EXIT_LOOP_FAILED if s.failed else 0
+
+
 def cmd_run(args):
     try:
         d = load_decl(args.declaration)
@@ -1049,20 +1431,7 @@ def cmd_run(args):
         return EXIT_INVALID
     max_load = args.max_load if args.max_load is not None else (os.cpu_count() or 2) / 2
     results = Path(args.results) if args.results else default_results()
-    # Checked before the first sample, not at its first append: an agent sandbox cannot write the
-    # default under ~/.local/state, and finding that out after a twenty-minute gate loses the gate.
-    # The probe leaves nothing behind, so a run refused later creates no results file.
-    try:
-        results.parent.mkdir(parents=True, exist_ok=True)
-        if results.exists():
-            with open(results, "a"):
-                pass
-        else:
-            tempfile.TemporaryFile(dir=results.parent).close()
-    except OSError as e:
-        print(f"loop-time: cannot write results at {results} ({e.strerror}); nothing was run. "
-              "Name a writable file with --results or LOOP_TIME_RESULTS "
-              "(inside an agent sandbox, under ~/.cache).", file=sys.stderr)
+    if not _results_writable(results):
         return EXIT_INVALID
     # Checked once before anything runs (a cold_prep or a scenario edit included), then again before
     # each sample, since the slot can change hands during a long run.
@@ -1074,7 +1443,7 @@ def cmd_run(args):
     _install_signal_handlers()
     try:
         s = run_loop(d, loop, mode, args.samples, results, max_load, args.force, args.load_wait,
-                     args.slot_holder, args.ignore_slot)
+                     args.slot_holder, args.ignore_slot, _pressure_interval(args))
     except SlotError as e:
         print(f"loop-time: refused mid-run: {e}; the samples before it were recorded", file=sys.stderr)
         return EXIT_SLOT
@@ -1101,6 +1470,22 @@ def cmd_run(args):
 
 # ---- cli ---------------------------------------------------------------------------------
 
+def _percent(text):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a number")
+    if not 1 <= v <= 100:
+        raise argparse.ArgumentTypeError(f"'{text}' is not between 1 and 100")
+    return v
+
+
+def _add_pressure_args(p):
+    p.add_argument("--pressure-interval", type=float, default=1.0,
+                   help="seconds between pressure readings while a sample runs (default 1)")
+    p.add_argument("--no-pressure", action="store_true", help="do not sample pressure")
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="loop-time", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
@@ -1125,15 +1510,34 @@ def build_parser():
                    help="measure while another session holds the timing slot; each record says so")
     r.add_argument("--slot-holder", default=None,
                    help="the slot holder to check as (default: the calling session's name)")
+    _add_pressure_args(r)
+    g = sub.add_parser("run-group", help="time several loops at once, started at a barrier",
+                       formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG)
+    g.add_argument("declaration")
+    g.add_argument("--loops", required=True,
+                   help="comma-separated loop ids, one member each; repeat an id for same-kind members (a,a,b)")
+    g.add_argument("--mode", default="warm", help="warm (default) or cold")
+    g.add_argument("--samples", type=int, default=3, help="rounds; every member runs once per round")
+    g.add_argument("--results")
+    g.add_argument("--max-load", type=float, default=None,
+                   help="refuse to start while the 1-minute load average exceeds this (default: half the CPUs); "
+                        "asked once, before the first round")
+    g.add_argument("--load-wait", type=int, default=120)
+    g.add_argument("--force", action="store_true", help="start anyway above --max-load; marks under_load")
+    g.add_argument("--ignore-slot", action="store_true")
+    g.add_argument("--slot-holder", default=None)
+    _add_pressure_args(g)
     rp = sub.add_parser("report", help="summarize a results file")
     rp.add_argument("--results")
     rp.add_argument("--json", action="store_true")
+    rp.add_argument("--percentile", type=_percent, default=None, metavar="P",
+                    help="also give the P-th percentile of wall time (nearest rank, 1 to 100), per cell")
     return p
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    return {"plan": cmd_plan, "run": cmd_run, "report": cmd_report}[args.cmd](args)
+    return {"plan": cmd_plan, "run": cmd_run, "run-group": cmd_run_group, "report": cmd_report}[args.cmd](args)
 
 
 if __name__ == "__main__":

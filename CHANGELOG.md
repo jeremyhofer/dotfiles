@@ -32,6 +32,21 @@ Entries are newest first.
 
 ---
 
+## 2026-11-14
+
+### `loop-time`: `run-group`, a pressure series in every record, `report --percentile`
+
+Nothing to do on adopting it; results files written before it read as before. `run-group <decl>
+--loops a,a,b` times several loops at once from a barrier, each in its own scratch directory; its
+records share a `group` id and are marked `concurrent`. Every record gains a `pressure` series
+(peak, median, p90 and min of CPU, I/O and memory pressure and load, read about once a second) and
+an `io_baseline`; both are recorded only, no guard reads them. On macOS, which has no pressure
+files, CPU busy and free memory stand in, with no I/O numbers. `report --percentile 90` adds a
+nearest-rank percentile per cell. `cpu_seconds` is now each command's own (read from `wait4`), which
+matters only once samples overlap.
+
+---
+
 ## 2026-11-12
 
 ### The global gitignore defaults for local agent settings match at any depth
