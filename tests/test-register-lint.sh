@@ -642,6 +642,126 @@ entry "$r" "ABC-01" "standing" "cadence: weekly
 overdue: block" "Reviewed."
 assert_has "an overdue value other than report is refused" "[conditional-field]" "$(run "$r")"
 
+# --- citation mode: `--citations` -----------------------------------------------------
+# Ported from a consumer site's own gate, with its hard-coded prefix replaced by the one the
+# register's entry files carry. Fixtures use ABC- for that reason; a second prefix proves the
+# derivation rather than a constant.
+# crepo NAME [path content]...  -> a throwaway repo root; its register is $tmp/NAME/docs/register
+crepo() {
+  _n="$1"; shift
+  mkdir -p "$tmp/$_n"
+  while [ $# -ge 2 ]; do
+    mkdir -p "$(dirname "$tmp/$_n/$1")"
+    printf '%s\n' "$2" > "$tmp/$_n/$1"
+    shift 2
+  done
+}
+cite() { python3 "$lint" "$tmp/$1/docs/register" --citations ${2:+"$2"} 2>&1 || true; }
+cite_rc() { python3 "$lint" "$tmp/$1/docs/register" --citations >/dev/null 2>&1; echo $?; }
+E1="docs/register/ABC-0001-first.md"; E1T="# first"
+E2="docs/register/closed/ABC-0002-second.md"; E2T="# second"
+
+crepo c-pass "$E1" "$E1T" "$E2" "$E2T" AGENTS.md "See ABC-0001, the old ABC-2, and the pre-register #1." \
+  docs/reference/x.md "Closed work lives in ABC-0002."
+out=$(cite c-pass)
+assert_has "citations: every spelling that resolves passes, with the census" \
+  "OK -- 2 entries (1 open, 1 closed), 4 citations across 4 files, all resolve." "$out"
+[ "$(cite_rc c-pass)" = 0 ] && ok "citations: a resolving register exits 0" || bad "citations: a resolving register exits 0"
+
+crepo c-missing "$E1" "$E1T" "$E2" "$E2T" CLAUDE.md "Tracked as ABC-0099."
+out=$(cite c-missing)
+assert_has "citations: a citation of a missing entry names the file and the id" \
+  "[citation-integrity] CLAUDE.md: cites ABC-0099, which is not a register entry" "$out"
+assert_has "citations: and the finding count is stated" "1 finding(s)" "$out"
+[ "$(cite_rc c-missing)" = 1 ] && ok "citations: a dangling citation exits 1" || bad "citations: a dangling citation exits 1"
+
+crepo c-hex "$E1" "$E1T" "$E2" "$E2T" CLAUDE.md "color #123 and #1234 and #123456 and #12345678, item #50, real #2."
+out=$(cite c-hex)
+assert_has "citations: a bare #NN counts only when it could be one (hex lengths and past-the-register skipped)" "1 citations" "$out"
+assert_lacks "citations: and none of those is a finding" "[citation-integrity]" "$out"
+
+crepo c-hexrange "$E1" "$E1T" docs/register/ABC-0999-high.md x CLAUDE.md "color #123 and #abc, real #1."
+out=$(cite c-hexrange)
+assert_lacks "citations: a hex-length #NN is skipped even inside the allocated range" "[citation-integrity]" "$out"
+
+crepo c-pattern "$E1" "$E1T" "$E2" "$E2T" CLAUDE.md "grep ABC-0*45 and see ABC-0001 and docs/ABC-77 and x#9."
+out=$(cite c-pattern)
+assert_has "citations: a search pattern, a path segment and x#9 are not citations" "1 citations" "$out"
+assert_lacks "citations: and none of those is a finding either" "[citation-integrity]" "$out"
+
+crepo c-code "$E1" "$E1T" "$E2" "$E2T" CLAUDE.md "Real ABC-0001, planted \`ABC-0998\` and \`\`ABC-0997\`\` quoted."
+out=$(cite c-code)
+assert_lacks "citations: an id inside an inline code span is not a citation" "ABC-0998" "$out"
+assert_lacks "citations: nor one inside a double-backtick span" "ABC-0997" "$out"
+assert_has "citations: and only the id outside backticks is counted" "1 citations" "$out"
+
+crepo c-fence "$E1" "$E1T" "$E2" "$E2T" CLAUDE.md "Real ABC-0001.
+\`\`\`
+planted ABC-0996
+\`\`\`
+~~~
+planted ABC-0995
+~~~"
+out=$(cite c-fence)
+assert_lacks "citations: an id inside a fenced block is not a citation" "ABC-0996" "$out"
+assert_lacks "citations: nor one inside a tilde fence" "ABC-0995" "$out"
+
+crepo c-outside "$E1" "$E1T" "$E2" "$E2T" CLAUDE.md "Quoted \`ABC-0994\` but cited ABC-0994 too."
+out=$(cite c-outside)
+assert_has "citations: the same missing id outside backticks is still reported" "cites ABC-0994, which is not a register entry" "$out"
+
+crepo c-width "$E1" "$E1T" "$E2" "$E2T" docs/register/ABC-3-short.md x AGENTS.md "ABC-0001"
+assert_has "citations: an entry file not at the register's width is refused, with the rename" \
+  "[id-width] docs/register/ABC-3-short.md: entry ids are 4 digits -- rename it ABC-0003-..." "$(cite c-width)"
+
+crepo c-dup "$E1" "$E1T" "$E2" "$E2T" docs/register/ABC-0001-again.md x AGENTS.md "ABC-0001"
+out=$(cite c-dup)
+case "$out" in
+  *"[id-uniqueness] ABC-0001 defined twice in docs/register: ABC-0001-"*) ok "citations: an id defined twice in one directory is refused" ;;
+  *) bad "citations: an id defined twice in one directory is refused" ;;
+esac
+
+crepo c-both "$E1" "$E1T" "$E2" "$E2T" docs/register/closed/ABC-0001-closed-copy.md x AGENTS.md "ABC-0001"
+assert_has "citations: an id in both the open and the closed directory is refused" \
+  "[id-uniqueness] ABC-0001 exists in both the open and closed directories" "$(cite c-both)"
+
+crepo c-none AGENTS.md "ABC-0001"
+mkdir -p "$tmp/c-none/docs/register"
+out=$(cite c-none)
+assert_has "citations: no entries at all fails rather than passing vacuously" "found no register entries at all" "$out"
+[ "$(cite_rc c-none)" = 1 ] && ok "citations: and exits 1" || bad "citations: and exits 1"
+
+crepo c-zero "$E1" "# no cites"
+out=$(cite c-zero)
+assert_has "citations: scanning zero citations fails rather than passing vacuously" \
+  "scanned zero citations across 1 files" "$out"
+
+crepo c-scope "$E1" "cites ABC-0009" "$E2" "$E2T" docs/reference/a.md "cites ABC-0008" \
+  .claude/rules/r.md "cites ABC-0007" docs/reference/ignored.txt "cites ABC-0006"
+out=$(cite c-scope)
+assert_has "citations: reference pages are scanned" "docs/reference/a.md: cites ABC-0008" "$out"
+assert_has "citations: rules are scanned" ".claude/rules/r.md: cites ABC-0007" "$out"
+assert_has "citations: the register's own entries are scanned" "docs/register/ABC-0001-first.md: cites ABC-0009" "$out"
+assert_lacks "citations: a non-markdown file is not scanned" "ABC-0006" "$out"
+
+# Beyond the port: the prefix is derived, an explicit path replaces the defaults, a missing
+# path is refused, and a store with two prefixes is reported rather than guessed at.
+crepo c-prefix docs/register/XYZ-0001-first.md "# first" AGENTS.md "XYZ-0001 and ABC-0099 and XYZ-0005."
+out=$(cite c-prefix)
+assert_has "citations: the prefix comes from the register, not a constant" "cites XYZ-0005, which is not a register entry" "$out"
+assert_lacks "citations: a foreign id is not this register's to resolve" "ABC-0099" "$out"
+
+crepo c-two docs/register/XYZ-0001-first.md "# first" docs/register/ABC-0002-second.md "# second" AGENTS.md "XYZ-0001"
+assert_has "citations: two prefixes in one register are reported" "[id-integrity]" "$(cite c-two)"
+
+crepo c-paths "$E1" "$E1T" "$E2" "$E2T" AGENTS.md "ABC-0001" notes.md "stale ABC-0042"
+out=$(cite c-paths "$tmp/c-paths/notes.md")
+assert_has "citations: an explicit path is checked" "notes.md: cites ABC-0042" "$out"
+out=$(cite c-paths)
+assert_lacks "citations: and without it the defaults do not reach notes.md" "ABC-0042" "$out"
+out=$(cite c-paths "$tmp/c-paths/gone.md")
+assert_has "citations: an explicit path that does not exist is refused" "[citation-source]" "$out"
+
 # --- absent register is not an error ----------------------------------------------------
 python3 "$lint" "$tmp/does-not-exist" --quiet >/dev/null 2>&1 \
   && ok "an absent register exits 0" || bad "an absent register exits 0"

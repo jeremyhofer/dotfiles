@@ -34,6 +34,17 @@ Entries are newest first.
 
 ## 2026-11-14
 
+### `register-lint --citations`: do the ids a repository cites resolve to register entries
+
+Nothing to do on adopting it; without the flag the tool behaves as before. `register-lint
+[register-dir] --citations [paths...]` checks citations instead of entry shape: every id of the
+register's own prefix (read from the entry filenames, never configured) cited in `AGENTS.md`,
+`CLAUDE.md`, `docs/reference/`, `.claude/rules/` and the register's own entries, or in the paths
+given, must name an entry. The padded id, the short id and a bare `#NN` all count. It also refuses an
+id defined twice, an id in both the open and closed directories, and an entry file off the register's
+width, and it fails on a register with no entries or a run that scans no citation. A repository that
+carries its own copy of such a gate can drop it for this.
+
 ### `loop-time`: `run-group`, a pressure series in every record, `report --percentile`
 
 Nothing to do on adopting it; results files written before it read as before. `run-group <decl>

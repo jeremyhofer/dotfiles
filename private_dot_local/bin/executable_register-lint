@@ -87,6 +87,25 @@ WHAT IT CHECKS — blocking
                        being checked. Measured in one workspace: a prose gate covered three
                        fewer documents under the archived name, staying green throughout.
 
+WHAT `--citations` CHECKS — a second mode, blocking, over the register AND the documents citing it
+    The entry checks above judge each entry's shape and know nothing about who cites it or whether
+    the ids are allocated safely. This mode adds both. It never runs together with them: a run is
+    one mode or the other, so a hook may wire each on the paths that concern it.
+    citation-integrity every register id cited in a context file (`AGENTS.md`, `CLAUDE.md`) or a
+                       reference page resolves to an entry. Three spellings count: the padded id,
+                       the short id written before ids were padded, and a bare `#45` that predates
+                       the register. A bare `#NN` is a hex color as often as a citation, so it is
+                       read only when it could be one: not a color length, not past the highest id.
+    id-uniqueness      no id is defined twice in a directory or in both the open and closed ones.
+    id-width           every entry FILE is named at the register's own width (the most common one).
+                       Only filenames are held to it; a short citation in prose still names the
+                       right entry.
+    citation-source    an explicit path that does not exist.
+    An id inside an inline code span (one or more backticks) or a fenced code block (backticks or
+    tildes) is a quoted literal, not a citation, and is not read.
+    It cannot pass vacuously: no entries, or no citation scanned, is a failure. It reads ids from
+    entry FILENAMES, as the register's contract names them, where the entry checks read frontmatter.
+
 WHAT IT REPORTS — advisory, never blocking
     triage-debt        entries declared absent pending examination. Visible, counted debt
                        with a named owner, which an empty section is not.
@@ -776,6 +795,142 @@ def check(entries, closed_dir, root=None, today=None):
     return findings
 
 
+# --- citation mode -------------------------------------------------------------------------
+
+# Bare `#NN` of these digit counts is a hex color, never a citation.
+HEX_LENGTHS = (3, 4, 6, 8)
+FILE_ID_RE = re.compile(r"^([A-Z][A-Z0-9]*)-(\d+)-.*\.md$")
+DEFAULT_CITATION_FILES = ("AGENTS.md", "CLAUDE.md")
+DEFAULT_CITATION_DIRS = ("docs/reference", ".claude/rules")
+
+
+def citations_repo_root(root):
+    """Where the default sources are looked for: the parent of `docs/` when the register sits in
+    one, else the nearest `.git` ancestor, else None."""
+    resolved = root.resolve()
+    if resolved.parent.name == "docs":
+        return resolved.parent.parent
+    return repo_root(resolved)
+
+
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\Z)", re.S | re.M)
+SPAN_RE = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)", re.S)
+
+
+def strip_code(text):
+    """Blank fenced blocks and inline code spans: a quoted id is a literal, not a citation."""
+    text = FENCE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    return SPAN_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+def check_citations(root, paths):
+    """(blocking lines, summary line, ok) for `--citations`. See the module docstring."""
+    findings = []
+    top = citations_repo_root(root)
+
+    def disp(path):
+        """A path as the reader knows it: relative to the repository root when under it."""
+        try:
+            return str(path.resolve().relative_to(top.resolve())) if top else str(path)
+        except ValueError:
+            return str(path)
+
+    def entries_in(directory, label):
+        found = {}
+        if not directory.is_dir():
+            return found
+        for f in sorted(directory.iterdir()):
+            m = FILE_ID_RE.match(f.name)
+            if not m:
+                continue
+            key = (m.group(1), int(m.group(2)))
+            found.setdefault(key, []).append((f.name, len(m.group(2))))
+            if len(found[key]) > 1:
+                findings.append(("id-uniqueness", "%s-%s defined twice in %s: %s and %s"
+                                 % (m.group(1), m.group(2), label, found[key][0][0], f.name)))
+        return found
+
+    open_ = entries_in(root, disp(root))
+    closed = entries_in(root / "closed", disp(root / "closed"))
+
+    prefixes = sorted({k[0] for k in list(open_) + list(closed)})
+    if len(prefixes) > 1:
+        findings.append(("id-integrity", "entries carry more than one prefix (%s); a register has "
+                         "exactly one" % ", ".join(prefixes)))
+    if not prefixes:
+        return ([], "register-lint --citations: FAIL -- found no register entries at all in %s. "
+                "The register has moved, or this ran from the wrong directory." % root, False)
+    prefix = prefixes[0]
+
+    widths = {}
+    for group in (open_, closed):
+        for key, files in group.items():
+            if key[0] == prefix:
+                for name, width in files:
+                    widths.setdefault(width, []).append((name, key[1]))
+    width = max(widths, key=lambda w: (len(widths[w]), w))
+    for w, files in sorted(widths.items()):
+        if w == width:
+            continue
+        for name, n in files:
+            where = root / name if (root / name).exists() else root / "closed" / name
+            findings.append(("id-width", "%s: entry ids are %d digits -- rename it %s-%s-..."
+                             % (disp(where), width, prefix, str(n).zfill(width))))
+
+    open_ids = {k[1] for k in open_ if k[0] == prefix}
+    closed_ids = {k[1] for k in closed if k[0] == prefix}
+    for n in sorted(open_ids & closed_ids):
+        findings.append(("id-uniqueness", "%s-%s exists in both the open and closed directories"
+                         % (prefix, str(n).zfill(width))))
+    defined = open_ids | closed_ids
+
+    def label(n):
+        return "%s-%s" % (prefix, str(n).zfill(width))
+
+    sources = []  # (path to read, name to print)
+    if paths:
+        for raw in paths:
+            p = pathlib.Path(raw)
+            if p.is_dir():
+                sources += [(f, str(f)) for f in sorted(p.glob("*.md"))]
+            elif p.is_file():
+                sources.append((p, str(p)))
+            else:
+                findings.append(("citation-source", "%s: no such file or directory" % raw))
+    elif top is not None:
+        sources += [(top / f, f) for f in DEFAULT_CITATION_FILES if (top / f).is_file()]
+        for d in DEFAULT_CITATION_DIRS:
+            sources += [(f, "%s/%s" % (d, f.name)) for f in sorted((top / d).glob("*.md"))]
+        for d in (root, root / "closed"):
+            sources += [(f, disp(f)) for f in sorted(d.glob("*.md"))]
+
+    cite_re = re.compile(r"(?:^|[^\w#/])(?:%s-(\d{1,4})(?![\w*])|#(\d{1,3})\b)" % re.escape(prefix))
+    scanned = 0
+    for path, name in sources:
+        text = strip_code(path.read_text(encoding="utf-8", errors="replace"))
+        for m in cite_re.finditer(text):
+            explicit, bare = m.group(1), m.group(2)
+            digits = explicit if explicit is not None else bare
+            n = int(digits)
+            if explicit is None and (len(digits) in HEX_LENGTHS or n > max(defined)):
+                continue
+            scanned += 1
+            if n not in defined:
+                findings.append(("citation-integrity", "%s: cites %s, which is not a register entry"
+                                 % (name, label(n))))
+
+    if scanned == 0 and not any(k == "citation-source" for k, _ in findings):
+        return (["[%s] %s" % f for f in findings], "register-lint --citations: FAIL -- scanned zero citations across %d files. "
+                "The citation pattern has stopped matching, or no source was found."
+                % len(sources), False)
+    lines = ["[%s] %s" % f for f in findings]
+    if findings:
+        return (lines, "register-lint --citations: %d finding(s)." % len(findings), False)
+    return ([], "register-lint --citations: OK -- %d entries (%d open, %d closed), %d citations "
+            "across %d files, all resolve."
+            % (len(defined), len(open_ids), len(closed_ids), scanned, len(sources)), True)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Lint a work register against its contract.")
     parser.add_argument("root", nargs="?", default="docs/register",
@@ -784,9 +939,29 @@ def main(argv):
                         help="print findings only, no census")
     parser.add_argument("--today", default=datetime.date.today().isoformat(),
                         help="reference date for staleness (default: today)")
+    parser.add_argument("--citations", nargs="*", metavar="PATH", default=None,
+                        help="check citations instead of entry shape: every id of this register's "
+                             "prefix cited in PATH... (files, or directories of *.md) resolves to an "
+                             "entry, plus id allocation. The prefix is read from the entry "
+                             "filenames. With no PATH: AGENTS.md and CLAUDE.md at the repository "
+                             "root, docs/reference/ and .claude/rules/ there, and the register's "
+                             "own entries. Exits 1 on a finding, and on no entries or no citations "
+                             "(never a vacuous pass). Write the register directory before --citations "
+                             "when PATHs follow.")
     args = parser.parse_args(argv)
 
     root = pathlib.Path(args.root)
+    if args.citations is not None:
+        if not root.is_dir():
+            print("register-lint: no register at %s." % root, file=sys.stderr)
+            return 1
+        lines, summary, ok = check_citations(root, args.citations)
+        for line in lines:
+            print(line)
+        if lines or not ok or not args.quiet:
+            print(summary, file=sys.stderr)
+        return 0 if ok else 1
+
     if not root.is_dir():
         print("register-lint: no register at %s -- nothing checked." % root, file=sys.stderr)
         return 0
