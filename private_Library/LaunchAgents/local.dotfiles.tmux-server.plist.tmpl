@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The tmux server on macOS, started at login in the Aqua session and kept running by launchd.
+
+  WHY. Every macOS process belongs to the login session it was started from: Aqua (the user at the
+  screen) or Background (SSH, background agents). Only an Aqua process can show a privacy-consent
+  dialog or read the login Keychain. A tmux server keeps the session of whatever started it, and every
+  pane it opens inherits that, so a server first started over SSH makes every pane Background, even
+  panes used at the machine's own screen. This agent starts the server here instead, so a later
+  `tmux` over SSH only attaches to it and its panes stay in Aqua.
+
+  HOW. `tmux -D` runs the server in the foreground (no daemon fork), so launchd supervises it, and
+  turns exit-empty off, so it stays up with no sessions. KeepAlive restarts it if it exits, such as
+  after `tmux kill-server`. In the seconds before that restart, a `tmux` run over SSH would start a
+  Background server again. LimitLoadToSessionType keeps it out of every session but Aqua. LANG is set
+  because launchd provides no locale, and tmux without one draws no UTF-8.
+
+  NOT LOADED BY THE BASE: the machine's owner loads it once, at the machine's screen. A server
+  already running holds the socket, so end it first (this closes its sessions; save their work):
+    tmux kill-server; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.tmux-server.plist
+  Check, from a new pane, over SSH or at the screen: `launchctl managername` prints Aqua. A server
+  started over SSH prints Background there, which is the red this check was first seen to give.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.dotfiles.tmux-server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>tmux</string>
+    <string>-D</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>LANG</key><string>en_US.UTF-8</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/tmux-server.log</string>
+  <key>StandardErrorPath</key><string>{{ .chezmoi.homeDir }}/Library/Logs/tmux-server.log</string>
+</dict>
+</plist>

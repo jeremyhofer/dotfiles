@@ -34,6 +34,16 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### macOS: a tmux server started in the Aqua session (ACTION, once per Mac)
+
+A new LaunchAgent, `~/Library/LaunchAgents/local.dotfiles.tmux-server.plist`, runs the tmux server as
+`tmux -D` under launchd from login, in the Aqua session. Panes of a server first started over SSH run in
+the Background session, where nothing can show a consent dialog or read the login Keychain; with the
+server started here, `tmux` over SSH attaches to it and its panes stay in Aqua. The base deploys it but
+does not load it. At the Mac's screen, after saving the work in any open tmux session (this ends the
+running server): `tmux kill-server; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.tmux-server.plist`.
+Then `launchctl managername` in a new pane prints `Aqua`. Linux is unaffected.
+
 ### Two new skills: `test-independence` and `visual-baselines`
 
 Nothing to do on adopting them; an apply deploys them. `test-independence` (no test depends on another test or
