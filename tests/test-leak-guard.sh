@@ -680,4 +680,24 @@ r=$(newrepo notinrecord); stage "$r" "| ZZP-10 |"
 if gate "$r" pre-commit; then
   echo "FAIL: a repo absent from the record was granted an exemption"; exit 1; fi
 
+# 27) a hook invoked BY ABSOLUTE PATH with fleet-decl NOT on PATH, as a CI worker's own PATH runs it,
+#     finds the fleet-decl installed beside it instead of refusing that none is installed. The control
+#     first: with no copy beside it, it still refuses, so the case can see the failure it guards.
+_lone=$(mktemp -d "$tmp/lonebin.XXXXXX"); cp "$guard" "$_lone/leak-guard"
+_minpath="$(dirname "$(command -v yq)"):$(dirname "$(command -v git)"):/usr/bin:/bin"
+PATH="$_minpath" command -v fleet-decl >/dev/null 2>&1 && { echo "FAIL: fleet-decl is on the minimal PATH; the case cannot run"; exit 1; }
+r=$(newrepo lonepath); stage "$r" "hello"
+for _h in leak-guard; do
+  out=$(HOME="$tmp" PATH="$_minpath" sh -c "cd '$r' && sh '$_lone/$_h' pre-commit" 2>&1) && {
+    echo "FAIL: $_h with no fleet-decl anywhere did not refuse"; exit 1; }
+  case "$out" in *"fleet-decl is not installed"*) : ;;
+    *) echo "FAIL: $_h control refused for another reason: $out"; exit 1 ;; esac
+done
+ln -s "$_fd" "$_lone/fleet-decl"
+for _h in leak-guard; do
+  out=$(HOME="$tmp" PATH="$_minpath" sh -c "cd '$r' && sh '$_lone/$_h' pre-commit" 2>&1) || true
+  case "$out" in *"fleet-decl is not installed"*)
+    echo "FAIL: $_h did not find the fleet-decl beside it: $out"; exit 1 ;; esac
+done
+
 echo PASS

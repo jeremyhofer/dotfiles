@@ -53,6 +53,14 @@ fi
 
 [ "${HUSKY:-}" = 0 ] && exit 0
 
+# A HOOK RUNS WITH ITS CALLER'S PATH. The global gitconfig invokes this script by absolute path, so it
+# runs where ~/.local/bin is not on PATH: a CI worker started by a LaunchAgent sets a PATH of its own.
+# fleet-decl is installed beside this script, so look there before refusing. Seen 2026-11-15 from a CI
+# run on the Mac: a test fixture's `git commit` in the worker was refused as "fleet-decl is not installed".
+if ! command -v fleet-decl >/dev/null 2>&1 && [ -x "${0%/*}/fleet-decl" ]; then
+  PATH="${0%/*}:$PATH"; export PATH
+fi
+
 command -v fleet-decl >/dev/null 2>&1 || {
   printf 'run-repo-gates: fleet-decl is not installed, so %s cannot be classified; its %s gate did not run.\n' "$top" "$event" >&2
   printf '  It ships with the public dotfiles base; apply that.\n' >&2
