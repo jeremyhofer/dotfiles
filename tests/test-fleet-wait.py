@@ -138,6 +138,22 @@ def test_the_slot_coming_free_with_a_queue_is_an_event(fl):
     assert finish(p) == (0, "event slot-queued beta-canonical")
 
 
+def test_the_same_queue_returning_after_a_grant_and_a_release_is_an_event(fl):
+    """Armed while a request waited on a free slot: the grant, the release, and the same holder
+    queuing again leave the slot as it was at the start, yet it is a new request nobody has seen.
+    Compared against the start alone it read as no change, and the request waited unseen until the
+    heartbeat (measured 2026-11-15, 18:42 to 19:12)."""
+    fl.slot(None, ["beta-canonical"])
+    p, _ = start(*FAST)
+    time.sleep(0.5)
+    fl.slot("beta-canonical", [])
+    time.sleep(0.5)
+    fl.slot(None, [])
+    time.sleep(0.5)
+    fl.slot(None, ["beta-canonical"])
+    assert finish(p) == (0, "event slot-queued beta-canonical")
+
+
 def test_a_staged_handoff_is_an_event(fl):
     p, _ = start(*FAST)
     (fl.state / "handoff-staging" / "2026-11-12-1930-x-park.md").write_text("x")

@@ -185,9 +185,12 @@ class Watch:
         for rid, outcome in sorted(results().items()):
             if self.results.get(rid) != outcome:
                 out.append(f"event request-result {rid} {outcome}")
+        # Compared with the previous poll, not the start: a request granted, released and queued
+        # again by the same holder ends where the start was, and is still a request nobody has seen.
         now_waiting = slot_waiting()
         if now_waiting and now_waiting != self.waiting:
             out.append("event slot-queued " + ",".join(now_waiting))
+        self.waiting = now_waiting
         for f in sorted(staged() - self.staged):
             out.append(f"event staged {f}")
         if self.seats is not None and not self.stale_at_start:
