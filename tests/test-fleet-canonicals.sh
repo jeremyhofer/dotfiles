@@ -2070,8 +2070,12 @@ starts "$out" auto-opt-canonical && [[ "$out" == *canonicalAutostart*maybe*"not 
 # writes, so a new root recorded there is a session's, not a leak.
 real_state=${XDG_STATE_HOME:-$HOME/.local/state}/fleet-canonicals
 live_roots=$(cat "$real_state"/*.tmproot 2>/dev/null | sort -u)
+# Suites run in parallel (nx run-many), and test-claude-scratch-hook.sh makes its fixtures directly
+# under /tmp as c-test-XXXXXX, because the guard it tests acts only there: one made while this suite
+# ran was reported as a leak here (2026-11-15, 21:05, a post-apply). No seat in this suite has a name
+# that shortens to `test`, so that exact shape is never this suite's own and is left out.
 leaked_real_tmp=$(comm -13 <(print -r -- "$REAL_TMP_BEFORE") <(find /tmp -maxdepth 1 -name 'c-*' 2>/dev/null | sort) \
-    | comm -23 - <(print -r -- "$live_roots"))
+    | comm -23 - <(print -r -- "$live_roots") | { grep -Ev '^/tmp/c-test-[A-Za-z0-9]{6}$' || true; })
 [[ -z "$leaked_real_tmp" ]] \
     && ok "no temp-root directories leaked into the real /tmp during this suite" \
     || bad "found real /tmp temp-root leftovers: $leaked_real_tmp"
