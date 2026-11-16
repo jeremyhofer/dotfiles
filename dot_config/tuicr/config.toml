@@ -8,9 +8,6 @@ comment_vim = false   # default comment editor: Shift-Enter = newline, Enter = s
                       # (tuicr's other newline key, Ctrl-j, is deliberately left to vim-tmux-navigator
                       # for pane switching; add tuicr to `is_vim` there only if Shift-Enter misbehaves.)
 
-[forge]
-comment_type_prefix = true   # prepend [ISSUE] etc. to comment bodies on GitHub/GitLab submit
-
 # Comment classifications — cycle with Tab while commenting (first = default; `None` at cycle's end).
 # `definition` is included in the export legend as guidance for LLMs, so it directly improves the
 # "review comments -> AI/Jira actionable work" pipeline. `comment_type` also lands in the JSON export,
@@ -21,4 +18,12 @@ comment_types = [
   { id = "nit",        label = "nit",     color = "#d19a66", definition = "small optional style/polish tweak; safe to ignore" },
   { id = "question",   label = "q",       color = "cyan",    definition = "ask for clarification; may become a follow-up task" },
   { id = "praise",     label = "praise",  color = "green",   definition = "positive callout; a pattern worth repeating" },
+  # tuicr has no way to hold a comment back from :submit (0.29.0: a type has only these four fields,
+  # and submit posts every comment not already sent), so an internal note is deleted once acted on.
+  { id = "internal",   label = "internal", color = "magenta", definition = "a note to the reviewer's AI tools, never for the author; act on it, then delete it; it must not be submitted" },
 ]
+
+# Tables come last: TOML puts every key after a [table] header inside that table, so a top-level
+# key such as comment_types written below [forge] would be read as forge.comment_types and ignored.
+[forge]
+comment_type_prefix = true   # prepend [ISSUE] etc. to comment bodies on GitHub/GitLab submit
