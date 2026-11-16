@@ -8,6 +8,7 @@ config), and the CI read is a stub (FLEET_WAIT_CI_CMD), so nothing touches the m
 state or the CI node. fleet-wait runs as a subprocess, the way a session meets it: each event case
 starts a wait, waits for its first line (the baseline is taken by then), plants one change, and
 expects the wait to end on it well before its heartbeat."""
+import fcntl
 import json
 import os
 import signal
@@ -59,6 +60,11 @@ def fl(tmp_path, monkeypatch):
            "CI_OUT": str(tmp_path / "ci.out"), "CI_FAIL": str(tmp_path / "ci.fail")}
     for k, v in env.items():
         monkeypatch.setenv(k, v)
+    # Who the heartbeat is for: named by FLEET_SLOT_AS, with no session id so the usage file and the
+    # agents listing are never consulted.
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setenv("FLEET_SLOT_AS", "alpha-canonical")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     f.ci("run-1", "running")
     f.snapshot({"alpha-canonical": "live", "beta-canonical": "live", "gamma-canonical": "dead"})
     f.slot(None, [])
@@ -266,6 +272,179 @@ def test_a_signal_ends_the_wait_cleanly(fl, sig):
     p.send_signal(sig)
     rc, out = finish(p)
     assert rc == 0 and out == f"stopped ({sig.name})", (rc, out)
+
+
+# ---- one heartbeat per holder ------------------------------------------------------------------
+
+def rec(fl, holder="alpha-canonical"):
+    return fl.state / "heartbeats" / f"{holder}.rec"
+
+
+def plant_stale(fl, holder, age=3600):
+    """A record whose wait died without cleaning up: the file is there and nobody holds its lock."""
+    path = rec(fl, holder)
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(f"holder: {holder}\nstarted: {time.time() - age}\nheartbeat: 1200.0\ninterval: 0.2\n")
+    os.utime(path, (time.time() - age,) * 2)
+    return path.read_text()
+
+
+def lock_held(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def holder_pid(path):
+    """The pid of the process holding the record's lock, from /proc/locks by inode (the python
+    process, not the uv wrapper)."""
+    ino = os.stat(path).st_ino
+    for line in Path("/proc/locks").read_text().splitlines():
+        f = line.split()
+        if "FLOCK" in f and f[5].endswith(f":{ino}"):
+            return int(f[4])
+    raise AssertionError(f"no flock on inode {ino}")
+
+
+def arm_as(holder, *args):
+    env = dict(os.environ, FLEET_SLOT_AS=holder)
+    p = subprocess.Popen([str(TOOL), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    assert p.stdout.readline().startswith("fleet-wait: watching")
+    return p
+
+
+def test_a_heartbeat_writes_its_record_and_removes_it_on_a_wake(fl):
+    p, _ = start(*FAST)
+    text = rec(fl).read_text()
+    assert text.splitlines()[0] == "holder: alpha-canonical" and "interval: 0.2" in text, text
+    fl.result("r-wake", "done")
+    assert finish(p)[0] == 0
+    assert not rec(fl).exists()
+
+
+def test_a_heartbeat_removes_its_record_on_sigterm(fl):
+    p, _ = start(*FAST)
+    assert rec(fl).exists()
+    p.send_signal(signal.SIGTERM)
+    assert finish(p)[0] == 0
+    assert not rec(fl).exists()
+
+
+def test_a_heartbeat_removes_its_record_on_an_exception(fl):
+    """A config that is not valid UTF-8 makes the tool raise after the record is written."""
+    (fl.tmp / "config").write_bytes(b"\xff\xfe\x00")
+    rc, _out = run(*FAST)
+    assert rc not in (0, 2), rc
+    assert not rec(fl).exists()
+
+
+def test_a_second_heartbeat_for_the_same_holder_is_refused(fl):
+    p, _ = start(*FAST)
+    before = rec(fl).read_text()
+    q = subprocess.run([str(TOOL), *FAST], capture_output=True, text=True, timeout=10, env=dict(os.environ))
+    assert q.returncode == 2 and q.stdout == "", (q.returncode, q.stdout)
+    assert q.stderr.startswith("fleet-wait: REFUSED: a heartbeat for alpha-canonical is already armed"), q.stderr
+    assert rec(fl).read_text() == before
+    fl.result("r-first", "done")
+    assert finish(p) == (0, "event request-result r-first done")
+    assert not rec(fl).exists()
+
+
+def test_a_different_holder_is_not_refused(fl):
+    p, _ = start(*FAST)
+    q = arm_as("beta-canonical", *FAST)
+    assert rec(fl, "beta-canonical").exists() and rec(fl).exists()
+    fl.result("r-both", "done")
+    assert finish(p)[0] == 0 and finish(q)[0] == 0
+
+
+def test_a_record_with_no_lock_holder_does_not_refuse_and_is_replaced(fl):
+    old = plant_stale(fl, "alpha-canonical")
+    p, _ = start(*FAST)
+    new = rec(fl).read_text()
+    assert new != old and lock_held(rec(fl))
+    p.send_signal(signal.SIGTERM)
+    finish(p)
+
+
+def test_a_sigkilled_heartbeat_is_taken_over_at_once(fl):
+    """The kernel frees the lock when the holder dies by SIGKILL, with the record file left behind.
+    The next wait for the same holder is not refused and takes the record over. The signal goes to
+    the python process holding the lock, not the uv wrapper that launched it."""
+    p, _ = start(*FAST)
+    holder = holder_pid(rec(fl))
+    old = rec(fl).read_text()
+    os.kill(holder, signal.SIGKILL)
+    for _ in range(50):
+        if not lock_held(rec(fl)):
+            break
+        time.sleep(0.1)
+    assert rec(fl).exists()  # SIGKILL ran no cleanup
+    q, _ = start(*FAST)
+    assert rec(fl).read_text() != old
+    assert holder_pid(rec(fl)) != holder
+    q.send_signal(signal.SIGTERM)
+    finish(q)
+    p.kill()
+    p.communicate()
+
+
+def test_the_record_is_refreshed_while_waiting(fl):
+    p, _ = start(*FAST)
+    os.utime(rec(fl), (time.time() - 5,) * 2)
+    time.sleep(1.0)
+    assert time.time() - os.path.getmtime(rec(fl)) < 2
+    p.send_signal(signal.SIGTERM)
+    finish(p)
+
+
+def test_the_record_is_written_in_place_so_the_lock_stays_on_its_inode(fl):
+    p, _ = start(*FAST)
+    ino = os.stat(rec(fl)).st_ino
+    time.sleep(0.8)
+    assert os.stat(rec(fl)).st_ino == ino and lock_held(rec(fl))
+    p.send_signal(signal.SIGTERM)
+    finish(p)
+
+
+def test_armed_lists_the_live_one_and_the_json_parses(fl):
+    p, _ = start(*FAST)
+    plant_stale(fl, "beta-canonical")
+    rc, out = run("--armed")
+    assert rc == 0 and "alpha-canonical" in out.split("stale")[0], out
+    assert "stale" in out and "beta-canonical" in out.split("stale")[1], out
+    rc, out = run("--armed", "--json")
+    d = json.loads(out)
+    assert rc == 0 and [r["holder"] for r in d["armed"]] == ["alpha-canonical"], d
+    assert [r["holder"] for r in d["stale"]] == ["beta-canonical"], d
+    p.send_signal(signal.SIGTERM)
+    finish(p)
+
+
+def test_armed_with_nothing_armed(fl):
+    assert run("--armed") == (0, "armed: none")
+    assert json.loads(run("--armed", "--json")[1]) == {"armed": [], "stale": []}
+
+
+def test_once_writes_no_record(fl):
+    p, _ = start("--heartbeat", "30m", "--interval", "1s", "--once")
+    assert not rec(fl).exists() and not (fl.state / "heartbeats").exists()
+    fl.result("r-once2", "failed")
+    finish(p)
+
+
+def test_an_unresolved_holder_is_said_in_the_records_first_line(fl, monkeypatch):
+    monkeypatch.delenv("FLEET_SLOT_AS")
+    p, _ = start(*FAST)
+    (path,) = list((fl.state / "heartbeats").glob("unresolved-*.rec"))
+    assert "UNRESOLVED" in path.read_text().splitlines()[0]
+    p.send_signal(signal.SIGTERM)
+    finish(p)
 
 
 @pytest.mark.parametrize("args", [(), ("--heartbeat",), ("--heartbeat", "soon"), ("--heartbeat", "0"),

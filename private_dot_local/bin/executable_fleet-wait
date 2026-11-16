@@ -6,6 +6,7 @@
 """fleet-wait -- block until something in the fleet changes, or a heartbeat deadline passes.
 
   usage: fleet-wait --heartbeat DURATION [--interval DURATION] [--ci] [--ci-every DURATION] [--once]
+         fleet-wait --armed [--json]
 
 A heartbeat for a coordinating session on a machine with no cron and no /loop. The session runs this
 through its Bash tool's background mode; a background command that exits wakes its session, even
@@ -40,11 +41,35 @@ on each wake. It is polled every --ci-every (default 2m), not every interval.
 is for tests and scripts that must not block. SIGTERM or SIGINT ends the wait with "stopped" and
 exit 0. Exit 2: a usage error.
 
+ONE HEARTBEAT PER SESSION. A wait (not --once) writes a record, $FLEET_STATE/heartbeats/<holder>.rec,
+and holds an exclusive flock on it for its whole life; it touches the file's mtime each interval and
+removes the record on a normal wake, on SIGTERM or SIGINT, and on an exception. A second wait for the
+same holder while that lock is held prints one line to stderr, `fleet-wait: REFUSED: a heartbeat for
+<holder> is already armed ...`, writes nothing and exits 2. Exit 0 still means a wake. Stop the old
+one before arming another.
+
+The holder is the session name, resolved as `fleet-slot` resolves who ran a command (a copy of its
+session_name: the status line's usage file for $CLAUDE_CODE_SESSION_ID, else $FLEET_SLOT_AS, else
+the agents listing). When none resolves, the key is `unresolved-<pid>` and the record's first line
+says so: two unresolved sessions cannot be told apart, so they never refuse each other.
+
+LIVENESS IS THE LOCK, NOT A PID AND NOT A CLOCK. Each command in an agent sandbox has its own pid
+namespace, so a recorded pid cannot be checked from another command; the flock is on the shared
+inode, so it can. The kernel releases it on any death, SIGKILL included, so a stopped heartbeat can
+be replaced at once. A record whose lock is free is stale: the next wait for that holder takes it
+over, and the leftover file is harmless. The record's contents are written in place, never by
+replacing the file, which would swap the inode and orphan the lock. The mtime only shows "refreshed
+<age> ago" in --armed and decides nothing.
+
+--armed lists each live record (holder, since, last refresh, heartbeat), then the stale ones (lock free) under a
+separate `stale` heading (--json: {"armed": [...], "stale": [...]}), and exits 0. It reads only.
+
 The defaults: --interval 30s. Config: snapshot-max-age, read from the fleet-canonicals config
 ($FLEET_CANONICALS_CONFIG, else ~/.config/fleet-canonicals/config), default 45.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -63,6 +88,7 @@ STAGING = STATE / "handoff-staging"
 SNAPSHOT = STATE / "sessions.json"
 CONFIG = Path(os.environ.get("FLEET_CANONICALS_CONFIG") or
               Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fleet-canonicals" / "config")
+HEARTBEATS = STATE / "heartbeats"
 CI_CMD = (os.environ.get("FLEET_WAIT_CI_CMD") or "ci-trigger status").split()
 
 
@@ -209,9 +235,202 @@ class Watch:
         return out
 
 
+# ---- one heartbeat per holder --------------------------------------------------------------------
+
+def usage_dir() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "claude-usage"
+
+
+def session_name() -> str | None:
+    """Who is running this, resolved as fleet-slot's session_name(listing=True) resolves it (copied,
+    since both are single-file scripts): the status line's usage file for CLAUDE_CODE_SESSION_ID,
+    else FLEET_SLOT_AS, else the agents listing."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        try:
+            name = json.loads((usage_dir() / f"{sid}.json").read_text(encoding="utf-8")).get("session_name")
+            if name:
+                return str(name)
+        except (OSError, ValueError, AttributeError):
+            pass
+    if os.environ.get("FLEET_SLOT_AS"):
+        return os.environ["FLEET_SLOT_AS"]
+    if not sid:
+        return None
+    cmd = (os.environ.get("FLEET_AGENTS_JSON_ALL_CMD") or os.environ.get("FLEET_AGENTS_JSON_CMD") or
+           "claude agents --json --all").split()
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout
+        rows = json.loads(out or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("sessionId") == sid and r.get("name"):
+            return str(r["name"])
+    return None
+
+
+def rec_path(holder: str) -> Path:
+    return HEARTBEATS / (re.sub(r"[^A-Za-z0-9._-]", "_", holder) + ".rec")
+
+
+def read_rec(path: Path) -> dict | None:
+    """A record is `key: value` lines after a first line naming the holder; None when unreadable.
+    Adds `refreshed` (mtime) from the file."""
+    try:
+        text = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    rec: dict = {"refreshed": mtime, "note": ""}
+    for i, line in enumerate(text.splitlines()):
+        k, sep, v = line.partition(": ")
+        if i == 0 and sep and k == "holder":
+            rec["holder"], _, rec["note"] = v.partition(" (")
+            continue
+        if sep:
+            rec[k] = v
+    try:
+        rec["started"], rec["heartbeat"], rec["interval"] = (
+            float(rec["started"]), float(rec["heartbeat"]), float(rec["interval"]))
+    except (KeyError, ValueError):
+        return None
+    return rec if "holder" in rec else None
+
+
+def is_live(path: Path) -> bool:
+    """A record is live if and only if its holder still holds the exclusive flock on it: a shared,
+    non-blocking attempt fails. The kernel drops the lock on any death, SIGKILL included, and the
+    lock is on the shared inode, so it holds across the agent sandbox's separate pid and mount
+    namespaces. An attempt that succeeds means the holder is gone (the file is left, harmless)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def records() -> list[dict]:
+    try:
+        files = sorted(HEARTBEATS.glob("*.rec"))
+    except OSError:
+        return []
+    return [r for r in (read_rec(f) for f in files) if r]
+
+
+def when(t: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t))
+
+
+def armed(as_json: bool) -> int:
+    now = time.time()
+    live, stale = [], []
+    for r in records():
+        row = {"holder": r["holder"], "since": when(r["started"]), "refreshed": when(r["refreshed"]),
+               "age_s": int(now - r["refreshed"]), "heartbeat_s": r["heartbeat"], "interval_s": r["interval"]}
+        (live if is_live(rec_path(r['holder'])) else stale).append(row)
+    if as_json:
+        print(json.dumps({"armed": live, "stale": stale}, indent=2))
+        return 0
+    print("armed:" if live else "armed: none")
+    for r in live:
+        print(f"  {r['holder']}  since {r['since']}  refreshed {r['age_s']}s ago  heartbeat {int(r['heartbeat_s'])}s")
+    if stale:
+        print("stale (holder gone, lock free; ignored, taken over by the next wait):")
+        for r in stale:
+            print(f"  {r['holder']}  since {r['since']}  refreshed {r['age_s']}s ago")
+    return 0
+
+
+class Heartbeat:
+    """The record of one running wait. arm() opens the record and takes an exclusive flock on it,
+    refusing when another process holds it; the lock is held until this process dies. The contents
+    are written in place (truncate, write), never by replacing the file, which would swap the inode
+    and orphan the lock. touch() only moves the mtime, which --armed shows as the last refresh."""
+
+    def __init__(self, heartbeat: float, interval: float):
+        name = session_name()
+        self.holder = name or f"unresolved-{os.getpid()}"
+        self.note = "" if name else (" (UNRESOLVED: a per-process key; two sessions with no resolvable "
+                                     "name cannot be told apart and never refuse each other)")
+        self.path = rec_path(self.holder)
+        self.heartbeat, self.interval = heartbeat, interval
+        self.fd: int | None = None
+
+    def _lock(self) -> int | None:
+        """The fd of the record with our lock held, or None when another holds it. The file may be
+        unlinked by a holder exiting between our open and our lock; then we hold a lock on a dead
+        inode, so check the path still names the inode we locked, else try again."""
+        HEARTBEATS.mkdir(parents=True, exist_ok=True)
+        for _ in range(5):
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                return None
+            try:
+                if os.fstat(fd).st_ino == os.stat(self.path).st_ino:
+                    return fd
+            except OSError:
+                pass
+            os.close(fd)
+        return None
+
+    def arm(self) -> bool:
+        try:
+            fd = None
+            for attempt in range(3):  # a reader's momentary shared lock is not a heartbeat
+                fd = self._lock()
+                if fd is not None:
+                    break
+                time.sleep(0.1)
+        except OSError as e:
+            print(f"fleet-wait: no heartbeat record written ({e.strerror}); the wait runs unguarded",
+                  file=sys.stderr)
+            return True
+        if fd is None:
+            old = read_rec(self.path)
+            detail = (f" (since {when(old['started'])}, refreshed {int(time.time() - old['refreshed'])}s ago)"
+                      if old else "")
+            print(f"fleet-wait: REFUSED: a heartbeat for {self.holder} is already armed{detail}; stop it "
+                  "before arming another", file=sys.stderr)
+            return False
+        self.fd = fd
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, (f"holder: {self.holder}{self.note}\nstarted: {time.time()}\n"
+                       f"heartbeat: {self.heartbeat}\ninterval: {self.interval}\n").encode(), 0)
+        return True
+
+    def touch(self) -> None:
+        if self.fd is not None:
+            try:
+                os.utime(self.fd)
+            except OSError:
+                pass
+
+    def drop(self) -> None:
+        """Unlink while still holding the lock, then release it by closing."""
+        if self.fd is None:
+            return
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
+        os.close(self.fd)
+        self.fd = None
+
+
 def main(argv: list[str]) -> int:
     heartbeat = interval = None
     ci_every, ci, once = 120.0, False, False
+    list_armed = as_json = False
     hb_text = ""
     args = list(argv)
     while args:
@@ -230,11 +449,19 @@ def main(argv: list[str]) -> int:
             ci = True
         elif a == "--once":
             once = True
+        elif a == "--armed":
+            list_armed = True
+        elif a == "--json":
+            as_json = True
         elif a in ("-h", "--help"):
             print(__doc__)
             return 0
         else:
             usage(f"unknown argument {a!r}")
+    if as_json and not list_armed:
+        usage("--json goes with --armed")
+    if list_armed:
+        return armed(as_json)
     if heartbeat is None:
         usage("--heartbeat is required: the wait must end on its own")
     interval = interval or 30.0
@@ -247,11 +474,25 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
 
+    hb = None if once else Heartbeat(heartbeat, interval)
+    if hb and not hb.arm():
+        return 2
+    try:
+        return wait(w_args=(ci, ci_every, once, hb_text, heartbeat, interval), stop=stop, hb=hb)
+    finally:
+        if hb:
+            hb.drop()
+
+
+def wait(w_args, stop, hb) -> int:
+    ci, ci_every, once, hb_text, heartbeat, interval = w_args
     start = time.monotonic()
     w = Watch(ci)
     print(w.header(hb_text), flush=True)
     next_ci = start + ci_every
     while True:
+        if hb:
+            hb.touch()
         deadline = start + heartbeat
         wake = min(time.monotonic() + interval, deadline)
         while stop["sig"] is None and time.monotonic() < wake:

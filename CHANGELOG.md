@@ -34,6 +34,18 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### `fleet-wait`: a second heartbeat for the same session is refused
+
+A `fleet-wait` (not `--once`) now writes a record under the fleet state directory's `heartbeats/`,
+keyed by the session name (resolved as `fleet-slot` resolves who ran a command), and holds an
+exclusive flock on it until it exits. A second wait for the same session finds the lock held, prints
+`fleet-wait: REFUSED: ...` to stderr, writes nothing and exits 2; exit 0 still means a wake. Liveness
+is the lock, not a pid (which a sandboxed command cannot check) and not a clock: the kernel frees
+the lock on any death, SIGKILL included, so a stopped heartbeat can be replaced at once. A leftover
+record after a kill is harmless. `fleet-wait --armed [--json]` lists the live records and, apart,
+the stale ones. A session with no resolvable name gets a per-process key, so two such sessions are
+not told apart. No action needed.
+
 ### `launchagent-status`: LaunchAgents that are deployed but not loaded (macOS)
 
 A new tool, `launchagent-status [--dir DIR] [--problems] [--json]`. launchd loads every plist in
