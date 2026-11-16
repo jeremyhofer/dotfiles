@@ -18,6 +18,9 @@ comment_types = [
   { id = "nit",        label = "nit",     color = "#d19a66", definition = "small optional style/polish tweak; safe to ignore" },
   { id = "question",   label = "q",       color = "cyan",    definition = "ask for clarification; may become a follow-up task" },
   { id = "praise",     label = "praise",  color = "green",   definition = "positive callout; a pattern worth repeating" },
+  { id = "callout",    label = "callout", color = "#61afef", definition = "a heads-up worth knowing; no change asked for" },
+  { id = "discussion", label = "discuss", color = "#d0d0d0", definition = "a topic to talk through and align on together, later or outside this change; not blocking" },
+  { id = "followup",   label = "followup", color = "#b4a7d6", definition = "an action item someone takes on after this change; not blocking, and not done in this pull request" },
   # tuicr has no way to hold a comment back from :submit (0.29.0: a type has only these four fields,
   # and submit posts every comment not already sent), so an internal note is deleted once acted on.
   { id = "internal",   label = "internal", color = "magenta", definition = "a note to the reviewer's AI tools, never for the author; act on it, then delete it; it must not be submitted" },

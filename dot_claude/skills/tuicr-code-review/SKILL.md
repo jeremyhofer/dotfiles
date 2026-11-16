@@ -84,6 +84,9 @@ The classifications are configured with definitions precisely so an agent can ro
 | `nit` | small optional style/polish tweak; safe to ignore | Batch these; do not spend a round trip each. |
 | `question` | ask for clarification; may become a follow-up task | **Answer it — do not silently "fix" it.** A question answered with a code change loses the question. |
 | `praise` | positive callout; a pattern worth repeating | No action. Do not reply "thanks". |
+| `callout` | a heads-up worth knowing; no change asked for | No change. Read it; reply only if it is wrong. |
+| `discussion` | a topic to talk through and align on together, later or outside this change; not blocking | **Do not resolve it in this change.** It is for the people to align on; leave it, or answer a factual question inside it. |
+| `followup` | an action item someone takes on after this change; not blocking, not done in this pull request | **Do not do it in this change.** Track it only where the human says to; a follow-up is not a request to file anything. |
 | `internal` | a note to the reviewer's AI tools, never for the author | **Act on it, then delete it** with `review delete`. Never reply to it, and never write one yourself. |
 | `none` | unclassified | Judge from the content; when unsure, ask. |
 
