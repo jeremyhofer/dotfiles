@@ -10,7 +10,8 @@ description: Use when installing, adding, or removing software on a Homebrew-man
 Not every tool on a Mac is Homebrew's to manage. Some are owned by **another channel** — a managed
 machine's software portal, a vendor's native installer, a per-project version manager. The
 base Brewfile itself carries one example: **node is never `brew "node"`** — it is installed
-per-project via fnm.
+per-project by a version manager (fnm today; mise, which the Brewfile also declares, replaces it at
+each machine's cutover).
 
 - The per-domain list of what other channels own lives in this machine's fragment:
   `~/.dotlocal/skills/brew-and-brewfiles.md`. **Read it before adding anything.**

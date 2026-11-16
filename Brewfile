@@ -8,7 +8,8 @@
 # overlay installs nothing, when in fact it installs exactly this core -- which is the whole
 # reason the base is the standalone standard.
 #
-# node is installed PER-PROJECT via fnm, NOT as a brew formula — do not add `brew "node"`.
+# node is installed PER-PROJECT (via fnm today; mise replaces fnm at each machine's cutover), NOT as
+# a brew formula — do not add `brew "node"`.
 #
 # REQUIRED marker: a `brew "formula"` line whose trailing comment contains the whole word
 # REQUIRED means apply itself, or a hook that runs on every commit, fails closed without it —
@@ -36,6 +37,7 @@ brew "agavra/tap/tuicr"  # code-review TUI (git/jj), vim keys — local + PR/MR 
 brew "mani"              # multi-repo manager: declarative sync (mani sync) + run across repos (mani exec)
 brew "worktrunk"         # git worktree manager (wt): create/switch/list/merge, parallel-agent isolation
 brew "fnm"               # node version manager (per-project node)
+brew "mise"              # runtime and per-project environment manager; replaces fnm and direnv at cutover
 brew "uv"                # python
 brew "direnv"            # per-directory env (.envrc)
 brew "tmux"
@@ -45,6 +47,7 @@ brew "thefuck"           # command corrector (zsh plugin)
 brew "tree"              # directory tree listing
 brew "just"              # task runner
 brew "age"               # file encryption (generic)
+brew "sops"              # encrypted per-project secret files, which mise decrypts with an age key
 brew "jq"                # JSON processor (scripts / CLI)
 brew "yq"                # YAML processor. REQUIRED, not optional: the publish-boundary git hook
                          # reads the fleet repo manifest through it on every commit and fails
