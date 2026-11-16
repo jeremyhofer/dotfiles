@@ -176,6 +176,18 @@ mkdir -p "$tmp/alone"; cp "$runner" "$tmp/alone/run-repo-gates"
 { [ $rc = 1 ] && grep -q 'git-staged-run is not installed' "$tmp/out"; } \
   && ok "no git-staged-run: the pre-commit gate is refused, not run on the working tree" || bad "no helper refused" "rc=$rc $(cat "$tmp/out")"
 
+# Invoked by absolute path with fleet-decl NOT on PATH, as a CI worker's own PATH runs it: the runner
+# uses the fleet-decl installed beside it. The control first, with no copy beside it, sees the refusal.
+mkdir -p "$tmp/yqonly" "$tmp/lone"; cp "$runner" "$tmp/lone/run-repo-gates"
+command -v yq >/dev/null 2>&1 && ln -sf "$(command -v yq)" "$tmp/yqonly/yq"
+(cd "$sp" && PATH="$tmp/yqonly:/usr/bin:/bin" sh "$tmp/lone/run-repo-gates" pre-commit </dev/null >"$tmp/out" 2>&1); rc=$?
+{ [ $rc = 1 ] && grep -q 'fleet-decl is not installed' "$tmp/out"; } \
+  && ok "no fleet-decl on PATH or beside it: refused (the control)" || bad "no fleet-decl not refused" "rc=$rc $(cat "$tmp/out")"
+ln -sf "$base/private_dot_local/bin/executable_fleet-decl" "$tmp/lone/fleet-decl"
+(cd "$sp" && PATH="$tmp/yqonly:/usr/bin:/bin" sh "$tmp/lone/run-repo-gates" pre-commit </dev/null >"$tmp/out" 2>&1); rc=$?
+{ ! grep -q 'fleet-decl is not installed' "$tmp/out" && grep -q 'git-staged-run is not installed' "$tmp/out"; } \
+  && ok "fleet-decl beside the runner, not on PATH: found, and the runner goes on to its next check" || bad "sibling fleet-decl not found" "rc=$rc $(cat "$tmp/out")"
+
 printf '{}\n' > "$root/work/js/package.json"
 run "$root/work/js" pre-commit
 { ! ran "$root/work/js" && [ $rc = 0 ] && grep -q node_modules "$tmp/out"; } && ok "package.json without node_modules: warned and skipped" || bad "no node_modules skip" "rc=$rc out=$(cat "$tmp/out")"
