@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""launchagent-status -- which deployed LaunchAgent plists launchd has actually loaded.
+
+WHY. On macOS the dotfiles deploy LaunchAgent plists into ~/Library/LaunchAgents. Some are loaded
+by an apply hook, some by a bootstrap script, some once by hand. launchd loads every plist in that
+directory at the NEXT graphical login, not at once, and it does not re-read a plist that changed
+until the agent is reloaded. So a plist can sit deployed and unloaded for days, and nothing
+reports it. This tool compares the directory against launchd's own answer, one agent at a time.
+
+    launchagent-status [--dir DIR] [--problems] [--json]
+
+DIR defaults to $HOME/Library/LaunchAgents. For each *.plist (sorted) it reads the Label, then
+reports:
+    loaded            `launchctl print gui/<uid>/<label>` answers
+    NOT-LOADED        it does not (a problem)
+    loaded-elsewhere  launchd has the label loaded from a different file than this plist (a
+                      problem; both paths are shown). Paths are compared by their real path, so a
+                      directory reached through a symlink is the same directory.
+    disabled          launchd's disabled list names the label, or the plist's Disabled key is true
+                      (not a problem: it is meant to be off)
+    unreadable        the plist has no readable Label (a problem)
+
+WHAT IT CANNOT TELL. It does not detect a loaded agent that is running a stale copy of a changed
+plist: launchd keeps the definition it read at load time, and this tool only asks whether a label
+is loaded, and from which path. A changed plist needs a reload (bootout, then bootstrap).
+
+CONTEXT. The check needs the user's gui domain, gui/<uid>. From an SSH session this answers while
+the user is logged in at the screen. With nobody logged in the domain cannot be read, and the tool
+says it cannot tell rather than reporting every agent as not loaded.
+
+EXIT. 0 no problems; 1 at least one problem; 2 usage error; 3 cannot tell (not macOS, or the gui
+domain cannot be read from here).
+
+Standard library only, and Python 3.9 syntax: macOS's command-line tools ship that python3.
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+
+PROG = "launchagent-status"
+PROBLEM_STATES = ("NOT-LOADED", "unreadable", "loaded-elsewhere")
+
+
+def run(*cmd):
+    """(exit status, stdout) of a command; (127, "") when it cannot be started."""
+    try:
+        out = subprocess.run(list(cmd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, universal_newlines=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+    return out.returncode, out.stdout
+
+
+def plist_key(plist, key):
+    rc, out = run("plutil", "-extract", key, "raw", "-o", "-", plist)
+    return out.rstrip("\n") if rc == 0 else None
+
+
+def loaded_path(printed):
+    """The first `path = ...` line of `launchctl print` output; `stdout path = ` does not count."""
+    for line in printed.splitlines():
+        m = re.match(r"\s*path = (.*)$", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def same_file(a, b):
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def usage():
+    return __doc__.split("\n\n")[0] + """
+
+usage: launchagent-status [--dir DIR] [--problems] [--json]
+
+Report which LaunchAgent plists in DIR (default $HOME/Library/LaunchAgents) are loaded in launchd.
+  --dir DIR    check DIR instead of the default
+  --problems   print only the problem lines and the summary
+  --json       print one JSON object instead of text
+  -h, --help   this help
+
+Exit: 0 no problems, 1 a problem, 2 usage error, 3 cannot tell (not macOS, gui domain unreadable).
+It does not detect a loaded agent running a stale copy of a changed plist."""
+
+
+def main(argv):
+    class Quiet(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError(message)
+
+    p = Quiet(prog=PROG, add_help=False)
+    p.add_argument("--dir", default=None)
+    p.add_argument("--problems", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("-h", "--help", action="store_true")
+    try:
+        args = p.parse_args(argv)
+    except ValueError as e:
+        print("%s: %s" % (PROG, e), file=sys.stderr)
+        return 2
+    if args.help:
+        print(usage())
+        return 0
+    directory = args.dir if args.dir is not None else os.path.join(os.environ.get("HOME", ""), "Library", "LaunchAgents")
+
+    if run("uname", "-s")[1].strip() != "Darwin":
+        print("%s: not macOS; there are no LaunchAgents to check" % PROG, file=sys.stderr)
+        return 3
+    uid = os.getuid()
+    domain = "gui/%d" % uid
+    if run("launchctl", "print", domain)[0] != 0:
+        print("%s: the gui domain for uid %d (%s) cannot be read from here (nobody logged in at the "
+              "screen, or a context that cannot see it), so it cannot tell" % (PROG, uid, domain),
+              file=sys.stderr)
+        return 3
+
+    # One line of launchd's disabled list per label: `"<label>" => disabled` (current macOS) or
+    # `=> true` (older).
+    disabled_list = run("launchctl", "print-disabled", domain)[1]
+
+    agents = []
+    for plist in sorted(glob.glob(os.path.join(directory, "*.plist"))):
+        label = plist_key(plist, "Label")
+        if not label:
+            agents.append({"label": "-", "file": plist, "state": "unreadable", "loaded_path": None})
+            continue
+        agent = {"label": label, "file": plist, "state": None, "loaded_path": None}
+        agents.append(agent)
+        if ('"%s" => disabled' % label in disabled_list or '"%s" => true' % label in disabled_list
+                or plist_key(plist, "Disabled") == "true"):
+            agent["state"] = "disabled"
+            continue
+        rc, printed = run("launchctl", "print", "%s/%s" % (domain, label))
+        if rc != 0:
+            agent["state"] = "NOT-LOADED"
+            continue
+        lp = loaded_path(printed)
+        agent["loaded_path"] = lp
+        agent["state"] = "loaded-elsewhere" if lp and not same_file(lp, plist) else "loaded"
+
+    count = lambda s: sum(1 for a in agents if a["state"] == s)
+    n_other = count("unreadable") + count("loaded-elsewhere")
+    n_problems = count("NOT-LOADED") + n_other
+
+    if args.json:
+        print(json.dumps({"domain": domain, "dir": directory, "agents": agents, "problems": n_problems}))
+    else:
+        if not agents:
+            print("no LaunchAgent plists in %s" % directory)
+        for a in agents:
+            if args.problems and a["state"] not in PROBLEM_STATES:
+                continue
+            line = "%s  %s  %s" % (a["state"], a["label"], a["file"])
+            if a["state"] == "loaded-elsewhere":
+                line += " (launchd has it from %s)" % a["loaded_path"]
+            print(line)
+        print("%d agents: %d loaded, %d disabled, %d not loaded, %d other problems" % (
+            len(agents), count("loaded"), count("disabled"), count("NOT-LOADED"), n_other))
+    return 1 if n_problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

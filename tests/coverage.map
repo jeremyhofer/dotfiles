@@ -105,6 +105,7 @@ test-loop-time.py                   private_dot_local/bin/executable_loop-time p
 test-fleet-slot.py                  private_dot_local/bin/executable_fleet-slot
 test-fleet-wait.py                  private_dot_local/bin/executable_fleet-wait
 test-git-branch-gone.py             private_dot_local/bin/executable_git-branch-gone
+test-launchagent-status.py          private_dot_local/bin/executable_launchagent-status
 test-machine-snapshot.sh            private_dot_local/bin/executable_machine-snapshot
 test-machine-snapshot-darwin.sh     private_dot_local/bin/executable_machine-snapshot
 test-memory-doctor.sh               private_dot_local/bin/executable_memory-doctor

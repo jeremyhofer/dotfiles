@@ -44,6 +44,12 @@ source checkout's HEAD now differs from it ("source is ahead of what is deployed
 post result. A `start` with neither `deployed` nor `refused` after it is `incomplete`, with its age:
 still running, or aborted for another reason. `--json` prints one stable object.
 
+On macOS only, the view ends with an `agents` line from `launchagent-status --json` (15 s limit):
+the LaunchAgent plists that are deployed but not loaded in launchd, or `not checked: <why>` when
+that tool is missing, cannot tell (exit 3) or times out; `--json` carries an `agents` key, the
+tool's own object or `{"checked": false, "reason": ...}`. It is a report only and changes no exit
+code; on any other system nothing is added.
+
 WAIT. Polls THIS machine's ledger every --interval (default 30s), prints each new event as it
 lands and one `waiting` line per poll, so silence never looks like waiting correctly. It exits 0
 once every instance named by --instances (default `base,overlay`; `base` for a machine with no
@@ -53,9 +59,10 @@ refusal), 3 on --timeout (default 30m). Each instance is judged from its LATEST 
 with Z or a +HH:MM offset (`date -u +%Y-%m-%dT%H:%M:%SZ` prints one), or epoch seconds; a time with
 no zone is a usage error (exit 2), since local wall-clock time read as UTC lands hours off. The
 same hand-written parser reads the ledger's own times on every Python. DURATION is a number with an
-optional s, m or h (bare seconds). It reads only the local file and builds in no ssh: a session
-reaches another machine by running `ssh <host> apply-status wait --since T` as the WHOLE command (a
-sandbox exempts only a bare ssh, nothing piped or redirected around it).
+optional s, m or h (bare seconds). WAIT reads only the local file (STATUS also asks launchd on a
+Mac) and builds in no ssh: a session reaches another machine by running
+`ssh <host> apply-status wait --since T` as the WHOLE command (a sandbox exempts only a bare ssh,
+nothing piped or redirected around it).
 
 EXIT. append: 0 always, including when the ledger cannot be written (one line on stderr says so, so
 a hook can never abort an apply); 2 a usage error. status: 0. wait: 0, 1, 3 as above; 2 usage.
@@ -307,6 +314,56 @@ def event_dict(r):
     return {"time": r["time"], "event": r["event"], "head": r["head"], "detail": r["detail"]}
 
 
+AGENTS_TIMEOUT = 15
+
+
+def agents_view():
+    """None off macOS (nothing is reported there), else launchagent-status's parsed --json object, or
+    {"checked": False, "reason": ...} when it is missing, cannot tell, times out or prints no JSON.
+    Exit 1 (a problem found) still carries the object; exit 3 and every other failure do not."""
+    def unchecked(reason):
+        return {"checked": False, "reason": reason}
+
+    try:
+        uname = subprocess.run(["uname", "-s"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, universal_newlines=True, timeout=AGENTS_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if uname.stdout.strip() != "Darwin":
+        return None
+    try:
+        out = subprocess.run(["launchagent-status", "--json"], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                             timeout=AGENTS_TIMEOUT)
+    except FileNotFoundError:
+        return unchecked("launchagent-status is not installed")
+    except subprocess.TimeoutExpired:
+        return unchecked("launchagent-status timed out after %ds" % AGENTS_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        return unchecked("launchagent-status could not run (%s)" % flat(str(e)))
+    if out.returncode not in (0, 1):
+        why = flat(out.stderr.strip()) or "exit %d" % out.returncode
+        return unchecked(why)
+    try:
+        data = json.loads(out.stdout)
+    except ValueError:
+        return unchecked("launchagent-status printed no JSON")
+    if not isinstance(data, dict):
+        return unchecked("launchagent-status printed no JSON object")
+    return data
+
+
+def agents_line(agents):
+    if agents.get("checked") is False:
+        return "%-8s not checked: %s" % ("agents", agents.get("reason", "unknown"))
+    bad = [a for a in agents.get("agents", []) if a.get("state") in ("NOT-LOADED", "unreadable", "loaded-elsewhere")]
+    n = len(agents.get("agents", []))
+    if not bad:
+        return "%-8s %d LaunchAgents, none deployed without being loaded" % ("agents", n)
+    return "%-8s %d of %d LaunchAgents with a problem: %s" % (
+        "agents", len(bad), n, ", ".join("%s (%s)" % (a.get("label", "?"), a.get("state")) for a in bad))
+
+
 def cmd_status(argv):
     p = argparse.ArgumentParser(prog="apply-status status", add_help=False)
     p.add_argument("--json", action="store_true")
@@ -315,12 +372,17 @@ def cmd_status(argv):
     at_now = now()
     data = {"host": socket.gethostname().split(".")[0], "ledger": ledger_path(), "now": iso(at_now),
             "instances": {i: instance_view(rows, i, at_now) for i in INSTANCES}}
+    agents = agents_view()
+    if agents is not None:
+        data["agents"] = agents
     if args.json:
         print(json.dumps(data, indent=2, sort_keys=True))
         return 0
     print("apply status on %s (%s)" % (data["host"], data["ledger"]))
     for inst in INSTANCES:
         print(human(inst, data["instances"][inst]))
+    if agents is not None:
+        print(agents_line(agents))
     return 0
 
 

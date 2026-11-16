@@ -34,6 +34,17 @@ Entries are newest first.
 
 ## 2026-11-15
 
+### `launchagent-status`: LaunchAgents that are deployed but not loaded (macOS)
+
+A new tool, `launchagent-status [--dir DIR] [--problems] [--json]`. launchd loads every plist in
+`~/Library/LaunchAgents` at the next graphical login, not at once, so a deployed agent can sit
+unloaded with nothing saying so. The tool compares the directory with launchd and reports each agent
+as loaded, `NOT-LOADED`, `loaded-elsewhere`, disabled or unreadable; exit 1 on a problem, 3 when it
+cannot tell (not macOS, or the gui domain is unreadable). It does not detect a loaded agent that runs
+a stale copy of a changed plist. On a Mac, `apply-status` (bare or `status`, and `--json`) now ends
+with an `agents` line from it, report only, exit codes unchanged; on Linux nothing changes. No action
+needed; a Mac gets the tool at its next apply.
+
 ### `canonicalLaunchSettings`: a seat's own Claude Code settings, merged at launch
 
 A new fleet-record key. A canonical may declare `canonicalLaunchSettings: <path>`, relative to

@@ -40,11 +40,22 @@ class Env:
         self.tmp = tmp
         self.state = tmp / "state"
         self.ledger = self.state / "dotfiles" / "apply.log"
+        # A fake `uname` first on PATH, so the status view's macOS-only agents line is decided by
+        # FAKE_UNAME (default Linux) and not by the machine running the suite.
+        self.fakebin = tmp / "fakebin"
+        self.fakebin.mkdir()
+        self.tool("uname", '#!/bin/sh\nprintf "%s\\n" "${FAKE_UNAME:-Linux}"\n')
+
+    def tool(self, name, body):
+        p = self.fakebin / name
+        p.write_text(body)
+        p.chmod(0o755)
 
     def env(self, **extra):
         env = dict(os.environ)
         env.update({"XDG_STATE_HOME": str(self.state), "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_CONFIG_NOSYSTEM": "1"})
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "PATH": str(self.fakebin) + os.pathsep + os.environ["PATH"]})
         env.pop("APPLY_STATUS_NOW", None)
         for k in [k for k in env if k.startswith("CHEZMOI")]:
             del env[k]
@@ -489,6 +500,81 @@ def test_append_head_overrides_the_head_it_would_read(e):
     src = e.repo()
     e.run("append", "--source", str(src), "--head", "feedbee", "base", "post-pass")
     assert e.lines()[0].split("\t")[4] == "feedbee"
+
+
+# --- agents (macOS only) -----------------------------------------------------------------------------
+
+AGENTS_OK = {"domain": "gui/501", "dir": "/d", "problems": 0, "agents": [
+    {"label": "com.x.a", "file": "/d/a.plist", "state": "loaded", "loaded_path": "/d/a.plist"}]}
+AGENTS_BAD = {"domain": "gui/501", "dir": "/d", "problems": 1, "agents": [
+    {"label": "com.x.a", "file": "/d/a.plist", "state": "loaded", "loaded_path": "/d/a.plist"},
+    {"label": "com.x.b", "file": "/d/b.plist", "state": "NOT-LOADED", "loaded_path": None}]}
+
+
+def fake_agents(e, doc, rc=0, stderr=""):
+    e.tool("launchagent-status", "#!/bin/sh\ncat <<'EOF_JSON'\n%s\nEOF_JSON\necho %r >&2\nexit %d\n"
+           % (json.dumps(doc), stderr, rc))
+
+
+def test_on_linux_the_status_view_has_no_agents_line_and_no_key(e):
+    fake_agents(e, AGENTS_BAD, rc=1)
+    out = e.run()
+    assert out.returncode == 0
+    assert "agents" not in out.stdout
+    assert "agents" not in json.loads(e.run("--json").stdout)
+
+
+def test_on_a_mac_the_status_view_ends_with_the_agents_line(e):
+    fake_agents(e, AGENTS_BAD, rc=1)
+    out = e.run(FAKE_UNAME="Darwin")
+    assert out.returncode == 0
+    last = out.stdout.splitlines()[-1]
+    assert last.startswith("agents   ") and "com.x.b (NOT-LOADED)" in last
+    assert "com.x.a" not in last
+
+
+def test_on_a_mac_with_no_problem_the_agents_line_says_so(e):
+    fake_agents(e, AGENTS_OK)
+    last = e.run(FAKE_UNAME="Darwin").stdout.splitlines()[-1]
+    assert last == "agents   1 LaunchAgents, none deployed without being loaded"
+
+
+def test_on_a_mac_json_carries_the_tools_object(e):
+    fake_agents(e, AGENTS_BAD, rc=1)
+    out = e.run("--json", FAKE_UNAME="Darwin")
+    assert out.returncode == 0
+    assert json.loads(out.stdout)["agents"] == AGENTS_BAD
+
+
+def test_a_missing_tool_is_not_checked(e):
+    out = e.run(FAKE_UNAME="Darwin", PATH=str(e.fakebin) + os.pathsep + "/usr/bin:/bin")
+    assert out.returncode == 0
+    assert out.stdout.splitlines()[-1].startswith("agents   not checked: ")
+    agents = json.loads(e.run("--json", FAKE_UNAME="Darwin",
+                              PATH=str(e.fakebin) + os.pathsep + "/usr/bin:/bin").stdout)["agents"]
+    assert agents["checked"] is False and agents["reason"]
+
+
+def test_a_tool_that_cannot_tell_is_not_checked_with_its_reason(e):
+    e.tool("launchagent-status", "#!/bin/sh\necho 'launchagent-status: the gui domain cannot be read' >&2\nexit 3\n")
+    out = e.run(FAKE_UNAME="Darwin")
+    assert out.returncode == 0
+    assert out.stdout.splitlines()[-1] == "agents   not checked: launchagent-status: the gui domain cannot be read"
+    assert json.loads(e.run("--json", FAKE_UNAME="Darwin").stdout)["agents"] == {
+        "checked": False, "reason": "launchagent-status: the gui domain cannot be read"}
+
+
+def test_a_tool_that_hangs_is_not_checked_after_its_limit(e):
+    e.tool("launchagent-status", "#!/bin/sh\nexec sleep 60\n")
+    # The tool's limit is 15 s; the test waits it out once.
+    out = e.run(FAKE_UNAME="Darwin", timeout=45)
+    assert out.returncode == 0
+    assert "not checked: launchagent-status timed out" in out.stdout.splitlines()[-1]
+
+
+def test_a_tool_that_prints_no_json_is_not_checked(e):
+    e.tool("launchagent-status", "#!/bin/sh\necho nonsense\nexit 0\n")
+    assert "not checked" in e.run(FAKE_UNAME="Darwin").stdout.splitlines()[-1]
 
 
 if __name__ == "__main__":
