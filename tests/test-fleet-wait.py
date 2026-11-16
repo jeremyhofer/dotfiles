@@ -301,14 +301,21 @@ def lock_held(path):
 
 
 def holder_pid(path):
-    """The pid of the process holding the record's lock, from /proc/locks by inode (the python
-    process, not the uv wrapper)."""
-    ino = os.stat(path).st_ino
-    for line in Path("/proc/locks").read_text().splitlines():
-        f = line.split()
-        if "FLOCK" in f and f[5].endswith(f":{ino}"):
-            return int(f[4])
-    raise AssertionError(f"no flock on inode {ino}")
+    """The pid of the process holding the record's lock (the python process, not the uv wrapper).
+    Linux: from /proc/locks by inode. macOS has no /proc, so there it is the one process `lsof -t`
+    finds with the record open: the holder keeps its fd open for its whole life, and nothing else
+    opens the record except for a moment."""
+    if Path("/proc/locks").exists():
+        ino = os.stat(path).st_ino
+        for line in Path("/proc/locks").read_text().splitlines():
+            f = line.split()
+            if "FLOCK" in f and f[5].endswith(f":{ino}"):
+                return int(f[4])
+        raise AssertionError(f"no flock on inode {ino}")
+    out = subprocess.run(["lsof", "-t", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         text=True).stdout.split()
+    assert len(out) == 1, f"expected one process with {path} open, lsof found {out}"
+    return int(out[0])
 
 
 def arm_as(holder, *args):
