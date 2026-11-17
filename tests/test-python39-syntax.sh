@@ -21,7 +21,7 @@ if [ -n "${PY39_FILES:-}" ]; then
   files=$PY39_FILES
 else
   files=$(grep -l '^#!/usr/bin/env python3' "$here"/private_dot_local/bin/executable_* 2>/dev/null || true)
-  files="$files $here/tests/apply-suites.py"
+  files="$files $here/tests/apply-suites.py $here/tests/seed-uv-cache.py"
 fi
 [ -n "$files" ] || { echo "FAIL: no Python tools found to check" >&2; exit 1; }
 

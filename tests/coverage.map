@@ -26,7 +26,7 @@ core run_onchange_install-git-hooks.sh.tmpl
 
 # --- whole-tree checks -------------------------------------------------------------------------
 tree test-shell-parse.sh        setup/** tests/*.sh private_dot_local/bin/**
-tree test-python39-syntax.sh    private_dot_local/bin/** tests/apply-suites.py
+tree test-python39-syntax.sh    private_dot_local/bin/** tests/apply-suites.py tests/seed-uv-cache.py
 tree test-portability-lint.sh   private_dot_local/bin/** setup/** tests/*.sh tests/coverage.map
 tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
@@ -35,7 +35,7 @@ tree test-no-new-shell.py       private_dot_local/bin/** tests/**
 
 # --- the selector, the map and the apply-time runs ---------------------------------------------
 test-select-suites.sh  tests/coverage.map
-test-apply-suites.py   tests/apply-suites.py tests/pre-apply.sh tests/post-apply.sh .chezmoi.toml.tmpl private_dot_local/bin/executable_apply-status
+test-apply-suites.py   tests/apply-suites.py tests/seed-uv-cache.py tests/pre-apply.sh tests/post-apply.sh .chezmoi.toml.tmpl private_dot_local/bin/executable_apply-status
 test-apply-status.py   private_dot_local/bin/executable_apply-status
 
 # --- tools: private_dot_local/bin --------------------------------------------------------------
@@ -148,6 +148,7 @@ test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl .chezmoida
 test-spell-tier-name.sh             dot_config/nvim/lua/config/spell.lua
 test-tuicr-config.py                dot_config/tuicr/config.toml
 test-run-all.sh                     tests/run-all.sh
+test-hermetic-uv.py                 tests/run-all.sh tests/land-gate.sh tests/seed-uv-cache.py tests/apply-suites.py tests/git-isolate.sh tests/git-isolated.gitconfig
 
 # --- names in fixture text, not reads ------------------------------------------------------------
 refs test-pre-commit-trigger.sh     dot_claude/modify_settings.json setup/overlay-doctor

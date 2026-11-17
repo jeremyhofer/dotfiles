@@ -106,6 +106,8 @@ class Rig:
         shutil.copy(HERE / "apply-suites.py", self.src / "tests" / "apply-suites.py")
         shutil.copy(HERE / "pre-apply.sh", self.src / "tests" / "pre-apply.sh")
         shutil.copy(HERE / "post-apply.sh", self.src / "tests" / "post-apply.sh")
+        shutil.copy(HERE / "seed-uv-cache.py", self.src / "tests" / "seed-uv-cache.py")
+        (self.src / "tests" / "test-uv.py").write_text("#!/usr/bin/env -S uv run --script\n")
         tool = self.src / "private_dot_local" / "bin"
         tool.mkdir(parents=True)
         shutil.copy(SRC / "private_dot_local" / "bin" / "executable_apply-status", tool)
@@ -122,7 +124,8 @@ class Rig:
         stub(self.src / "node_modules" / ".bin" / "nx", f"""
 rec = {str(self.rec)!r}
 with open(os.path.join(rec, "nx.calls"), "a") as f:
-    f.write(json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ)}}) + "\\n")
+    f.write(json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ),
+                        "seeded": os.path.exists(os.path.join(rec, "uv.calls"))}}) + "\\n")
 if os.environ.get("NX_STUB_DIRTY"):
     open({str(self.src / "dirtied")!r}, "w").write("x")
 if os.environ.get("NX_STUB_HOLD"):
@@ -160,7 +163,13 @@ if sys.argv[1:2] == ["ci"]:
     os.makedirs("node_modules", exist_ok=True)
     json.dump(dict(lock, packages=pk), open("node_modules/.package-lock.json", "w"))
 """)
-        for tool in ("uv", "jq", "yq", "gitleaks", "wt"):
+        # The stand-in uv records each call and exits UV_STUB_RC (seeding with it set fails).
+        stub(self.bin / "uv", f"""
+with open(os.path.join({str(self.rec)!r}, "uv.calls"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\\n")
+sys.exit(int(os.environ.get("UV_STUB_RC", "0")))
+""")
+        for tool in ("jq", "yq", "gitleaks", "wt"):
             stub(self.bin / tool, "sys.exit(0)\n")
         os.symlink(sys.executable, self.bin / "python3")
         os.symlink(shutil.which("git"), self.bin / "git")
@@ -764,6 +773,37 @@ def test_the_chezmoi_config_names_both_hooks(tmp_path):
         block = cfg.split(f"[hooks.apply.{hook}]\n")[1].split("\n\n")[0]
         assert '    command = "sh"' in block.splitlines(), cfg
         assert f'    args = ["{SRC}/tests/{hook}-apply.sh"]' in block.splitlines(), cfg
+
+
+def uv_calls(rig):
+    f = rig.rec / "uv.calls"
+    return f.read_text().splitlines() if f.exists() else []
+
+
+def test_pre_seeds_uv_s_cache_before_the_suites_and_runs_them_offline(rig):
+    assert rig.run("pre").returncode == 0
+    assert uv_calls(rig) == [f"sync --script {rig.src}/tests/test-uv.py"]
+    [call] = rig.nx_calls()
+    assert call["seeded"] is True
+    assert call["env"]["UV_OFFLINE"] == "1"
+
+
+def test_pre_keeps_a_uv_offline_the_caller_set(rig):
+    assert rig.run("pre", UV_OFFLINE="0").returncode == 0
+    assert rig.nx_calls()[0]["env"]["UV_OFFLINE"] == "0"
+
+
+def test_a_failed_seed_does_not_abort_the_apply(rig):
+    r = rig.run("pre", UV_STUB_RC="1")
+    assert r.returncode == 0, r.stderr
+    assert len(rig.nx_calls()) == 1
+
+
+def test_the_post_run_seeds_uv_s_cache_before_its_suites(rig):
+    assert rig.run("post", "--run").returncode == 0
+    assert uv_calls(rig) == [f"sync --script {rig.src}/tests/test-uv.py"]
+    [call] = rig.nx_calls()
+    assert call["seeded"] is True and call["env"]["UV_OFFLINE"] == "1"
 
 
 if __name__ == "__main__":

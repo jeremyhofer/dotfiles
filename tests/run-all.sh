@@ -33,6 +33,12 @@
 # A suite is tests/test-*.sh (sh, bash or zsh) or tests/test-*.py whose shebang is
 # `#!/usr/bin/env -S uv run --script` (run as `uv run --script`, SKIPped when uv is missing).
 #
+# OFFLINE BY DEFAULT. Every suite runs with UV_OFFLINE=1, so a `uv run --script` suite takes its
+# pinned packages from uv's cache and never reaches a registry (a gate fetches nothing: skill
+# hermetic-gates). The cache is filled by `python3 tests/seed-uv-cache.py`, which every apply runs
+# first; a suite that fails because a package is missing from it gets one line naming that command.
+# A UV_OFFLINE already set (to 0 or false, say, to let a person fetch) is left as it is.
+#
 # Usage:
 #   sh tests/run-all.sh            # every suite
 #   sh tests/run-all.sh kb         # only suites whose name contains "kb"
@@ -62,6 +68,9 @@ fi
 
 # No suite may reach the machine's own global git config, so none can fire its commit hooks.
 . "$here/git-isolate.sh"
+
+# No suite reaches a package registry unless the caller set UV_OFFLINE itself.
+UV_OFFLINE=${UV_OFFLINE-1}; export UV_OFFLINE
 
 jobs=${RUN_ALL_JOBS:-}
 case "$jobs" in
@@ -100,6 +109,10 @@ case "$interp" in
   *)  "$interp" "$t" > "$work/out/$name" 2>&1 < /dev/null ;;
 esac
 rc=$?
+# A uv suite that failed on a package missing from uv's cache says how to fill it, under the error.
+if [ "$rc" -ne 0 ] && [ "$interp" = uv ] && grep -qE 'was not found in the cache|network was disabled|Request failed after' "$work/out/$name" 2>/dev/null; then
+  printf 'run-all: uv has no cached package for %s; fill the cache with: python3 tests/seed-uv-cache.py (needs the network)\n' "$name" >> "$work/out/$name"
+fi
 # `times` line 2 is the CPU of this shell's waited-for children: the suite and what it ran. This
 # worker runs one suite, so nothing else is counted.
 times > "$work/prof/$name.times"

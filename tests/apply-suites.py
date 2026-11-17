@@ -38,6 +38,11 @@ Anything else, or a record that is missing or unreadable, runs `npm ci --no-audi
 failure refuses the apply. Residual: an optional package newly added for THIS platform alone, with
 no other entry changing, is not noticed; Nx fails loudly if its native binary is missing.
 
+UV RUNS OFFLINE. Nx runs each suite through tests/run-all.sh, which sets UV_OFFLINE=1 (a value the
+caller set stays), and nx_env sets it too, so a uv-script suite takes its packages from uv's cache.
+Both `pre` and `post --run` first run tests/seed-uv-cache.py, with the network, to fill that cache;
+a seed that fails is logged and the suites go ahead on what is cached.
+
 NX'S ENVIRONMENT. NX_DAEMON=false and NX_ISOLATE_PLUGINS=false, so Nx opens no socket: inside a
 sandbox no socket directory passes Nx's ownership walk (from Nx 24.0.3), and plugin workers need a
 socket as much as the daemon does. NX_TUI=false and --outputStyle=static, so the log is plain lines.
@@ -253,11 +258,33 @@ def ensure_install(prefix: list, env: dict, log) -> str:
     return f"npm ci ran: {why}"
 
 
+def seed_uv_cache(log) -> None:
+    """Fill uv's cache for every uv-script suite (tests/seed-uv-cache.py, with the network): the
+    suites then run offline. A failed seed is written to the log and goes no further, since a
+    machine that is offline today may hold what the suites need already, and a suite that finds a
+    package missing fails naming the seed command."""
+    seed = HERE / "seed-uv-cache.py"
+    log.write(f"apply-suites: {seed.name}\n")
+    log.flush()
+    try:
+        rc = subprocess.run([sys.executable, str(seed), "--root", str(SRC)], stdin=subprocess.DEVNULL,
+                            stdout=log, stderr=subprocess.STDOUT, env=hook_env(), timeout=1800).returncode
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.write(f"apply-suites: uv cache seeding did not run ({e})\n")
+        return
+    if rc != 0:
+        log.write(f"apply-suites: uv cache seeding failed (exit {rc}); the suites go ahead on what is cached\n")
+    log.flush()
+
+
 def nx_env(env: dict) -> dict:
     out = dict(env)
     out["NX_DAEMON"] = "false"
     out["NX_ISOLATE_PLUGINS"] = "false"
     out["NX_TUI"] = "false"
+    # The suites run offline against uv's cache (tests/seed-uv-cache.py fills it); a UV_OFFLINE the
+    # caller set is kept.
+    out.setdefault("UV_OFFLINE", "1")
     if not out.get("NX_PARALLEL"):
         out["NX_PARALLEL"] = str(min(os.cpu_count() or 4, 8))
     return out
@@ -357,6 +384,7 @@ def pre() -> int:
         try:
             prefix, node = select_node(env)
             installed = ensure_install(prefix, env, log)
+            seed_uv_cache(log)
             say("pre-apply", f"running the suites through Nx ({node}; {installed}); a suite whose"
                 " inputs are unchanged replays from Nx's cache...")
             rc = run_nx(prefix, env, [], log)
@@ -487,6 +515,7 @@ def post_body(env: dict, sd: Path) -> int:
         try:
             prefix, node = select_node(env)
             log.write(f"apply-suites: {node}; {ensure_install(prefix, env, log)}\n")
+            seed_uv_cache(log)
             rc = run_nx(prefix, env, ["--skip-nx-cache"], log)
             refusal = ""
         except Refused as e:

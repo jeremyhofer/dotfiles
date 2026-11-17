@@ -32,6 +32,17 @@ Entries are newest first.
 
 ---
 
+## 2026-11-17
+
+### The base's own gates run uv offline
+
+Nothing to do on adopting it. `tests/run-all.sh` (so the commit gate and `tests/land-gate.sh`) and
+the apply hooks' Nx runs now set `UV_OFFLINE=1` unless the caller set `UV_OFFLINE`, so a
+`uv run --script` suite reads its pinned packages from uv's cache and fetches nothing. The new
+`tests/seed-uv-cache.py` fills that cache with the network, and both apply hooks run it first, so
+every apply refreshes it. On a machine that has not applied since, run it once by hand before
+running a suite where there is no network.
+
 ## 2026-11-16
 
 ### A new skill: `hermetic-gates`
