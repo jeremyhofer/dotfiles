@@ -257,6 +257,8 @@ class Fleet:
             "FLEET_CLAUDE_CMD": world / "bin" / "claude-stub",
             "FLEET_TRUST_CHECK_CMD": world / "bin" / "trust-stub",
             "TRUST_NAMES": self.trust_names, "TRUST_RC": self.trust_rc,
+            # The real override reader, not a stub: it reads XDG_STATE_HOME as set above.
+            "CLAUDE_USAGE_OVERRIDE_CMD": BIN / "executable_claude-usage-override",
             "FLEET_CANONICALS_BIN": "bash %s" % TOOL, "FLEET_CANONICALS_QUEUE": QUEUE_SRC,
             "PATH": str(world / "bin") + os.pathsep + CLEAN_PATH,
         }
@@ -793,6 +795,81 @@ def test_serve_usage_ignores_a_window_that_already_reset(fleet):
     fleet.plant("r-u5", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
     fleet.expect("r-u5", "done", "", "a usage file whose window already reset is not read as current")
+
+
+def _override(fleet, until_in, set_ago=60, **fields):
+    """Write the usage override file the real reader reads, with `until` until_in seconds from now."""
+    def iso(t):
+        return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(t))
+    t = int(time.time())
+    rec = {"format": 1, "until": iso(t + until_in), "reason": "run to the limit this week",
+           "set_by": "tester", "set_at": iso(t - set_ago)}
+    rec.update(fields)
+    p = fleet.T / "xdg-state" / "claude-usage" / "override"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rec))
+
+
+def test_serve_usage_override_active(fleet):
+    later = int(time.time()) + 86400
+    _usage_files(fleet, 97, 12, later, later)
+    _override(fleet, 3 * 86400)
+    fleet.plant("r-o1", "up", "alpha-canonical", "alpha-canonical")
+    fleet.plant("r-o2", "refresh", "beta-canonical", "director-canonical", age=3600)
+    fleet.plant("r-o3", "up", "director-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-o1", "done", "", "an active usage override lets a start through above the threshold")
+    note = fleet.result("r-o1", "usage_override")
+    assert "97%" in note and "not applied" in note and "run to the limit this week" in note, \
+        "the served result says which window the override let it past: %s" % fleet.result_doc("r-o1")
+    logged = [a for a in fleet.audit_lines() if a.get("id") == "r-o1"]
+    assert logged and logged[0].get("usage_override") == note, "the journal records the override too: %s" % logged
+    fleet.expect("r-o2", "refused", "age", "the override stands down the usage check only: a stale request is still refused")
+    fleet.expect("r-o3", "refused", "never-touch", "the override stands down the usage check only: never-touch still holds")
+
+
+def test_serve_usage_override_is_not_noted_below_the_threshold(fleet):
+    later = int(time.time()) + 86400
+    _usage_files(fleet, 40, 12, later, later)
+    _override(fleet, 3 * 86400)
+    fleet.plant("r-o4", "up", "alpha-canonical", "alpha-canonical")
+    fleet.serve()
+    fleet.expect("r-o4", "done", "", "below the threshold a start is served as ever")
+    assert "usage_override" not in fleet.result_doc("r-o4"), \
+        "with nothing to stand down, the result carries no override note: %s" % fleet.result_doc("r-o4")
+
+
+def test_serve_usage_override_expired(fleet):
+    later = int(time.time()) + 86400
+    _usage_files(fleet, 97, 12, later, later)
+    _override(fleet, -60, set_ago=3600)
+    fleet.plant("r-o5", "up", "alpha-canonical", "alpha-canonical")
+    fleet.serve()
+    fleet.expect("r-o5", "refused", "usage", "an expired override is inert: the threshold refuses again")
+    assert "expired at" in fleet.result("r-o5", "detail"), \
+        "the refusal names the expired override: %s" % fleet.result_doc("r-o5")
+
+
+def test_serve_usage_override_invalid(fleet):
+    later = int(time.time()) + 86400
+    _usage_files(fleet, 97, 12, later, later)
+    _override(fleet, 3 * 86400, until="2099-01-01T00:00:00")  # no zone: malformed
+    fleet.plant("r-o6", "up", "alpha-canonical", "alpha-canonical")
+    fleet.serve()
+    fleet.expect("r-o6", "refused", "usage", "a malformed override is not applied: the threshold refuses")
+    assert "invalid" in fleet.result("r-o6", "detail") and "not applied" in fleet.result("r-o6", "detail"), \
+        "the refusal reports the malformed override: %s" % fleet.result_doc("r-o6")
+
+
+def test_serve_usage_override_reader_missing(fleet):
+    later = int(time.time()) + 86400
+    _usage_files(fleet, 97, 12, later, later)
+    _override(fleet, 3 * 86400)
+    fleet.mp.setenv("CLAUDE_USAGE_OVERRIDE_CMD", str(fleet.T / "no-such-reader"))
+    fleet.plant("r-o7", "up", "alpha-canonical", "alpha-canonical")
+    fleet.serve()
+    fleet.expect("r-o7", "refused", "usage", "a reader that cannot run means no override, whatever the file says")
+    assert "could not be read" in fleet.result("r-o7", "detail"), fleet.result_doc("r-o7")
 
 
 def test_serve_trust(fleet):
@@ -1894,6 +1971,14 @@ MUTANTS = [
      ' or req["name"] in as_list(ctx.cfg["request-usage-exempt"])', '', "test_serve_usage"),
     ("usage-verbs", "stopping verbs are refused for usage too",
      'if req["verb"] not in STARTING or ', 'if ', "test_serve_usage"),
+    ("usage-override-ignored", "an active usage override is ignored",
+     '        if ov["active"]:\n', '        if False:\n', "test_serve_usage_override_active"),
+    ("usage-override-any-state", "an expired or invalid usage override is applied",
+     'st["active"] = rc == 0 and st.get("state") == "active" and st.get("active") is True',
+     'st["active"] = True', "test_serve_usage_override_invalid"),
+    ("usage-override-reader-fails-open", "a reader that cannot run is read as an active override",
+     '"state": "unknown", "active": False,', '"state": "unknown", "active": True,',
+     "test_serve_usage_override_reader_missing"),
     ("trust-neighbor", "any untrusted directory refuses every launch",
      "        if proj is None or proj in untrusted:", "        if True:", "test_serve_trust"),
     ("trust-verbs", "down needs trust too",

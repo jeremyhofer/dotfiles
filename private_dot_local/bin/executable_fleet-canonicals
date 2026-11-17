@@ -408,7 +408,8 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     acting on another (unless the requester is on request-any), a self-refresh
                     (unless allow-self-refresh), over the rate limits (3 per canonical, 10 for
                     the fleet, per hour), while requests/PAUSED exists, up/refresh/resume at 85%
-                    of the 7-day window (unless exempt), up/resume in an untrusted workspace,
+                    of the 7-day window (unless exempt, or while `claude-usage-override status`
+                    reports an override active), up/resume in an untrusted workspace,
                     and any verb for a name a live process holds that the sessions list omits.
                     A stop of a session that is working waits, queued, until it is idle or
                     stale. A resume of a session still listed, in any state, is served only
@@ -455,7 +456,8 @@ configuration (file, then the variable that overrides each key):
   request-limit-canonical = <n> [3]  lifecycle actions per canonical per rolling hour
   request-limit-fleet = <n>  [auto]  lifecycle actions for the whole fleet per rolling hour; auto
                                      is max(10, 2 x the seats declared for this machine)
-  request-usage-threshold = <pct> [85]  7-day usage at which up, refresh and resume are refused
+  request-usage-threshold = <pct> [85]  7-day usage at which up, refresh and resume are refused,
+                                        unless claude-usage-override reports an override active
   request-usage-exempt = <names>  [none]  canonicals that may still be started above it
   request-any = <names>      [director-canonical]  requesters who may act on any canonical
   never-touch = <names>      [director-canonical]  canonicals the queue never acts on, any verb

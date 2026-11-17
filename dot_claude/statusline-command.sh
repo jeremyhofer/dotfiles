@@ -279,7 +279,27 @@ usage_window_seg() {
   printf '%s' "$seg"
 }
 
+# usage_override_mark -> " · override to <day time>" while `claude-usage-override` reports a usage
+# override active, " · override invalid" for a malformed one, nothing otherwise, so the human can see
+# that the usage throttles are standing down. The reader is the one judge; the file test before it
+# only spares a machine with no override a process per render. If the two ever disagreed on the
+# path, the mark would be missing, which touches no throttle.
+usage_override_mark() {
+  local f="${CLAUDE_USAGE_OVERRIDE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-usage/override}"
+  local cmd="${CLAUDE_USAGE_OVERRIDE_CMD:-$HOME/.local/bin/claude-usage-override}"
+  local out rc ep when
+  [ -f "$f" ] && [ -x "$cmd" ] || return 0
+  out=$("$cmd" status --json 2>/dev/null) && rc=0 || rc=$?
+  case "$rc" in
+    0) ep=$(printf '%s' "$out" | jq -r '.until_epoch // empty' 2>/dev/null)
+       case "$ep" in ''|*[!0-9]*) when='' ;; *) when=$(fmt_epoch "$ep" '%a %H:%M') ;; esac
+       printf ' %s· override%s%s' "$C_DETAIL" "${when:+ to $when}" "$RESET" ;;
+    3) printf ' %s· override invalid%s' "$C_DETAIL" "$RESET" ;;
+  esac
+}
+
 win_seg=$(usage_window_seg "$five_pct" "$five_resets" "$seven_pct" "$seven_resets")
+[ -n "$win_seg" ] && win_seg="${win_seg}$(usage_override_mark)"
 [ -n "$win_seg" ] && parts+=("$win_seg")
 
 # --- Reload band: what walking away right now costs ------------------------

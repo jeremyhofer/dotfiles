@@ -73,4 +73,40 @@ rcheck 'R  MED:900k amber · CACHE'  'tokens form: Sonnet at 900k is 5.4%, amber
 rcheck 'R  n/a · CACHE'             'unrecognized model renders n/a in either form' 'Mystery 1' 260000 null
 rcheck 'R  n/a · CACHE'             'no token figure renders n/a' 'Opus 5' '' null
 
+# --- usage override mark: drives the real helper against the real override reader ---------------
+TOOL_OVERRIDE="$HERE/../private_dot_local/bin/executable_claude-usage-override"
+OV_TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-statusline-override.XXXXXX")
+trap 'rm -rf "$OV_TMP"' EXIT
+mark() {  # mark [reader] -> the mark, plain text
+    TZ=UTC CLAUDE_USAGE_OVERRIDE_FILE="$OV_TMP/override" CLAUDE_USAGE_OVERRIDE_CMD="${1:-$TOOL_OVERRIDE}" bash -c '
+        C_DETAIL= RESET=
+        '"$(sed -n '/^fmt_epoch()/p' "$LINE")"'
+        '"$(sed -n '/^usage_override_mark() {/,/^}/p' "$LINE")"'
+        usage_override_mark
+    '
+}
+mcheck() {  # mcheck <expected> <description> [reader]
+    local got; got=$(mark "${3:-}")
+    [[ "$got" == "$1" ]] && ok "$2 -> '$got'" || bad "$2: got '$got', expected '$1'"
+}
+override_file() {  # override_file <until offset seconds> [until text] -> writes the file; prints until's UTC label
+    python3 - "$OV_TMP/override" "$1" "${2:-}" <<'PY'
+import json, sys, time
+path, off, given = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+t = int(time.time())
+iso = lambda e: time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(e))
+json.dump({"format": 1, "until": given or iso(t + off), "reason": "r", "set_by": "t",
+           "set_at": iso(t - 7200)}, open(path, "w"))
+print(time.strftime("%a %H:%M", time.gmtime(t + off)))
+PY
+}
+mcheck '' 'no override file: no mark'
+when=$(override_file 172800)
+mcheck " · override to $when" 'an active override is marked, with its expiry'
+mcheck '' 'a reader that cannot run: no mark' "$OV_TMP/no-such-reader"
+override_file -60 >/dev/null
+mcheck '' 'an expired override: no mark'
+override_file 0 '2099-01-01T00:00:00' >/dev/null
+mcheck ' · override invalid' 'a malformed override is marked invalid'
+
 exit $fail

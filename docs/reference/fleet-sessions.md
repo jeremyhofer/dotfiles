@@ -122,7 +122,7 @@ key set to nothing is an empty list, not the default):
 | `request-max-age` | `600` | seconds after which a queued request is refused as stale |
 | `request-limit-canonical` | `3` | lifecycle actions (run, whether they succeeded or failed) per canonical in a rolling hour |
 | `request-limit-fleet` | `auto` | the same, for every canonical together; `auto` is max(10, 2 × the seats the record declares for this machine), so one refresh round plus one recovery per seat fits |
-| `request-usage-threshold` | `85` | the 7-day usage percent at which `up`, `refresh`, `resume` and `init` are refused |
+| `request-usage-threshold` | `85` | the 7-day usage percent at which `up`, `refresh`, `resume` and `init` are refused, unless a usage override is active (`claude-usage-override`) |
 | `request-usage-exempt` | none | canonicals that may still be started above the threshold |
 | `request-any` | `director-canonical` | requesters who may request any canonical's action; everyone else, only their own |
 | `never-touch` | `director-canonical` | canonicals the queue never acts on, for any verb, whoever asks; refused at `request` too |
@@ -359,7 +359,10 @@ No notification is sent. The runner refuses, in this order, a request that:
 - is `up`, `refresh`, `resume` or `init` while the highest current `seven_day_pct` in
   `$XDG_RUNTIME_DIR/claude-usage/*.json` is at or above `request-usage-threshold` and the canonical
   is not exempt (a file whose `seven_day_resets_at` has passed is skipped; with no files, usage is
-  not checked);
+  not checked), and no usage override is active. `claude-usage-override status` is the reader: while
+  it reports active, a start the threshold would have refused is served, and its result file and
+  audit line carry a `usage_override` note naming the window it ran into. Every other check still
+  applies. An expired or malformed override is not applied, and the refusal says which;
 - is `up`, `resume` or `init` where `claude-trust-check` reports the canonical's project untrusted, or
   cannot read the trust state;
 - names a canonical with no live row in `claude agents --json` while a live process holds the name:
@@ -537,7 +540,8 @@ earlier one.
   own, any root younger than 10 minutes, and anything not of the exact shape, and exits 2 without
   removing anything when it cannot read the sessions list.
 - **No ramp-down hook:** nothing interrupts a session at a usage threshold; the human calls the
-  park (skill `parking-and-handoff`).
+  park (skill `parking-and-handoff`). Where a domain does install one, it should read
+  `claude-usage-override status` as the queue does, so one override stands down every throttle.
 - **No messaging:** coordination goes through handoff files and the human (skill `fleet-messaging`,
   no-messaging mode). Nobody tells the hub a handoff is staged: the human asks it to place, and
   `status`'s `handoff UNPLACED` lines are the reminder.

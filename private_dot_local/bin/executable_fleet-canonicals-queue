@@ -396,7 +396,13 @@ class Pass:
         self._live: list[dict] | None | bool = False
         self._all: list[dict] | None | bool = False
         self._trust: tuple[int, set[str]] | None = None
+        self._override: dict | None = None
         self.snapshot = [(p, read_request(p)) for p in queued()]
+
+    def usage_override(self) -> dict:
+        if self._override is None:
+            self._override = usage_override()
+        return self._override
 
     def live(self) -> list[dict] | None:
         if self._live is False:
@@ -568,14 +574,43 @@ def seven_day_pct(t: int) -> tuple[float | None, str]:
     return best, src
 
 
+def usage_override() -> dict:
+    """The machine's temporary usage override, read by `claude-usage-override status --json`, the
+    one reader every usage throttle shares. Fails safe: a reader that cannot run, or prints
+    something that is not its JSON, means not active."""
+    try:
+        rc, out = run(sibling("claude-usage-override", "CLAUDE_USAGE_OVERRIDE_CMD") + ["status", "--json"],
+                      timeout=30)
+    except OSError as e:  # run() turns a missing command into 127; a non-executable one raises
+        rc, out = 126, str(e)
+    try:
+        st = json.loads(out.strip().splitlines()[-1]) if out.strip() else None
+    except ValueError:
+        st = None
+    if not isinstance(st, dict) or not isinstance(st.get("detail"), str):
+        return {"state": "unknown", "active": False,
+                "detail": f"claude-usage-override could not be read (exit {rc}); not applied"}
+    st["active"] = rc == 0 and st.get("state") == "active" and st.get("active") is True
+    return st
+
+
 def check_usage(req: dict, ctx: Pass, path: Path) -> str | None:
     if req["verb"] not in STARTING or req["name"] in as_list(ctx.cfg["request-usage-exempt"]):
         return None
     limit = float(as_int(ctx.cfg, "request-usage-threshold"))
     pct, src = seven_day_pct(ctx.t)
     if pct is not None and pct >= limit:
-        return (f"usage: the 7-day window is at {pct:g}% ({src}), at or above "
-                f"request-usage-threshold ({limit:g}%), and '{req['name']}' is not exempt")
+        # Only a refusal asks the override: below the threshold there is nothing to stand down.
+        ov = ctx.usage_override()
+        msg = (f"the 7-day window is at {pct:g}% ({src}), at or above "
+               f"request-usage-threshold ({limit:g}%), and '{req['name']}' is not exempt")
+        if ov["active"]:
+            req["_usage_override"] = f"{msg}; not applied, the usage override is {ov['detail']}"
+            return None
+        # An expired or invalid override is named, so nobody believes one is in force; an absent
+        # one is the normal case and adds nothing.
+        note = "" if ov.get("state") == "absent" else f" (usage override {ov['detail']})"
+        return f"usage: {msg}{note}"
     return None
 
 
@@ -1137,11 +1172,17 @@ def serve_one(path: Path, ctx: Pass) -> None:
         # Which idle path let a stopping verb through, so a served request can be told apart from
         # the stuck-row and unlisted-process cases afterwards; the journal names only the outcome.
         result["admitted"] = req["_admitted"]
+    if not check and req.get("_usage_override"):
+        # A start the usage threshold would have refused, let through by the override: said in the
+        # result and the journal, so the window it ran into is on record.
+        result["usage_override"] = req["_usage_override"]
     result["detail" if check else "output"] = detail
     write_atomic(QUEUE / f"{rid}.result.json", result)
     entry = {k: result[k] for k in ("at", "id", "verb", "name", "requester", "outcome", "check")}
     if check:
         entry["detail"] = detail
+    if "usage_override" in result:
+        entry["usage_override"] = result["usage_override"]
     append_audit(entry)
     ctx.audit.append(entry)
     who = f"{req.get('verb')} {req.get('name')} (from {req.get('requester')})"

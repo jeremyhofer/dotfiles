@@ -183,7 +183,8 @@ and runs the plain verb, so the pre-flight and the handoff gate still apply. The
   and the result says `done` only once a process holds it again. A live process is refused,
   whatever its row says.
 - Also refused: a second request for a canonical already queued, more than three actions per
-  canonical (ten for the fleet) an hour, a starting verb at 85% of the 7-day window unless exempt,
+  canonical (ten for the fleet) an hour, a starting verb at 85% of the 7-day window unless exempt
+  or a usage override is active (`claude-usage-override status`),
   `up` or `resume` in an untrusted workspace, any verb for a name a live process holds while the
   sessions list shows no live row for it (check `live-process`: the list cannot be trusted for that
   canonical, so the human acts), and anything while `requests/PAUSED` exists.

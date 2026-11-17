@@ -51,6 +51,7 @@ test-claude-project-settings.sh     private_dot_local/bin/executable_claude-proj
 test-claude-scratch-hook.sh         private_dot_local/bin/executable_claude-scratch-hook
 test-claude-trust-check.sh          private_dot_local/bin/executable_claude-trust-check private_dot_local/bin/executable_fleet-decl
 test-claude-usage-report.sh         private_dot_local/bin/executable_claude-usage-report
+test-claude-usage-override.py       private_dot_local/bin/executable_claude-usage-override
 test-claude-worklog-hook.sh         private_dot_local/bin/executable_claude-worklog-hook
 test-claude-worktree-hook.sh        private_dot_local/bin/executable_claude-worktree-hook
 test-comment-lint.sh                private_dot_local/bin/executable_comment-lint
@@ -63,7 +64,7 @@ test-fleet-canonicals.sh            private_dot_local/bin/executable_fleet-canon
 test-fleet-canonicals-bounds.sh     private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
 test-fleet-canonicals-context.sh    private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-decl
 test-fleet-canonicals-place.sh      private_dot_local/bin/executable_fleet-canonicals
-test-fleet-canonicals-requests.py   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl
+test-fleet-canonicals-requests.py   private_dot_local/bin/executable_fleet-canonicals private_dot_local/bin/executable_fleet-canonicals-queue private_dot_local/bin/executable_fleet-decl private_dot_local/bin/executable_claude-usage-override
 test-fleet-decl.sh                  private_dot_local/bin/executable_fleet-decl
 # fleet-repo runs fleet-decl from beside itself, and git-clone-worktree runs fleet-repo the same way.
 test-fleet-repo.sh                  private_dot_local/bin/executable_fleet-repo private_dot_local/bin/executable_fleet-decl
@@ -135,7 +136,7 @@ test-scaffold-overlay.sh            setup/scaffold-overlay overlay-skeleton/**
 # --- deployed configuration with a suite ---------------------------------------------------------
 test-modify-settings.sh             dot_claude/modify_settings.json
 test-statusline-dir.sh              dot_claude/statusline-command.sh
-test-statusline-usage.sh            dot_claude/statusline-command.sh
+test-statusline-usage.sh            dot_claude/statusline-command.sh private_dot_local/bin/executable_claude-usage-override
 test-tooling-inventory.sh           dot_claude/tooling.md
 test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map

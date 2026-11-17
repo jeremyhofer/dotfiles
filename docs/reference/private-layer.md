@@ -185,6 +185,15 @@ Rules the merge imposes:
 The base's apply runs this fragment, so after the private layer changes it, re-apply the base's
 target: `chezmoi apply ~/.claude/settings.json`.
 
+### Usage throttles: read `claude-usage-override`
+
+A hook or tool the private layer ships that slows down, advises or refuses work as usage climbs
+should consult `claude-usage-override status` before acting, as the base's request queue does: exit
+0 means a temporary override is active, and the throttle stands down until the time the line names.
+Any other exit, or a reader that cannot run, means not active. The file it reads,
+`${XDG_STATE_HOME:-~/.local/state}/claude-usage/override`, is set by the person who owns the
+subscription with `claude-usage-override set`; a private layer supplies nothing for it.
+
 ### Skills: `~/.dotlocal/skills/<skill>.md`
 
 Some base skills end by pointing at a fragment with this domain's specifics (its hosts, layout,

@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""claude-usage-override -- one temporary, explicit override of every usage-based throttle.
+
+Some tools and hooks slow down or refuse work as the subscription's rolling usage climbs: a request
+queue that will not start sessions past a weekly percentage, hooks that refuse subagents or advise a
+slower pace. Sometimes the person who owns the subscription wants the opposite for a while: run to
+the limit, on purpose. This file is the one switch for that, and the one reader of it, so every
+consumer agrees on whether it is on.
+
+  claude-usage-override set --until <ISO 8601 time with zone> --reason <text> [--by <who>]
+  claude-usage-override clear
+  claude-usage-override status [--json]
+
+THE FILE. ${XDG_STATE_HOME:-~/.local/state}/claude-usage/override, a JSON object:
+  {"format": 1, "until": "2026-11-23T19:00:00-06:00", "reason": "...",
+   "set_by": "...", "set_at": "2026-11-16T20:00:00-06:00"}
+CLAUDE_USAGE_OVERRIDE_FILE names another path (the tests use it). CLAUDE_USAGE_OVERRIDE_NOW, epoch
+seconds, fixes the clock for the tests.
+
+STATUS is the reader every consumer calls. Exit 0: active, and the line says until when and why.
+Exit 1: not active, because no file exists or because it expired (the line says which, and when).
+Exit 3: the file exists but is not valid, so it is NOT applied. Exit 2: a usage error. `--json`
+prints {"state": "active"|"absent"|"expired"|"invalid", "active": bool, "detail": "<the line>",
+"path", and "until", "reason", "set_by", "set_at" when they were read, and "until_epoch" for a
+valid file}.
+
+FAIL SAFE. Anything other than a well-formed, unexpired file is "not active": a missing, unreadable
+or malformed file, a time without a zone, an expiry before it was set, or one more than the bound
+after it was set. A consumer that cannot run this tool at all treats that as not active too. The
+cost of a wrong "not active" is the throttling that was already there; the cost of a wrong "active"
+is throttling silently gone, which is the failure worth refusing.
+
+EXPIRY NEEDS NO CLEANUP. An expired file is inert: every reader compares `until` with the clock, so
+the throttles come back by themselves at the expiry. `clear` ends one early; an expired file may be
+left in place, and status reports when it expired.
+
+THE 21-DAY BOUND. `set` refuses an expiry more than 21 days ahead, and the reader refuses a file whose
+`until` is more than 21 days after its `set_at`, so a hand-edited file cannot stretch it either. A
+rolling window is at most a week long; three of them is room for "run to the limit this week, and
+again after it resets", with slack. Longer than that is no longer temporary, and belongs in each
+tool's own configuration instead.
+
+ANTHROPIC'S OWN LIMIT IS NOT AFFECTED. This turns off this machine's own pacing; the service still
+stops work at 100% of a window, and nothing here works around that.
+"""
+from __future__ import annotations
+
+import getpass
+import json
+import os
+import re
+import socket
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+FORMAT = 1
+MAX_DAYS = 21
+MAX_REASON = 300
+MAX_BYTES = 65536
+FUTURE_SKEW = 300  # seconds a set_at may lie ahead of the clock (two machines' clocks disagree)
+EXAMPLE = "2026-11-23T19:00-06:00"
+
+
+def path() -> Path:
+    given = os.environ.get("CLAUDE_USAGE_OVERRIDE_FILE")
+    if given:
+        return Path(given)
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(state) / "claude-usage" / "override"
+
+
+def now() -> float:
+    given = os.environ.get("CLAUDE_USAGE_OVERRIDE_NOW", "")
+    if re.fullmatch(r"\d+", given):
+        return float(given)
+    return time.time()
+
+
+def parse_time(text: object) -> datetime | None:
+    """An ISO 8601 time WITH a zone, or None. `Z` and a +HHMM offset are accepted as well as
+    +HH:MM; Python 3.9's fromisoformat takes only the last, and this runs where 3.9 is the system
+    python."""
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    s = re.sub(r"([+-]\d\d)(\d\d)$", r"\1:\2", s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return None
+    return dt
+
+
+def fmt(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def span(seconds: float) -> str:
+    s = int(abs(seconds))
+    if s >= 86400:
+        return f"{s // 86400}d {s % 86400 // 3600}h"
+    if s >= 3600:
+        return f"{s // 3600}h {s % 3600 // 60}m"
+    return f"{s // 60}m"
+
+
+def read() -> dict:
+    """The override's state. Never raises: every failure is a state, and only one is active. The
+    catch-all is a backstop for a case the checks below did not foresee; it reports, never allows."""
+    try:
+        return _read()
+    except Exception as e:  # any surprise in a file anyone can write means not active
+        p = path()
+        return {"path": str(p), "active": False, "state": "invalid",
+                "detail": f"invalid: {p}: could not be checked ({type(e).__name__}); the override is not applied"}
+
+
+def _read() -> dict:
+    p = path()
+    out: dict = {"path": str(p), "active": False}
+
+    def invalid(why: str) -> dict:
+        out.update(state="invalid", detail=f"invalid: {p}: {why}; the override is not applied")
+        return out
+
+    try:
+        with open(p, "rb") as fh:
+            raw = fh.read(MAX_BYTES + 1)
+    except FileNotFoundError:
+        out.update(state="absent", detail=f"inactive: no usage override is set ({p})")
+        return out
+    except OSError as e:
+        return invalid(f"cannot be read ({e.strerror or e})")
+    if len(raw) > MAX_BYTES:
+        return invalid(f"larger than {MAX_BYTES} bytes")
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return invalid("not JSON")
+    if not isinstance(d, dict):
+        return invalid("not a JSON object")
+    for k in ("until", "reason", "set_by", "set_at"):
+        if isinstance(d.get(k), str):
+            out[k] = d[k]
+    if d.get("format") != FORMAT:
+        return invalid(f"format is {d.get('format')!r}, not {FORMAT}")
+    until, set_at = parse_time(d.get("until")), parse_time(d.get("set_at"))
+    if until is None:
+        return invalid(f"until {d.get('until')!r} is not an ISO 8601 time with a zone")
+    if set_at is None:
+        return invalid(f"set_at {d.get('set_at')!r} is not an ISO 8601 time with a zone")
+    for k in ("reason", "set_by"):
+        if not isinstance(d.get(k), str) or not d[k].strip():
+            return invalid(f"{k} is missing or empty")
+    t = now()
+    if set_at.timestamp() > t + FUTURE_SKEW:
+        return invalid(f"set_at {fmt(set_at)} is in the future")
+    if until <= set_at:
+        return invalid(f"until {fmt(until)} is not after set_at {fmt(set_at)}")
+    if until - set_at > timedelta(days=MAX_DAYS):
+        return invalid(f"until {fmt(until)} is more than {MAX_DAYS} days after set_at {fmt(set_at)}")
+    reason = " ".join(d["reason"].split())
+    out["until_epoch"] = int(until.timestamp())
+    left = until.timestamp() - t
+    if left <= 0:
+        out.update(state="expired",
+                   detail=f'inactive: the usage override expired at {fmt(until)} ({span(left)} ago); '
+                          f'it was for "{reason}"')
+        return out
+    out.update(state="active", active=True,
+               detail=f'active: usage throttles stand down until {fmt(until)} (in {span(left)}), '
+                      f'for "{reason}"; set by {d["set_by"]} at {fmt(set_at)}')
+    return out
+
+
+def die(msg: str, code: int = 2) -> None:
+    print(f"claude-usage-override: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def cmd_status(args: list[str]) -> int:
+    as_json = False
+    for a in args:
+        if a == "--json":
+            as_json = True
+        else:
+            die(f"status: unknown argument '{a}' (usage: status [--json])")
+    st = read()
+    print(json.dumps(st, sort_keys=True) if as_json else st["detail"])
+    return {"active": 0, "absent": 1, "expired": 1}.get(st["state"], 3)
+
+
+def default_by() -> str:
+    try:
+        user = getpass.getuser()
+    except Exception:  # getuser raises when no user name can be found at all
+        user = "unknown"
+    return f"{user}@{socket.gethostname().split('.')[0]}"
+
+
+def cmd_set(args: list[str]) -> int:
+    usage = "set --until <ISO 8601 time with zone> --reason <text> [--by <who>]"
+    opts: dict[str, str] = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--until", "--reason", "--by"):
+            if i + 1 >= len(args):
+                die(f"set: {a} needs a value (usage: {usage})")
+            opts[a[2:]] = args[i + 1]
+            i += 2
+        else:
+            die(f"set: unknown argument '{a}' (usage: {usage})")
+    if "until" not in opts:
+        die(f"set: --until is required (usage: {usage})")
+    reason = " ".join(opts.get("reason", "").split())
+    if not reason:
+        die("set: --reason is required and may not be empty; it is what every consumer will say "
+            "the override is for")
+    if len(reason) > MAX_REASON:
+        die(f"set: --reason is {len(reason)} characters; keep it to {MAX_REASON}")
+    until = parse_time(opts["until"])
+    if until is None:
+        die(f"set: --until '{opts['until']}' is not an ISO 8601 time with a zone, such as "
+            f"'{EXAMPLE}' or a time ending in Z; a time without a zone means a different moment "
+            "on every machine that reads it")
+    t = now()
+    if until.timestamp() <= t:
+        die(f"set: --until {fmt(until)} is not in the future")
+    if until.timestamp() - t > MAX_DAYS * 86400:
+        die(f"set: --until {fmt(until)} is more than {MAX_DAYS} days ahead; an override is "
+            "temporary, and a longer change belongs in each tool's own configuration")
+    by = " ".join(opts.get("by", "").split()) or default_by()
+    set_at = datetime.fromtimestamp(t, tz=until.tzinfo or timezone.utc)
+    record = {"format": FORMAT, "until": fmt(until), "reason": reason, "set_by": by,
+              "set_at": fmt(set_at.replace(microsecond=0))}
+    p = path()
+    previous = read()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(p.parent, 0o700)
+        except OSError:
+            pass
+        fd, tmp = tempfile.mkstemp(prefix=".override.", dir=str(p.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, indent=2) + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, p)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        die(f"set: cannot write {p}: {e.strerror or e}. Inside a sandboxed session the state "
+            "directory may not be writable; run this from a terminal", 1)
+    if previous["state"] == "active":
+        print(f"replaced: {previous['detail']}")
+    print(read()["detail"])
+    return 0
+
+
+def cmd_clear(args: list[str]) -> int:
+    if args:
+        die("clear: takes no arguments")
+    p = path()
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        print(f"nothing to clear: no usage override is set ({p})")
+        return 0
+    except OSError as e:
+        die(f"clear: cannot remove {p}: {e.strerror or e}", 1)
+    print(f"cleared: {p}; every usage throttle applies again")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    verb, rest = argv[0], argv[1:]
+    if verb == "status":
+        return cmd_status(rest)
+    if verb == "set":
+        return cmd_set(rest)
+    if verb == "clear":
+        return cmd_clear(rest)
+    die(f"unknown command '{verb}' (set, clear, status)")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

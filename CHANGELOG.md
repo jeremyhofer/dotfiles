@@ -32,6 +32,48 @@ Entries are newest first.
 
 ---
 
+## 2026-11-16
+
+### `claude-usage-override`: one temporary override for every usage throttle (ACTION, a private layer with its own)
+
+A new tool. `claude-usage-override set --until <ISO 8601 time with zone> --reason <text>` writes
+`${XDG_STATE_HOME:-~/.local/state}/claude-usage/override`; `status [--json]` is the one reader every
+usage throttle shares (exit 0 active, 1 none or expired, 3 malformed); `clear` ends one early. While
+it is active, the throttles this machine runs on its own stand down; at the expiry they return by
+themselves, because every reader compares the expiry with the clock, so nothing needs cleaning up.
+`set` refuses an expiry in the past, one without a zone, an empty reason and an expiry more than 21
+days ahead, and the reader refuses a file whose expiry is more than 21 days after it was set: three
+weekly windows is room to run to the limit, reset, and run again, and anything longer belongs in
+each tool's own configuration. A missing, unreadable or malformed file, or a reader that cannot
+run, means not active. The service's own limit at 100% is not affected.
+
+**What reads usage state, and what each does now** (enumerated by listing `private_dot_local/bin/`,
+`dot_claude/` and its skills, `docs/`, then a case-insensitive search for usage, ramp-down, 7d,
+seven_day, weekly, pace, threshold, USAGE_, rate_limit and percent, gitignore-aware and with `-uu`;
+the `-uu` pass added only `node_modules/`, `.nx/` and `.pytest_cache/` files and a linked worktree):
+
+- `fleet-canonicals-queue` (`serve-requests`): the `usage` check, which refuses `up`, `refresh`,
+  `resume` and `init` at `request-usage-threshold` (85) of the 7-day window, is not applied while
+  the override is active; the served request's result file and audit line carry a `usage_override`
+  note. Every other check is unchanged. An expired or malformed override is named in the refusal.
+- `fleet-canonicals` `wait-for-reset` and `resume-at`: read the reset times to wait for, and throttle
+  nothing; unchanged.
+- `statusline-command.sh`: renders the usage windows and hands the payload to a domain's recorder,
+  if one is installed; display only. It now adds `· override to <day time>` to the usage segment
+  while an override is active, and `· override invalid` for a malformed one, calling the reader
+  only when the override file exists.
+- `claude-usage-report`: reports the weekly-limit history; unchanged.
+- `fleet-slot`, `fleet-wait` and the queue's session-name lookup read the per-session usage files
+  for a session's name only; unchanged.
+- Skills `parking-and-handoff` (a usage threshold as a reason to checkpoint) and
+  `canonical-takeover` (the queue's 85% refusal) now name the override and how to check it; so do
+  `docs/reference/fleet-sessions.md` and `fleet-canonicals --help`.
+
+**ACTION, in a private layer that ships its own usage throttles** (a ramp-down hook, a pacing
+advisory, a spawn gate): have each one consult `claude-usage-override status` before acting, so one
+override stands all of them down (`docs/reference/private-layer.md`, "Usage throttles"). A layer
+with none has nothing to do.
+
 ## 2026-11-15
 
 ### `fleet-wait`: a second heartbeat for the same session is refused

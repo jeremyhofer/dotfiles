@@ -29,6 +29,13 @@ A pause, stop or end-of-day signal from the human, or a usage threshold. Where t
 ramp-down hook, it injects these steps at the threshold. Where hooks are barred or absent, nothing
 will interrupt you: watch your own usage on the status line, or let the human say when.
 
+**A usage threshold does not apply while a usage override is active.** The human can set one
+temporary override that stands down every usage-based throttle until a stated time: check it with
+`claude-usage-override status` (exit 0 active, and the line says until when and why). While it is
+active, a usage threshold is not a reason to checkpoint, slow down or park; the service's own limit
+at 100% still stops work, and a pause from the human still outranks everything. It expires by
+itself; never set, extend or clear it on your own initiative.
+
 **A pause outranks everything else the session is doing**: autonomous defaults, escalation, being
 exhaustive. If your domain's always-on rules give a fuller precedence order, that order is
 canonical. The rule is "never impede wrapping up", not "never compact": a `/compact` or trim the
