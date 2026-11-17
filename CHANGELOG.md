@@ -33,6 +33,17 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (mise task shell)
+
+### `lint-tasknames` refuses an inline mise task that names no pipefail shell (ACTION, a repository with mise tasks)
+
+An inline task in a mise config (a `run`, not a task file) must name its own `shell`, and a POSIX
+shell there must set pipefail, for example `shell = "bash -euo pipefail -c"`; otherwise it is an
+ERROR (`shell`), exit 1. mise ignores `unix_default_inline_shell_args` in a project's `mise.toml`, so
+without the line `false | true` succeeds. A task file is exempt, as is a `shell` naming another
+interpreter (`python3 -c`). **ACTION:** none of the home repositories has mise tasks yet; a
+repository that adds them gives each inline task the line.
+
 ## 2026-11-17 (base pin)
 
 ### The base pins its Node in `mise.toml`; `.nvmrc` is gone

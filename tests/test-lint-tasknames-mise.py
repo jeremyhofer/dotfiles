@@ -72,10 +72,15 @@ def findings(r):
     return "\n".join(l for l in r.stdout.splitlines() if l.startswith(("  ERROR", "  WARN", "  INFO")))
 
 
+PIPEFAIL = "bash -euo pipefail -c"
+
+
 def toml_tasks(d, **tasks):
-    """A mise.toml in `d` with one `[tasks."<name>"]` table per keyword (name -> run line)."""
+    """A mise.toml in `d` with one `[tasks."<name>"]` table per keyword (name -> run line), each naming
+    a pipefail shell, as every inline task must (the shell rule's own tests write theirs by hand)."""
     d.mkdir(parents=True, exist_ok=True)
-    (d / "mise.toml").write_text("".join(f'[tasks."{n}"]\nrun = "{r}"\n' for n, r in tasks.items()))
+    (d / "mise.toml").write_text("".join(f'[tasks."{n}"]\nshell = "{PIPEFAIL}"\nrun = "{r}"\n'
+                                         for n, r in tasks.items()))
 
 
 def file_task(d, rel, body="echo hi\n"):
@@ -150,7 +155,7 @@ def test_a_nested_mise_toml_is_read_once_and_labeled(box):
 def test_a_dot_config_mise_toml_is_the_directory_s_own_and_counted_once(box):
     d = box / "repo/.config"
     d.mkdir(parents=True)
-    (d / "mise.toml").write_text('[tasks."wifi-dot"]\nrun = "true"\n')
+    (d / "mise.toml").write_text(f'[tasks."wifi-dot"]\nshell = "{PIPEFAIL}"\nrun = "true"\n')
     r = lint(box)
     assert findings(r).count("wifi-dot") == 1, out(r)
     assert "WARN  [mise] wifi-dot: verb" in r.stdout, out(r)
@@ -224,6 +229,39 @@ def test_a_file_task_body_reaches_the_triad_check(box):
     file_task(box / "repo", "mise-tasks/validate-units", "systemctl --user is-active foo.service\n")
     r = lint(box)
     assert r.returncode == 1 and "ERROR [mise] validate-units: triad" in r.stdout, out(r)
+
+
+# ---- an inline task names its own shell, with pipefail ------------------------------------------
+# mise ignores `unix_default_inline_shell_args` in a project's mise.toml, so a task without its own
+# `shell` runs without pipefail and `false | true` succeeds.
+
+def test_an_inline_task_naming_no_shell_is_an_error(box):
+    (box / "repo/mise.toml").write_text('[tasks.build-app]\nrun = "false | true"\n')
+    r = lint(box)
+    assert r.returncode == 1, out(r)
+    assert "ERROR [mise] build-app: shell: names no `shell`" in r.stdout, out(r)
+
+
+@pytest.mark.parametrize("shell", ["bash -c", "sh -eu -c", "/bin/zsh -c"])
+def test_a_posix_shell_without_pipefail_is_an_error(box, shell):
+    (box / "repo/mise.toml").write_text(f'[tasks.build-app]\nshell = "{shell}"\nrun = "false | true"\n')
+    r = lint(box)
+    assert r.returncode == 1, out(r)
+    assert "ERROR [mise] build-app: shell: " in r.stdout and "pipefail" in r.stdout, out(r)
+
+
+@pytest.mark.parametrize("shell", ["bash -euo pipefail -c", "sh -o pipefail -c", "python3 -c"])
+def test_a_pipefail_shell_or_a_non_shell_interpreter_is_clean(box, shell):
+    (box / "repo/mise.toml").write_text(f'[tasks.build-app]\nshell = "{shell}"\nrun = "true"\n')
+    r = lint(box)
+    assert r.returncode == 0 and "shell" not in findings(r), out(r)
+
+
+def test_a_file_task_and_a_task_with_no_run_need_no_shell(box):
+    file_task(box / "repo", "mise-tasks/build-site")
+    (box / "repo/mise.toml").write_text('[tasks.build-all]\ndepends = ["build-site"]\n')
+    r = lint(box)
+    assert r.returncode == 0 and "shell" not in findings(r), out(r)
 
 
 # ---- an allowance names the file the task lives in ---------------------------------------------

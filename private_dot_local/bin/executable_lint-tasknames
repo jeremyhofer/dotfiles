@@ -60,6 +60,12 @@ are not. A file task under a subdirectory of `mise-tasks/` gets mise's `group:na
 separator rule reports. A config mise cannot parse, or a missing `mise`, is a READER ERROR. Listing
 needs no trust (measured with mise 2026.11.5), though mise records each config it read in its own
 state directory.
+
+One mise rule is not about the name. An inline task (a `run` in a mise config, not a task file, whose
+shebang chooses its interpreter) must name its own `shell`, and a POSIX shell there must set
+pipefail (`bash -euo pipefail -c`); otherwise it is an ERROR (`shell`). mise ignores
+`unix_default_inline_shell_args` in a project's mise.toml, so a task without its own `shell` runs
+without pipefail and `false | true` succeeds (measured with mise 2026.11.5).
 """
 
 import json
@@ -506,15 +512,34 @@ def read_mise(repo):
             rel = src.relative_to(root)  # outside: a parent's or the global config's task
         except ValueError:
             continue
-        body = " ".join(t.get("run") or [])
+        run = [r for r in (t.get("run") or []) if isinstance(r, str)]
+        body = " ".join(run)
         if t.get("file"):
             try:
                 with open(t["file"], "rb") as f:
                     body = f.read(MISE_BODY_MAX).decode("utf-8", "replace")
             except OSError:
                 body = ""
-        out.append((name, None, body, rel.as_posix()))
+        shell_finding = None if t.get("file") or not run else mise_shell_finding(t.get("shell"))
+        out.append((name, None, body, rel.as_posix(), shell_finding))
     return out
+
+
+# The shells whose pipelines take `-o pipefail`. A task whose `shell` names another interpreter
+# (`python3 -c`, `node -e`) has no pipelines to guard.
+POSIX_SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"}
+
+
+def mise_shell_finding(shell):
+    """Why an inline mise task's `shell` is refused, or None. mise ignores
+    `unix_default_inline_shell_args` in a project's mise.toml, so an inline task that names no shell
+    of its own runs without pipefail: `false | true` succeeds (measured with mise 2026.11.5)."""
+    if not shell or not str(shell).strip():
+        return "shell: names no `shell`, so mise runs it without pipefail; add `shell = \"bash -euo pipefail -c\"`"
+    words = str(shell).split()
+    if Path(words[0]).name in POSIX_SHELLS and "pipefail" not in words:
+        return f"shell: `{shell}` does not set pipefail; add `-o pipefail`"
+    return None
 
 
 # (tool, reader, marker filenames) — markers None => root-only (nx: the workspace
@@ -750,8 +775,9 @@ def lint_one(repo, key=None, why="", base=None):
                 # A reader that knows each task's own file (mise: `mise.toml` or a task file) names it,
                 # relative to the directory read, so an allowance's `path` can say which.
                 own = item[3] if len(item) > 3 else None
+                shell_finding = item[4] if len(item) > 4 else None
                 tfile = bfile if own is None else (own if dr == "." else f"{dr}/{own}")
-                tasks.append((name, ctx if ctx is not None else rel, body, tfile))
+                tasks.append((name, ctx if ctx is not None else rel, body, tfile, shell_finding))
         if errored:
             tally.append(f"{tool}(ERROR)")
             continue
@@ -759,7 +785,7 @@ def lint_one(repo, key=None, why="", base=None):
             tally.append(f"{tool}(-)")
             continue
         tally.append(f"{tool}({len(tasks)})" + (f"@{len(dirs)}d" if len(dirs) > 1 else ""))
-        for name, ctx, body, bfile in tasks:
+        for name, ctx, body, bfile, shell_finding in tasks:
             if tool == "just" and name in JUST_IDIOM:
                 continue
             if tool == "nx" and name in NX_PROVIDED:
@@ -782,6 +808,8 @@ def lint_one(repo, key=None, why="", base=None):
             t = triad_finding(name, body)
             if t:
                 violations.append((ERROR, where, name, t))
+            if shell_finding:
+                violations.append((ERROR, where, name, shell_finding))
 
     # Stale allowances: a claimed name no current task carries. Skipped when a reader errored, because
     # the task list is then incomplete and "no such task" would be a guess.
