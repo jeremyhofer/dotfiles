@@ -66,9 +66,79 @@ mise_switched() {
   return 1
 }
 
+# --- The Node pin the apply's suites run under (tests/apply-suites.py reads the same one): [tools]
+#     node in this repository's mise.toml, else .nvmrc while that file still exists. Both present and
+#     disagreeing stops the bootstrap, naming both. Prints nothing when neither pins Node.
+#     The mise.toml reader takes the way a pin is written, `node = "<version>"` (single quotes, a
+#     quoted key and a trailing comment allowed) under a [tools] header, or `tools.node = "<version>"`
+#     before any header. Any other value of that key, and a [tools.node] table, stop the bootstrap
+#     rather than being guessed at, as apply-suites.py refuses them. Builtins only. ---
+trim() {
+  t=$1
+  t=${t#"${t%%[![:space:]]*}"}
+  printf '%s' "${t%"${t##*[![:space:]]}"}"
+}
+
+check_version() {  # check_version <value> <where>: prints the value without a leading v
+  v=${1#v}
+  case "$v" in
+    '' | *[!0-9.]* | .* | *. | *..* | *.*.*.*) die "$2 holds '$1', not a version number" ;;
+  esac
+  printf '%s' "$v"
+}
+
+toml_node_pin() {
+  f="$REPO_DIR/mise.toml"
+  [ -f "$f" ] || return 0
+  table=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=$(trim "$line")
+    case "$line" in
+      '#'* | '') continue ;;
+      '['*)
+        table=${line%%]*}; table=$(trim "${table#[}")
+        case "$table" in
+          tools.node | 'tools."node"') die "mise.toml pins Node in a [tools.node] table, which this reader cannot take: write node = \"<version>\" under [tools]" ;;
+        esac
+        continue ;;
+    esac
+    key=$(trim "${line%%=*}")
+    case "$table/$key" in tools/node | 'tools/"node"' | "tools/'node'" | /tools.node) ;; *) continue ;; esac
+    value=$(trim "${line#*=}")
+    case "$value" in
+      '"'*) q='"' ;;
+      "'"*) q="'" ;;
+      *) die "mise.toml's [tools] node is $value, which this reader cannot take: write it as node = \"<version>\"" ;;
+    esac
+    value=${value#"$q"}
+    rest=$(trim "${value#*"$q"}")
+    case "$rest" in '' | '#'*) ;; *) die "mise.toml's [tools] node line is not one this reader can take: $line" ;; esac
+    check_version "${value%%"$q"*}" "mise.toml's [tools] node"
+    return 0
+  done < "$f"
+}
+
+node_pin() {
+  from_toml=$(toml_node_pin) || exit 1
+  from_nvmrc=""
+  if [ -f "$REPO_DIR/.nvmrc" ]; then
+    from_nvmrc=$(check_version "$(trim "$(cat "$REPO_DIR/.nvmrc")")" .nvmrc) || exit 1
+  fi
+  if [ -n "$from_toml" ] && [ -n "$from_nvmrc" ] && [ "$from_toml" != "$from_nvmrc" ]; then
+    die "mise.toml pins Node $from_toml but .nvmrc pins $from_nvmrc; make them agree, or delete .nvmrc, then re-run"
+  fi
+  if [ -n "$from_toml" ]; then printf '%s mise.toml' "$from_toml"
+  elif [ -n "$from_nvmrc" ]; then printf '%s .nvmrc' "$from_nvmrc"
+  fi
+}
+
 # --- default Node (per-project is the norm; a default is convenient + mmdc needs a node runtime).
-#     Through mise on a machine switched to it, else through fnm. Idempotent. ---
+#     Through mise on a machine switched to it, else through fnm. Idempotent. The pin is read
+#     first, so a pin that cannot be read stops the stage before anything is installed. ---
 ensure_node() {
+  pin_and_file=$(node_pin) || exit 1
+  pin=${pin_and_file%% *}
+  pin_file=${pin_and_file#* }
   if mise_switched; then ensure_node_mise; else ensure_node_fnm; fi
 }
 
@@ -84,12 +154,11 @@ ensure_node_mise() {
   else
     echo "mise could not install the global default tools; the apply's pin is still installed below" >&2
   fi
-  # The apply's suites run under the Node this repository's .nvmrc pins, so it is installed before
-  # the guarded apply below.
-  pin="$(cat "$REPO_DIR/.nvmrc" 2>/dev/null || true)"
+  # The apply's suites run under the Node this repository pins (node_pin), so it is installed
+  # before the guarded apply below.
   if [ -n "$pin" ]; then
-    (cd "$HOME" && mise install "node@$pin") || die "mise could not install Node $pin (.nvmrc), which the apply's suites need"
-    echo "mise: installed the .nvmrc pin $pin"
+    (cd "$HOME" && mise install "node@$pin") || die "mise could not install Node $pin ($pin_file), which the apply's suites need"
+    echo "mise: installed the $pin_file pin $pin"
   fi
 }
 
@@ -103,13 +172,12 @@ ensure_node_fnm() {
   fi
   ver="$(fnm ls 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)"
   [ -n "$ver" ] && fnm default "$ver" >/dev/null 2>&1 && echo "fnm: default -> $ver"
-  # The apply's suites run under the Node this repository's .nvmrc pins, and the pre-apply hook
+  # The apply's suites run under the Node this repository pins (node_pin), and the pre-apply hook
   # refuses the apply when fnm lacks it (tests/apply-suites.py), so it is installed before the
   # guarded apply below.
-  pin="$(cat "$REPO_DIR/.nvmrc" 2>/dev/null || true)"
   if [ -n "$pin" ] && ! fnm exec --using="$pin" node --version >/dev/null 2>&1; then
-    fnm install "$pin" || die "fnm could not install Node $pin (.nvmrc), which the apply's suites need"
-    echo "fnm: installed the .nvmrc pin $pin"
+    fnm install "$pin" || die "fnm could not install Node $pin ($pin_file), which the apply's suites need"
+    echo "fnm: installed the $pin_file pin $pin"
   fi
 }
 

@@ -160,8 +160,10 @@ what makes them safe to move off it.
   config's `hooks.apply.pre`), `--dry-run` included. A suite whose inputs did not change since it
   last passed on this machine, in the same context (a terminal, or a Claude Code sandbox), replays
   from Nx's cache, so an apply waits only on the suites the change reaches; the first apply after a
-  tool upgrade runs them all. It needs the Node `.nvmrc` pins (through `fnm`), and refuses the apply
-  without it, naming `fnm install <version>`. A failing suite
+  tool upgrade runs them all. It needs the Node the repository pins (`[tools] node` in `mise.toml`,
+  else `.nvmrc` until the pin moves; the two must agree), and refuses the apply without it, naming
+  the install: `mise install node@<version>` where mise is active (`DOTFILES_MISE_SHIMS` set) and
+  `mise` is on `PATH`, else `fnm install <version>`. A failing suite
   aborts the apply before anything is written and names the suite, its log and the re-run command:
   fix the source, or stop and report, rather than look for a way past it. The report is kept in
   `~/.local/state/dotfiles/pre-apply-<time>.log` and the alert hook is called. Each hook also

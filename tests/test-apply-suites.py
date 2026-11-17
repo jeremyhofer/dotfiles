@@ -9,8 +9,10 @@ its two chezmoi hooks, tests/pre-apply.sh and tests/post-apply.sh.
 Run: sh tests/run-all.sh --only test-apply-suites.py
  or: uv run --script tests/test-apply-suites.py [-k <pattern>]
 
-What is held: `pre` runs `nx run-many -t test` under the Node .nvmrc pins (through fnm, or a node
-on PATH of the pinned major), runs `npm ci` only when node_modules does not hold what
+What is held: `pre` runs `nx run-many -t test` under the Node the repository pins (mise.toml's
+`[tools] node`, else .nvmrc; both present must agree, or the apply is refused naming both): through
+mise where mise is active (DOTFILES_MISE_SHIMS set, and mise on PATH) with its installing and
+network access off, else through fnm, else a node on PATH of the pinned major. It runs `npm ci` only when node_modules does not hold what
 package-lock.json names, gives Nx no socket to open, removes chezmoi's CHEZMOI_* variables, and
 aborts the apply on a failure, naming the suite, the log and how to re-run it. Node that is missing
 or of the wrong version refuses the apply; a skip switch or a missing suite tool skips it, loudly.
@@ -19,7 +21,8 @@ a bounded set of logs and the alert hook on a failure. The generated chezmoi con
 
 Everything runs in a scratch copy: the script beside a stand-in `node_modules/.bin/nx` that records
 how it was called and prints a canned Nx log, and a PATH of stand-ins for fnm, node, npm and the
-tools the suites need, so no suite, no install and no apply runs. Each refusal has a control beside
+tools the suites need (and, where a test adds it, for mise), so no suite, no install and no apply
+runs, and the machine's own mise and fnm are never reached. Each refusal has a control beside
 it that the same rig passes.
 """
 import json
@@ -35,6 +38,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent
 PIN = "26.13.0"
+OTHER = "26.14.1"
 
 # Nx's static output, as `nx run-many -t test --outputStyle=static` writes it (shortened).
 NX_PASS = """
@@ -223,6 +227,50 @@ sys.exit(int(os.environ.get("UV_STUB_RC", "0")))
     def drop_fnm(self) -> None:
         (self.bin / "fnm").unlink()
 
+    def write_mise_toml(self, node: str) -> None:
+        (self.src / "mise.toml").write_text(f'[tools]\nnode = "{node}"\npython = "3.15.2"\n')
+
+    def add_mise(self) -> None:
+        """The stand-in mise: `mise exec node@V -- cmd ...` records its argv and environment, then
+        runs cmd with the stand-in node first on PATH, reporting V, when V is in MISE_INSTALLED.
+        Otherwise it does what mise 2026.11.5 did with installing switched off (measured in scratch
+        mise directories): a warning, then cmd on the PATH it was given. Anything else fails."""
+        stub(self.bin / "mise", f"""
+args = sys.argv[1:]
+with open(os.path.join({str(self.rec)!r}, "mise.calls"), "a") as f:
+    f.write(json.dumps({{"argv": args, "env": dict(os.environ)}}) + "\\n")
+if len(args) < 4 or args[0] != "exec" or not args[1].startswith("node@") or args[2] != "--":
+    sys.stderr.write(f"stub mise: unexpected call {{args}}\\n")
+    sys.exit(2)
+v = args[1][len("node@"):]
+if v in os.environ.get("MISE_INSTALLED", "").split():
+    os.environ["NODE_VERSION"] = v
+    os.environ["MISE_USED"] = v
+    os.environ["PATH"] = {str(self.root / "nodebin")!r} + os.pathsep + os.environ["PATH"]
+else:
+    sys.stderr.write(f"mise WARN  node@{{v}} is not installed and auto-install is disabled, so mise "
+                     f"looks for node on PATH instead. Install it with: mise install node@{{v}}\\n")
+os.execvp(args[3], args[3:])
+""")
+
+    def mise_call_list(self) -> list:
+        f = self.rec / "mise.calls"
+        return [json.loads(line) for line in f.read_text().splitlines()] if f.exists() else []
+
+    def mise_calls(self) -> list:
+        return [c["argv"] for c in self.mise_call_list()]
+
+    def mise_call_envs(self) -> list:
+        return [c["env"] for c in self.mise_call_list()]
+
+    def run_without_tomllib(self, *args: str, **extra: str) -> subprocess.CompletedProcess:
+        """The script under a Python that cannot import tomllib, as Python 3.9 cannot."""
+        script = str(self.src / "tests" / "apply-suites.py")
+        boot = ("import runpy, sys; sys.modules['tomllib'] = None; "
+                f"sys.argv = [{script!r}] + sys.argv[1:]; runpy.run_path({script!r}, run_name='__main__')")
+        return subprocess.run([sys.executable, "-c", boot, *args], env=self.env(**extra),
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
     @property
     def status(self) -> Path:
         return self.root / "state" / "dotfiles" / "post-apply.last"
@@ -393,6 +441,164 @@ def test_without_fnm_or_node_the_apply_is_refused(rig):
     assert out.returncode == 1
     assert "no fnm and no node on PATH" in out.stderr
     assert rig.nx_calls() == []
+
+
+# --- pre: the pin, from mise.toml or .nvmrc --------------------------------------------------------
+
+def test_a_mise_toml_pin_alone_is_used(rig):
+    (rig.src / ".nvmrc").unlink()
+    rig.write_mise_toml(PIN)
+    out = rig.run("pre")
+    assert out.returncode == 0, out.stderr
+    [call] = rig.nx_calls()
+    assert call["env"].get("FNM_USED") == PIN
+
+
+def test_the_mise_toml_pin_is_the_one_selected(rig):
+    # fnm has only the pin installed and mise.toml names another version: the refusal names that
+    # file and that version, so the version reached fnm from mise.toml.
+    (rig.src / ".nvmrc").unlink()
+    rig.write_mise_toml(OTHER)
+    out = rig.run("pre")
+    assert out.returncode == 1
+    assert f"Node {OTHER} (mise.toml) is not installed in fnm" in out.stderr
+    assert f"fnm install {OTHER}" in out.stderr
+
+
+def test_a_mise_toml_and_an_nvmrc_that_agree_are_used(rig):
+    rig.write_mise_toml(PIN)
+    out = rig.run("pre")
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("FNM_USED") == PIN
+
+
+def test_a_mise_toml_and_an_nvmrc_that_disagree_refuse_naming_both(rig):
+    rig.write_mise_toml(OTHER)
+    out = rig.run("pre", FNM_INSTALLED=f"{PIN} {OTHER}")
+    assert out.returncode == 1
+    assert f"mise.toml pins Node {OTHER}" in out.stderr
+    assert f".nvmrc pins {PIN}" in out.stderr
+    assert "Apply ABORTED" in out.stderr
+    assert rig.nx_calls() == []
+
+
+def test_a_mise_toml_without_a_node_pin_falls_back_to_the_nvmrc(rig):
+    (rig.src / "mise.toml").write_text('[tools]\npython = "3.15.2"\n\n[env]\nX = "1"\n')
+    out = rig.run("pre")
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("FNM_USED") == PIN
+
+
+def test_neither_pin_file_refuses(rig):
+    (rig.src / ".nvmrc").unlink()
+    out = rig.run("pre")
+    assert out.returncode == 1
+    assert "mise.toml" in out.stderr and ".nvmrc" in out.stderr
+    assert rig.nx_calls() == []
+
+
+@pytest.mark.parametrize("value", ['"latest"', '"lts"', '["26.13.0"]', '{ version = "26.13.0" }'])
+def test_a_mise_toml_pin_that_is_not_a_version_number_refuses(rig, value):
+    (rig.src / ".nvmrc").unlink()
+    (rig.src / "mise.toml").write_text(f"[tools]\nnode = {value}\n")
+    out = rig.run("pre")
+    assert out.returncode == 1
+    assert "mise.toml" in out.stderr and "not a version number" in out.stderr
+    assert rig.nx_calls() == []
+
+
+def test_a_mise_toml_that_does_not_parse_refuses_naming_it(rig):
+    (rig.src / "mise.toml").write_text("[tools\nnode = \n")
+    out = rig.run("pre")
+    assert out.returncode == 1
+    assert "mise.toml" in out.stderr and "cannot be read" in out.stderr
+    assert rig.nx_calls() == []
+
+
+def test_a_python_without_tomllib_refuses_a_mise_toml_naming_the_fix(rig):
+    # macOS's command-line tools ship Python 3.9, which has no tomllib; a hook may meet it first.
+    rig.write_mise_toml(PIN)
+    out = rig.run_without_tomllib("pre")
+    assert out.returncode == 1
+    assert "tomllib" in out.stderr and "3.11" in out.stderr
+    assert rig.nx_calls() == []
+
+
+def test_a_python_without_tomllib_still_reads_an_nvmrc_alone(rig):
+    out = rig.run_without_tomllib("pre")
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("FNM_USED") == PIN
+
+
+# --- pre: Node through mise, where mise is active (DOTFILES_MISE_SHIMS set) ------------------------
+
+def test_mise_active_runs_node_through_mise_for_the_pin(rig):
+    rig.add_mise()
+    out = rig.run("pre", DOTFILES_MISE_SHIMS=str(rig.root / "shims"), MISE_INSTALLED=PIN)
+    assert out.returncode == 0, out.stderr
+    [call] = rig.nx_calls()
+    assert call["env"].get("MISE_USED") == PIN, "Nx did not run under mise's pinned Node"
+    assert "FNM_USED" not in call["env"]
+    assert f"Node v{PIN} via mise" in out.stderr
+    calls = rig.mise_calls()
+    assert calls and all(c[:3] == ["exec", f"node@{PIN}", "--"] for c in calls), calls
+
+
+def test_mise_active_takes_the_pin_from_mise_toml(rig):
+    (rig.src / ".nvmrc").unlink()
+    rig.write_mise_toml(PIN)
+    rig.add_mise()
+    out = rig.run("pre", DOTFILES_MISE_SHIMS=str(rig.root / "shims"), MISE_INSTALLED=PIN)
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("MISE_USED") == PIN
+
+
+def test_mise_active_never_lets_mise_install_or_reach_the_network(rig):
+    rig.add_mise()
+    rig.run("pre", DOTFILES_MISE_SHIMS=str(rig.root / "shims"), MISE_INSTALLED=PIN)
+    envs = rig.mise_call_envs()
+    assert envs, "mise was not called"
+    for env in envs:
+        assert env.get("MISE_EXEC_AUTO_INSTALL") == "false"
+        assert env.get("MISE_AUTO_INSTALL") == "false"
+        assert env.get("MISE_NOT_FOUND_AUTO_INSTALL") == "false"
+        assert env.get("MISE_OFFLINE") == "1"
+
+
+def test_mise_active_a_pin_mise_has_not_installed_refuses_naming_the_install(rig):
+    rig.add_mise()
+    out = rig.run("pre", DOTFILES_MISE_SHIMS=str(rig.root / "shims"), MISE_INSTALLED=OTHER)
+    assert out.returncode == 1
+    assert f"Node {PIN} (.nvmrc) is not installed in mise" in out.stderr
+    assert f"mise install node@{PIN}" in out.stderr
+    assert "fnm install" not in out.stderr
+    assert rig.nx_calls() == []
+
+
+def test_mise_active_a_path_node_of_another_version_is_not_taken_for_the_pin(rig):
+    # With installing off, mise falls back to a node on PATH (measured on mise 2026.11.5, with a
+    # warning); one of another version than the pin is refused.
+    rig.add_mise()
+    out = rig.run("pre", DOTFILES_MISE_SHIMS=str(rig.root / "shims"), MISE_INSTALLED="",
+                  NODE_VERSION="26.1.0")
+    assert out.returncode == 1
+    assert f"mise install node@{PIN}" in out.stderr
+    assert rig.nx_calls() == []
+
+
+@pytest.mark.parametrize("shims", [None, ""])
+def test_mise_on_path_but_not_active_selects_through_fnm_as_before(rig, shims):
+    rig.add_mise()
+    out = rig.run("pre", DOTFILES_MISE_SHIMS=shims, MISE_INSTALLED=PIN)
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("FNM_USED") == PIN
+    assert rig.mise_calls() == []
+
+
+def test_mise_active_without_mise_on_path_selects_through_fnm_as_before(rig):
+    out = rig.run("pre", DOTFILES_MISE_SHIMS=str(rig.root / "shims"))
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("FNM_USED") == PIN
 
 
 # --- pre: npm ci -----------------------------------------------------------------------------------

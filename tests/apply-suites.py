@@ -21,11 +21,19 @@ terminal (one did: the sandbox could not write /tmp, so the leak the suite check
 happen there). Claude Code sets SANDBOX_RUNTIME in a sandboxed command, and the plugin hashes it, so
 a pass recorded in a sandbox never replays in a terminal, nor the reverse.
 
-NODE COMES FROM .nvmrc. Nx is a repository dependency (package.json), run under the Node the
-repository pins:
-  * with `fnm` on PATH, every Node command runs as `fnm exec --using=<.nvmrc>`; a version fnm has not
+NODE COMES FROM THE REPOSITORY'S PIN. Nx is a repository dependency (package.json), run under the
+Node the repository pins. The pin is `[tools] node` in mise.toml, else .nvmrc while that file still
+exists; with both present they must agree, or the apply is refused naming both values. A mise.toml
+with no `[tools] node` leaves the pin to .nvmrc. Reading mise.toml needs tomllib (Python 3.11): under
+an older python3 a repository with a mise.toml refuses the apply, naming the fix. The pin is then
+selected by the first of these that applies:
+  * where mise is active (DOTFILES_MISE_SHIMS set and not empty, which the base exports only on a
+    machine whose chezmoi data sets miseActive) and `mise` is on PATH, every Node command runs as
+    `mise exec node@<pin> --`, with mise's installing and network access switched off; a version
+    mise has not installed refuses the apply, naming `mise install node@<pin>`;
+  * with `fnm` on PATH, every Node command runs as `fnm exec --using=<pin>`; a version fnm has not
     installed refuses the apply, naming `fnm install <version>`;
-  * without fnm, the `node` on PATH is used only if its major version is the pin's; otherwise, or
+  * otherwise the `node` on PATH is used only if its major version is the pin's; otherwise, or
     with no node at all, the apply is refused, naming the fix.
 The version is never installed from here: a download on the apply path is a side effect the apply
 should not have, and some machines must install through a mirror their owner configures.
@@ -196,35 +204,94 @@ def capture(cmd: list, env: dict) -> str | None:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
-def select_node(env: dict) -> tuple:
-    """(prefix, description): the argv prefix that runs a Node command under the pinned version."""
-    try:
-        want = (SRC / ".nvmrc").read_text().strip()
-    except OSError:
-        raise Refused(f"no readable {SRC / '.nvmrc'}, so the Node the suites run under is unknown")
+def pin_value(value, where: str) -> str:
+    """A pin as written, checked to be a version number, without a leading `v`."""
+    if not isinstance(value, str):
+        raise Refused(f"{where} holds {value!r}, not a version number")
+    want = value.strip()
     want = want[1:] if want.startswith("v") else want
     if not re.fullmatch(r"\d+(\.\d+){0,2}", want):
-        raise Refused(f".nvmrc holds {want!r}, not a version number")
+        raise Refused(f"{where} holds {want!r}, not a version number")
+    return want
+
+
+def node_pin() -> tuple:
+    """(pin, file): the Node version the repository pins, and the name of the file it came from.
+    mise.toml's `[tools] node` first, .nvmrc while it still exists; both present must agree."""
+    toml_path, nvmrc_path = SRC / "mise.toml", SRC / ".nvmrc"
+    from_toml = None
+    if toml_path.exists():
+        try:
+            import tomllib  # Python 3.11; imported here so a repository without mise.toml needs none
+        except ImportError:
+            raise Refused(f"{toml_path} cannot be read by this python3 ({sys.version.split()[0]}), "
+                          f"which has no tomllib. Put Python 3.11 or later first on PATH, then apply again")
+        try:
+            data = tomllib.loads(toml_path.read_text())
+        except (OSError, ValueError) as e:
+            raise Refused(f"{toml_path} cannot be read ({e}), so the Node the suites run under is unknown")
+        tools = data.get("tools")
+        if isinstance(tools, dict) and "node" in tools:
+            from_toml = pin_value(tools["node"], "mise.toml's [tools] node")
+    from_nvmrc = None
+    if nvmrc_path.exists():
+        try:
+            from_nvmrc = pin_value(nvmrc_path.read_text(), ".nvmrc")
+        except OSError:
+            raise Refused(f"no readable {nvmrc_path}, so the Node the suites run under is unknown")
+    if from_toml is not None and from_nvmrc is not None and from_toml != from_nvmrc:
+        raise Refused(f"mise.toml pins Node {from_toml} but .nvmrc pins {from_nvmrc}, so the Node the "
+                      f"suites run under is ambiguous. Make them agree, or delete .nvmrc, then apply again")
+    if from_toml is not None:
+        return from_toml, "mise.toml"
+    if from_nvmrc is not None:
+        return from_nvmrc, ".nvmrc"
+    raise Refused(f"neither {toml_path} ([tools] node) nor {nvmrc_path} pins Node, so the Node the "
+                  f"suites run under is unknown")
+
+
+# Every mise command run from here: nothing installed, nothing fetched. Without them `mise exec`
+# installs a missing version first (its exec_auto_install setting), and may ask the network which
+# versions exist. They reach the suites too, where nothing should install either.
+MISE_NO_INSTALL = {"MISE_EXEC_AUTO_INSTALL": "false", "MISE_AUTO_INSTALL": "false",
+                   "MISE_NOT_FOUND_AUTO_INSTALL": "false", "MISE_OFFLINE": "1"}
+
+
+def select_node(env: dict) -> tuple:
+    """(prefix, description, env): the argv prefix that runs a Node command under the pinned
+    version, what it is, and the environment to run it with."""
+    want, source = node_pin()
     wanted = want.split(".")
     path = env.get("PATH", "")
+    mise = shutil.which("mise", path=path) if env.get("DOTFILES_MISE_SHIMS") else None
+    if mise:
+        menv = dict(env, **MISE_NO_INSTALL)
+        prefix = [mise, "exec", f"node@{want}", "--"]
+        got = capture(prefix + ["node", "--version"], menv)
+        # With installing off, mise runs a node from PATH for a version it lacks (with a warning),
+        # so the version is checked, not only the exit status.
+        if got is None or version_parts(got)[: len(wanted)] != wanted:
+            raise Refused(f"Node {want} ({source}) is not installed in mise. Install it with "
+                          f"`mise install node@{want}`, then apply again")
+        return prefix, f"Node {got} via mise", menv
     fnm = shutil.which("fnm", path=path)
     if fnm:
         prefix = [fnm, "exec", f"--using={want}", "--"]
         got = capture(prefix + ["node", "--version"], env)
         if got is None or version_parts(got)[: len(wanted)] != wanted:
-            raise Refused(f"Node {want} (.nvmrc) is not installed in fnm. Install it with "
+            raise Refused(f"Node {want} ({source}) is not installed in fnm. Install it with "
                           f"`fnm install {want}`, then apply again")
-        return prefix, f"Node {got} via fnm"
+        return prefix, f"Node {got} via fnm", env
     node = shutil.which("node", path=path)
     if node is None:
         raise Refused(f"no fnm and no node on PATH. Install fnm (the Brewfile's, or the "
                       f"distribution's package) and run `fnm install {want}`, then apply again")
     got = capture([node, "--version"], env) or "an unreadable version"
     if version_parts(got)[:1] != wanted[:1]:
-        raise Refused(f"the node on PATH ({node}) is {got}, but .nvmrc pins {want}, major "
+        raise Refused(f"the node on PATH ({node}) is {got}, but {source} pins {want}, major "
                       f"{wanted[0]}. Install fnm and run `fnm install {want}`, or put Node "
                       f"{wanted[0]} first on PATH, then apply again")
-    return [], f"Node {got} from PATH (no fnm)"
+    return [], f"Node {got} from PATH (no fnm)", env
 
 
 def install_is_current(src: Path) -> tuple:
@@ -383,7 +450,7 @@ def pre() -> int:
     logpath = Path(name)
     with os.fdopen(fd, "w") as log:
         try:
-            prefix, node = select_node(env)
+            prefix, node, env = select_node(env)
             installed = ensure_install(prefix, env, log)
             seed_uv_cache(log)
             say("pre-apply", f"running the suites through Nx ({node}; {installed}); a suite whose"
@@ -515,7 +582,7 @@ def post_body(env: dict, sd: Path) -> int:
     logpath = sd / ("post-apply-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + ".log")
     with open(logpath, "w") as log:
         try:
-            prefix, node = select_node(env)
+            prefix, node, env = select_node(env)
             log.write(f"apply-suites: {node}; {ensure_install(prefix, env, log)}\n")
             seed_uv_cache(log)
             rc = run_nx(prefix, env, ["--skip-nx-cache"], log)

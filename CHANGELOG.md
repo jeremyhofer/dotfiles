@@ -34,6 +34,18 @@ Entries are newest first.
 
 ## 2026-11-17
 
+### The apply's Node pin may come from `mise.toml`, and runs through mise where mise is active
+
+Nothing to do on a machine where mise is not active. `tests/apply-suites.py` (both apply hooks) and
+`bootstrap-mac.sh`'s Node stage now read the pin from `[tools] node` in the repository's `mise.toml`,
+else from `.nvmrc` as before; this repository still pins in `.nvmrc`. Both present and disagreeing
+refuses the apply (and stops the bootstrap), naming both values. Where mise is active
+(`DOTFILES_MISE_SHIMS` set) and `mise` is on `PATH`, the apply runs every Node command as
+`mise exec node@<pin> --` with mise's installing and network access switched off, and refuses with
+`mise install node@<pin>` when that version is not installed; elsewhere it uses fnm, then a `node` on
+`PATH`, exactly as before. A repository with a `mise.toml` needs Python 3.11 or later (tomllib) as
+the `python3` the apply hooks meet, and refuses the apply under an older one, naming the fix.
+
 ### `miseActive` now also puts mise's shims first on every PATH the base sets, and drops the direnv and fnm hooks
 
 On a machine whose generated config sets `miseActive = true` (and only there; with it false or

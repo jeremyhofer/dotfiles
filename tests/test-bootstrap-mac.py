@@ -12,12 +12,15 @@ Run: sh tests/run-all.sh --only test-bootstrap-mac.py
 What is held: a machine is switched to mise only when the [data] of its generated base chezmoi
 config says `miseActive = true`. Without that config (a new machine, before chezmoi has run) or with
 the key false, the stage runs fnm exactly as it always has and never calls mise. Switched, it runs
-`mise install` of the global default and `mise install node@<pin>` of this repository's `.nvmrc`,
+`mise install` of the global default and `mise install node@<pin>` of this repository's pin,
 both from $HOME so no project's configuration is read, and never calls fnm; a pin that will not
-install stops the bootstrap, naming the pin.
+install stops the bootstrap, naming the pin. The pin is `[tools] node` in the repository's
+mise.toml, else its `.nvmrc`, on both paths: written in each accepted way it is read; a mise.toml
+without that key, or with it only in another table, leaves the pin to `.nvmrc`; a value the reader
+cannot take, and a mise.toml and `.nvmrc` that disagree, stop the stage before anything installs.
 
 Nothing real is installed: the script runs one stage (`sh bootstrap-mac.sh node`) as a copy in a
-scratch "repository" with its own `.nvmrc`, HOME is a scratch directory, and PATH holds only stub
+scratch "repository" with its own `.nvmrc` (and, where a test writes one, `mise.toml`), HOME is a scratch directory, and PATH holds only stub
 `fnm` and `mise` programs that record each call, beside links to the few system utilities the
 script uses. The machine's own fnm and mise are never on that PATH.
 """
@@ -32,6 +35,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "bootstrap-mac.sh"
 PIN = "26.13.0"
+OTHER = "26.14.1"
 UTILITIES = ("sed", "grep", "sort", "tail", "cat", "dirname")
 
 # fnm's stub: `fnm ls` prints $FNM_LS_FILE; `fnm exec --using=V ...` succeeds only for a version
@@ -79,6 +83,9 @@ class Machine:
         self.fnm_ls.write_text("* v24.1.0 default\n")
         self.log.write_text("")
         self.extra_env: dict[str, str] = {}
+
+    def mise_toml(self, text: str) -> None:
+        (self.repo / "mise.toml").write_text(text)
 
     def stub(self, name: str, text: str) -> None:
         p = self.stubs / name
@@ -173,6 +180,96 @@ def test_switched_without_mise_on_path_skips_and_never_falls_back_to_fnm(m):
     assert r.returncode == 0, r.stderr
     assert "mise not on PATH" in r.stdout
     assert m.calls("fnm") == []
+
+
+# --- the pin: [tools] node in mise.toml, else .nvmrc ---------------------------------------------------
+
+def test_switched_a_mise_toml_pin_alone_is_installed_through_mise(m):
+    m.switch("true")
+    (m.repo / ".nvmrc").unlink()
+    m.mise_toml(f'[tools]\nnode = "{OTHER}"\npython = "3.15.2"\n')
+    r = m.run("node")
+    assert r.returncode == 0, r.stderr
+    assert m.calls("mise") == [f"mise install (in {m.home})",
+                               f"mise install node@{OTHER} (in {m.home})"]
+
+
+def test_not_switched_a_mise_toml_pin_alone_is_installed_through_fnm(m):
+    (m.repo / ".nvmrc").unlink()
+    m.mise_toml(f'[tools]\nnode = "{OTHER}"\n')
+    r = m.run("node")
+    assert r.returncode == 0, r.stderr
+    assert m.calls("fnm")[-2:] == [f"fnm exec --using={OTHER} node --version", f"fnm install {OTHER}"]
+    assert m.calls("mise") == []
+
+
+@pytest.mark.parametrize("text", [
+    '[tools]\nnode = "{v}"\n',
+    "[tools]\nnode='{v}'\n",
+    '  [tools]   # the runtimes\n  node   =   "{v}"   # the apply\'s pin\n',
+    '[env]\nX = "1"\n\n[tools]\npython = "3.15.2"\n"node" = "{v}"\n\n[tasks.x]\nrun = "true"\n',
+    '[tools]\nnode = "v{v}"\n',
+    'tools.node = "{v}"\n\n[env]\nX = "1"\n',
+])
+def test_switched_the_mise_toml_pin_is_read_in_each_way_it_is_written(m, text):
+    m.switch("true")
+    (m.repo / ".nvmrc").unlink()
+    m.mise_toml(text.format(v=OTHER))
+    r = m.run("node")
+    assert r.returncode == 0, r.stderr
+    assert m.calls("mise")[-1] == f"mise install node@{OTHER} (in {m.home})"
+
+
+def test_switched_a_mise_toml_and_an_nvmrc_that_agree_install_the_pin(m):
+    m.switch("true")
+    m.mise_toml(f'[tools]\nnode = "{PIN}"\n')
+    r = m.run("node")
+    assert r.returncode == 0, r.stderr
+    assert m.calls("mise")[-1] == f"mise install node@{PIN} (in {m.home})"
+
+
+@pytest.mark.parametrize("switched", ["true", "false"])
+def test_a_mise_toml_and_an_nvmrc_that_disagree_stop_naming_both(m, switched):
+    m.switch(switched)
+    m.mise_toml(f'[tools]\nnode = "{OTHER}"\n')
+    r = m.run("node")
+    assert r.returncode != 0
+    assert OTHER in r.stderr and PIN in r.stderr
+    assert "mise.toml" in r.stderr and ".nvmrc" in r.stderr
+    assert not [c for c in m.calls("mise") + m.calls("fnm") if "node@" in c or "install " in c]
+
+
+@pytest.mark.parametrize("text", [
+    '[tools]\npython = "3.15.2"\n',
+    '[env]\nnode = "{v}"\n',
+    '[env]\ntools.node = "{v}"\n',
+    '# node = "{v}"\n[tools]\n',
+])
+def test_switched_a_mise_toml_without_a_node_pin_falls_back_to_the_nvmrc(m, text):
+    m.switch("true")
+    m.mise_toml(text.format(v=OTHER))
+    r = m.run("node")
+    assert r.returncode == 0, r.stderr
+    assert m.calls("mise")[-1] == f"mise install node@{PIN} (in {m.home})"
+
+
+@pytest.mark.parametrize("text", [
+    '[tools]\nnode = {{ version = "{v}" }}\n',
+    '[tools]\nnode = ["{v}"]\n',
+    '[tools]\nnode = "latest"\n',
+    '[tools]\nnode = 26\n',
+    '[tools]\nnode = "{v}\n',
+    '[tools]\nnode = "{v}" extra\n',
+    '[tools.node]\nversion = "{v}"\n',
+])
+def test_a_mise_toml_pin_the_reader_cannot_take_stops_naming_it(m, text):
+    m.switch("true")
+    (m.repo / ".nvmrc").unlink()
+    m.mise_toml(text.format(v=OTHER))
+    r = m.run("node")
+    assert r.returncode != 0
+    assert "mise.toml" in r.stderr
+    assert not [c for c in m.calls("mise") if "node@" in c]
 
 
 def test_an_unknown_stage_is_refused(m):

@@ -94,8 +94,11 @@ private layer's address. The suites run around an apply, through Nx (`tests/appl
 generated chezmoi config carries a `hooks.apply.pre` that runs `tests/pre-apply.sh` (every suite,
 replayed from Nx's cache where its inputs did not change; a failure aborts the apply) and a
 `hooks.apply.post` that runs `tests/post-apply.sh` (every suite, uncached, in the background; it
-alerts on a failure). So an apply needs the Node version `.nvmrc` pins. Both hooks also append to the
-machine's apply ledger (`~/.local/state/dotfiles/apply.log`, owned by the `apply-status` tool), so a
+alerts on a failure). So an apply needs the Node version the repository pins: `[tools] node` in
+`mise.toml`, else `.nvmrc` until the pin moves there (both present must agree). It runs through
+`mise exec` where mise is active (`DOTFILES_MISE_SHIMS` set) and `mise` is on `PATH`, else through
+`fnm exec`, else a `node` on `PATH` of the pin's major; nothing is installed on the apply path.
+Both hooks also append to the machine's apply ledger (`~/.local/state/dotfiles/apply.log`, owned by the `apply-status` tool), so a
 session that cannot watch the terminal can read whether an apply started, was refused, deployed and
 how the after-apply run ended; a private layer's own apply hooks may append to the same file.
 
