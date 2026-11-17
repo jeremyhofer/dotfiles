@@ -35,7 +35,7 @@ Entries are newest first.
 
 ## 2026-11-17 (mise trust)
 
-### `mise-fleet-trust`: the apply trusts the mise configurations the manifest opts in (ACTION, a private layer whose manifest declares `miseTrust:`)
+### `mise-fleet-trust`: the apply trusts the mise configurations the manifest opts in and writes mise's miserc (ACTION, a private layer whose manifest declares `miseTrust:` or that has mise settings for the miserc)
 
 A new tool, deployed with a new apply step only where the generated config's `[data]` sets
 `miseActive = true`; the step runs only where `mise` is installed. While `miseActive` is false or
@@ -47,21 +47,22 @@ outside any sandbox, which trusts:
   prefix, so a configuration in a subdirectory or a dependency stays untrusted;
 - the dotfiles source's own `mise.toml`, on every machine, with or without a manifest.
 
-It re-runs when the tool or the source's `mise.toml` changes. A manifest `fleet-decl` cannot read, or
-an invalid `miseIgnore` entry, fails the step before any project is trusted.
+It also writes mise's miserc, `~/.config/mise/miserc.toml` (or under `$MISE_CONFIG_DIR`), replacing
+it whole at every run: `ignored_config_paths` (each opted-in project's `node_modules`, `.venv`,
+`vendor` and `miseIgnore` paths) and `ceiling_paths` (each project's parent) as top-level keys, then
+the domain's `~/.dotlocal/mise/miserc.extra.toml` verbatim. mise reads those settings before any
+configuration file, so a `conf.d/` drop-in, or a `[settings]` table in the miserc, has no effect on
+them. A fragment that sets either list is refused.
 
-The ignore list (each opted-in project's `node_modules`, `.venv`, `vendor` and `miseIgnore` paths)
-and the ceiling (each project's parent) are printed by `mise-fleet-trust --env` as
-`MISE_IGNORED_CONFIG_PATHS` and `MISE_CEILING_PATHS`. mise honors those two settings only from the
-environment: set in a `conf.d/` drop-in or `config.toml` they are reported by `mise settings get`
-and have no effect. So no drop-in is written, and nothing in the base sets the two variables yet;
-until something does, a dependency's `mise.toml` is not ignored, and a shim run in its directory
-fails as untrusted.
+It re-runs when the tool or the source's `mise.toml` changes. A manifest `fleet-decl` cannot read,
+an invalid `miseIgnore` entry or a refused fragment fails the step before any project is trusted,
+and leaves the miserc as it was.
 
-**ACTION, a private layer whose manifest declares `miseTrust:`:** add the trigger
-`run_onchange_after_trust-mise-configs.sh.tmpl` from `overlay-skeleton/opt-in/`, which re-runs the
-tool when the manifest changes, and a `miseActive` key in that layer's own generated config, set
-with the base's. `overlay-doctor` reports a manifest declaring `miseTrust:` without the trigger.
+**ACTION, a private layer whose manifest declares `miseTrust:` or that ships
+`dot_dotlocal/mise/miserc.extra.toml`:** add the trigger `run_onchange_after_trust-mise-configs.sh.tmpl`
+from `overlay-skeleton/opt-in/`, which re-runs the tool when either changes, and a `miseActive` key in
+that layer's own generated config, set with the base's. `overlay-doctor` reports a missing trigger or
+one that does not hash both. The fragment is a new seam: see `docs/reference/private-layer.md`.
 
 ### `fleet-decl --check`: `miseTrust` and `miseIgnore` (ACTION, a private layer whose manifest lists a repository that commits a `mise.toml`)
 

@@ -110,6 +110,10 @@ mk "$tmp/ov"; printf 'projects:\n  x:\n    path: x\n    miseTrust: true\n' > "$t
 tcase "T11 a manifest declaring miseTrust without the mise trust trigger is missing" 1 'MISSING .*trust-mise-configs'
 printf '#!/bin/sh\n# {{ include "Devel/mani.yaml.tmpl" | sha256sum }}\n' > "$tmp/ov/run_onchange_after_trust-mise-configs.sh.tmpl"
 tcase "T12 ...and with it passes" 0 ''
+mkdir -p "$tmp/ov/dot_dotlocal/mise"; echo 'override_tool_versions_filenames = ["none"]' > "$tmp/ov/dot_dotlocal/mise/miserc.extra.toml"
+tcase "T13 a miserc fragment the trigger does not hash is missing" 1 'MISSING .*trust-mise-configs.* does not hash dot_dotlocal/mise/miserc.extra.toml'
+printf '#!/bin/sh\n# {{ include "Devel/mani.yaml.tmpl" | sha256sum }}\n# {{ include "dot_dotlocal/mise/miserc.extra.toml" | sha256sum }}\n' > "$tmp/ov/run_onchange_after_trust-mise-configs.sh.tmpl"
+tcase "T14 ...and hashing both passes" 0 ''
 
 # --- Tier P: every overlay file carries a reason to be private, or is reported as a candidate to move
 # to the base. ADVISORY: it never changes the exit code, so an overlay written before the list existed

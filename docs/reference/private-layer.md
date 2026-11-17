@@ -346,6 +346,24 @@ the default. A file that is empty, or whose first value is not a positive intege
 stderr and the default is used; the tool does not guess. Without the file the default applies.
 Check it with `context-footprint --no-delta`: the `budget` row shows the value in force.
 
+## mise's miserc: `~/.dotlocal/mise/miserc.extra.toml`
+
+mise reads a few settings before any configuration file, so it honors them only from its "miserc",
+`miserc.toml` in its configuration directory (`$MISE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/mise`), as
+top-level keys, or from the environment; set in a `conf.d/` drop-in, or under `[settings]`, they are
+reported by `mise settings get` and do nothing. Where chezmoi data sets `miseActive`, the base's
+`mise-fleet-trust` writes that file at every apply: `ignored_config_paths` and `ceiling_paths`, built
+from the repository manifest's `miseTrust` projects, then this fragment, copied verbatim. A fragment
+that sets either list is refused (the apply step exits 2 and the old file stays), because the tool
+owns them; ignore more paths through a project's `miseIgnore:` instead. Without the fragment the
+miserc holds the two lists only. The file's changes reach the miserc through the trigger below
+("Triggers").
+
+```toml
+# ~/.dotlocal/mise/miserc.extra.toml
+override_tool_versions_filenames = ["none"]
+```
+
 ## Task-name allowances: `~/.dotlocal/lint-tasknames/allowances.toml`
 
 `lint-tasknames` warns about a task name outside the shared vocabulary. A domain that has a project
@@ -560,7 +578,7 @@ applied and nothing downstream moves. `overlay-doctor` (Tier T) checks each row 
 | the same fragment, declaring plugins | `run_onchange_after_install-claude-plugins.sh.tmpl`, calling the base's `install-claude-plugins` | `overlay-skeleton/opt-in/` | opt-in |
 | `Devel/mani.yaml.tmpl`, declaring `claudeLocalSettings:` or `claudeDirSettings:`, and the files they point at | `run_onchange_after_apply-project-claude-settings.sh.tmpl`, hashing the manifest and every project file, and calling the base's `claude-project-settings` | `overlay-skeleton/opt-in/` | opt-in |
 | `dot_dotlocal/skill-externals.yaml` | `run_onchange_after_sync-skill-externals.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
-| `Devel/mani.yaml.tmpl`, declaring `miseTrust:` | `run_onchange_after_trust-mise-configs.sh.tmpl`, hashing the manifest and calling the base's `mise-fleet-trust`, rendered empty until the layer's own `miseActive` is true (chezmoi data is per instance, so set it with the base's) | `overlay-skeleton/opt-in/` | opt-in |
+| `Devel/mani.yaml.tmpl` declaring `miseTrust:`, or `dot_dotlocal/mise/miserc.extra.toml` | `run_onchange_after_trust-mise-configs.sh.tmpl`, hashing both and calling the base's `mise-fleet-trust`, rendered empty until the layer's own `miseActive` is true (chezmoi data is per instance, so set it with the base's) | `overlay-skeleton/opt-in/` | opt-in |
 | `tests/run-all.sh` (and, to scope the gate to the staged paths, `tests/select-suites.sh` with its `tests/coverage.map`) | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
 
 **Opt-in means the layer adds the trigger itself.** `setup/scaffold-overlay` copies the skeleton but

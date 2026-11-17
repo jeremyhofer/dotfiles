@@ -228,10 +228,6 @@ if _has Devel/mani.yaml; then
   if grep -Eqs 'claude(Local|Dir)Settings:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
     _trigger run_onchange_after_apply-project-claude-settings.sh.tmpl "declaring claudeLocalSettings or claudeDirSettings does not write it" Devel/mani.yaml
   fi
-  # Opt-in: only a manifest whose projects opt in to mise trust needs the trust step re-run with it.
-  if grep -Eqs 'miseTrust:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
-    _trigger run_onchange_after_trust-mise-configs.sh.tmpl "a project opting in to mise trust is not trusted until the trust step runs" Devel/mani.yaml
-  fi
 fi
 _sd=dot_dotlocal/claude/executable_settings-declared
 if _has "$_sd"; then
@@ -241,6 +237,17 @@ if _has "$_sd"; then
   if grep -Eq 'enabledPlugins|extraKnownMarketplaces' "$OSRC/$_sd" 2>/dev/null; then
     _trigger run_onchange_after_install-claude-plugins.sh.tmpl "declaring a plugin does not install it" "$_sd"
   fi
+fi
+# Opt-in: the mise trust step re-runs with the manifest only where a project opts in to mise trust,
+# and with the domain's miserc fragment wherever the layer ships one.
+_mt=""
+if _has Devel/mani.yaml && grep -Eqs 'miseTrust:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
+  _mt="Devel/mani.yaml"
+fi
+_has dot_dotlocal/mise/miserc.extra.toml && _mt="$_mt dot_dotlocal/mise/miserc.extra.toml"
+if [ -n "$_mt" ]; then
+  # shellcheck disable=SC2086 # the inputs are fixed words
+  _trigger run_onchange_after_trust-mise-configs.sh.tmpl "the mise trust step writes mise's miserc from these" $_mt
 fi
 if _has dot_dotlocal/skill-externals.yaml; then
   _trigger run_onchange_after_sync-skill-externals.sh.tmpl "the skill list is installed by skill-externals-sync" dot_dotlocal/skill-externals.yaml

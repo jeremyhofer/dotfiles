@@ -4,8 +4,8 @@
 # dependencies = ["pytest==8.4.2"]
 # ///
 """Tests for mise-fleet-trust, the apply step that trusts the mise configurations the fleet manifest
-opts in, and for the apply script and `.chezmoiignore` lines that run it only where `miseActive` is
-true.
+opts in and writes mise's miserc, and for the apply script and `.chezmoiignore` lines that run it
+only where `miseActive` is true.
 
 Run: sh tests/run-all.sh --only test-mise-fleet-trust.py
  or: uv run --script tests/test-mise-fleet-trust.py [-k <pattern>]
@@ -16,15 +16,17 @@ What is held:
   `mise.toml` in a subdirectory of the project, one in a directory whose name merely starts with
   the project's, and one in a project that does not opt in all stay untrusted. A stub that trusts
   the project's directory as a prefix fails this check (seen red below).
-* With the environment `--env` prints, a dependency's `node_modules/x/mise.toml` and a `miseIgnore`
-  path are ignored while the project's own configuration still applies, and an untrusted
-  `mise.toml` above the project is not read (the ceiling). A stub whose ignore list is empty fails
-  the first check (seen red below). The two lists are printed as environment variables because
-  this mise does not honor `ignored_config_paths` or `ceiling_paths` from a `conf.d/` drop-in (the
-  tool's header).
+* The miserc the tool writes makes mise ignore a dependency's `node_modules/x/mise.toml` and a
+  `miseIgnore` path while the project's own configuration still applies, and stops the walk above
+  the project (the ceiling); without it, mise reads and refuses them (the controls). A stub whose
+  ignore list is empty fails the first check (seen red below). Measured with `mise config ls`.
+* The miserc is written at mise's configuration directory (MISE_CONFIG_DIR, else XDG_CONFIG_HOME),
+  mode 644, with a header, replacing what was there; a domain fragment is copied into it verbatim,
+  and a fragment that sets either list is refused, leaving the old file in place.
 * The base source's own `mise.toml` is trusted with `--base-source`, also where there is no fleet
-  record at all. An unreadable record and an invalid `miseIgnore` refuse (exit 2) and trust no
-  project; a project not on disk is skipped; `--dry-run` trusts nothing.
+  record at all. An unreadable record and an invalid `miseIgnore` refuse (exit 2), trust no project
+  and leave the miserc unchanged; a project not on disk is skipped; `--dry-run` writes and trusts
+  nothing.
 * With `miseActive` false or absent, `.chezmoiignore` keeps both the tool and its apply script off
   the machine; with it true they deploy, and the script runs only where `mise` is installed. The
   rendered script hashes the tool and passes the source directory.
@@ -36,8 +38,10 @@ is not installed, the record cases where yq is not, the chezmoi cases where chez
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -68,8 +72,10 @@ class World:
         self.proj = self.devel / "internal" / "proj"
         self.base = tmp / "base-source"
         self.record = tmp / "mani.yaml"
-        # A ceiling at the projects' parent, for a probe that must see only the directory's own
-        # configuration and the project's: without it the untrusted parent config fails every probe.
+        self.miserc = tmp / "config" / "miserc.toml"
+        self.fragment = tmp / "home" / ".dotlocal" / "mise" / "miserc.extra.toml"
+        # A ceiling at the projects' parent, for a probe made before the tool has written its
+        # miserc: without it the untrusted parent config fails every probe.
         self.ceil = {"MISE_CEILING_PATHS": str(self.devel / "internal")}
         # mise names whichever of the project's two files it reads first.
         self.own_configs = (self.proj / "mise.toml", self.proj / "mise.local.toml")
@@ -102,7 +108,11 @@ class World:
     def write_record(self, text: str) -> None:
         self.record.write_text(text)
 
-    def env(self, extra: dict | None = None) -> dict:
+    def write_fragment(self, text: str) -> None:
+        self.fragment.parent.mkdir(parents=True, exist_ok=True)
+        self.fragment.write_text(text)
+
+    def env(self, extra: dict | None = None, drop: tuple = ()) -> dict:
         env = {k: v for k, v in os.environ.items() if not k.startswith("MISE_")}
         for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
             env.pop(var, None)
@@ -117,25 +127,26 @@ class World:
             FLEET_DEVEL_ROOT=str(self.devel),
         )
         env.update(extra or {})
+        for var in drop:
+            env.pop(var, None)
         return env
 
-    def run(self, *args: str, tool: Path = TOOL, extra: dict | None = None):
-        return subprocess.run([sys.executable, str(tool), *args], env=self.env(extra),
+    def run(self, *args: str, tool: Path = TOOL, extra: dict | None = None, drop: tuple = ()):
+        return subprocess.run([sys.executable, str(tool), *args], env=self.env(extra, drop),
                               capture_output=True, text=True, timeout=120)
 
-    def mise_env(self, cwd: Path, extra: dict | None = None):
-        return subprocess.run([MISE, "env", "-s", "bash"], cwd=cwd, env=self.env(extra),
+    def mise(self, cwd: Path, *args: str, extra: dict | None = None):
+        return subprocess.run([MISE, *args], cwd=cwd, env=self.env(extra),
                               capture_output=True, text=True, timeout=60)
 
-    def env_lines(self, tool: Path = TOOL) -> dict:
-        out = self.run("--env", tool=tool)
-        assert out.returncode == 0, out.stderr
-        got = {}
-        for line in out.stdout.splitlines():
-            key, _, value = line.partition("=")
-            got[key] = value
-        assert set(got) == {"MISE_IGNORED_CONFIG_PATHS", "MISE_CEILING_PATHS"}, out.stdout
-        return got
+    def mise_env(self, cwd: Path, extra: dict | None = None):
+        return self.mise(cwd, "env", "-s", "bash", extra=extra)
+
+    def config_ls(self, cwd: Path, extra: dict | None = None):
+        return self.mise(cwd, "config", "ls", extra=extra)
+
+    def lists(self) -> dict:
+        return tomllib.loads(self.miserc.read_text())
 
 
 @pytest.fixture
@@ -157,7 +168,7 @@ def untrusted(out, *configs: Path) -> bool:
 def check_only_exact_files_trusted(w: World, tool: Path = TOOL) -> None:
     out = w.run(tool=tool)
     assert out.returncode == 0, out.stderr
-    own = w.mise_env(w.proj, w.env_lines())
+    own = w.mise_env(w.proj, w.ceil)
     assert own.returncode == 0, f"the project's own config is not trusted: {own.stderr}"
     assert "OWN=proj" in own.stdout and "LOCAL=proj" in own.stdout, own.stdout
     for d in (w.proj / "sub", w.devel / "internal" / "proj-other", w.devel / "internal" / "optout"):
@@ -168,12 +179,11 @@ def check_only_exact_files_trusted(w: World, tool: Path = TOOL) -> None:
 def check_dependency_ignored(w: World, tool: Path = TOOL) -> None:
     out = w.run(tool=tool)
     assert out.returncode == 0, out.stderr
-    lines = w.env_lines(tool)
-    for d, var in ((w.proj / "node_modules" / "x", "DEP"), (w.proj / "fixtures", "FIX")):
-        got = w.mise_env(d, lines)
+    for d in (w.proj / "node_modules" / "x", w.proj / "fixtures"):
+        got = w.config_ls(d)
         assert got.returncode == 0, f"{d.relative_to(w.tmp)} is read, not ignored: {got.stderr}"
-        assert "OWN=proj" in got.stdout, "the project's own config stopped applying"
-        assert f"{var}=" not in got.stdout, f"{d.relative_to(w.tmp)}'s config applied"
+        assert str(w.proj / "mise.toml") in got.stdout, "the project's own config is not listed"
+        assert str(d / "mise.toml") not in got.stdout, f"{d.relative_to(w.tmp)}'s config is listed"
 
 
 # --- the tool -----------------------------------------------------------------------------------
@@ -193,33 +203,109 @@ def test_a_dependency_and_a_mise_ignore_path_are_ignored(world):
 
 
 @needs_mise
-def test_without_the_environment_the_dependency_fails_loudly(world):
-    # The control for the case above: the same directory without the printed environment is read
-    # and refused, so the pass above comes from the ignore list and not from the setup.
+def test_without_the_miserc_the_dependency_is_read(world):
+    # The control for the case above: the same directory, the project trusted but no miserc, is
+    # read and refused, so the pass above comes from the miserc and not from the setup.
     assert world.run().returncode == 0
+    world.miserc.unlink()
     dep = world.proj / "node_modules" / "x"
-    assert untrusted(world.mise_env(dep, world.ceil), dep / "mise.toml")
+    assert untrusted(world.config_ls(dep, world.ceil), dep / "mise.toml")
+
+
+@needs_mise
+def test_the_lists_under_a_settings_table_are_not_honored(world):
+    # The form matters: the same two lists the tool writes, moved under [settings], leave the
+    # dependency read. So the pass above comes from the lists being top-level keys.
+    assert world.run().returncode == 0
+    text = world.miserc.read_text()
+    i = text.index("ignored_config_paths = ")
+    world.miserc.write_text(text[:i] + "[settings]\n" + text[i:])
+    assert "settings" in tomllib.loads(world.miserc.read_text())
+    dep = world.proj / "node_modules" / "x"
+    # The ceiling from the environment, so the untrusted parent (also unread only through the
+    # miserc) cannot be what fails: the refusal must name the dependency.
+    assert untrusted(world.config_ls(dep, world.ceil), dep / "mise.toml")
 
 
 @needs_mise
 def test_the_ceiling_stops_the_walk_above_the_project(world):
+    parent = world.devel / "internal" / "mise.toml"
+    assert untrusted(world.config_ls(world.proj), parent), "the parent is not read, so this sees nothing"
     assert world.run().returncode == 0
-    without = world.mise_env(world.proj)
-    assert untrusted(without, world.devel / "internal" / "mise.toml"), "the parent's untrusted config is not read, so this check sees nothing"
-    lines = world.env_lines()
-    assert str(world.devel / "internal") in lines["MISE_CEILING_PATHS"].split(":")
-    got = world.mise_env(world.proj, lines)
-    assert got.returncode == 0 and "PARENT=" not in got.stdout, got.stderr
+    got = world.config_ls(world.proj)
+    assert got.returncode == 0, got.stderr
+    assert str(parent) not in got.stdout and str(world.proj / "mise.toml") in got.stdout, got.stdout
 
 
 @needs_mise
-def test_dependency_directories_are_listed_whether_or_not_they_exist(world):
-    lines = world.env_lines()["MISE_IGNORED_CONFIG_PATHS"].split(":")
+def test_the_miserc_lists_every_opted_in_project(world):
+    assert world.run().returncode == 0
+    got = world.lists()
     for name in ("node_modules", ".venv", "vendor", "fixtures"):
-        assert str(world.proj / name) in lines, f"{name} missing from {lines}"
+        assert str(world.proj / name) in got["ignored_config_paths"], name
     # A project not on this machine still gets its entries, so a later clone is covered.
-    assert str(world.devel / "internal" / "away" / "node_modules") in lines
-    assert not any("optout" in p for p in lines), "a project that does not opt in is listed"
+    assert str(world.devel / "internal" / "away" / "node_modules") in got["ignored_config_paths"]
+    assert got["ceiling_paths"] == [str(world.devel / "internal")]
+    assert not any("optout" in p for p in got["ignored_config_paths"])
+
+
+@needs_mise
+def test_the_miserc_is_generated_644_and_replaced(world):
+    world.miserc.write_text("stale = true\n")
+    assert world.run().returncode == 0
+    text = world.miserc.read_text()
+    assert text.startswith("# Generated by mise-fleet-trust"), text
+    assert "stale" not in text
+    assert stat.S_IMODE(world.miserc.stat().st_mode) == 0o644
+    assert sorted(p.name for p in world.miserc.parent.iterdir()) == ["conf.d", "miserc.toml"], \
+        "a temporary file was left beside the miserc"
+
+
+@needs_mise
+def test_the_miserc_follows_xdg_config_home(world):
+    xdg = world.tmp / "xdg"
+    out = world.run(extra={"XDG_CONFIG_HOME": str(xdg)}, drop=("MISE_CONFIG_DIR",))
+    assert out.returncode == 0, out.stderr
+    assert (xdg / "mise" / "miserc.toml").is_file()
+    assert not world.miserc.exists()
+
+
+@needs_mise
+def test_a_fragment_reaches_the_miserc(world):
+    line = 'override_tool_versions_filenames = ["none"]\n'
+    world.write_fragment("# the domain's own\n" + line)
+    assert world.run().returncode == 0
+    text = world.miserc.read_text()
+    assert text.endswith("# the domain's own\n" + line), "the fragment is not copied verbatim, last"
+    assert world.lists()["override_tool_versions_filenames"] == ["none"]
+    # mise acts on it: `.tool-versions` is no longer read. (`mise settings get` prints `[]` with
+    # the setting and without it, so it cannot tell.) The control is the same run without it.
+    tool_versions = world.proj / ".tool-versions"
+    tool_versions.write_text("python 3.99.0\n")
+    got = world.config_ls(world.proj)
+    assert got.returncode == 0 and str(tool_versions) not in got.stdout, (got.stdout, got.stderr)
+    world.fragment.unlink()
+    assert world.run().returncode == 0
+    assert str(tool_versions) in world.config_ls(world.proj).stdout, "the control reads no .tool-versions"
+
+
+@pytest.mark.parametrize("line", ["ignored_config_paths = []", 'ceiling_paths = ["/x"]',
+                                  '"ceiling_paths" = []'])
+@needs_mise
+def test_a_fragment_setting_a_list_is_refused(world, line):
+    world.miserc.write_text("kept = true\n")
+    world.write_fragment(line + "\n")
+    out = world.run()
+    assert out.returncode == 2, (out.returncode, out.stderr)
+    assert "this tool writes that list" in out.stderr, out.stderr
+    assert world.miserc.read_text() == "kept = true\n", "the miserc changed on a refusal"
+    assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
+
+
+@needs_mise
+def test_a_fragment_naming_a_list_in_a_comment_is_not_refused(world):
+    world.write_fragment("# ceiling_paths is written by the tool\n")
+    assert world.run().returncode == 0
 
 
 @needs_mise
@@ -238,6 +324,7 @@ def test_no_record_still_trusts_the_base_source(world):
     assert out.returncode == 0, out.stderr
     assert "no fleet record" in out.stderr
     assert world.mise_env(world.base).returncode == 0
+    assert world.lists()["ignored_config_paths"] == []
     assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
 
 
@@ -246,17 +333,18 @@ def test_an_unreadable_record_refuses_and_trusts_no_project(world):
     world.write_record("projects: [this is: not: a map\n")
     out = world.run()
     assert out.returncode == 2, (out.returncode, out.stderr)
+    assert not world.miserc.exists(), "a miserc was written from an unreadable record"
     assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
-    assert world.run("--env").returncode == 2
 
 
-@pytest.mark.parametrize("bad", ["../escape", "/abs", "a/./b", "x*", "a:b"])
+@pytest.mark.parametrize("bad", ["../escape", "/abs", "a/./b", "x*"])
 @needs_mise
 def test_an_invalid_mise_ignore_refuses(world, bad):
     world.write_record(f"projects:\n  proj:\n    path: internal/proj\n    miseTrust: true\n"
                        f"    miseIgnore: ['{bad}']\n")
     out = world.run()
     assert out.returncode == 2, (out.returncode, out.stdout, out.stderr)
+    assert not world.miserc.exists()
     assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
 
 
@@ -268,10 +356,12 @@ def test_a_project_not_on_disk_is_skipped(world):
 
 
 @needs_mise
-def test_dry_run_trusts_nothing(world):
+def test_dry_run_writes_and_trusts_nothing(world):
     out = world.run("--dry-run", "--base-source", str(world.base))
     assert out.returncode == 0, out.stderr
     assert str(world.proj / "mise.toml") in out.stdout
+    assert "ignored_config_paths = [" in out.stdout
+    assert not world.miserc.exists()
     assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
     assert untrusted(world.mise_env(world.base), world.base / "mise.toml")
 
@@ -279,9 +369,9 @@ def test_dry_run_trusts_nothing(world):
 @needs_mise
 def test_no_project_opts_in(world):
     world.write_record("projects:\n  optout:\n    path: internal/optout\n")
-    out = world.run()
-    assert out.returncode == 0, out.stderr
-    assert world.env_lines() == {"MISE_IGNORED_CONFIG_PATHS": "", "MISE_CEILING_PATHS": ""}
+    assert world.run().returncode == 0
+    got = world.lists()
+    assert got["ignored_config_paths"] == [] and got["ceiling_paths"] == []
 
 
 # --- the checks against defective stubs: each must fail ---------------------------------------

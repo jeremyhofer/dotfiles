@@ -3,9 +3,10 @@
 # each fleet project that opts in with `miseTrust: true` (mise-fleet-trust's header has the rules).
 # Deployed only where miseActive is true and run only where mise is installed (.chezmoiignore).
 #
+# The tool also writes mise's miserc (its ignore list and ceiling, and the domain's fragment).
 # chezmoi re-runs it when the tool or the source's mise.toml changes; a private layer that ships the
-# fleet manifest carries its own trigger for the manifest (docs/reference/private-layer.md,
-# "Triggers"). mise keeps trust records across runs, so a run that is not repeated loses nothing.
+# fleet manifest or a miserc fragment carries its own trigger for them
+# (docs/reference/private-layer.md, "Triggers").
 #   tool:           {{ include "private_dot_local/bin/executable_mise-fleet-trust" | sha256sum }}
 #   base mise.toml: {{ if stat (joinPath .chezmoi.sourceDir "mise.toml") }}{{ include "mise.toml" | sha256sum }}{{ else }}none{{ end }}
 #

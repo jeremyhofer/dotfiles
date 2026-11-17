@@ -1,14 +1,17 @@
 {{ if get . "miseActive" -}}
 #!/bin/sh
-# OPT-IN: re-runs the base's mise trust step when the manifest changes, so a project that opts in
-# with `miseTrust: true` is trusted at the next apply rather than whenever the base's own trigger
-# next fires. Keep it only if the manifest declares `miseTrust:`. Drop the `.example` suffix.
+# OPT-IN: re-runs the base's mise trust step when the manifest or this layer's miserc fragment
+# changes, so a project that opts in with `miseTrust: true` is trusted, and the fragment reaches mise's
+# miserc, at the next apply rather than whenever the base's own trigger next fires. Keep it if the
+# manifest declares `miseTrust:` or the layer ships dot_dotlocal/mise/miserc.extra.toml; drop the
+# fragment line below if it does not. Drop the `.example` suffix.
 #
 # It renders empty, and so does not run, until this layer's own `miseActive` is true. chezmoi data is
 # per instance, so set `miseActive` in this layer's generated config and in the base's together.
 #
-# Re-runs whenever the manifest changes:
+# Re-runs whenever either input changes:
 #   manifest hash: {{ include "Devel/mani.yaml.tmpl" | sha256sum }}
+#   fragment hash: {{ include "dot_dotlocal/mise/miserc.extra.toml" | sha256sum }}
 # The logic is the base's `mise-fleet-trust`; this only runs it, on the machine's own Python where
 # there is one. The base's own trigger trusts the dotfiles source's mise.toml, so this passes no
 # --base-source. A manifest the tool cannot read fails the apply (exit 2), naming why.

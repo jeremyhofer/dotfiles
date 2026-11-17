@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""mise-fleet-trust -- trust the mise configurations the fleet manifest opts in, and nothing else.
+"""mise-fleet-trust -- trust the mise configurations the fleet manifest opts in, and nothing else,
+and write the mise settings that bound what mise reads.
 
     mise-fleet-trust [--base-source DIR] [--dry-run]
-    mise-fleet-trust --env
 
 WHY. mise applies a configuration's [env], settings and tasks only once that file is trusted, and
 its trust records live in mise's state directory, which an agent's sandbox may not write. So trust is
@@ -21,54 +21,73 @@ mise refuses to trust a path that is not there; the next run after it appears tr
 Measured with mise 2026.11.5: `mise trust <file>` records the file's DIRECTORY as a trust root, and
 every configuration file in that directory (`.mise.toml`, `.config/mise/config.toml`, a later
 `mise.local.toml`) counts as trusted with it, while a subdirectory's does not. Trusting each file by
-its path is still the narrowest form mise offers outside paranoid mode, and it stays exact if mise
-narrows the record.
+its path is still the narrowest form mise offers outside paranoid mode's `config` category. That
+record carries no content, and paranoid `env_files` does not change it: a configuration trusted this
+way stays trusted after an edit. An environment file a configuration loads (a SOPS file) is trusted
+separately and, under paranoid `env_files`, against its contents; this tool trusts none. mise runs
+here with the machine's own configuration, so any paranoid setting comes from the deployed drop-ins.
 
-WHAT IT CANNOT RECORD: THE IGNORE LIST AND THE CEILING. Two more settings complete the boundary:
-`ignored_config_paths` (each opted-in project's `node_modules`, `.venv` and `vendor`, and its
-`miseIgnore:` paths, so a dependency's configuration is never read, and `mise exec` there never
-trusts and runs it) and `ceiling_paths` (each project's parent, so the walk stops above the
-project). Measured with mise 2026.11.5, neither setting has any effect when set in a configuration
-file (a conf.d/ drop-in, config.toml or settings.toml), though `mise settings get` reports the
-value; each takes effect only from the environment, MISE_IGNORED_CONFIG_PATHS and
-MISE_CEILING_PATHS, as `:`-separated lists. So --env prints the two, and whatever starts a process
-that reaches mise has to set them; this tool writes no drop-in. The dependency directories are
-listed whether or not they exist yet, and so are opted-in projects not on disk here, because the
-values outlive this run: a clone or an `npm ci` after the apply is still covered.
+THE MISERC. Two more settings complete the boundary: `ignored_config_paths` (each opted-in
+project's `node_modules`, `.venv` and `vendor`, and its `miseIgnore:` paths, so a dependency's
+configuration is never read, and `mise exec` there never trusts and runs it) and `ceiling_paths`
+(each project's parent, so the walk stops above the project). mise reads these before any
+configuration file, so they take effect only from its "miserc", `miserc.toml` in mise's
+configuration directory ($MISE_CONFIG_DIR, else $XDG_CONFIG_HOME/mise, else ~/.config/mise), as
+top-level keys, or from the environment; set in a conf.d/ drop-in, in config.toml or under
+[settings] in the miserc, `mise settings get` reports them and they do nothing (measured, mise
+2026.11.5). This tool owns that file and
+writes it at every run, atomically, mode 644:
 
-    MISE_IGNORED_CONFIG_PATHS=<dir>/.venv:<dir>/node_modules:<dir>/vendor:<dir>/<miseIgnore>...
-    MISE_CEILING_PATHS=<parent of dir>:...
+    # (a header naming this tool)
+    ignored_config_paths = ["<dir>/.venv", "<dir>/fixtures", "<dir>/node_modules", "<dir>/vendor"]
+    ceiling_paths = ["<parent of dir>"]
+    # (then a domain's own miserc settings, copied verbatim)
 
-An entry matches the path it names, not a deeper directory of the same name.
+The domain's settings come from ~/.dotlocal/mise/miserc.extra.toml, when it exists: every other
+setting mise reads only from the miserc goes there. A fragment that names either list is refused,
+because the two are this tool's and a second assignment would make the file invalid or override
+them. The dependency directories are listed whether or not they exist yet, and so are opted-in
+projects not on disk here, so a clone or an `npm ci` after the apply is still covered. An entry
+matches the path it names, not a deeper directory of the same name.
 
 THE MANIFEST. Read through fleet-decl ($FLEET_RECORD, else ~/Devel/mani.yaml; a project's `path` is
 relative to $FLEET_DEVEL_ROOT, else ~/Devel, or absolute). No manifest file means no project is
-trusted, which is not an error. A manifest fleet-decl cannot read, or a `miseIgnore` entry that is
-not a plain path inside its project, refuses the run before any project is trusted: an answer
-built from an unreadable record would be unfounded, and a guessed ignore list could reach outside
-the project. `fleet-decl --check` reports the same entries.
+trusted and both lists are empty, which is not an error. A manifest fleet-decl cannot read, an
+invalid `miseIgnore` entry (not a plain path inside its project) or a refused fragment stops the run
+before any project is trusted and leaves the miserc as it was: an answer built from an unreadable
+record would be unfounded, and a guessed ignore list could reach outside the project.
+`fleet-decl --check` reports the same entries.
 
 OPTIONS.
     --base-source DIR   also trust DIR/mise.toml (the apply passes the dotfiles source directory)
-    --dry-run           print what would be trusted, trust nothing
-    --env               print the two environment lines above and nothing else; trusts nothing
+    --dry-run           print the miserc and what would be trusted; write and trust nothing
 
 EXIT. 0 done (or nothing to do); 1 a `mise trust` failed or an opted-in project declares no path,
 each named on stderr, the rest still done; 2 usage, mise not installed, fleet-decl not found, the
-manifest unreadable, or an invalid miseIgnore entry.
+manifest unreadable, an invalid miseIgnore entry, a refused fragment, or the miserc not written.
 
 Standard library only, Python 3.9 syntax.
 """
 import argparse
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 PROG = "mise-fleet-trust"
 CONFIG_NAMES = ("mise.toml", "mise.local.toml")
 DEPENDENCY_DIRS = (".venv", "node_modules", "vendor")
 GLOB_CHARS = "*?["
+OWNED_KEYS = ("ignored_config_paths", "ceiling_paths")
+HEADER = """\
+# Generated by mise-fleet-trust at each dotfiles apply; an edit here is overwritten.
+# mise reads this file (its "miserc") before any configuration file, and some settings, these
+# among them, take effect only here or in the environment. The two lists below come from the fleet
+# manifest's miseTrust projects; what follows them is ~/.dotlocal/mise/miserc.extra.toml, verbatim.
+"""
 
 
 class Refuse(Exception):
@@ -123,8 +142,7 @@ def decl_rows(fleet_decl, *args):
 
 
 def bad_ignore(entry):
-    """Why a miseIgnore entry is refused, or None. The same shape fleet-decl --check holds it to,
-    plus no `:`, which would split the environment list."""
+    """Why a miseIgnore entry is refused, or None: the shape fleet-decl --check holds it to."""
     if not entry:
         return "is empty"
     if entry.startswith("/") or entry.startswith("~"):
@@ -133,8 +151,6 @@ def bad_ignore(entry):
         return "has an empty, . or .. component"
     if any(c in entry for c in GLOB_CHARS):
         return "has a glob character"
-    if ":" in entry or "\n" in entry:
-        return "has a : or a newline"
     return None
 
 
@@ -176,9 +192,6 @@ def load_projects():
             errors += 1
             continue
         directory = project_dir(raw)
-        if ":" in directory or "\n" in directory:
-            raise Refuse("%s: its directory %s has a : or a newline, which the environment "
-                         "lists cannot carry" % (name, directory))
         projects.append(Project(name, directory, ignores.get(name, [])))
     return projects, errors
 
@@ -193,13 +206,85 @@ def ceiling_paths(project):
     return [os.path.dirname(project.dir)]
 
 
-def env_lines(projects):
+def mise_config_dir():
+    """mise's configuration directory, found as mise finds it."""
+    if os.environ.get("MISE_CONFIG_DIR"):
+        return os.environ["MISE_CONFIG_DIR"]
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config, "mise")
+
+
+def fragment_path():
+    return os.path.join(os.path.expanduser("~"), ".dotlocal", "mise", "miserc.extra.toml")
+
+
+def read_fragment():
+    """The domain's miserc settings, verbatim, or "" when there are none. Raises Refuse when the
+    fragment cannot be read or names a setting this tool owns."""
+    path = fragment_path()
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refuse("the miserc fragment %s cannot be read: %s" % (path, e))
+    for number, line in enumerate(text.splitlines(), 1):
+        code = line.split("#", 1)[0]
+        for key in OWNED_KEYS:
+            if re.search(r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])" % key, code):
+                raise Refuse("the miserc fragment %s sets %s (line %d): this tool writes that list "
+                             "from the fleet manifest, so a domain cannot set it too; extend it "
+                             "with miseIgnore or the manifest instead" % (path, key, number))
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def toml_list(paths):
+    # A JSON string is a valid TOML basic string: the same quoting and escapes.
+    return "[" + ", ".join(json.dumps(p) for p in paths) + "]"
+
+
+def miserc_text(projects, fragment):
     ignored, ceilings = set(), set()
     for project in projects:
         ignored.update(ignore_paths(project))
         ceilings.update(ceiling_paths(project))
-    return ["MISE_IGNORED_CONFIG_PATHS=" + ":".join(sorted(ignored)),
-            "MISE_CEILING_PATHS=" + ":".join(sorted(ceilings))]
+    text = (HEADER + "ignored_config_paths = " + toml_list(sorted(ignored)) + "\n"
+            + "ceiling_paths = " + toml_list(sorted(ceilings)) + "\n")
+    if fragment:
+        text += "\n# --- %s ---\n" % fragment_path() + fragment
+    try:
+        import tomllib  # Python 3.11 and later; where it is missing, mise is the only parser
+    except ImportError:
+        return text
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise Refuse("the miserc would not parse (%s); is the fragment %s valid TOML?"
+                     % (e, fragment_path()))
+    return text
+
+
+def write_miserc(text):
+    """Replace mise's miserc in one step: a reader sees the old file or the new one, never part."""
+    directory = mise_config_dir()
+    target = os.path.join(directory, "miserc.toml")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".miserc.", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, target)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    except OSError as e:
+        raise Refuse("cannot write %s: %s" % (target, e))
+    print("wrote %s" % target)
 
 
 def trust_file(mise, path, dry_run):
@@ -231,21 +316,13 @@ def trust_project(mise, project, dry_run):
 def main(argv):
     parser = argparse.ArgumentParser(prog=PROG, add_help=True,
                                      description="Trust the mise configurations the fleet "
-                                                 "manifest opts in (see the header).")
+                                                 "manifest opts in, and write mise's miserc "
+                                                 "(see the header).")
     parser.add_argument("--base-source", metavar="DIR")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--env", action="store_true")
     args = parser.parse_args(argv)
-    if args.env and (args.base_source or args.dry_run):
-        parser.error("--env takes no other option")
 
     try:
-        if args.env:
-            projects, _ = load_projects()
-            for line in env_lines(projects):
-                print(line)
-            return 0
-
         mise = shutil.which("mise")
         if not mise:
             raise Refuse("mise is not installed")
@@ -257,15 +334,22 @@ def main(argv):
                 failures += 0 if trust_file(mise, path, args.dry_run) else 1
             else:
                 say("no mise.toml in %s; nothing to trust there" % args.base_source)
+        # Everything is read and checked before anything about the projects is written.
         projects, errors = load_projects()
+        text = miserc_text(projects, read_fragment())
         failures += errors
+        if args.dry_run:
+            print("would write %s:" % os.path.join(mise_config_dir(), "miserc.toml"))
+            sys.stdout.write(text)
+        else:
+            write_miserc(text)
         for project in projects:
             if not os.path.isdir(project.dir):
                 say("%s: %s is not on disk here; skipped" % (project.name, project.dir))
                 continue
             failures += 0 if trust_project(mise, project, args.dry_run) else 1
     except Refuse as e:
-        say("%s -- no project was trusted" % e)
+        say("%s -- no project was trusted, and the miserc is unchanged" % e)
         return 2
     return 1 if failures else 0
 
