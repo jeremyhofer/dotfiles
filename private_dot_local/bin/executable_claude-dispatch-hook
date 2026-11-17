@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # claude-dispatch-hook -- Claude Code hook on subagent dispatch: refuses a dispatch that names no
-# model, so every subagent's tier is a decision rather than an inheritance.
+# model, so every subagent's tier is a decision rather than an inheritance, and a dispatch that names
+# Fable unless the session was started with the opt-in.
 #
 # SUBCOMMANDS (the hook's JSON input on stdin):
 #
@@ -11,11 +12,29 @@
 #                    `model`, and any type named in --exempt: agents whose own definition sets
 #                    their model, where a dispatch-time model would override it.
 #
+#                    Also matcher "Workflow". Refuses an Agent call whose `model` names Fable
+#                    (any case, any id containing it, such as claude-fable-5-2), and a Workflow
+#                    whose script mentions Fable anywhere (inline `script`, or the file at
+#                    `scriptPath`), unless CLAUDE_FABLE_OPTIN=1 is in the environment. A fork
+#                    still passes: it ignores `model` and runs on its parent's.
+#
+# THE OPT-IN. CLAUDE_FABLE_OPTIN=1 in the environment Claude Code was started with, which its hooks
+# inherit: `CLAUDE_FABLE_OPTIN=1 claude ...` for one session, or the `env` key of a settings file for
+# every session that reads it. The session it guards cannot set it: a Bash `export` changes only
+# that shell, never the hook's environment, and settings files are a permission edit the person at
+# the keyboard makes. It lasts as long as the session, so there is no expiry to manage.
+#
 # WHY. A dispatch that names no model runs on the parent's model, so a session on the top tier
 # hands that tier to every subagent it forgets to tier. Nobody chose it, and nothing records that
 # nobody did. Refusing the dispatch makes the choice explicit at the one point it is made, and the
-# retry costs one turn. It reads only the Agent tool's input: subagents started some other way (a
-# workflow script's agents) are not seen.
+# retry costs one turn. Fable is refused separately because a named model passes the first check:
+# the top tier is not used for delegation here unless its owner chose it for this session.
+#
+# NOT SEEN. A Workflow started by `name` (a saved workflow; its script is not in the input), a
+# Workflow script that builds the model name at run time, an agent type whose own definition sets
+# Fable (dispatched with no `model`, under --exempt), and a session itself running on Fable, whose
+# forks inherit it. The script check over-matches instead: a script that only mentions Fable in a
+# prompt is refused too, which is loud and is lifted by the opt-in.
 #
 # FAIL OPEN. A hook that breaks a session is worse than one that misses a case: without jq, with
 # unreadable input, or on any internal error, it exits 0 and prints nothing.
@@ -35,6 +54,26 @@ done
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat 2>/dev/null) || exit 0
 
+deny() {
+  jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+}
+
+fable_reason="Fable is not used for delegation here unless whoever started this session set CLAUDE_FABLE_OPTIN=1 in its environment, and it is not set. Re-dispatch on the cheapest tier that does the task well (haiku, sonnet or opus). If Fable is really wanted, ask the person at the keyboard: only they set the opt-in, when they start the session."
+
+tool=$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null) || exit 0
+
+if [ "$tool" = Workflow ]; then
+  [ "${CLAUDE_FABLE_OPTIN:-}" = 1 ] && exit 0
+  script=$(printf '%s' "$input" | jq -r '.tool_input.script // ""' 2>/dev/null) || exit 0
+  path=$(printf '%s' "$input" | jq -r '.tool_input.scriptPath // ""' 2>/dev/null) || exit 0
+  [ -n "$path" ] && [ -r "$path" ] && script="$script
+$(cat "$path" 2>/dev/null)"
+  if printf '%s' "$script" | grep -qi fable; then
+    deny "This workflow's script mentions Fable. $fable_reason"
+  fi
+  exit 0
+fi
+
 fields=$(printf '%s' "$input" | jq -r '
   select(.tool_name == "Agent" or .tool_name == "Task")
   | [(.tool_input.subagent_type // "general-purpose"), (.tool_input.model // "")] | @tsv' 2>/dev/null) || exit 0
@@ -42,11 +81,14 @@ fields=$(printf '%s' "$input" | jq -r '
 type=${fields%%	*}
 model=${fields#*	}
 
-[ -n "$model" ] && exit 0
+if [ -n "$model" ]; then
+  [ "$type" = fork ] && exit 0
+  [ "${CLAUDE_FABLE_OPTIN:-}" = 1 ] && exit 0
+  case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
+    *fable*) deny "This dispatch names model \"$model\". $fable_reason" ;;
+  esac
+  exit 0
+fi
 case "$exempt" in *",$type,"*) exit 0 ;; esac
-
-deny() {
-  jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
-}
 
 deny "Every subagent dispatch here names its model; this one names none, so it would inherit yours. Re-dispatch with \`model\` set to the cheapest tier that does the task well: haiku for mechanical sweeps, rote edits, enumeration and format churn; sonnet for standard search, build or code work with a clear spec; opus for judgment-heavy design, adversarial verification or ambiguous debugging. Name opus explicitly when that is the choice. A fork (subagent_type \"fork\") inherits your model by design and needs no model."

@@ -45,7 +45,7 @@ codes, state files, caveats). This file is short on purpose: every session loads
   · `memory-doctor` (auto-memory store health) · `claude-context-probe` (what Claude Code loads) ·
   `claude-project-settings` (writes declared repo and directory settings) · `claude-trust-check`
   (unaccepted workspace-trust prompts) · `claude-mask-sweep` (stale sandbox placeholder files) ·
-  `install-claude-plugins` · `claude-dispatch-hook` (refuses a dispatch naming no model) ·
+  `install-claude-plugins` · `claude-dispatch-hook` (refuses a dispatch naming no model, or Fable without its opt-in) ·
   `claude-worklog-hook` (dispatch and work-note log) · `claude-worktree-hook` (worktree command
   guard) · `claude-scratch-hook` (scratch-tree tidying) · `skill-externals-sync` (pinned external
   skills).

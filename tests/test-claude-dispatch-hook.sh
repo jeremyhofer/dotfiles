@@ -1,6 +1,6 @@
 #!/bin/sh
 # test-claude-dispatch-hook.sh -- contract tests for the Claude Code hook that refuses a subagent
-# dispatch which names no model.
+# dispatch which names no model, or names Fable without the opt-in.
 #
 # The guard is also run as a DELIBERATELY BROKEN copy (its refusal removed by sed, the sed target
 # asserted to exist first), and the broken copy must let the dispatch through. A guard never seen to
@@ -66,6 +66,42 @@ out=$(run "$HOOK" "$(agent_payload general-purpose -)" --exempt claude-code-guid
 expect "--exempt does not widen to other types" deny "$out" $?
 out=$(run "$HOOK" "$(agent_payload general-purpose - Bash)"); expect "another tool is not acted on" allow "$out" $?
 
+echo "fable:"
+unset CLAUDE_FABLE_OPTIN
+out=$(run "$HOOK" "$(agent_payload general-purpose fable)"); expect "a dispatch naming fable is refused" deny "$out" $?
+reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""')
+case "$reason" in *CLAUDE_FABLE_OPTIN=1*) ok "the refusal names the opt-in" ;; *) no "the refusal names the opt-in" ;; esac
+out=$(run "$HOOK" "$(agent_payload general-purpose claude-fable-5-2)"); expect "a full fable model id is refused" deny "$out" $?
+out=$(run "$HOOK" "$(agent_payload general-purpose Fable)"); expect "fable in another case is refused" deny "$out" $?
+out=$(run "$HOOK" "$(agent_payload claude-code-guide fable)" --exempt claude-code-guide)
+expect "an exempt type naming fable is refused" deny "$out" $?
+out=$(run "$HOOK" "$(agent_payload general-purpose fable Task)"); expect "fable under the older tool name Task is refused" deny "$out" $?
+out=$(run "$HOOK" "$(agent_payload fork fable)"); expect "a fork naming fable passes (it ignores model)" allow "$out" $?
+out=$(printf '%s' "$(agent_payload general-purpose fable)" | CLAUDE_FABLE_OPTIN=1 "$HOOK" require-model 2>"$T/err")
+expect "with CLAUDE_FABLE_OPTIN=1 fable passes" allow "$out" $?
+out=$(printf '%s' "$(agent_payload general-purpose fable)" | CLAUDE_FABLE_OPTIN=yes "$HOOK" require-model 2>"$T/err")
+expect "an opt-in other than 1 does not count" deny "$out" $?
+out=$(printf '%s' "$(agent_payload general-purpose -)" | CLAUDE_FABLE_OPTIN=1 "$HOOK" require-model 2>"$T/err")
+expect "the opt-in does not lift the no-model refusal" deny "$out" $?
+
+# wf_payload <script text> [scriptPath]
+wf_payload() {
+  jq -cn --arg s "$1" --arg p "${2:-}" '
+    {session_id: "s1", hook_event_name: "PreToolUse", tool_name: "Workflow", cwd: "/x",
+     tool_input: ((if $s == "" then {} else {script: $s} end)
+                  + (if $p == "" then {} else {scriptPath: $p} end))}'
+}
+echo "workflow:"
+out=$(run "$HOOK" "$(wf_payload "await agent('x', {model: 'fable'})")"); expect "a workflow script naming fable is refused" deny "$out" $?
+out=$(run "$HOOK" "$(wf_payload "await agent('x', {model: 'sonnet'})")"); expect "a workflow script without fable passes" allow "$out" $?
+printf "agent('x', {model: \"claude-fable-5-2\"})\n" > "$T/wf.js"
+out=$(run "$HOOK" "$(wf_payload '' "$T/wf.js")"); expect "a scriptPath file naming fable is refused" deny "$out" $?
+printf "agent('x', {model: 'haiku'})\n" > "$T/wf-ok.js"
+out=$(run "$HOOK" "$(wf_payload '' "$T/wf-ok.js")"); expect "a scriptPath file without fable passes" allow "$out" $?
+out=$(run "$HOOK" "$(wf_payload '' "$T/absent.js")"); expect "an unreadable scriptPath passes (fail open)" allow "$out" $?
+out=$(printf '%s' "$(wf_payload "agent('x', {model: 'fable'})")" | CLAUDE_FABLE_OPTIN=1 "$HOOK" require-model 2>"$T/err")
+expect "with the opt-in a fable workflow passes" allow "$out" $?
+
 echo "fail open:"
 out=$(printf 'not json' | "$HOOK" require-model 2>"$T/err"); expect "unreadable input allows" allow "$out" $?
 out=$(printf '' | "$HOOK" require-model 2>"$T/err"); expect "empty input allows" allow "$out" $?
@@ -81,6 +117,14 @@ grep -q 'deny "' "$HOOK" || no "broken-copy target not found in hook: deny \""
 b="$T/broken"; sed 's/^\([[:space:]]*\)deny "/\1: "/' "$HOOK" > "$b"; chmod +x "$b"
 cmp -s "$HOOK" "$b" && no "broken copy is identical to the hook (sed matched nothing)"
 out=$(run "$b" "$(agent_payload general-purpose -)"); expect "with the refusal removed, no model passes" allow "$out" $?
+grep -q '\*fable\*) deny "' "$HOOK" || no "broken-copy target not found in hook: *fable*) deny \""
+b2="$T/broken-fable"; sed 's/\*fable\*) deny "/*fable*) : "/' "$HOOK" > "$b2"; chmod +x "$b2"
+cmp -s "$HOOK" "$b2" && no "fable broken copy is identical to the hook (sed matched nothing)"
+out=$(run "$b2" "$(agent_payload general-purpose fable)"); expect "with the fable refusal removed, fable passes" allow "$out" $?
+out=$(run "$b2" "$(agent_payload general-purpose -)"); expect "removing the fable refusal leaves the no-model one" deny "$out" $?
+b3="$T/broken-wf"; sed 's/grep -qi fable/false/' "$HOOK" > "$b3"; chmod +x "$b3"
+cmp -s "$HOOK" "$b3" && no "workflow broken copy is identical to the hook (sed matched nothing)"
+out=$(run "$b3" "$(wf_payload "agent('x', {model: 'fable'})")"); expect "with the script check removed, a fable workflow passes" allow "$out" $?
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
