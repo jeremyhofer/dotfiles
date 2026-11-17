@@ -20,7 +20,10 @@ What is held, for Linux and for macOS (rendered with the OS overridden in chezmo
   sets its own PATH starts it with the shim directory, and none names fnm. ~/.zshrc renders neither
   the direnv nor the fnm hook.
 * With `miseActive` false or absent, nothing of the above renders: no shim directory, neither
-  variable, and the direnv and fnm hooks as before; false and absent render the same bytes.
+  variable, and the direnv and fnm hooks as before; false and absent render the same bytes. The units
+  and agents held to this are the ones chezmoi deploys under that data (`chezmoi managed`), so a
+  file .chezmoiignore keeps off such a machine, like the Linux SOPS key loader, is not; each one
+  skipped is seen to deploy with the flag on.
 * ~/.zshenv starts no process, with the flag on or off: it is sourced with forking forbidden
   (RLIMIT_NPROC of 1), and a planted command substitution is seen to fail the same probe.
 * The shim directory and the key file name are each written once in the source: no template carries
@@ -61,19 +64,36 @@ AGENT_DIR = ROOT / "private_Library" / "LaunchAgents"
 
 # --- rendering -----------------------------------------------------------------------------------
 
-def render_text(tmp: Path, text: str, os_name: str, flag: str) -> str:
-    """Template text rendered by chezmoi under a scratch config, with chezmoi's OS set to os_name."""
+def chezmoi_argv(tmp: Path, os_name: str, flag: str) -> list[str]:
+    """chezmoi run against this source under a scratch config holding the flag, with chezmoi's OS
+    set to os_name."""
     tmp.mkdir(parents=True, exist_ok=True)
     cfg = tmp / f"c-{flag}.toml"
     cfg.write_text('[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n'
                    + FLAGS[flag])
-    out = subprocess.run(
-        [CHEZMOI, "--config", str(cfg), "--source", str(ROOT),
-         "--persistent-state", str(tmp / f"s-{flag}.db"),
-         "--override-data", '{"chezmoi":{"os":"%s"}}' % os_name, "execute-template"],
-        input=text, capture_output=True, text=True, timeout=60)
+    return [CHEZMOI, "--config", str(cfg), "--source", str(ROOT),
+            "--persistent-state", str(tmp / f"s-{flag}.db"),
+            "--override-data", '{"chezmoi":{"os":"%s"}}' % os_name]
+
+
+def render_text(tmp: Path, text: str, os_name: str, flag: str) -> str:
+    """Template text rendered by chezmoi under a scratch config, with chezmoi's OS set to os_name."""
+    out = subprocess.run([*chezmoi_argv(tmp, os_name, flag), "execute-template"],
+                         input=text, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     return out.stdout
+
+
+def deployed(tmp: Path, os_name: str, flag: str) -> set[str]:
+    """The source paths, relative to the source root, that chezmoi deploys under the same scratch
+    config: its own reading of .chezmoiignore, so a file ignored under that data is not in it."""
+    out = subprocess.run([*chezmoi_argv(tmp, os_name, flag), "managed",
+                          "--path-style", "source-relative"],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    found = set(out.stdout.splitlines())
+    assert found, "chezmoi listed nothing as managed, so the deploy filter would see nothing"
+    return found
 
 
 def render(tmp: Path, source: Path, os_name: str, flag: str) -> str:
@@ -302,14 +322,39 @@ def test_every_agent_that_sets_path_starts_it_with_the_shims(tmp_path):
     assert setters, "no LaunchAgent sets PATH, so this check saw nothing"
 
 
+def rel(source: Path) -> str:
+    return str(source.relative_to(ROOT))
+
+
 @pytest.mark.parametrize("flag", ["off", "absent"])
 def test_units_and_agents_off_name_no_shims(tmp_path, flag):
+    """A unit or LaunchAgent that deploys with the flag off names no shims. One that .chezmoiignore
+    leaves out under that data never reaches such a machine, so it is not held to this."""
+    linux, darwin = deployed(tmp_path, "linux", flag), deployed(tmp_path, "darwin", flag)
+    checked = []
     for u in units():
-        assert "mise" not in render(tmp_path, u, "linux", flag), u.name
+        if rel(u) in linux:
+            checked.append(u.name)
+            assert "mise" not in render(tmp_path, u, "linux", flag), u.name
     for a in agents():
-        text = render(tmp_path, a, "darwin", flag)
-        plistlib.loads(text.encode())
-        assert "mise" not in text, a.name
+        if rel(a) in darwin:
+            checked.append(a.name)
+            text = render(tmp_path, a, "darwin", flag)
+            plistlib.loads(text.encode())
+            assert "mise" not in text, a.name
+    assert any(n.endswith((".service", ".service.tmpl")) for n in checked), "no unit checked"
+    assert any(n.endswith((".plist", ".plist.tmpl")) for n in checked), "no LaunchAgent checked"
+
+
+@pytest.mark.parametrize("flag", ["off", "absent"])
+def test_what_the_off_check_skips_deploys_with_the_flag_on(tmp_path, flag):
+    """The check above skips only what the flag itself keeps from deploying: each unit or agent left
+    out with the flag off is in chezmoi's view with it on, so the skip is not a blind view."""
+    for os_name, sources in (("linux", units()), ("darwin", agents())):
+        off, on = deployed(tmp_path, os_name, flag), deployed(tmp_path / "on", os_name, "on")
+        for s in sources:
+            if rel(s) not in off:
+                assert rel(s) in on, f"{s.name} deploys on {os_name} with miseActive neither on nor {flag}"
 
 
 @pytest.mark.parametrize("flag", ["on", "off"])
