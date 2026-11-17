@@ -227,8 +227,10 @@ kb_findings() {
 # is a defect: untrusted, its pins and [env] fail every shim run with no terminal to approve them
 # (a service, an agent session, a hook), and the failure names mise, not the missing opt-in. Both
 # facts are read from the checkout at the entry's `path`, so the check speaks for this machine's
-# checkouts only; one that is not on disk here is skipped. `false` is not an exemption: the record
-# says such a repository opts in, so anything but true is refused.
+# checkouts only; one that is not on disk here is skipped. Such a repository must DECLARE the key:
+# `true` trusts it, an explicit `false` is a recorded decline (it stays untrusted, as one with no
+# entry does), and only a missing or malformed key is refused. Default deny, configured per
+# repository; no tag is exempt either way, so a third-party clone gets its own line too.
 # miseIgnore: paths inside the project whose mise configs are ignored (a vendored tree, a fixture
 # holding a mise.toml). Each is joined onto the project's directory by the trust render, so one that
 # is absolute, ~-relative, globbed or climbing out with `..` would ignore something outside the
@@ -244,10 +246,12 @@ mise_findings() {
                  | .key + "\t"
                    + ((((.value.miseTrust | tag) == "!!bool") and (.value.miseTrust == true)) | tostring) + "\t"
                    + (((.value | has("miseTrust")) and ((.value.miseTrust | tag) != "!!bool")) | tostring) + "\t"
-                   + (.value | has("miseIgnore") | tostring) + "\t" + (.value.path // "" | tostring)' \
+                   + (.value | has("miseIgnore") | tostring) + "\t"
+                   + (((.value | has("miseTrust")) and ((.value.miseTrust | tag) == "!!bool")) | tostring) + "\t"
+                   + (.value.path // "" | tostring)' \
           "$RECORD" 2>/dev/null) || die_unusable "--check: the mise query failed on $RECORD -- refusing to report it clean"
   [ -n "$_rows" ] || return 0
-  printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _mp _mtrust _mbadt _mhasi _mpath; do
+  printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _mp _mtrust _mbadt _mhasi _mdecl _mpath; do
     if [ "$_mbadt" = true ]; then
       printf '[miseTrust-value] %s: miseTrust must be true or false, unquoted\n' "$_mp"
     fi
@@ -271,12 +275,12 @@ mise_findings() {
         done
       fi
     fi
-    [ "$_mtrust" = true ] && continue
+    [ "$_mdecl" = true ] && continue
     [ -n "$_mpath" ] || continue
     case "$_mpath" in /*) _md=$_mpath ;; *) _md="$DEVEL_ROOT/$_mpath" ;; esac
     [ -d "$_md" ] || continue
     if [ -e "$_md/.mise.secrets.sops.json" ] || [ -L "$_md/.mise.secrets.sops.json" ]; then
-      printf '[miseTrust-missing] %s: %s holds .mise.secrets.sops.json but miseTrust is not true\n' "$_mp" "$_mpath"
+      printf '[miseTrust-missing] %s: %s holds .mise.secrets.sops.json but declares no miseTrust (true trusts it, false declines)\n' "$_mp" "$_mpath"
     fi
     # Only a checkout's own .git: without one, git would search upward and answer for whatever
     # repository encloses the directory. The exported git variables are cleared because inside a
@@ -286,7 +290,7 @@ mise_findings() {
                    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
              git -C "$_md" -c core.fsmonitor=false ls-files -- mise.toml 2>/dev/null); then
       [ -z "$_mt" ] \
-        || printf '[miseTrust-missing] %s: %s tracks mise.toml but miseTrust is not true\n' "$_mp" "$_mpath"
+        || printf '[miseTrust-missing] %s: %s tracks mise.toml but declares no miseTrust (true trusts it, false declines)\n' "$_mp" "$_mpath"
     else
       printf '[miseTrust-unreadable] %s: %s has a .git that git cannot read, so whether it tracks mise.toml is unknown\n' "$_mp" "$_mpath"
     fi

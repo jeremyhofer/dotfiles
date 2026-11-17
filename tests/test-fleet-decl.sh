@@ -713,8 +713,9 @@ out=$(FLEET_RECORD="$TMP/kb-typo.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 
 
 # miseTrust and miseIgnore: a project's opt-in to mise trust, and the paths inside it whose mise
 # configs are ignored. A repository that COMMITS a mise.toml at its top level, or holds a SOPS
-# secrets file there, without `miseTrust: true` is refused: untrusted, its pins and [env] fail every
-# shim run that has no terminal to approve them, and nothing else says why. The facts are read from
+# secrets file there, must declare miseTrust: true trusts it, an explicit false records a decline,
+# and a missing key is refused, because an undeclared one fails every shim run that has no terminal
+# to approve it, and nothing else says why. The facts are read from
 # the checkout at the entry's `path`, so the fixtures are real git repositories. Exported git
 # variables are cleared first: inside a hook they name the repository being committed, and the
 # fixture setup below would write to it.
@@ -743,12 +744,13 @@ while IFS='|' read -r label repo extra want; do
   fi
 done <<'CASES'
 a tracked mise.toml with no miseTrust|m/tracked|-|[miseTrust-missing] alpha: m/tracked tracks mise.toml
-a tracked mise.toml with miseTrust false|m/tracked|    miseTrust: false|[miseTrust-missing] alpha: m/tracked tracks mise.toml
+a tracked mise.toml with miseTrust false, a recorded decline|m/tracked|    miseTrust: false|clean
 a tracked mise.toml with miseTrust true|m/tracked|    miseTrust: true|clean
 an untracked mise.toml with no miseTrust|m/untracked|-|clean
 a mise.toml tracked below the top level with no miseTrust|m/nested|-|clean
 a secrets file with no miseTrust|m/secrets|-|[miseTrust-missing] alpha: m/secrets holds .mise.secrets.sops.json
 a secrets file with miseTrust true|m/secrets|    miseTrust: true|clean
+a secrets file with miseTrust false, a recorded decline|m/secrets|    miseTrust: false|clean
 a checkout with neither, and no miseTrust|m/clean|-|clean
 a checkout not on this machine|m/absent|-|clean
 a checkout whose .git cannot be read|m/broken|-|[miseTrust-unreadable] alpha: m/broken

@@ -40,18 +40,19 @@ Entries are newest first.
 Two new project keys in the fleet manifest. `miseTrust: true` is a project's opt-in to mise trust;
 `miseIgnore:` lists paths inside the project whose mise configs are to be ignored. `--check` now
 reads each project's checkout at its `path` on this machine and refuses, as `[miseTrust-missing]`,
-one that tracks a `mise.toml` at its top level or holds a `.mise.secrets.sops.json` there without
-`miseTrust: true`; `false` does not exempt it. It also refuses a `miseTrust` that is not an unquoted
+one that tracks a `mise.toml` at its top level or holds a `.mise.secrets.sops.json` there and
+declares no `miseTrust`. `true` trusts it; an explicit `false` is a recorded decline, accepted, and
+the repository stays untrusted. No tag is exempt. It also refuses a `miseTrust` that is not an unquoted
 boolean, a `miseIgnore` that is not a list of relative paths inside the project or sits on a project
 without `miseTrust: true`, near-misses of either key, and a checkout whose `.git` git cannot read.
 Nothing reads the keys yet beyond the check; they are the declarations a later apply step will
 trust from.
 
 **ACTION:** run `fleet-decl --check` (or `sh setup/overlay-doctor`) on each machine after applying.
-For each `[miseTrust-missing]`, read that repository's `mise.toml` and, if it is to be trusted, add
-`miseTrust: true` to its entry in the private layer's manifest source. A third-party clone that
-commits a `mise.toml` is refused too, so either trust it after reading its config or drop it from
-the manifest. Details: [`docs/reference/fleet-manifest.md`](docs/reference/fleet-manifest.md).
+For each `[miseTrust-missing]`, read that repository's `mise.toml` and declare a choice in its entry
+in the private layer's manifest source: `miseTrust: true` to trust it, or `miseTrust: false`, with a
+comment saying why, to decline. A third-party clone that commits a `mise.toml` needs a line too;
+declining is the usual answer for one you do not work in. Details: [`docs/reference/fleet-manifest.md`](docs/reference/fleet-manifest.md).
 
 
 ## 2026-11-17 (tooling index)
