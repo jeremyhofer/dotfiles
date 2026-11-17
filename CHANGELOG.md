@@ -33,6 +33,15 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (tooling index)
+
+### `tooling.md` is a one-line index; the full catalog is `~/.claude/tooling-reference.md` (new file)
+
+Every session loads `tooling.md` on every request, so it now holds one line per tool (about 5KB,
+down from 26KB). The full entries moved verbatim to `~/.claude/tooling-reference.md`, which is
+deployed and never imported. Nothing to do on adopting it, beyond the apply. A private layer's own
+tooling file can follow the same split.
+
 ## 2026-11-17 (heartbeat)
 
 ### `fleet-wait --heartbeat` is refused above 55 minutes (ACTION if a caller passes more)

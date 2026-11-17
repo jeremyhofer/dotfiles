@@ -144,7 +144,7 @@ test-scaffold-overlay.sh            setup/scaffold-overlay overlay-skeleton/**
 test-modify-settings.sh             dot_claude/modify_settings.json
 test-statusline-dir.sh              dot_claude/statusline-command.sh
 test-statusline-usage.sh            dot_claude/statusline-command.sh private_dot_local/bin/executable_claude-usage-override
-test-tooling-inventory.sh           dot_claude/tooling.md
+test-tooling-inventory.sh           dot_claude/tooling.md dot_claude/tooling-reference.md
 test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map
 # A tracked .npmrc has no line on purpose: a glob matching no tracked file is refused as dead, and a

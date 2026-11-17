@@ -74,7 +74,8 @@ No task runner; the commands are plain.
 - **A change an adopted machine must act on gets a `CHANGELOG.md` entry**, marked ACTION when a
   private layer has to change, in the same commit. A change that adds a seam (a config file a tool
   reads, a skill that reads a domain fragment) also updates `docs/reference/private-layer.md`, and a
-  new tool its line in `dot_claude/tooling.md`. Other machines catch up only from what these say.
+  new tool its one-line entry in `dot_claude/tooling.md` (always-on, so one line) and its full entry
+  in `dot_claude/tooling-reference.md`. Other machines catch up only from what these say.
 - **Publish when a change lands, through the check.** Push to `origin` first; then, in the same
   sitting, `sh setup/publish-check` (the publish remote is `git config dotfiles.publishRemote`) and
   the push it prints. The check fails until the changelog covers every commit since the last publish

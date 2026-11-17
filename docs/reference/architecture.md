@@ -172,8 +172,10 @@ after it.
   a merge would replace the whole array).
 - **Skills** in `~/.claude/skills/` are procedures an agent loads by name when their trigger
   applies. A machine excludes any it does not want with `skipSkills`.
-- **`~/.claude/tooling.md`** is the inventory of every tool this repository installs.
-  `tests/test-tooling-inventory.sh` fails when a tool is missing from it.
+- **`~/.claude/tooling.md`** is the inventory of every tool this repository installs, one line each,
+  imported into every session's context; `tests/test-tooling-inventory.sh` fails when a tool is
+  missing from it. **`~/.claude/tooling-reference.md`** holds each tool's full entry and is read on
+  demand, never imported, so the always-on cost stays one line a tool.
 - **The status line** (`statusline-command.sh`) shows the model, directory, branch, context use and
   usage limits.
 
