@@ -3,12 +3,14 @@
 # for its agreement with tests/select-suites.sh. Both read tests/coverage.map; this suite holds
 # them to the same reach, so the commit tier and the cache cannot disagree about a suite.
 #
-# Three assertions. (1) Nx lists exactly one project per suite file in tests/, and each suite
+# Four assertions. (1) Nx lists exactly one project per suite file in tests/, and each suite
 # marked `# run-all: serial` gets `parallelism: false`, an unmarked one not. (2) A DIFFERENTIAL:
 # for a handful of single paths, the suites Nx says are affected equal what the shell selector
 # prints. (3) A map that cannot be trusted (a glob matching nothing, a line naming no suite, a line
 # with no globs, a glob outside the translated subset) makes the plugin fail rather than yield a
-# partial graph, shown against a scratch map and beside a control run that passes.
+# partial graph, shown against a scratch map and beside a control run that passes. (4) Every suite's
+# cache key holds the mise binary, and that input is steady across two runs and changed by a
+# stand-in mise, measured by the entries Nx writes to a scratch cache directory.
 #
 # WHY `nx show projects --affected --files=<path>` FOR THE NX SIDE. It asks Nx's own task-input
 # matching which projects a changed file reaches, with no git base to resolve, so it runs on any
@@ -76,6 +78,19 @@ if nxq graph --file="$tmp/graph.json"; then
     console.log(String(n));' "$tmp/graph.json")
   if [ "$nenv" = "$nwant" ]; then ok "all $nwant suite targets hash SANDBOX_RUNTIME"
   else bad "suite targets hashing SANDBOX_RUNTIME" "$nenv of $nwant"; fi
+  # mise moves with the package manager, so every suite's key holds the mise binary on PATH
+  # (tools/nx/suites.js, MISE_INPUT); whether the input does its job is held further down.
+  nmise=$(node -e '
+    const want = require(process.argv[2]).MISE_INPUT;
+    const nodes = require(process.argv[1]).graph.nodes;
+    let n = 0;
+    for (const [name, p] of Object.entries(nodes)) {
+      const t = p.data.targets && p.data.targets.test;
+      if (want && name.startsWith("suite-") && t && (t.inputs || []).some((i) => i && i.runtime === want)) n++;
+    }
+    console.log(String(n));' "$tmp/graph.json" "$root/tools/nx/suites.js")
+  if [ "$nmise" = "$nwant" ]; then ok "all $nwant suite targets hash the mise binary"
+  else bad "suite targets hashing the mise binary" "$nmise of $nwant"; fi
 else bad "nx graph" "$(errs)"; fi
 
 echo "== the tracer's control target"
@@ -90,6 +105,10 @@ if nxq show project suite-nx-suites --json; then
   if grep -q '"cache":false' "$tmp/out"; then ok "suite-nx-suites runs every time (cache false)"
   else bad "suite-nx-suites is cached" "its verdict depends on the set of tracked files"; fi
 else bad "nx show project suite-nx-suites" "$(errs)"; fi
+if nxq show project suite-mise-installed --json; then
+  if grep -q '"cache":false' "$tmp/out"; then ok "suite-mise-installed runs every time (cache false)"
+  else bad "suite-mise-installed is cached" "its verdict depends on the machine's mise and files under HOME"; fi
+else bad "nx show project suite-mise-installed" "$(errs)"; fi
 if nxq show project suite-hc-status --json; then
   if grep -q '"cache":true' "$tmp/out"; then ok "suite-hc-status (the control) is cached"
   else bad "suite-hc-status (the control) is not cached" "every other suite should be"; fi
@@ -158,6 +177,39 @@ if (cd "$root" && git ls-files | tar -cf - -T -) | (cd "$ws" && tar -xf -) \
 else
   bad "building the scratch copy" "tar, ln or git failed"
 fi
+
+echo "== the mise input: steady across runs, changed by another mise"
+# Measured where it acts: Nx's cache directory names each entry by its task's hash, so a run that adds
+# no entry hashed what the run before it did. A probe suite in the scratch copy runs three times: twice
+# under this PATH (one entry between them: the input is steady), then with a stand-in mise first on
+# PATH printing another version (a second entry: the input changed). The runs use scratch mise
+# directories, so a mise the input runs writes nothing of the machine's. Without mise installed
+# the first two runs still hold; the third then compares a mise against none.
+if [ -d "$ws/tests" ] && printf '#!/bin/sh\nexit 0\n' > "$ws/tests/test-zz-hash-probe.sh" \
+   && printf 'test-zz-hash-probe.sh tests/run-all.sh\n' >> "$ws/tests/coverage.map" && git -C "$ws" add -A; then
+  mkdir -p "$tmp/nxcache" "$tmp/stub" "$tmp/mise/config" "$tmp/mise/data" "$tmp/mise/state" "$tmp/mise/cache"
+  printf '#!/bin/sh\necho "1999.1.1 stand-in"\n' > "$tmp/stub/mise"; chmod +x "$tmp/stub/mise"
+  hashes() { ls "$tmp/nxcache" | grep -E '^[0-9]+$' | sort | tr '\n' ' '; }
+  hprobe() { # $1: a directory put first on PATH, or ""
+    (NX_CACHE_DIRECTORY="$tmp/nxcache" NX_CACHE_PROJECT_GRAPH=false \
+     MISE_CONFIG_DIR="$tmp/mise/config" MISE_DATA_DIR="$tmp/mise/data" \
+     MISE_STATE_DIR="$tmp/mise/state" MISE_CACHE_DIR="$tmp/mise/cache" \
+     PATH="${1:+$1:}$PATH"
+     export NX_CACHE_DIRECTORY NX_CACHE_PROJECT_GRAPH MISE_CONFIG_DIR MISE_DATA_DIR MISE_STATE_DIR MISE_CACHE_DIR PATH
+     nxin "$ws" run suite-zz-hash-probe:test --outputStyle=static)
+  }
+  if hprobe "" && h1=$(hashes) && hprobe "" && h2=$(hashes) && hprobe "$tmp/stub" && h3=$(hashes); then
+    n1=$(printf '%s' "$h1" | wc -w | tr -d ' '); n2=$(printf '%s' "$h2" | wc -w | tr -d ' ')
+    n3=$(printf '%s' "$h3" | wc -w | tr -d ' ')
+    if [ "$n1" = 1 ] && [ "$h2" = "$h1" ]; then ok "two runs under one mise hash alike ($h1)"
+    else bad "two runs under one mise hashed differently" "after run 1: $h1; after run 2: $h2"; fi
+    if [ "$n3" = $((n2 + 1)) ]; then ok "a stand-in mise printing another version changes the hash"
+    else bad "a stand-in mise printing another version did not add one new hash" "after run 2: $h2; after run 3: $h3"; fi
+  else bad "the hash probe suite ran" "$(errs)"; fi
+  rm -f "$ws/tests/test-zz-hash-probe.sh"
+  grep -v '^test-zz-hash-probe.sh ' "$ws/tests/coverage.map" > "$tmp/map.ws" && cp "$tmp/map.ws" "$ws/tests/coverage.map"
+  git -C "$ws" add -A
+else bad "building the hash probe suite" "printf or git failed"; fi
 
 # Two suite files that name one project (`test-kb.sh` and `test-kb.py` are both `suite-kb`) are
 # refused, naming both: the second used to replace the first silently, and a port passes through

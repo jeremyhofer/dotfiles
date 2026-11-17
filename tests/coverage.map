@@ -37,6 +37,9 @@ tree test-no-new-shell.py       private_dot_local/bin/** tests/**
 test-select-suites.sh  tests/coverage.map
 test-apply-suites.py   tests/apply-suites.py tests/seed-uv-cache.py tests/pre-apply.sh tests/post-apply.sh .chezmoi.toml.tmpl private_dot_local/bin/executable_apply-status
 test-apply-status.py   private_dot_local/bin/executable_apply-status
+# The installed mise, checked at every apply where mise is active. It reads no source file but itself
+# (it checks the machine), and Nx never caches it (tools/nx/suites.js, UNCACHED).
+test-mise-installed.py tests/test-mise-installed.py
 
 # --- tools: private_dot_local/bin --------------------------------------------------------------
 test-adr-lint.sh                    private_dot_local/bin/executable_adr-lint
@@ -157,6 +160,7 @@ test-hermetic-uv.py                 tests/run-all.sh tests/land-gate.sh tests/se
 # --- names in fixture text, not reads ------------------------------------------------------------
 refs test-pre-commit-trigger.sh     dot_claude/modify_settings.json setup/overlay-doctor
 refs test-publish-check.sh          dot_claude/tooling.md docs/reference/private-layer.md
+refs test-mise-installed.py        docs/reference/private-layer.md
 refs test-context-lint.sh           docs/README.md
 refs test-register.sh               docs/README.md
 refs test-nx-suites.sh              dot_config/sway/config setup/chezmoi-safe-apply private_dot_local/bin/executable_hc-status private_dot_local/bin/executable_git-clone-worktree private_dot_local/bin/executable_kb

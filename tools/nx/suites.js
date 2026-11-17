@@ -37,6 +37,15 @@ const { execFileSync } = require('node:child_process');
 const MAP_ENV = 'NX_SUITES_MAP_FOR_TESTS';
 const MAP_FILE = 'tests/coverage.map';
 
+// mise moves with the package manager rather than a pin, so a cached pass must not replay once it
+// changes. The input is a checksum of the mise binary on PATH, not `mise --version`: that command
+// checks for a newer release over the network and reports the result on stderr, which Nx hashes
+// with stdout, so two runs of the same mise gave two hashes (measured with mise 2026.11.5 and
+// Nx 24.0.5, the network refused). cksum is POSIX, so the line is the same on Linux and macOS; it
+// read the 160 MB Linux binary in under 0.1 s. A machine without mise hashes a fixed line.
+// tests/test-nx-suites.sh holds this input steady across two runs and changed by a stand-in mise.
+const MISE_INPUT = 'm=$(command -v mise) && cksum < "$m" || echo "mise: not installed"';
+
 // What the suites run through, by runtime and not by file: a different OS or tool version can
 // change a suite's result with no file edit, so a cache entry must not outlive it.
 const RUNTIME_INPUTS = [
@@ -46,6 +55,7 @@ const RUNTIME_INPUTS = [
   'uv --version',
   'python3 --version',
   'chezmoi --version',
+  MISE_INPUT,
 ];
 
 // THE CONTEXT A SUITE RAN IN. A suite can pass inside a Claude Code session's sandbox and fail in a
@@ -134,6 +144,7 @@ function parseMap(mapPath, suites) {
 // deleting any file can change it while no claimed file's content changes.
 const UNCACHED = {
   'test-nx-suites.sh': 'reads the set of tracked files, which no input glob names',
+  'test-mise-installed.py': "checks this machine's mise, its mise configuration and files under $HOME, which no input names",
 };
 
 const SERIAL_MARK = '# run-all: serial';
@@ -220,4 +231,4 @@ const createNodes = [
   (_files, _options, context) => [[MAP_FILE, { projects: buildProjects(context.workspaceRoot) }]],
 ];
 
-module.exports = { createNodes, createNodesV2: createNodes, globToRegExp };
+module.exports = { createNodes, createNodesV2: createNodes, globToRegExp, MISE_INPUT };

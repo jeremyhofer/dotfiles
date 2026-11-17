@@ -343,6 +343,27 @@ repository with no manifest entry, a manifest that cannot be read, or two keys s
 no allowances, and the header says which. An entry the manifest reader cannot parse is exit 2, naming
 the line, rather than being attributed to a neighbor.
 
+## mise checks: `~/.dotlocal/mise/required-files`
+
+Where mise is active (the base's drop-in `~/.config/mise/conf.d/10-base.toml` is deployed, which the
+`miseActive` data value decides), every apply runs `tests/test-mise-installed.py`: the installed mise
+resolves a pin, refuses an untrusted config, ignores a dependency's config and decrypts a SOPS file
+with a throwaway key, and no age key sits at a default key path. A domain whose machines need files
+of their own for mise to work (an encrypted file its drop-in loads, say) lists them here, and the
+suite fails, and with it the apply, while one is missing.
+
+The file holds one path per line, absolute or starting `~/`. Blank lines and `#` comments are
+ignored.
+
+```text
+# ~/.dotlocal/mise/required-files
+~/.config/example/token.sops.json
+```
+
+A listed path that is missing or not a regular file fails the suite, naming the line; so does a
+relative path, which names no one file. Without the file nothing is required. Where mise is not
+active the whole suite is skipped, the list included.
+
 ## Worktrees
 
 ### `~/.dotlocal/worktrunk.toml`

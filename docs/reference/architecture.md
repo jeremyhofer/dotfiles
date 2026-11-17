@@ -57,6 +57,7 @@ generic machine.
 | Skills | each reads `~/.dotlocal/skills/<skill>.md` for the domain's specifics | the generic procedure |
 | `skill-externals-sync` (after every apply) | `~/.dotlocal/skill-externals.yaml`: the domain's own pinned skills, fetched with git | only the base's skills and its public pinned ones |
 | `context-footprint` | `~/.dotlocal/context-budget`: the domain's token budget for always-on context | the default budget, 25000 |
+| `tests/test-mise-installed.py` (every apply, where mise is active) | `~/.dotlocal/mise/required-files`: files the domain's mise setup needs on each machine | nothing is required beyond the base's own checks |
 | `leak-guard`, `hook-doctor` | `~/.dotlocal/git-leak-*`: the terms to keep out, the private push destinations, a probe token | the guard passes every commit; hook-doctor reports `NOT-CONFIGURED` |
 | `fleet-decl` and its callers | the repository manifest, `~/Devel/mani.yaml` (or `$FLEET_RECORD`); schema in [`fleet-manifest.md`](fleet-manifest.md) | callers that need it refuse; the others skip their per-repository step |
 | Templates | chezmoi data: `domain`, `overlayRepo`, `skipSkills`, `dpi`, `miseActive` | prompted at `chezmoi init`; `skipSkills` defaults to none, `miseActive` (never prompted) to false |

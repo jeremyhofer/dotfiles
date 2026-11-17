@@ -84,6 +84,27 @@ make sure `SOPS_AGE_KEY_FILE` reaches both. Without the credential the unit fail
 login and every new shell prints the loader's one-line error. `docs/reference/private-layer.md`,
 "Tool configuration", has the row.
 
+### A suite checks the installed mise at every apply where mise is active, and the mise binary keys every suite's cache
+
+Nothing to do on adopting it. `tests/test-mise-installed.py` runs at every apply (Nx never caches it)
+and is skipped, naming the path, unless the base's drop-in `~/.config/mise/conf.d/10-base.toml` is
+deployed, which happens only on a machine whose chezmoi data sets `miseActive`. Where it runs, it
+checks the installed mise in scratch data, state and cache directories under the machine's own mise
+configuration: a pin resolves through its shim, a missing version fails where the drop-ins set
+`auto_install = false` and `not_found_system_fallback = false`, an untrusted config is refused, a
+dependency's config under `ignored_config_paths` is ignored, a SOPS file decrypts into a process with
+a throwaway age key (on macOS also through the external `sops` with `SOPS_AGE_KEY_CMD`), and no age
+key sits at a default key path. Each check also runs against a planted defect in every run and must
+catch it. An active machine needs `mise`, `sops` and `age-keygen` on PATH, or the suite fails.
+
+A new seam, `~/.dotlocal/mise/required-files`: the files a domain's mise setup needs, one per line;
+one that is missing fails the suite and the apply (`docs/reference/private-layer.md`, "mise checks").
+
+Every suite's Nx cache key now also holds a checksum of the `mise` binary on PATH (`cksum`), so a
+cached pass does not replay after a package update moves mise. Not `mise --version`, which checks
+for a newer release over the network and reports it on stderr, so its output changes from run to
+run. The first apply after this one runs every suite, since every key changed.
+
 ### The apply ledger records when a post-apply run starts
 
 Nothing to do on adopting it. `tests/post-apply.sh`'s run now appends a `post-start` event before its
