@@ -356,10 +356,11 @@ No notification is sent. The runner refuses, in this order, a request that:
 - shares its canonical with an older request in the same pass or one marked running (a runner that
   died mid-verb leaves one; remove it by hand);
 - would exceed `request-limit-canonical` or `request-limit-fleet` in the past hour;
-- is `up`, `refresh`, `resume` or `init` while the highest current `seven_day_pct` in
-  `$XDG_RUNTIME_DIR/claude-usage/*.json` is at or above `request-usage-threshold` and the canonical
-  is not exempt (a file whose `seven_day_resets_at` has passed is skipped; with no files, usage is
-  not checked), and no usage override is active. `claude-usage-override status` is the reader: while
+- is `up`, `refresh`, `resume` or `init` while the `seven_day_pct` of the newest file in
+  `$XDG_RUNTIME_DIR/claude-usage/*.json` (by its `written_at`, else its mtime) is at or above
+  `request-usage-threshold` and the canonical is not exempt (a file whose `seven_day_resets_at` has
+  passed is skipped; with no files, usage is not checked). The newest, not the highest: a stopped
+  session's file keeps the figure it last saw, including one from before a reset, and no usage override is active. `claude-usage-override status` is the reader: while
   it reports active, a start the threshold would have refused is served, and its result file and
   audit line carry a `usage_override` note naming the window it ran into. Every other check still
   applies. An expired or malformed override is not applied, and the refusal says which;

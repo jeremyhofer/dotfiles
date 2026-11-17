@@ -552,14 +552,21 @@ def check_rate(req: dict, ctx: Pass, path: Path) -> str | None:
 
 
 def seven_day_pct(t: int) -> tuple[float | None, str]:
-    """The highest current 7-day usage percent across this machine's per-session usage files. A
-    file whose seven_day_resets_at has passed describes a window that is over, and is skipped: the
-    files of stopped sessions are never removed."""
+    """The current 7-day usage percent: the figure in the NEWEST of this machine's per-session
+    usage files, by the written_at the status line's recorder stores (the file's mtime where there
+    is none). The percent is the account's, so each file holds the same figure as of when it was
+    written, and only the newest is current. The highest is not: the files of stopped sessions are
+    never removed, and one written before the window was reset keeps its old figure under the same
+    seven_day_resets_at (measured 2026-11-17: a file from 08:36 read 99% after a 09:10 reset, while
+    live files read 1%, and every start through the queue was refused). A file whose
+    seven_day_resets_at has passed describes a window that is over, and is skipped."""
     best: float | None = None
+    best_key: float = 0.0
     src = ""
     for f in sorted(USAGE_DIR.glob("*.json")):
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
+            mtime = f.stat().st_mtime
         except (OSError, ValueError):
             continue
         if not isinstance(d, dict):
@@ -569,8 +576,10 @@ def seven_day_pct(t: int) -> tuple[float | None, str]:
             continue
         if isinstance(resets, (int, float)) and resets < t:
             continue
-        if best is None or pct > best:
-            best, src = float(pct), f.name
+        written = d.get("written_at")
+        key = float(written) if isinstance(written, (int, float)) else mtime
+        if best is None or key > best_key:
+            best, best_key, src = float(pct), key, f.name
     return best, src
 
 

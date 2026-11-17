@@ -770,20 +770,27 @@ def test_serve_init(fleet):
 
 # ================================================================= serve: usage and trust
 
-def _usage_files(fleet, first, second, resets_first, resets_second):
-    for name, pct, resets in (("a", first, resets_first), ("b", second, resets_second)):
-        (fleet.usage / (name + ".json")).write_text(json.dumps(
-            {"session_name": "x", "seven_day_pct": pct, "seven_day_resets_at": resets}))
+def _usage_files(fleet, first, second, resets_first, resets_second, written=None):
+    """Two usage files, "a" then "b". `written` gives each its written_at, as the status line's
+    recorder writes it; without it neither carries one, and their mtimes order them ("b" newer)."""
+    now = int(time.time())
+    for i, (name, pct, resets) in enumerate((("a", first, resets_first), ("b", second, resets_second))):
+        rec = {"session_name": "x", "seven_day_pct": pct, "seven_day_resets_at": resets}
+        if written is not None:
+            rec["written_at"] = written[i]
+        f = fleet.usage / (name + ".json")
+        f.write_text(json.dumps(rec))
+        os.utime(f, (now - 600 + 300 * i, now - 600 + 300 * i))
 
 
 def test_serve_usage(fleet):
     later = int(time.time()) + 86400
-    _usage_files(fleet, 85, 12, later, later)
+    _usage_files(fleet, 12, 85, later, later)
     fleet.plant("r-u1", "up", "alpha-canonical", "alpha-canonical")
     fleet.plant("r-u2", "refresh", "beta-canonical", "director-canonical")
     fleet.plant("r-u3", "down", "gamma-canonical", "gamma-canonical")
     fleet.serve()
-    fleet.expect("r-u1", "refused", "usage", "up is refused at 85% of the 7-day window (the highest file wins)")
+    fleet.expect("r-u1", "refused", "usage", "up is refused at 85% of the 7-day window (the newest file)")
     fleet.expect("r-u2", "refused", "usage", "refresh is refused at the threshold too")
     fleet.expect("r-u3", "done", "", "down is never refused for usage")
     fleet.set_config("request-usage-exempt = alpha-canonical")
@@ -792,9 +799,30 @@ def test_serve_usage(fleet):
     fleet.expect("r-u4", "done", "", "a canonical on the exempt list may still be started")
 
 
+def test_serve_usage_reads_the_newest_file_not_the_highest(fleet):
+    # The 7-day percent is the account's, so every session's file reports the same figure as of
+    # when it was written, and the newest is the current one. A stopped session's file keeps the
+    # figure it last saw: measured 2026-11-17, a file written at 08:36 held 99% after the window was
+    # reset at 09:10 with its seven_day_resets_at unchanged, while live files read 1%, and every
+    # refresh through the queue was refused.
+    now = int(time.time())
+    _usage_files(fleet, 99, 2, now + 86400, now + 86400, written=[now - 8000, now - 30])
+    fleet.plant("r-u6", "refresh", "beta-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-u6", "done", "", "an older file's higher figure does not outvote the newest file")
+    _usage_files(fleet, 2, 99, now + 86400, now + 86400, written=[now - 30, now - 8000])
+    fleet.plant("r-u7", "refresh", "beta-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-u7", "done", "", "written_at, not the file's mtime, says which file is newest")
+    _usage_files(fleet, 2, 90, now + 86400, now + 86400, written=[now - 8000, now - 30])
+    fleet.plant("r-u8", "refresh", "beta-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-u8", "refused", "usage", "the newest file's figure is the one checked")
+
+
 def test_serve_usage_ignores_a_window_that_already_reset(fleet):
     now = int(time.time())
-    _usage_files(fleet, 99, 84, now - 60, now + 86400)
+    _usage_files(fleet, 84, 99, now + 86400, now - 60)
     fleet.plant("r-u5", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
     fleet.expect("r-u5", "done", "", "a usage file whose window already reset is not read as current")
@@ -815,7 +843,7 @@ def _override(fleet, until_in, set_ago=60, **fields):
 
 def test_serve_usage_override_active(fleet):
     later = int(time.time()) + 86400
-    _usage_files(fleet, 97, 12, later, later)
+    _usage_files(fleet, 12, 97, later, later)
     _override(fleet, 3 * 86400)
     fleet.plant("r-o1", "up", "alpha-canonical", "alpha-canonical")
     fleet.plant("r-o2", "refresh", "beta-canonical", "director-canonical", age=3600)
@@ -844,7 +872,7 @@ def test_serve_usage_override_is_not_noted_below_the_threshold(fleet):
 
 def test_serve_usage_override_expired(fleet):
     later = int(time.time()) + 86400
-    _usage_files(fleet, 97, 12, later, later)
+    _usage_files(fleet, 12, 97, later, later)
     _override(fleet, -60, set_ago=3600)
     fleet.plant("r-o5", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
@@ -855,7 +883,7 @@ def test_serve_usage_override_expired(fleet):
 
 def test_serve_usage_override_invalid(fleet):
     later = int(time.time()) + 86400
-    _usage_files(fleet, 97, 12, later, later)
+    _usage_files(fleet, 12, 97, later, later)
     _override(fleet, 3 * 86400, until="2099-01-01T00:00:00")  # no zone: malformed
     fleet.plant("r-o6", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
@@ -866,7 +894,7 @@ def test_serve_usage_override_invalid(fleet):
 
 def test_serve_usage_override_reader_missing(fleet):
     later = int(time.time()) + 86400
-    _usage_files(fleet, 97, 12, later, later)
+    _usage_files(fleet, 12, 97, later, later)
     _override(fleet, 3 * 86400)
     fleet.mp.setenv("CLAUDE_USAGE_OVERRIDE_CMD", str(fleet.T / "no-such-reader"))
     fleet.plant("r-o7", "up", "alpha-canonical", "alpha-canonical")
@@ -1970,6 +1998,12 @@ MUTANTS = [
     ("usage-reset-window", "a usage file whose window already reset still counts",
      "        if isinstance(resets, (int, float)) and resets < t:\n            continue\n", "", 
      "test_serve_usage_ignores_a_window_that_already_reset"),
+    ("usage-highest-wins", "the highest figure in any current file wins over the newest one",
+     "        if best is None or key > best_key:\n", "        if best is None or float(pct) > best:\n",
+     "test_serve_usage_reads_the_newest_file_not_the_highest"),
+    ("usage-mtime-only", "a file's mtime is used even where it carries written_at",
+     "        written = d.get(\"written_at\")\n", "        written = None\n",
+     "test_serve_usage_reads_the_newest_file_not_the_highest"),
     ("usage-exempt", "request-usage-exempt is ignored",
      ' or req["name"] in as_list(ctx.cfg["request-usage-exempt"])', '', "test_serve_usage"),
     ("usage-verbs", "stopping verbs are refused for usage too",
