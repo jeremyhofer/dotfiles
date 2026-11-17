@@ -351,6 +351,24 @@ def test_an_invalid_mise_ignore_refuses(world, bad):
     assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
 
 
+@pytest.mark.parametrize("char", ["*", "?", "["])
+@needs_mise
+def test_a_project_directory_holding_a_glob_character_refuses(world, char):
+    # Its ignore globs are written under its directory, so a glob character there would make them
+    # match other paths. The directory exists, so only the character can refuse it.
+    name = f"g{char}lob"
+    (world.devel / "internal" / name).mkdir()
+    (world.devel / "internal" / name / "mise.toml").write_text(env_toml("GLOB", "glob"))
+    world.write_record("projects:\n"
+                       "  proj:\n    path: internal/proj\n    miseTrust: true\n"
+                       f"  globby:\n    path: 'internal/{name}'\n    miseTrust: true\n")
+    out = world.run()
+    assert out.returncode == 2, (out.returncode, out.stdout, out.stderr)
+    assert "globby" in out.stderr and "glob character" in out.stderr, out.stderr
+    assert not world.miserc.exists(), "a miserc was written for a refused record"
+    assert untrusted(world.mise_env(world.proj, world.ceil), *world.own_configs)
+
+
 @needs_mise
 def test_a_project_not_on_disk_is_skipped(world):
     out = world.run()
