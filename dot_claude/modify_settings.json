@@ -63,6 +63,16 @@
 # file an earlier apply wrote. `retired_env` below names each such key once, and the merge removes
 # it from the live env: NX_SOCKET_DIR, replaced by the two keys above.
 #
+# THE CONTEXT CAP. ~/.dotlocal/claude/context-cap-percent (or $CLAUDE_CONTEXT_CAP_FILE), when it
+# holds one whole number from 1 to 100, becomes env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: Claude Code then
+# compacts each main session and each subagent when its context reaches that percentage of the
+# auto-compact window (about 967k tokens on a model with a 1M-token window), and a running session
+# picks the value up when this file changes. It is a plain setting, so it needs no hook and works on
+# a machine whose settings allow no custom hooks; Claude Code ignores a value above its default
+# percentage, so it can only lower the threshold. The base owns the key: with no cap file it is
+# removed from the live env, so a value set by hand or by a fragment does not survive an apply. A
+# file that holds anything else is reported on stderr and the live value is left as it was.
+#
 # worktree.baseRef IS NOT DECLARED: Claude Code's default ("fresh", branch from the remote's default
 # branch) is wanted, and freshness of a worktree's base is otherwise handled by worktrunk's hooks
 # (wt-fetch-base). Removing a key from this block does not remove it from a live file; a machine that
@@ -129,6 +139,23 @@ EOF
 
 retired_env='["NX_SOCKET_DIR"]'
 
+cap_path=${CLAUDE_CONTEXT_CAP_FILE:-"$HOME/.dotlocal/claude/context-cap-percent"}
+cap='{}'
+if [ -f "$cap_path" ]; then
+  pct=$(tr -d '[:space:]' < "$cap_path" 2>/dev/null)
+  case "$pct" in
+    ''|*[!0-9]*|????*) pct= ;;   # not digits, or too long to be a percent (and to parse safely)
+    *) pct=$((10#$pct)); { [ "$pct" -ge 1 ] && [ "$pct" -le 100 ]; } || pct= ;;
+  esac
+  if [ -n "$pct" ]; then
+    cap=$(jq -cn --arg p "$pct" '{env: {CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: $p}}')
+  else
+    printf 'modify_settings.json: context-cap file %s does not hold a whole percent from 1 to 100; the context cap is left as it was\n' "$cap_path" >&2
+  fi
+else
+  retired_env='["NX_SOCKET_DIR","CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]'
+fi
+
 frag_path=${CLAUDE_SETTINGS_FRAGMENT:-"$HOME/.dotlocal/claude/settings-declared"}
 domain='{}'; retired='[]'; ensure='[]'
 if [ -f "$frag_path" ]; then
@@ -142,9 +169,9 @@ if [ -f "$frag_path" ]; then
   fi
 fi
 
-printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" --argjson ensure "$ensure" --argjson retiredEnv "$retired_env" '
+printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" --argjson ensure "$ensure" --argjson retiredEnv "$retired_env" --argjson cap "$cap" '
   ($base.hooks // {}) as $bh | ($domain.hooks // {}) as $dh
-  | (. * ($base | del(.hooks)) * ($domain | del(.hooks)))
+  | (. * ($base | del(.hooks)) * ($domain | del(.hooks)) * $cap)
   | if (($bh | length) + ($dh | length)) > 0 then
       .hooks = ((if (.hooks | type) == "object" then .hooks else {} end)
         + reduce ((($bh | keys_unsorted) + ($dh | keys_unsorted)) | unique[]) as $e ({};

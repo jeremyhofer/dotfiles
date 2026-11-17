@@ -27,7 +27,9 @@ cat <<JSON
 }
 JSON
 EOF
-run() { printf '%s' "$1" | CLAUDE_SETTINGS_FRAGMENT="$2" bash "$SCRIPT" 2>"$TMP/err"; }
+# The context cap file is pointed at a path that does not exist unless a case sets CAP, so no case
+# reads this machine's own ~/.dotlocal/claude/context-cap-percent.
+run() { printf '%s' "$1" | CLAUDE_SETTINGS_FRAGMENT="$2" CLAUDE_CONTEXT_CAP_FILE="${CAP:-$TMP/no-cap}" bash "$SCRIPT" 2>"$TMP/err"; }
 val() { printf '%s' "$1" | jq -r "$2"; }
 
 # A) no fragment: a fresh machine gets the base defaults only
@@ -142,6 +144,25 @@ out=$(run '' "$ens_frag")
   || { echo "FAIL: ensureAllow on a fresh machine must create the list"; fail=1; }
 again=$(run "$out" "$ens_frag")
 [ "$(printf '%s' "$again" | jq -S -c .)" = "$(printf '%s' "$out" | jq -S -c .)" ] || { echo "FAIL: ensureAllow applied twice must change nothing"; fail=1; }
+
+# G) the context cap: a whole percent from 1 to 100 in the cap file becomes
+# env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (Claude Code compacts main sessions and subagents at that share
+# of the auto-compact window); with no file the key is removed, since the base owns it; a malformed
+# file changes nothing and says so on stderr
+printf ' 50\n' > "$TMP/cap50"
+out=$(CAP="$TMP/cap50" run '{"env":{"KEEP_ME":"1"}}' "$TMP/absent")
+[ "$(val "$out" '.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')" = "50" ] && [ "$(val "$out" '.env.KEEP_ME')" = "1" ] \
+  || { echo "FAIL: a cap file of 50 must set env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE to \"50\", keeping other env: $(val "$out" '.env')"; fail=1; }
+out=$(run '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40","KEEP_ME":"1"}}' "$TMP/absent")
+[ "$(val "$out" '.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')" = "null" ] && [ "$(val "$out" '.env.KEEP_ME')" = "1" ] \
+  || { echo "FAIL: with no cap file, a live CLAUDE_AUTOCOMPACT_PCT_OVERRIDE must be removed: $(val "$out" '.env')"; fail=1; }
+for bad in 0 101 50% abc '' 99999999999999999999; do
+  printf '%s\n' "$bad" > "$TMP/capbad"
+  out=$(CAP="$TMP/capbad" run '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"40"}}' "$TMP/absent")
+  [ "$(val "$out" '.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')" = "40" ] \
+    || { echo "FAIL: a malformed cap file ('$bad') must leave the live value alone: $(val "$out" '.env')"; fail=1; }
+  grep -q 'context-cap' "$TMP/err" || { echo "FAIL: a malformed cap file ('$bad') must be reported on stderr"; fail=1; }
+done
 
 # F) no jq on PATH: byte-identical passthrough
 nojq="$TMP/nojq"; mkdir -p "$nojq"

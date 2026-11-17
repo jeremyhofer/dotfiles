@@ -146,6 +146,19 @@ The base's `~/.claude/CLAUDE.md` holds the standards true on any machine and imp
 last, so the domain adds who the user is, its machines, and its own rules. Claude Code skips a
 missing import.
 
+### Context cap: `~/.dotlocal/claude/context-cap-percent`
+
+Optional. One whole number from 1 to 100. The base's `modify_settings.json` writes it into the user
+settings as `env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. Claude Code then compacts every main session and
+subagent when its context reaches that percentage of the auto-compact window, which is about 967k
+tokens on a model with a 1M-token window. A lower cap means shorter sessions: fewer tokens re-read on
+every request.
+- It is a plain setting, so a machine whose settings allow no custom hooks can use it. Claude Code
+  ignores a value above its default percentage, so the cap can only lower the threshold.
+- With no file, the base removes the key, so a value set any other way does not survive an apply.
+- A malformed file is reported during the apply and changes nothing.
+- `CLAUDE_CONTEXT_CAP_FILE` points at another path.
+
 ### Settings: `~/.dotlocal/claude/settings-declared`
 
 An EXECUTABLE that prints one JSON object. The base's `modify_settings.json` merges its own block,

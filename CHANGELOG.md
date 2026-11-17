@@ -32,6 +32,20 @@ Entries are newest first.
 
 ---
 
+
+## 2026-11-17 (context cap)
+
+### A configurable context cap: `~/.dotlocal/claude/context-cap-percent` (optional)
+
+The settings merge now reads an optional one-line file holding a whole percent from 1 to 100, and
+sets `env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to it. Claude Code then compacts main sessions and
+subagents at that share of the auto-compact window. It is a plain setting, with no hook. With no
+file, the key is removed from the live settings. A malformed file is reported and changes nothing.
+Details: [`docs/reference/private-layer.md`](docs/reference/private-layer.md).
+
+**ACTION, only if you want a cap:** write the percent, for example `50`, to
+`~/.dotlocal/claude/context-cap-percent` (or ship it in the private layer), then apply.
+
 ## 2026-11-17
 
 ### `fleet-slot` no longer says go on a free slot while a grant is pending
