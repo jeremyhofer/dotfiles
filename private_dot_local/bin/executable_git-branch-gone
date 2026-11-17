@@ -48,6 +48,14 @@ branch other than the remote's default sets), else the remote's own default bran
 outright: main, master, devel, develop, the integration branch, the remote's default branch and
 the repository's land.branch.
 
+A branch SUPERSEDED rather than merged (its work rebased onto another branch, under new commit ids)
+is checked with --into naming the branch that carries the work: `git-branch-gone old --into new`.
+The three tests run against `new` as they would against the integration branch, and the third (a
+merge that changes nothing) passes when a rebase changed every patch id but kept the content. It
+fails when `new` also changed lines `old` had touched (a dependency bump replaced by a later one, a
+section rewritten), because that merge conflicts. A refusal then means only that the tool cannot
+prove the work is there: the deletion is a person's call, made on the report-only output.
+
 exit status: 0 nothing refused (deleted, would delete, or no remote has it); 1 a remote's tip is
 not integrated, a deletion did not take, or the branch is protected; 2 usage, or a remote or git
 could not be read.
@@ -116,7 +124,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("branch")
     ap.add_argument("--delete", action="store_true", help="delete; without it, report only")
     ap.add_argument("--base-remote", default="origin", help="whose default branch is the integration branch")
-    ap.add_argument("--into", help="the integration branch, instead of --base-remote's default")
+    ap.add_argument("--into", help="the integration branch, instead of --base-remote's default; "
+                    "or, for a superseded branch, the branch that carries its work")
     a = ap.parse_args(argv)
     branch = a.branch.removeprefix("refs/heads/")
     try:
