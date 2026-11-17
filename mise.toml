@@ -1,0 +1,4 @@
+# The Node version this repository's suites run under, read by tests/apply-suites.py (every apply)
+# and bootstrap-mac.sh. A source-only file: .chezmoiignore keeps it out of the home directory.
+[tools]
+node = "26.13.0"

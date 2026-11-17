@@ -96,7 +96,7 @@ generated chezmoi config carries a `hooks.apply.pre` that runs `tests/pre-apply.
 replayed from Nx's cache where its inputs did not change; a failure aborts the apply) and a
 `hooks.apply.post` that runs `tests/post-apply.sh` (every suite, uncached, in the background; it
 alerts on a failure). So an apply needs the Node version the repository pins: `[tools] node` in
-`mise.toml`, else `.nvmrc` until the pin moves there (both present must agree). It runs through
+`mise.toml` (a `.nvmrc` beside it, if one is ever added back, must agree). It runs through
 `mise exec` where mise is active (`DOTFILES_MISE_SHIMS` set) and `mise` is on `PATH`, else through
 `fnm exec`, else a `node` on `PATH` of the pin's major; nothing is installed on the apply path.
 Both hooks also append to the machine's apply ledger (`~/.local/state/dotfiles/apply.log`, owned by the `apply-status` tool), so a

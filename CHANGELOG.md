@@ -33,6 +33,18 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (base pin)
+
+### The base pins its Node in `mise.toml`; `.nvmrc` is gone
+
+Nothing to do beyond the apply. The base's own Node pin, read by `tests/apply-suites.py` at every
+apply and by `bootstrap-mac.sh`, moved from `.nvmrc` to `[tools] node` in `mise.toml`, still
+26.13.0. Both readers already took `mise.toml` first. `.chezmoiignore` keeps the file out of the
+home directory, and where `miseActive` is set the apply's trust step trusts it as the base source's
+own configuration. Where mise is not active, fnm's switch-on-`cd` no longer finds a pin in the
+source directory, so a shell there stays on fnm's default Node; the apply is unaffected, since it
+selects the pin itself.
+
 ## 2026-11-17 (mise trust)
 
 ### `mise-fleet-trust`: the apply trusts the mise configurations the manifest opts in and writes mise's miserc (ACTION, a private layer whose manifest declares `miseTrust:` or that has mise settings for the miserc)
