@@ -125,6 +125,7 @@ test-skill-externals-sync.sh        private_dot_local/bin/executable_skill-exter
 test-spell-capture.sh               private_dot_local/bin/executable_spell-capture
 test-ui-shot.sh                     private_dot_local/bin/executable_ui-shot
 test-us-spelling-lint.sh            private_dot_local/bin/executable_us-spelling-lint
+test-bootstrap-mac.py               bootstrap-mac.sh
 test-wt-bootstrap.sh                private_dot_local/bin/executable_wt-bootstrap
 test-wt-config-gen.sh               private_dot_local/bin/executable_wt-config-gen private_dot_local/bin/executable_fleet-decl dot_config/worktrunk/base.toml
 test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-base private_dot_local/bin/executable_wt-config-gen dot_config/worktrunk/base.toml
@@ -175,7 +176,7 @@ exempt docs/** *.md setup/README.md
 exempt tests/*.parity.md
 # Tools with no suite of their own; the tree checks above still read them.
 exempt private_dot_local/bin/executable_git-merge-diff private_dot_local/bin/executable_nvim-healthdump
-exempt setup/chezmoi-safe-apply bootstrap-mac.sh Brewfile
+exempt setup/chezmoi-safe-apply Brewfile
 # Install scripts chezmoi runs at apply time; no suite renders them.
 exempt run_*.sh run_*.sh.tmpl
 # chezmoi metadata and fragments no suite reads.

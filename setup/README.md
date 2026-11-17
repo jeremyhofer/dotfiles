@@ -20,7 +20,7 @@ overwrites it).
 
 | Tool | What it does |
 |------|--------------|
-| `../bootstrap-mac.sh` | macOS entry point: foundation → `brew bundle` → default Node → **guarded apply** → overlay bootstrap stages. Re-runnable. |
+| `../bootstrap-mac.sh` | macOS entry point: foundation → `brew bundle` → default Node (fnm, or `mise install` on a machine whose chezmoi config sets `miseActive = true`) → **guarded apply** → overlay bootstrap stages. Re-runnable; `sh bootstrap-mac.sh node` (any of `foundation bundle node chezmoi bootstrapd`) runs only the stages named. |
 | `setup/scaffold-overlay <dir>` | Create a brand-new overlay source skeleton (self-documented) to fill in. |
 | `setup/overlay-doctor` | **Compliance audit**: checks an overlay has every required Tier-B (private-vocab) + Tier-C (domain) piece present and filled; fail-loud, read-only. Runnable from the base checkout alone. |
 | `setup/adopt-audit` | **Pre-apply safety check**: for every path an apply would write, flags any *differing* file already deployed there that isn't yet captured in source (base or overlay). Non-zero exit = capture those first. |

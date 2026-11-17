@@ -46,6 +46,16 @@
 # manager and uv at once, and when it does, both installs run, JavaScript first (since that
 # is also the one wiring git hooks, so it goes before anything else that might depend on
 # them being in place).
+#
+# TOOL VERSIONS, ON A MACHINE SWITCHED TO MISE. A machine is switched when the [data] of its
+# generated base chezmoi config (${XDG_CONFIG_HOME:-~/.config}/chezmoi/chezmoi.toml) says
+# `miseActive = true`; absent or false, nothing below about mise runs and mise is never called.
+# Switched, before any install, it asks mise which versions the worktree's pins request that are
+# not installed (`mise ls --current --missing`, offline) and, when there are any, prints ONE line
+# naming them and the command that installs them, `mise install` in the worktree. It never installs
+# a version itself: versions are installed deliberately, and inside an agent sandbox the install
+# could not write mise's directories anyway. The report does not change the exit status; an
+# install below that needs a missing version then fails through mise, with its own status.
 
 set -eu
 
@@ -53,7 +63,7 @@ dir="."
 while [ $# -gt 0 ]; do
   case "$1" in
     -C) dir="${2:-.}"; shift 2 ;;
-    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'wt-bootstrap: unknown argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -66,6 +76,37 @@ require_cmd() {
   printf 'wt-bootstrap: %s not found on PATH (needed for %s)\n' "$1" "$2" >&2
   exit 1
 }
+
+# --- Tool versions: report what a switched machine has not installed -----------------
+# Builtins only, like the rest of this script, so it runs on a PATH that holds nothing else.
+mise_switched() {
+  cfg="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi/chezmoi.toml"
+  [ -f "$cfg" ] || return 1
+  tab=$(printf '\t')
+  while IFS=" $tab=" read -r key value _rest || [ -n "$key" ]; do
+    if [ "$key" = miseActive ] && [ "$value" = true ]; then return 0; fi
+  done < "$cfg"
+  return 1
+}
+
+if mise_switched; then
+  if ! command -v mise >/dev/null 2>&1; then
+    printf 'wt-bootstrap: mise not found on PATH, on a machine switched to it (miseActive); tool versions not checked\n' >&2
+  elif rows=$(MISE_OFFLINE=1 mise ls --current --missing --no-header); then
+    # Each row: tool, version, "(missing)", the file that requests it, the request as written.
+    missing=""
+    while read -r tool version flag _rest; do
+      if [ "$flag" = "(missing)" ]; then missing="$missing $tool@$version"; fi
+    done <<EOF
+$rows
+EOF
+    if [ -n "$missing" ]; then
+      printf "wt-bootstrap: not installed:%s -- run 'mise install' in %s (never run here: versions are installed deliberately)\n" "$missing" "$(pwd)" >&2
+    fi
+  else
+    printf 'wt-bootstrap: mise could not list the tool versions this worktree needs (its error is above); not checked\n' >&2
+  fi
+fi
 
 # --- JavaScript: at most one lockfile may pick the package manager --------------------
 js_present=""

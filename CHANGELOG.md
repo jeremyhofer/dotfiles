@@ -177,6 +177,17 @@ malformed line refuses the launch. Nothing to do without one; format and caveats
 `docs/reference/private-layer.md`, "Session launches". `FLEET_MANAGERNAME_CMD` is a hook for a
 launchd-domain check on macOS that runs nothing unless set.
 
+### `bootstrap-mac.sh` and `wt-bootstrap` follow `miseActive`
+
+Nothing to do; a machine that has not switched to mise sees no change. Both read `miseActive` from
+the `[data]` of the generated base chezmoi config, and absent or false means not switched. On a
+switched machine, `bootstrap-mac.sh`'s Node stage runs `mise install` (the global default the mise
+drop-ins name) and `mise install node@<.nvmrc>` from `$HOME`, instead of fnm; a new machine has no
+config yet when that stage runs, so it takes the fnm path until switched. `wt-bootstrap` asks mise
+which of a new worktree's pinned versions are not installed and reports them in one line naming
+`mise install`, never installing them; the report does not change its exit status.
+`bootstrap-mac.sh` also takes stage names (`sh bootstrap-mac.sh node`) to run only those stages.
+
 ## 2026-11-16
 
 ### A new skill: `hermetic-gates`

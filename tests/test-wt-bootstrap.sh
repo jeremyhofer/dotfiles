@@ -12,6 +12,11 @@
 # "not on PATH" case for real, rather than quietly falling through to whatever happens to be
 # installed on the machine running the suite.
 #
+# HOME is a fresh directory per case too, so whether the machine is switched to mise is decided
+# only by the chezmoi config a case writes there (switch_mise), never by the real machine's.
+# "mise" is a stub like the others, which also prints a chosen `mise ls` answer; the real mise is
+# never run, so nothing is ever installed.
+#
 # Run: sh ~/.local/share/chezmoi/tests/test-wt-bootstrap.sh
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
@@ -33,8 +38,8 @@ n=0
 # for one test case. Every case gets fresh directories so cases cannot see each other's state.
 new_case() {
   n=$((n + 1))
-  WD="$work/wd$n"; STUBS="$work/stubs$n"
-  mkdir -p "$WD" "$STUBS"
+  WD="$work/wd$n"; STUBS="$work/stubs$n"; HOME_DIR="$work/home$n"
+  mkdir -p "$WD" "$STUBS" "$HOME_DIR"
   LOG="$work/log$n"
   : > "$LOG"
 }
@@ -51,10 +56,29 @@ STUBEOF
   chmod +x "$STUBS/$name"
 }
 
-# run -- executes wt-bootstrap against $WD, PATH narrowed to $STUBS only. Sets $out (stdout +
-# stderr merged) and $rc (exit status).
+# stub_mise ANSWER [EXITCODE] -- a fake mise that records its call like stub() and prints ANSWER
+# (a `mise ls` table, one row per line) to stdout.
+stub_mise() {
+  printf '%s\n' "$1" > "$STUBS/mise.answer"
+  cat > "$STUBS/mise" <<STUBEOF
+#!/bin/sh
+printf 'mise %s\n' "\$*" >> "$LOG"
+while IFS= read -r line; do [ -n "\$line" ] && printf '%s\n' "\$line"; done < "$STUBS/mise.answer"
+exit ${2:-0}
+STUBEOF
+  chmod +x "$STUBS/mise"
+}
+
+# switch_mise VALUE -- writes the case's generated chezmoi config with miseActive = VALUE.
+switch_mise() {
+  mkdir -p "$HOME_DIR/.config/chezmoi"
+  printf '[data]\n    domain = "personal"\n    miseActive = %s\n' "$1" > "$HOME_DIR/.config/chezmoi/chezmoi.toml"
+}
+
+# run -- executes wt-bootstrap against $WD, PATH narrowed to $STUBS only and HOME to the case's
+# own. Sets $out (stdout + stderr merged) and $rc (exit status).
 run() {
-  out=$( (PATH="$STUBS"; export PATH; "$sh_bin" "$bs" -C "$WD") 2>&1 )
+  out=$( (PATH="$STUBS"; HOME="$HOME_DIR"; export PATH HOME; unset XDG_CONFIG_HOME; "$sh_bin" "$bs" -C "$WD") 2>&1 )
   rc=$?
 }
 
@@ -135,6 +159,67 @@ new_case; : > "$WD/package-lock.json"; stub npm 3
 run
 eq "wt-bootstrap exits with the failing install's own status" "$rc" "3"
 eq "the failing install did run" "$(calls)" "npm ci"
+
+# --- mise: a switched machine reports a missing version, and never installs it -------------
+missing_row='node    26.13.0 (missing)  /w/.nvmrc  26.13.0'
+asked='mise ls --current --missing --no-header'
+installs() { grep -c '^mise install' "$LOG"; }
+reports() { printf '%s\n' "$out" | grep -c "mise install"; }
+
+echo "== switched to mise, a pinned version not installed -> one report line naming mise install =="
+new_case; switch_mise true; : > "$WD/package-lock.json"; stub npm; stub_mise "$missing_row"
+run
+eq "exits 0 (the report does not fail the hook)" "$rc" "0"
+eq "mise was asked which versions are missing, then npm ci ran" "$(calls)" "$asked
+npm ci"
+eq "mise install was never run" "$(installs)" "0"
+eq "exactly one line names mise install" "$(reports)" "1"
+case "$out" in
+  *"node@26.13.0"*) ok "the report names the missing version" ;;
+  *) bad "the report names the missing version (got: $out)" ;;
+esac
+eq "the report comes before the install" "$(printf '%s\n' "$out" | sed -n '1p' | grep -c 'mise install')" "1"
+
+echo "== switched to mise, nothing missing -> asked once, nothing reported =="
+new_case; switch_mise true; stub_mise ""
+run
+eq "exits 0" "$rc" "0"
+eq "mise was asked, and nothing else ran" "$(calls)" "$asked"
+eq "nothing was printed" "$out" ""
+
+echo "== not switched (no chezmoi config), mise on PATH -> mise never called, as before =="
+new_case; stub_mise "$missing_row"
+run
+eq "exits 0" "$rc" "0"
+eq "nothing was invoked" "$(calls)" ""
+eq "nothing was printed" "$out" ""
+
+echo "== miseActive = false, mise on PATH -> mise never called, as before =="
+new_case; switch_mise false; : > "$WD/package-lock.json"; stub npm; stub_mise "$missing_row"
+run
+eq "exits 0" "$rc" "0"
+eq "only npm ci ran" "$(calls)" "npm ci"
+eq "only the install line was printed" "$out" "wt-bootstrap: npm ci"
+
+echo "== switched, mise ls fails -> says so, installs still run, exit 0 =="
+new_case; switch_mise true; : > "$WD/package-lock.json"; stub npm; stub_mise "" 2
+run
+eq "exits 0" "$rc" "0"
+eq "mise was asked, then npm ci ran" "$(calls)" "$asked
+npm ci"
+case "$out" in
+  *"could not list"*) ok "the failure is reported" ;;
+  *) bad "the failure is reported (got: $out)" ;;
+esac
+
+echo "== switched, mise not on PATH -> one line naming it, exit 0 =="
+new_case; switch_mise true
+run
+eq "exits 0" "$rc" "0"
+case "$out" in
+  *"mise not found on PATH"*) ok "the message names mise" ;;
+  *) bad "the message names mise (got: $out)" ;;
+esac
 
 echo
 echo "passed: $pass   failed: $fail"

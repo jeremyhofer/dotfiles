@@ -8,6 +8,8 @@
 # standard public methods; on `work` it checks and instructs instead of installing. Domain
 # is read from ~/.config/chezmoi/chezmoi.toml. Run this from a checkout of the base repo:
 #   sh bootstrap-mac.sh     (chezmoi source = this repo; the overlay is set up by chezmoi).
+#   sh bootstrap-mac.sh node chezmoi    (only the named stages, in the order given; the stages are
+#                                        foundation, bundle, node, chezmoi, bootstrapd)
 set -eu
 
 log() { printf '\n=== %s ===\n' "$1"; }
@@ -49,9 +51,49 @@ ensure_bundle() {
   HOMEBREW_CASK_OPTS="--adopt" brew bundle --file "$REPO_DIR/Brewfile"
 }
 
-# --- default Node via fnm (per-project is the norm; a default LTS is convenient + mmdc needs a
-#     node runtime). Idempotent. ---
+# --- Is this machine switched to mise? miseActive in the [data] of the generated base chezmoi config,
+#     the per-machine switch, never prompted; absent or false means not switched. On a new machine
+#     this stage runs before chezmoi has written that config, so a new machine is never switched: it
+#     takes the fnm path, as every machine did before mise, and is switched later by setting the key
+#     and re-running. The rule is the same one wt-bootstrap applies, and reads with builtins only. ---
+mise_switched() {
+  cfg="$HOME/.config/chezmoi/chezmoi.toml"
+  [ -f "$cfg" ] || return 1
+  tab=$(printf '\t')
+  while IFS=" $tab=" read -r key value _rest || [ -n "$key" ]; do
+    if [ "$key" = miseActive ] && [ "$value" = true ]; then return 0; fi
+  done < "$cfg"
+  return 1
+}
+
+# --- default Node (per-project is the norm; a default is convenient + mmdc needs a node runtime).
+#     Through mise on a machine switched to it, else through fnm. Idempotent. ---
 ensure_node() {
+  if mise_switched; then ensure_node_mise; else ensure_node_fnm; fi
+}
+
+# The global default Node is whatever the mise settings drop-ins name (~/.config/mise/conf.d; a
+# domain's sets it, the base's sets none). Both installs run from $HOME, so no project's mise.toml
+# or pin file is read, and an untrusted one cannot refuse them. This is the deliberate install:
+# nothing else installs a version on a switched machine.
+ensure_node_mise() {
+  log "default Node (mise)"
+  command -v mise >/dev/null 2>&1 || { echo "mise not on PATH (did brew bundle run?) — skipping"; return 0; }
+  if (cd "$HOME" && mise install); then
+    echo "mise: the global default tools are installed"
+  else
+    echo "mise could not install the global default tools; the apply's pin is still installed below" >&2
+  fi
+  # The apply's suites run under the Node this repository's .nvmrc pins, so it is installed before
+  # the guarded apply below.
+  pin="$(cat "$REPO_DIR/.nvmrc" 2>/dev/null || true)"
+  if [ -n "$pin" ]; then
+    (cd "$HOME" && mise install "node@$pin") || die "mise could not install Node $pin (.nvmrc), which the apply's suites need"
+    echo "mise: installed the .nvmrc pin $pin"
+  fi
+}
+
+ensure_node_fnm() {
   log "default Node (fnm)"
   command -v fnm >/dev/null 2>&1 || { echo "fnm not on PATH (did brew bundle run?) — skipping"; return 0; }
   if fnm ls 2>/dev/null | grep -qE 'v[0-9]'; then
@@ -103,11 +145,22 @@ run_bootstrapd() {
 }
 
 main() {
-  ensure_foundation
-  ensure_bundle
-  ensure_node
-  ensure_chezmoi
-  run_bootstrapd
+  if [ $# -eq 0 ]; then set -- foundation bundle node chezmoi bootstrapd; fi
+  for stage in "$@"; do
+    case "$stage" in
+      foundation|bundle|node|chezmoi|bootstrapd) ;;
+      *) die "unknown stage: $stage (foundation, bundle, node, chezmoi, bootstrapd)" ;;
+    esac
+  done
+  for stage in "$@"; do
+    case "$stage" in
+      foundation) ensure_foundation ;;
+      bundle) ensure_bundle ;;
+      node) ensure_node ;;
+      chezmoi) ensure_chezmoi ;;
+      bootstrapd) run_bootstrapd ;;
+    esac
+  done
   log "bootstrap-mac complete"
 }
 main "$@"
