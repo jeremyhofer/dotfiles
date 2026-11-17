@@ -1,0 +1,17 @@
+# Decrypts the machine's SOPS age key from its systemd credential into the file SOPS_AGE_KEY_FILE
+# names, inside $XDG_RUNTIME_DIR, at login; does nothing when the file is already there. See
+# `sops-key-loader --help`. ~/.zshrc runs the same tool when the file is missing, for a shell that
+# starts before this unit has finished.
+# Linux only: the base's .chezmoiignore skips .config/systemd on macOS. Deployed, and enabled
+# through the default.target.wants link beside it, only on a machine whose chezmoi data sets
+# miseActive = true. XDG_RUNTIME_DIR comes from the user manager; SOPS_AGE_KEY_FILE from the
+# manager's environment (~/.config/environment.d), and the unit fails, visibly, where it is unset.
+[Unit]
+Description=Load the SOPS age key into the runtime directory (sops-key-loader)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/sops-key-loader
+
+[Install]
+WantedBy=default.target

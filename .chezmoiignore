@@ -58,6 +58,17 @@ setup/
 .config/brave-flags.conf
 {{ end }}
 
+{{ if or (ne .chezmoi.os "linux") (not (get . "miseActive")) }}
+# The SOPS age key loader, its login unit and the link that enables it: Linux only (the key is a
+# systemd credential there), and only on a machine whose generated config sets miseActive = true,
+# so a machine that has not switched to mise deploys exactly what it did before. The loader's link
+# is the only entry in default.target.wants, so the directory is ignored whole: ignoring the link
+# alone still creates the empty directory. Another unit enabled there must change this line.
+.local/bin/sops-key-loader
+.config/systemd/user/sops-key-loader.service
+.config/systemd/user/default.target.wants
+{{ end }}
+
 {{ if ne .chezmoi.os "darwin" }}
 # --- macOS-only, ignored elsewhere: launchd agents (Linux runs the systemd user timers instead) ---
 Library

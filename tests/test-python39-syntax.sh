@@ -20,7 +20,8 @@ command -v python3 >/dev/null 2>&1 || { echo "test: python3 is required" >&2; ex
 if [ -n "${PY39_FILES:-}" ]; then
   files=$PY39_FILES
 else
-  files=$(grep -l '^#!/usr/bin/env python3' "$here"/private_dot_local/bin/executable_* 2>/dev/null || true)
+  # Both shebangs: a tool that must not resolve python3 through PATH names /usr/bin/python3.
+  files=$(grep -lE '^#!/usr/bin/(env )?python3' "$here"/private_dot_local/bin/executable_* 2>/dev/null || true)
   files="$files $here/tests/apply-suites.py"
 fi
 [ -n "$files" ] || { echo "FAIL: no Python tools found to check" >&2; exit 1; }
