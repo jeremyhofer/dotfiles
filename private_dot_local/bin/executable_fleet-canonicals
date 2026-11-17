@@ -136,21 +136,20 @@ REMOTE_CONTROL=$(config_value FLEET_REMOTE_CONTROL remote-control)
 # from where it is visible. status, up and clean read it:
 #   - fresh (no older than snapshot-max-age): used, and `unknown` is reported as UNKNOWN, never MISSING;
 #   - stale: the verb REFUSES, naming the timer, because an old snapshot reads as current;
-#   - missing (the timer is not enabled on this machine yet): a one-line note, then the direct reads
-#     these verbs made before the snapshot existed. Making a missing snapshot refuse too is a
-#     recorded follow-up for when every machine runs the timer.
+#   - missing: the verb REFUSES too, naming how to enable the timer. Until 2026-11-17 a missing
+#     snapshot fell back to the direct reads, which inside a sandbox read a live seat as MISSING
+#     and invite a second launch; every machine now runs the timer, so a missing file means the
+#     timer is off, not that the machine predates it.
+# A seat a fresh snapshot does not list is still read directly.
 SNAPSHOT_FILE=${FLEET_SNAPSHOT_FILE:-"$FLEET_STATE/sessions.json"}
 SNAPSHOT_MAX_AGE=$(config_value FLEET_SNAPSHOT_MAX_AGE snapshot-max-age)
 SNAPSHOT_MAX_AGE=${SNAPSHOT_MAX_AGE:-45}
 SNAP_USE=0
 
-# snapshot_gate VERB -- set SNAP_USE=1 for a fresh snapshot; note a missing one; die on a stale one.
+# snapshot_gate VERB -- set SNAP_USE=1 for a fresh snapshot; die on a missing, unreadable or stale one.
 snapshot_gate() {
   local taken age
-  if [ ! -e "$SNAPSHOT_FILE" ]; then
-    printf 'note     no session snapshot (%s); reading the sessions directly. Enable the snapshot timer: systemctl --user enable --now fleet-canonicals-snapshot.timer (macOS: the local.dotfiles.fleet-canonicals-snapshot LaunchAgent)\n' "$SNAPSHOT_FILE" >&2
-    return 0
-  fi
+  [ -e "$SNAPSHOT_FILE" ] || die "$1: no session snapshot ($SNAPSHOT_FILE), so a seat this session cannot see could be reported absent; refusing. Enable the snapshot timer: systemctl --user enable --now fleet-canonicals-snapshot.timer (macOS: the local.dotfiles.fleet-canonicals-snapshot LaunchAgent)"
   taken=$(jq -r '.takenAt // empty' "$SNAPSHOT_FILE" 2>/dev/null)
   case "$taken" in ''|*[!0-9]*) die "$1: the session snapshot $SNAPSHOT_FILE is unreadable; refusing rather than guessing. Check the snapshot timer (fleet-canonicals-snapshot)" ;; esac
   age=$(( $(date +%s) - taken ))
@@ -2626,6 +2625,9 @@ cmd_refresh() {
     die "refresh: $why
   Refusing to stop a session whose successor cannot be launched."
   fi
+  # The relaunch (`up`) refuses a missing, unreadable or stale snapshot; refuse on one here,
+  # before the stop, rather than stop the seat and then refuse to start it again.
+  snapshot_gate refresh
 
   json=$(agents_json)
   rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
@@ -2735,8 +2737,8 @@ cmd_refresh() {
   # rather than treating the stopped pid as dead: the stop was confirmed from where refresh runs,
   # and inside a sandbox that view cannot see other sessions' processes, which is the reason the
   # snapshot exists. A snapshot taken after the stop that still shows the seat running is a real
-  # refusal, and `up` makes it. Skipped when there is no snapshot (the direct reads apply) or the
-  # one there already shows the seat dead or absent.
+  # refusal, and `up` makes it. Skipped when the snapshot already shows the seat dead or absent (a
+  # missing snapshot was refused before the stop).
   local stopped_at snap_state snap_wait taken
   stopped_at=$(date +%s)
   snap_wait=${FLEET_REFRESH_SNAPSHOT_WAIT:-30}

@@ -188,6 +188,10 @@ mk tmplname
 put "$w" dot_config/systemd/user/ntfy-inbox.service.tmpl 'x'; cl '- ntfy-inbox.service ships'
 cm "$w" $D "add a unit"; git -C "$w" push -q origin main
 expect "prefixes and .tmpl are stripped from the token" 0 "named in the entries" --skip-tests
+mk runbefore
+put "$w" run_before_make-thing.sh '#!/bin/sh'; cl '- make-thing.sh runs before each apply'
+cm "$w" $D "add a script"; git -C "$w" push -q origin main
+expect "a bare run_ script prefix is stripped from the token" 0 "named in the entries" --skip-tests
 mk extless
 put "$w" dot_config/thing.conf 'x'; cl '- thing is configured'
 cm "$w" $D "add a config"; git -C "$w" push -q origin main

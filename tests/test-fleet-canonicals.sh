@@ -189,6 +189,13 @@ export FLEET_RECORD="$TMPROOT/rec.yaml"
 # directory. A suite whose result depends on the machine it runs on is not a suite.
 export FLEET_STATE="$TMPROOT/fcstate"
 mkdir -p "$TMPROOT/fcstate"
+# A session snapshot holding no seats, which every case reads: status, up, clean and refresh refuse
+# without one (since 2026-11-17), and a seat a fresh snapshot does not list is read directly, which is
+# what these cases test. Its own file and a day's max age, so a case that sets its own FLEET_STATE
+# still finds it and a slow run does not age it out. What the snapshot itself decides (missing,
+# stale, unknown, live) is tests/test-fleet-canonicals-requests.py's to test, not this suite's.
+export FLEET_SNAPSHOT_FILE="$TMPROOT/sessions.json" FLEET_SNAPSHOT_MAX_AGE=86400
+printf '{"version":1,"takenAt":%s,"seats":{}}\n' "$(date +%s)" > "$FLEET_SNAPSHOT_FILE"
 # FLEET_TMPROOT_PREFIX likewise: several cases launch without setting it, and a launch makes its
 # scratch root under the prefix, so they made c-<name>-XXXXXX directories in the REAL /tmp. Inside an
 # agent sandbox /tmp is not writable, so the mktemp failed quietly and the leak check below could not

@@ -269,10 +269,33 @@ class Fleet:
             monkeypatch.setenv(k, str(v))
         self.path = env["PATH"]
         self.q = load_queue()
+        # Every machine runs the snapshot timer, and a missing snapshot refuses (since 2026-11-17), so
+        # each case starts with a fresh one holding no seats: a seat it does not list is read
+        # directly, as before the snapshot existed. It is retaken before each run, as the timer
+        # would, until the case writes its own or removes it (no_snapshot).
+        self._default_snapshot()
+
+    # ---- the default snapshot
+    DEFAULT_SNAPSHOT_MARK = "fixtureDefault"
+
+    def _default_snapshot(self):
+        self.snap.write_text(json.dumps({"version": 1, "takenAt": int(time.time()), "seats": {},
+                                         self.DEFAULT_SNAPSHOT_MARK: True}))
+
+    def _retake_default_snapshot(self):
+        try:
+            if json.loads(self.snap.read_text()).get(self.DEFAULT_SNAPSHOT_MARK):
+                self._default_snapshot()
+        except (OSError, ValueError):
+            pass
+
+    def no_snapshot(self):
+        self.snap.unlink(missing_ok=True)
 
     # ---- running things
     def call(self, fn, *args):
         """Run a function of the queue module in this process; its exit becomes a status."""
+        self._retake_default_snapshot()
         out, err = io.StringIO(), io.StringIO()
         status = 0
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -296,6 +319,7 @@ class Fleet:
 
     def fc(self, *args, env=None, timeout=300):
         """The real `fleet-canonicals` as a process; stdout and stderr together, as 2>&1 had them."""
+        self._retake_default_snapshot()
         p = subprocess.run(["bash", str(TOOL), *map(str, args)], stdin=subprocess.DEVNULL,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout,
                            env=dict(os.environ, **(env or {})))
@@ -1554,6 +1578,7 @@ def test_snapshot_unreadable_list_is_unknown_never_dead(fleet):
 
 
 def test_snapshot_refuses_inside_a_sandbox(fleet):
+    fleet.no_snapshot()
     (fleet.proc / "1").mkdir()
     (fleet.proc / "1" / "comm").write_text("bwrap\n")
     r = fleet.snapshot()
@@ -1640,10 +1665,17 @@ def test_status_refuses_a_stale_snapshot(fleet):
         "status refuses a stale snapshot, naming the timer (rc=%s): %s" % (r.status, r.out)
 
 
-def test_status_with_no_snapshot_notes_it_and_reads_the_sessions_directly(fleet):
+# A missing snapshot refuses as a stale one does. Until 2026-11-17 it fell back to
+# the direct reads, which inside a sandbox read a live seat as MISSING; every machine now runs the
+# snapshot timer, so a missing file means the timer is not running, and the refusal names it.
+
+def test_status_refuses_a_missing_snapshot(fleet):
+    fleet.no_snapshot()
     r = fleet.fc("status")
-    assert "no session snapshot" in r.out and "alpha-canonical" in r.out, \
-        "status with no snapshot notes it and reads the sessions directly: %s" % r.out
+    assert r.status != 0 and "no session snapshot" in r.out and "fleet-canonicals-snapshot" in r.out \
+        and "MISSING" not in r.out and "alpha-canonical" not in r.out, \
+        "status refuses a missing snapshot, naming the timer, and reports no seat; nor does the refusal carry " \
+        "the verdict word callers grep for (rc=%s): %s" % (r.status, r.out)
 
 
 # up: refuses a seat the snapshot shows live or unknown; a dead one starts
@@ -1678,13 +1710,30 @@ def test_up_and_clean_refuse_a_stale_snapshot(fleet):
         "clean refuses a stale snapshot (rc=%s): %s" % (r.status, r.out)
 
 
-# the runner: a stale snapshot refuses every request; a fresh one refuses starting an unknown seat
+def test_up_and_clean_refuse_a_missing_snapshot(fleet):
+    fleet.no_snapshot()
+    r = fleet.fc("up", "gamma-canonical", "--dry-run")
+    assert r.status != 0 and "no session snapshot" in r.out and "would start" not in r.out, \
+        "up refuses a missing snapshot (rc=%s): %s" % (r.status, r.out)
+    r = fleet.fc("clean", "--dry-run")
+    assert r.status != 0 and "no session snapshot" in r.out, \
+        "clean refuses a missing snapshot (rc=%s): %s" % (r.status, r.out)
+
+
+# the runner: a stale or missing snapshot refuses every request; a fresh one refuses starting an unknown seat
 
 def test_serve_snapshot_stale(fleet):
     fleet.write_snapshot(100, "gamma-canonical", "dead")
     fleet.plant("r-snap1", "up", "gamma-canonical", "gamma-canonical")
     fleet.serve()
     fleet.expect("r-snap1", "refused", "snapshot", "the runner refuses a request while the snapshot is stale")
+
+
+def test_serve_snapshot_missing(fleet):
+    fleet.no_snapshot()
+    fleet.plant("r-snap5", "up", "gamma-canonical", "gamma-canonical")
+    fleet.serve()
+    fleet.expect("r-snap5", "refused", "snapshot", "the runner refuses a request while there is no snapshot")
 
 
 def test_serve_snapshot_unknown_seat(fleet):
@@ -1792,6 +1841,31 @@ def test_refresh_with_no_snapshot_after_the_stop_refuses_naming_the_next_step(fl
     r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": "2"})
     assert r.status != 0 and "not retaken" in r.out and "fleet-canonicals up gamma-canonical" in r.out and "started 1" not in r.out, \
         "refresh: no snapshot after the stop within the wait refuses, naming the next step (rc=%s): %s" % (r.status, r.out)
+
+
+# refresh gates on the snapshot BEFORE it stops anything: its relaunch (`up`) refuses a stale or
+# missing snapshot, so a refresh that stopped first would leave the seat down.
+
+def _gamma_still_listed(fleet):
+    return any(r.get("name") == "gamma-canonical" for r in json.loads(fleet.agents.read_text()))
+
+
+def test_refresh_refuses_a_missing_snapshot_before_stopping(fleet):
+    _refresh_fixture(fleet)
+    fleet.no_snapshot()
+    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": "2"})
+    assert r.status != 0 and "no session snapshot" in r.out and _gamma_still_listed(fleet) \
+        and "started 1" not in r.out, \
+        "refresh: a missing snapshot refuses before the stop, leaving the seat running (rc=%s): %s" % (r.status, r.out)
+
+
+def test_refresh_refuses_a_stale_snapshot_before_stopping(fleet):
+    _refresh_fixture(fleet)
+    fleet.write_snapshot(100, "gamma-canonical", "live", "pid 6101 (fixture)", pids=[6101])
+    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": "2"})
+    assert r.status != 0 and re.search(r"snapshot is 1\d\ds old", r.out) and _gamma_still_listed(fleet) \
+        and "started 1" not in r.out, \
+        "refresh: a stale snapshot refuses before the stop, leaving the seat running (rc=%s): %s" % (r.status, r.out)
 
 
 # context use: the snapshot records each live seat's prompt size at its last main-thread reply

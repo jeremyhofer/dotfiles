@@ -33,6 +33,25 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (a missing session snapshot refuses)
+
+### `fleet-canonicals` and `fleet-canonicals-queue` refuse without a session snapshot (ACTION if the timer is off)
+
+`status`, `up`, `clean` and `refresh`, and the request runner, now refuse when the session snapshot
+(`$FLEET_STATE/sessions.json`) is missing, as they already did when it was stale or unreadable. They
+used to print a note and read the sessions directly, which inside a sandbox reads a live seat as
+MISSING and invites a second launch. `refresh` also checks the snapshot before it stops anything, so a
+missing or stale snapshot no longer leaves a seat stopped and unlaunched.
+
+**ACTION, only on a machine where `status` prints `no session snapshot` after this apply:** enable the
+timer from a terminal, then retry.
+
+```sh
+systemctl --user enable --now fleet-canonicals-snapshot.timer   # Linux
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-snapshot.plist   # macOS
+```
+
+
 ## 2026-11-17 (tuicr from homebrew-core)
 
 ### The Brewfile takes tuicr from homebrew-core; the `agavra/tap` tap is gone (ACTION, macOS)

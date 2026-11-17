@@ -25,6 +25,10 @@ export FLEET_HANDOFFS_SEARCH="$TMPROOT" FLEET_TMPROOT_PREFIX="$TMPROOT/tmproots"
 # SSH is refused).
 export FLEET_LAUNCH_ENV="$_srcbin/no-launch-env"; unset SSH_CONNECTION
 mkdir -p "$FLEET_PID_RECORD_DIR" "$FLEET_PROC_ROOT" "$FLEET_STATE"
+# A session snapshot holding no seats: up, status, clean and refresh refuse without one (since
+# 2026-11-17). Why it is shaped this way: tests/test-fleet-canonicals.sh, where the same fixture is set up.
+export FLEET_SNAPSHOT_FILE="$TMPROOT/sessions.json" FLEET_SNAPSHOT_MAX_AGE=86400
+printf '{"version":1,"takenAt":%s,"seats":{}}\n' "$(date +%s)" > "$FLEET_SNAPSHOT_FILE"
 print 'projects:\n  seed:\n    scope: seed' > "$FLEET_RECORD"
 
 fail=0

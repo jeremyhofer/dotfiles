@@ -775,12 +775,14 @@ def check_live_process(req: dict, ctx: Pass, path: Path) -> str | None:
 
 
 def check_snapshot(req: dict, ctx: Pass, path: Path) -> str | None:
-    # The session snapshot (see `snapshot` below). Missing: the timer is not enabled here, and the
-    # runner's own reads, made outside every sandbox, stand alone. Stale or unreadable: refuse, since
-    # it may describe sessions as they no longer are. Fresh: a starting verb for a seat it reads as
-    # UNKNOWN is refused, since nothing could tell whether the seat is running.
+    # The session snapshot (see `snapshot` below). Missing: refuse, naming the timer; every machine
+    # runs it (2026-11-17), so a missing file means it is off, and the verb run next would refuse
+    # anyway. Stale or unreadable: refuse, since it may describe sessions as they no longer are. Fresh: a starting verb for a seat it reads as UNKNOWN is refused, since nothing
+    # could tell whether the seat is running.
     if not SNAPSHOT.exists():
-        return None
+        return (f"no session snapshot ({SNAPSHOT}); is fleet-canonicals-snapshot running? "
+                "systemctl --user enable --now fleet-canonicals-snapshot.timer "
+                "(macOS: the local.dotfiles.fleet-canonicals-snapshot LaunchAgent)")
     try:
         d = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
         taken = int(d["takenAt"])

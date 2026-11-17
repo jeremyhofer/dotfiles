@@ -136,7 +136,7 @@ token_of() {
       again=1
       while [ "$again" -eq 1 ]; do
         again=0
-        for pre in dot_ private_ executable_ readonly_ empty_ symlink_ modify_ run_once_ run_onchange_ before_ after_; do
+        for pre in dot_ private_ executable_ readonly_ empty_ symlink_ modify_ run_once_ run_onchange_ run_ before_ after_; do
           case $tok in "$pre"?*) tok=${tok#"$pre"}; again=1 ;; esac
         done
       done
