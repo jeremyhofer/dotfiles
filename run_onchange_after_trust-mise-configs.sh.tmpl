@@ -1,0 +1,19 @@
+#!/bin/sh
+# Trusts the mise configurations this machine vouches for: the dotfiles source's own mise.toml, and
+# each fleet project that opts in with `miseTrust: true` (mise-fleet-trust's header has the rules).
+# Deployed only where miseActive is true and run only where mise is installed (.chezmoiignore).
+#
+# chezmoi re-runs it when the tool or the source's mise.toml changes; a private layer that ships the
+# fleet manifest carries its own trigger for the manifest (docs/reference/private-layer.md,
+# "Triggers"). mise keeps trust records across runs, so a run that is not repeated loses nothing.
+#   tool:           {{ include "private_dot_local/bin/executable_mise-fleet-trust" | sha256sum }}
+#   base mise.toml: {{ if stat (joinPath .chezmoi.sourceDir "mise.toml") }}{{ include "mise.toml" | sha256sum }}{{ else }}none{{ end }}
+#
+# The tool runs on the machine's own Python where there is one, not through PATH: once mise's shims
+# lead PATH, a `python3` that mise cannot resolve fails, and trust must not depend on that.
+set -eu
+command -v mise >/dev/null 2>&1 || { echo "trust-mise-configs: mise not installed, skipped" >&2; exit 0; }
+tool=$(command -v mise-fleet-trust) || { echo "trust-mise-configs: mise-fleet-trust not on PATH" >&2; exit 1; }
+py=python3
+[ -x /usr/bin/python3 ] && py=/usr/bin/python3
+exec "$py" "$tool" --base-source {{ .chezmoi.sourceDir | quote }}

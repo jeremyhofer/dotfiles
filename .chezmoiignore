@@ -97,14 +97,18 @@ load-machine-snapshot-agent.sh
 {{ if not (get . "miseActive") }}
 # --- mise, off until this machine switches to it. miseActive is never prompted: it is set by
 #     editing the [data] of the generated config (~/.config/chezmoi/chezmoi.toml), and absent means
-#     false. Until then neither the base's mise settings drop-in nor the step creating mise's state
-#     directory is deployed, so a machine with mise installed keeps mise's own defaults. Turning it
+#     false. Until then neither the base's mise settings drop-in, the step creating mise's state
+#     directory, nor the tool that records which mise configurations are trusted and the apply step
+#     that runs it is deployed, so a machine with mise installed keeps mise's own defaults. Turning it
 #     off again stops future deploys only; a drop-in already deployed stays until removed by hand. ---
 .config/mise
 create-mise-state-dir.sh
+.local/bin/mise-fleet-trust
+trust-mise-configs.sh
 {{ else if not (lookPath "mise") }}
-# mise's state directory is created only where mise is installed.
+# mise's state directory is created, and the trust step runs, only where mise is installed.
 create-mise-state-dir.sh
+trust-mise-configs.sh
 {{ end }}
 
 # Per-machine skill exclusion: skills named in the skipSkills config value (a list in the [data] of

@@ -228,6 +228,10 @@ if _has Devel/mani.yaml; then
   if grep -Eqs 'claude(Local|Dir)Settings:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
     _trigger run_onchange_after_apply-project-claude-settings.sh.tmpl "declaring claudeLocalSettings or claudeDirSettings does not write it" Devel/mani.yaml
   fi
+  # Opt-in: only a manifest whose projects opt in to mise trust needs the trust step re-run with it.
+  if grep -Eqs 'miseTrust:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
+    _trigger run_onchange_after_trust-mise-configs.sh.tmpl "a project opting in to mise trust is not trusted until the trust step runs" Devel/mani.yaml
+  fi
 fi
 _sd=dot_dotlocal/claude/executable_settings-declared
 if _has "$_sd"; then

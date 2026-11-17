@@ -106,6 +106,10 @@ mk "$tmp/ov"; mkdir -p "$tmp/ov/tests"; echo '#!/bin/sh' > "$tmp/ov/tests/run-al
 tcase "T9 a test suite without a gate is advised, not failed (opt-in: no custom hooks on some machines)" 0 'NOTE .*install-test-gate'
 mk "$tmp/ov"; printf 'projects:\n  x:\n    path: x\n    claudeDirSettings:\n      sub: claude/projects/x-sub.json\n' > "$tmp/ov/Devel/mani.yaml.tmpl"
 tcase "T10 a manifest declaring only directory settings without the project-settings trigger is missing" 1 'MISSING .*apply-project-claude-settings'
+mk "$tmp/ov"; printf 'projects:\n  x:\n    path: x\n    miseTrust: true\n' > "$tmp/ov/Devel/mani.yaml.tmpl"
+tcase "T11 a manifest declaring miseTrust without the mise trust trigger is missing" 1 'MISSING .*trust-mise-configs'
+printf '#!/bin/sh\n# {{ include "Devel/mani.yaml.tmpl" | sha256sum }}\n' > "$tmp/ov/run_onchange_after_trust-mise-configs.sh.tmpl"
+tcase "T12 ...and with it passes" 0 ''
 
 # --- Tier P: every overlay file carries a reason to be private, or is reported as a candidate to move
 # to the base. ADVISORY: it never changes the exit code, so an overlay written before the list existed

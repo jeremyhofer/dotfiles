@@ -30,9 +30,10 @@ codes, state files, caveats). This file is short on purpose: every session loads
   before a destructive command) · `git-merge-diff` (the diff a merge would introduce) ·
   `git-clone-worktree` (old name for `fleet-repo clone`).
 - Worktrees and repos: `fleet-repo` (make a repo on disk match its manifest entry) · `fleet-decl`
-  (read one declaration from the manifest; exit 2 = unreadable) · `wt-bootstrap` (a fresh
-  worktree's frozen install) · `wt-fetch-base` (a new worktree starts from a fetched base) ·
-  `wt-config-gen` (worktrunk's user config).
+  (read one declaration from the manifest; exit 2 = unreadable) · `mise-fleet-trust` (trust the
+  mise configurations the manifest opts in) · `wt-bootstrap` (a fresh worktree's frozen install) ·
+  `wt-fetch-base` (a new worktree starts from a fetched base) · `wt-config-gen` (worktrunk's user
+  config).
 - The fleet: `fleet-canonicals` (the long-running named sessions: status, up/down, refresh,
   handoffs, the request queue; skill `canonical-takeover`) · `fleet-canonicals-queue` (behind
   `fleet-canonicals request`) · `fleet-slot` (the timing slot for heavy work) · `fleet-wait` (a

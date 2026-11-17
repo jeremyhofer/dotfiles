@@ -146,6 +146,7 @@ test-statusline-dir.sh              dot_claude/statusline-command.sh
 test-statusline-usage.sh            dot_claude/statusline-command.sh private_dot_local/bin/executable_claude-usage-override
 test-tooling-inventory.sh           dot_claude/tooling.md dot_claude/tooling-reference.md
 test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
+test-mise-fleet-trust.py            private_dot_local/bin/executable_mise-fleet-trust private_dot_local/bin/executable_fleet-decl run_onchange_after_trust-mise-configs.sh.tmpl .chezmoiignore
 test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.map
 # A tracked .npmrc has no line on purpose: a glob matching no tracked file is refused as dead, and a
 # staged path nothing claims runs every suite (the fail-safe), this one included.

@@ -560,6 +560,7 @@ applied and nothing downstream moves. `overlay-doctor` (Tier T) checks each row 
 | the same fragment, declaring plugins | `run_onchange_after_install-claude-plugins.sh.tmpl`, calling the base's `install-claude-plugins` | `overlay-skeleton/opt-in/` | opt-in |
 | `Devel/mani.yaml.tmpl`, declaring `claudeLocalSettings:` or `claudeDirSettings:`, and the files they point at | `run_onchange_after_apply-project-claude-settings.sh.tmpl`, hashing the manifest and every project file, and calling the base's `claude-project-settings` | `overlay-skeleton/opt-in/` | opt-in |
 | `dot_dotlocal/skill-externals.yaml` | `run_onchange_after_sync-skill-externals.sh.tmpl`, hashing it | `overlay-skeleton/` | required |
+| `Devel/mani.yaml.tmpl`, declaring `miseTrust:` | `run_onchange_after_trust-mise-configs.sh.tmpl`, hashing the manifest and calling the base's `mise-fleet-trust`, rendered empty until the layer's own `miseActive` is true (chezmoi data is per instance, so set it with the base's) | `overlay-skeleton/opt-in/` | opt-in |
 | `tests/run-all.sh` (and, to scope the gate to the staged paths, `tests/select-suites.sh` with its `tests/coverage.map`) | `run_onchange_install-test-gate.sh.tmpl`, calling the base's `install-test-gate` | `overlay-skeleton/opt-in/` | opt-in |
 
 **Opt-in means the layer adds the trigger itself.** `setup/scaffold-overlay` copies the skeleton but

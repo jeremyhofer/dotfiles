@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""mise-fleet-trust -- trust the mise configurations the fleet manifest opts in, and nothing else.
+
+    mise-fleet-trust [--base-source DIR] [--dry-run]
+    mise-fleet-trust --env
+
+WHY. mise applies a configuration's [env], settings and tasks only once that file is trusted, and
+its trust records live in mise's state directory, which an agent's sandbox may not write. So trust is
+decided in one place, the fleet manifest (`miseTrust: true` on a project, read through fleet-decl),
+and recorded here, by the dotfiles apply, which runs outside any sandbox. Nothing else is trusted:
+mise's own automatic trust (`mise exec`, `mise run`, `mise install` run outside a sandbox) and a
+person's `mise trust` after reading a config are the only other ways in.
+
+WHAT IT TRUSTS. For each project with `miseTrust: true` whose directory is on this machine, its
+top-level `mise.toml` and `mise.local.toml`, each by its own path (`mise trust <file>`), never the
+project's directory as a prefix: a prefix trusts every configuration below it, a dependency's
+included. With --base-source DIR, also DIR/mise.toml, the dotfiles source's own; this needs no
+manifest, so a machine with none still trusts it. A file that does not exist is skipped, because
+mise refuses to trust a path that is not there; the next run after it appears trusts it.
+
+Measured with mise 2026.11.5: `mise trust <file>` records the file's DIRECTORY as a trust root, and
+every configuration file in that directory (`.mise.toml`, `.config/mise/config.toml`, a later
+`mise.local.toml`) counts as trusted with it, while a subdirectory's does not. Trusting each file by
+its path is still the narrowest form mise offers outside paranoid mode, and it stays exact if mise
+narrows the record.
+
+WHAT IT CANNOT RECORD: THE IGNORE LIST AND THE CEILING. Two more settings complete the boundary:
+`ignored_config_paths` (each opted-in project's `node_modules`, `.venv` and `vendor`, and its
+`miseIgnore:` paths, so a dependency's configuration is never read, and `mise exec` there never
+trusts and runs it) and `ceiling_paths` (each project's parent, so the walk stops above the
+project). Measured with mise 2026.11.5, neither setting has any effect when set in a configuration
+file (a conf.d/ drop-in, config.toml or settings.toml), though `mise settings get` reports the
+value; each takes effect only from the environment, MISE_IGNORED_CONFIG_PATHS and
+MISE_CEILING_PATHS, as `:`-separated lists. So --env prints the two, and whatever starts a process
+that reaches mise has to set them; this tool writes no drop-in. The dependency directories are
+listed whether or not they exist yet, and so are opted-in projects not on disk here, because the
+values outlive this run: a clone or an `npm ci` after the apply is still covered.
+
+    MISE_IGNORED_CONFIG_PATHS=<dir>/.venv:<dir>/node_modules:<dir>/vendor:<dir>/<miseIgnore>...
+    MISE_CEILING_PATHS=<parent of dir>:...
+
+An entry matches the path it names, not a deeper directory of the same name.
+
+THE MANIFEST. Read through fleet-decl ($FLEET_RECORD, else ~/Devel/mani.yaml; a project's `path` is
+relative to $FLEET_DEVEL_ROOT, else ~/Devel, or absolute). No manifest file means no project is
+trusted, which is not an error. A manifest fleet-decl cannot read, or a `miseIgnore` entry that is
+not a plain path inside its project, refuses the run before any project is trusted: an answer
+built from an unreadable record would be unfounded, and a guessed ignore list could reach outside
+the project. `fleet-decl --check` reports the same entries.
+
+OPTIONS.
+    --base-source DIR   also trust DIR/mise.toml (the apply passes the dotfiles source directory)
+    --dry-run           print what would be trusted, trust nothing
+    --env               print the two environment lines above and nothing else; trusts nothing
+
+EXIT. 0 done (or nothing to do); 1 a `mise trust` failed or an opted-in project declares no path,
+each named on stderr, the rest still done; 2 usage, mise not installed, fleet-decl not found, the
+manifest unreadable, or an invalid miseIgnore entry.
+
+Standard library only, Python 3.9 syntax.
+"""
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+PROG = "mise-fleet-trust"
+CONFIG_NAMES = ("mise.toml", "mise.local.toml")
+DEPENDENCY_DIRS = (".venv", "node_modules", "vendor")
+GLOB_CHARS = "*?["
+
+
+class Refuse(Exception):
+    """The run cannot proceed; exit 2."""
+
+
+class Project(object):
+    def __init__(self, name, directory, ignores):
+        self.name = name
+        self.dir = directory
+        self.ignores = ignores
+
+
+def say(msg):
+    print("%s: %s" % (PROG, msg), file=sys.stderr)
+
+
+def fleet_decl_command():
+    """fleet-decl beside this file (installed, or the source copy), else on PATH."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for name in ("fleet-decl", "executable_fleet-decl"):
+        candidate = os.path.join(here, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return [candidate]
+    found = shutil.which("fleet-decl")
+    if found:
+        return [found]
+    raise Refuse("fleet-decl is not installed, so the manifest cannot be read")
+
+
+def record_path():
+    return os.environ.get("FLEET_RECORD") or os.path.join(os.path.expanduser("~"), "Devel", "mani.yaml")
+
+
+def decl_rows(fleet_decl, *args):
+    """<project><TAB><value> rows of a bulk fleet-decl read; [] when nothing is declared."""
+    out = subprocess.run(fleet_decl + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         universal_newlines=True)
+    if out.returncode == 1:
+        return []
+    if out.returncode != 0:
+        detail = out.stderr.strip().splitlines()
+        raise Refuse("the manifest %s could not be read (fleet-decl %s: exit %d%s)"
+                     % (record_path(), args[0], out.returncode,
+                        ", " + detail[-1] if detail else ""))
+    rows = []
+    for line in out.stdout.splitlines():
+        name, sep, value = line.partition("\t")
+        if sep:
+            rows.append((name, value))
+    return rows
+
+
+def bad_ignore(entry):
+    """Why a miseIgnore entry is refused, or None. The same shape fleet-decl --check holds it to,
+    plus no `:`, which would split the environment list."""
+    if not entry:
+        return "is empty"
+    if entry.startswith("/") or entry.startswith("~"):
+        return "is not relative to the project"
+    if any(part in ("", ".", "..") for part in entry.split("/")):
+        return "has an empty, . or .. component"
+    if any(c in entry for c in GLOB_CHARS):
+        return "has a glob character"
+    if ":" in entry or "\n" in entry:
+        return "has a : or a newline"
+    return None
+
+
+def project_dir(raw):
+    if raw.startswith("/"):
+        joined = raw
+    else:
+        root = os.environ.get("FLEET_DEVEL_ROOT") or os.path.join(os.path.expanduser("~"), "Devel")
+        joined = os.path.join(root, raw)
+    # Resolved where it exists, so the paths match the ones mise sees from a working directory.
+    return os.path.realpath(joined) if os.path.isdir(joined) else os.path.normpath(joined)
+
+
+def load_projects():
+    """(projects, errors): every opted-in project, on disk or not. Raises Refuse."""
+    if not os.path.isfile(record_path()):
+        say("no fleet record at %s: no project is trusted" % record_path())
+        return [], 0
+    fleet_decl = fleet_decl_command()
+    opted = [name for name, value in decl_rows(fleet_decl, "--values", "miseTrust")
+             if value == "true"]
+    if not opted:
+        return [], 0
+    paths = dict(decl_rows(fleet_decl, "--values", "path"))
+    ignores = {}
+    for name, entry in decl_rows(fleet_decl, "--values-list", "miseIgnore"):
+        ignores.setdefault(name, []).append(entry)
+    for name in opted:
+        for entry in ignores.get(name, []):
+            why = bad_ignore(entry)
+            if why:
+                raise Refuse("%s: miseIgnore entry '%s' %s (fleet-decl --check reports it too)"
+                             % (name, entry, why))
+    projects, errors = [], 0
+    for name in opted:
+        raw = paths.get(name, "")
+        if not raw:
+            say("%s: opts in to mise trust but declares no path; skipped" % name)
+            errors += 1
+            continue
+        directory = project_dir(raw)
+        if ":" in directory or "\n" in directory:
+            raise Refuse("%s: its directory %s has a : or a newline, which the environment "
+                         "lists cannot carry" % (name, directory))
+        projects.append(Project(name, directory, ignores.get(name, [])))
+    return projects, errors
+
+
+def ignore_paths(project):
+    paths = [os.path.join(project.dir, d) for d in DEPENDENCY_DIRS]
+    paths += [os.path.join(project.dir, entry) for entry in project.ignores]
+    return paths
+
+
+def ceiling_paths(project):
+    return [os.path.dirname(project.dir)]
+
+
+def env_lines(projects):
+    ignored, ceilings = set(), set()
+    for project in projects:
+        ignored.update(ignore_paths(project))
+        ceilings.update(ceiling_paths(project))
+    return ["MISE_IGNORED_CONFIG_PATHS=" + ":".join(sorted(ignored)),
+            "MISE_CEILING_PATHS=" + ":".join(sorted(ceilings))]
+
+
+def trust_file(mise, path, dry_run):
+    """Trust one existing file by its path. Returns False when mise refused."""
+    if dry_run:
+        print("would trust %s" % path)
+        return True
+    out = subprocess.run([mise, "trust", "--quiet", path], stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, universal_newlines=True)
+    if out.returncode != 0:
+        detail = out.stderr.strip().splitlines()
+        say("mise trust %s failed (exit %d)%s" % (path, out.returncode,
+                                                  ": " + detail[0] if detail else ""))
+        return False
+    print("trusted %s" % path)
+    return True
+
+
+def trust_project(mise, project, dry_run):
+    """Trust the project's own top-level configuration files. Returns False on any failure."""
+    ok = True
+    for name in CONFIG_NAMES:
+        path = os.path.join(project.dir, name)
+        if os.path.isfile(path):
+            ok = trust_file(mise, path, dry_run) and ok
+    return ok
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog=PROG, add_help=True,
+                                     description="Trust the mise configurations the fleet "
+                                                 "manifest opts in (see the header).")
+    parser.add_argument("--base-source", metavar="DIR")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--env", action="store_true")
+    args = parser.parse_args(argv)
+    if args.env and (args.base_source or args.dry_run):
+        parser.error("--env takes no other option")
+
+    try:
+        if args.env:
+            projects, _ = load_projects()
+            for line in env_lines(projects):
+                print(line)
+            return 0
+
+        mise = shutil.which("mise")
+        if not mise:
+            raise Refuse("mise is not installed")
+        failures = 0
+        # The base source first: it depends on no manifest, so an unreadable one does not stop it.
+        if args.base_source:
+            path = os.path.join(os.path.realpath(args.base_source), "mise.toml")
+            if os.path.isfile(path):
+                failures += 0 if trust_file(mise, path, args.dry_run) else 1
+            else:
+                say("no mise.toml in %s; nothing to trust there" % args.base_source)
+        projects, errors = load_projects()
+        failures += errors
+        for project in projects:
+            if not os.path.isdir(project.dir):
+                say("%s: %s is not on disk here; skipped" % (project.name, project.dir))
+                continue
+            failures += 0 if trust_project(mise, project, args.dry_run) else 1
+    except Refuse as e:
+        say("%s -- no project was trusted" % e)
+        return 2
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -35,6 +35,34 @@ Entries are newest first.
 
 ## 2026-11-17 (mise trust)
 
+### `mise-fleet-trust`: the apply trusts the mise configurations the manifest opts in (ACTION, a private layer whose manifest declares `miseTrust:`)
+
+A new tool, deployed with a new apply step only where the generated config's `[data]` sets
+`miseActive = true`; the step runs only where `mise` is installed. While `miseActive` is false or
+absent, neither deploys and nothing changes. The step runs `mise-fleet-trust --base-source <source>`
+outside any sandbox, which trusts:
+
+- each project with `miseTrust: true` that is on disk here: its own top-level `mise.toml` and
+  `mise.local.toml`, each by its path (`mise trust <file>`), never the project's directory as a
+  prefix, so a configuration in a subdirectory or a dependency stays untrusted;
+- the dotfiles source's own `mise.toml`, on every machine, with or without a manifest.
+
+It re-runs when the tool or the source's `mise.toml` changes. A manifest `fleet-decl` cannot read, or
+an invalid `miseIgnore` entry, fails the step before any project is trusted.
+
+The ignore list (each opted-in project's `node_modules`, `.venv`, `vendor` and `miseIgnore` paths)
+and the ceiling (each project's parent) are printed by `mise-fleet-trust --env` as
+`MISE_IGNORED_CONFIG_PATHS` and `MISE_CEILING_PATHS`. mise honors those two settings only from the
+environment: set in a `conf.d/` drop-in or `config.toml` they are reported by `mise settings get`
+and have no effect. So no drop-in is written, and nothing in the base sets the two variables yet;
+until something does, a dependency's `mise.toml` is not ignored, and a shim run in its directory
+fails as untrusted.
+
+**ACTION, a private layer whose manifest declares `miseTrust:`:** add the trigger
+`run_onchange_after_trust-mise-configs.sh.tmpl` from `overlay-skeleton/opt-in/`, which re-runs the
+tool when the manifest changes, and a `miseActive` key in that layer's own generated config, set
+with the base's. `overlay-doctor` reports a manifest declaring `miseTrust:` without the trigger.
+
 ### `fleet-decl --check`: `miseTrust` and `miseIgnore` (ACTION, a private layer whose manifest lists a repository that commits a `mise.toml`)
 
 Two new project keys in the fleet manifest. `miseTrust: true` is a project's opt-in to mise trust;
