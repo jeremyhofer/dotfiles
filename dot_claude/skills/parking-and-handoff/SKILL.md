@@ -66,6 +66,11 @@ step 5's closing rule (end on a statement), which holds at every turn of a backg
    - **Background jobs this session started** (`run_in_background`, `Workflow`). You issued them and
      hold their ids, so this is something you know, not something to discover.
    - **Work dispatched to a peer** that is still expected to report back.
+   - **Every watch this session promised a peer it would keep** ("X is armed and I'll tell you the
+     moment Y"). The promise outlives the session in the peer's plans, while the watch itself dies
+     with the session. So the handoff names each one: what it watches, who was promised, and whether
+     the successor re-arms it or tells that peer it has ended. A watch nobody carries forward fails
+     silently, because the peer goes on waiting for a message that will never come.
 
    Mark each as meaningful work or residue, and ask. The decision procedure:
 
