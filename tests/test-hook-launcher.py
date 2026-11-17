@@ -32,9 +32,11 @@ PATH, and runs the tool directly.
 
 Everything runs in a scratch HOME with scratch mise config, data, state and cache directories, a
 scratch git config, and a stub fleet-decl that reports every repository as a fleet member (so the
-spelling hooks act). mise's Python is the machine's own interpreter, linked into the scratch data
-directory with `mise link` under a release number no real Python has (3.97.0), so nothing is
-downloaded and the path `sys.executable` reports tells mise's run from the fallback. Needs mise,
+spelling hooks act). mise's Python is the machine's own interpreter behind a wrapper that marks the
+run, linked into the scratch data directory with `mise link` under a release number no real Python
+has (3.97.0), so nothing is downloaded and the marker tells mise's run from the fallback. Not
+`sys.executable`: Homebrew's Python on macOS reports its resolved real path whatever name started
+it, so there both runs printed the same path (the Mac's pre-apply suite, 2026-11-17). Needs mise,
 codespell and git 2.54+ (configured hooks); the missing-key case also needs sops and age-keygen.
 Each is a visible skip when absent.
 """
@@ -146,17 +148,21 @@ class World:
         # mise: the machine's Python linked as release 3.97.0, a shim for it, home's two settings.
         self.fakepy = tmp / "fakepy"
         (self.fakepy / "bin").mkdir(parents=True)
-        (self.fakepy / "bin" / "python3").symlink_to(os.path.realpath(self.machine_python))
+        (self.fakepy / "bin" / "python3").write_text(
+            f'#!/bin/sh\nHOOK_LAUNCHER_TEST_PYTHON=mise exec "{os.path.realpath(self.machine_python)}" "$@"\n')
+        (self.fakepy / "bin" / "python3").chmod(0o755)
         self.config_root = tmp / "mise-config"
         self.mise_config(self.config_root, MISE_PY)
         self.mise(self.config_root, "link", f"python@{MISE_PY}", str(self.fakepy))
         self.mise(self.config_root, "reshim")
         assert (self.shims / "python3").exists(), "mise made no python3 shim"
-        self.mise_python = str(self.data / "installs" / "python" / MISE_PY / "bin" / "python3")
+        # What the probe prints for each interpreter: the wrapper's marker, or none.
+        self.mise_mark, self.machine_mark = "mise", "machine"
 
         # A basic tool that reports which interpreter ran it and exits with its first argument.
         self.probe = tmp / "probe-tool"
-        self.probe.write_text("#!/usr/bin/env python3\nimport sys\nprint(sys.executable)\n"
+        self.probe.write_text("#!/usr/bin/env python3\nimport os, sys\n"
+                              "print(os.environ.get('HOOK_LAUNCHER_TEST_PYTHON', 'machine'))\n"
                               "sys.exit(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\n")
         self.probe.chmod(0o755)
 
@@ -308,7 +314,7 @@ def test_control_mise_resolves_and_the_launcher_is_silent(world):
     r = world.repo("control")
     p = world.run([str(world.bin / "hook-launcher"), str(world.probe)], r, world.config_root)
     assert p.returncode == 0, p.stderr
-    assert p.stdout.strip() == world.mise_python, "mise's shim did not run the tool"
+    assert p.stdout.strip() == world.mise_mark, "mise's shim did not run the tool"
     assert p.stderr == ""
     c, made = commit(world, r, world.config_root)
     assert c.returncode == 0 and made, c.stdout + c.stderr
@@ -350,7 +356,7 @@ def test_the_fallback_runs_the_machines_python_with_one_line(world, case):
     r, cfg, extra = plant(world, case, f"probe-{case}")
     p = world.run([str(world.bin / "hook-launcher"), str(world.probe)], r, cfg, **extra)
     assert p.returncode == 0, p.stderr
-    assert p.stdout.strip() == world.machine_python, p.stdout
+    assert p.stdout.strip() == world.machine_mark, p.stdout
     assert len(p.stderr.splitlines()) == 1, p.stderr
     assert p.stderr.startswith(PREFIX) and CASES[case][1] in p.stderr, p.stderr
 
@@ -400,7 +406,7 @@ def test_unknown_mise_text_names_all_three_fixes(world, tmp_path):
                   DOTFILES_MISE_SHIMS=str(shims),
                   PATH=f"{shims}:{world.stub}:{world.base_path}")
     assert p.returncode == 0, p.stderr
-    assert p.stdout.strip() == world.machine_python
+    assert p.stdout.strip() == world.machine_mark
     assert len(p.stderr.splitlines()) == 1, p.stderr
     for fix in ("mise trust", "mise install", "load the SOPS age key"):
         assert fix in p.stderr, p.stderr
