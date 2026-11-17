@@ -33,6 +33,7 @@ file, then apply.
 | `overlayRepo` | git URL of the private source | where `chezmoi-overlay` clones it from |
 | `skipSkills` | list of base skill names | those skills are not deployed on this machine (an already-deployed one stays until removed by hand) |
 | `dpi` | number, Linux only | X11 `.Xresources` |
+| `miseActive` | `true` or `false`, never prompted; absent is `false` | the base's mise settings drop-in (`~/.config/mise/conf.d/10-base.toml`) deploys, and each apply creates mise's state directory at mode 700 where `mise` is installed; it switches one machine to mise before another while every apply stays a full one |
 
 ```toml
 [data]
