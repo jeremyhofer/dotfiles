@@ -33,6 +33,14 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (`claude-usage-report --sessions`: what counts as parked)
+
+`claude-usage-report --sessions` reads a session as `parked` when, in its last 30 minutes, it ran
+`fleet-canonicals stage` or `fleet-canonicals handoff --set` for its own seat, or committed a handoff
+named `*-<seat>-park.md`. It used to accept any command containing `fleet-canonicals stage`, for any
+seat and at any point, which missed a seat that commits its handoff directly and counted a session
+that merely mentioned the command. No action.
+
 ## 2026-11-17 (a missing session snapshot refuses)
 
 ### `fleet-canonicals` and `fleet-canonicals-queue` refuse without a session snapshot (ACTION if the timer is off)

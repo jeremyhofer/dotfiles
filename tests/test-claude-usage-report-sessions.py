@@ -153,6 +153,53 @@ def test_seat_name_is_the_title_else_the_agent_name(tree):
     assert set(r) == {"seat-a", "seat-b", "seat-c"}
 
 
+def bash(cmd):
+    return [{"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]
+
+
+def one_seat(tree, sid, seat, calls, last="2026-10-16T14:00:00Z"):
+    """A session titled `seat`: one request per (timestamp, Bash command or None), then a last
+    request at `last` with no tool call."""
+    f = Path(tree["env"]["CLAUDE_PROJECTS_DIR"]) / "-w-proj" / ("%s.jsonl" % sid)
+    line(f, {"type": "custom-title", "customTitle": seat})
+    for i, (ts, cmd) in enumerate(calls):
+        rec(f, "%s-%d" % (sid, i), ts, inp=1, cr=1, cc=1, out=1, **({"content": bash(cmd)} if cmd else {}))
+    rec(f, "%s-last" % sid, last, inp=1, cr=1, cc=1, out=1)
+    os.utime(f, (NOW, NOW))
+
+
+# A seat parks by staging its handoff, by committing its own `*-<seat>-park.md`, or by recording
+# its pointer (director-canonical commits its handoff directly, 2026-11-17), in the session's last
+# 30 minutes. Committing ANOTHER seat's park file is placing it, and a park long before the end was
+# followed by more work, so neither is a park.
+
+def test_parked_by_committing_its_own_park_handoff(tree):
+    one_seat(tree, "eeeeeeee-5", "seat-e", [("2026-10-16T13:50:00Z",
+             "f=handoffs/2026-10-16-1350-seat-e-park.md && git add $f && git commit -q -m park")])
+    assert rows(tree)["seat-e"]["ended"] == "parked"
+
+
+def test_parked_by_recording_its_pointer(tree):
+    one_seat(tree, "ffffffff-6", "seat-f", [("2026-10-16T13:55:00Z",
+             "fleet-canonicals handoff seat-f --set /h/2026-10-16-1355-seat-f-checkpoint.md")])
+    assert rows(tree)["seat-f"]["ended"] == "parked"
+
+
+def test_committing_another_seats_park_handoff_is_not_a_park(tree):
+    one_seat(tree, "99999999-7", "seat-g", [
+        ("2026-10-16T13:50:00Z", "p=handoffs/2026-10-16-1350-seat-x-park.md; git add $p && git commit -q -m place"),
+        ("2026-10-16T13:51:00Z", "fleet-canonicals stage seat-x /h/x.md"),
+        ("2026-10-16T13:52:00Z", "fleet-canonicals handoff seat-x --set /h/x.md")])
+    assert rows(tree)["seat-g"]["ended"] == "exited"
+
+
+def test_a_park_long_before_the_end_is_not_a_park(tree):
+    one_seat(tree, "88888888-8", "seat-h", [
+        ("2026-10-16T12:00:00Z", "fleet-canonicals stage seat-h /h/park.md"),
+        ("2026-10-16T12:01:00Z", "git add handoffs/2026-10-16-1201-seat-h-park.md && git commit -m p")])
+    assert rows(tree)["seat-h"]["ended"] == "exited"
+
+
 def test_ended_parked_compacted_exited(tree):
     r = rows(tree)
     assert (r["seat-a"]["ended"], r["seat-b"]["ended"], r["seat-c"]["ended"]) == ("parked", "compacted", "exited")

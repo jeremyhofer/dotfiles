@@ -45,7 +45,9 @@ more than once for several. The columns:
                  not part of any ctx column.
     cmp          compactions: how many times the context was summarized and cut.
     ended        how the session finished:
-                   parked     it ran `fleet-canonicals stage` (it wrote and staged a handoff).
+                   parked     in its last 30 minutes it ran, for its own seat, `fleet-canonicals
+                              stage`, `fleet-canonicals handoff --set`, or a `git commit` of a
+                              handoff named `*-<seat>-park.md`.
                    live       its process is still running.
                    compacted  not parked and not running, and it compacted at least once.
                    exited     not parked, not running, never compacted.
@@ -110,6 +112,7 @@ import calendar
 import fnmatch
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -317,7 +320,13 @@ def build(root, cutoff, home, end=float("inf")):
     }
 
 
-PARK_MARK = "fleet-canonicals stage "
+# A session parked when, in its last PARK_WINDOW seconds, it ran one of these for its OWN seat:
+# `fleet-canonicals stage <seat>`, `fleet-canonicals handoff <seat> --set`, or a `git commit` of a
+# handoff named `*-<seat>-park.md` (director-canonical commits its handoff directly, 2026-11-17).
+# Its own seat, because the coordinating seat commits other seats' park files when it places them;
+# its last minutes, because a park followed by more work was a checkpoint.
+PARK_WINDOW = 30 * 60
+PARK_HINTS = ("fleet-canonicals", "-park.md")
 
 
 def usage_vals(m):
@@ -334,14 +343,31 @@ def usage_vals(m):
     return vals
 
 
-def ran_park(m):
-    """Whether an assistant message holds a Bash tool call that stages a handoff."""
+def park_commands(m):
+    """The Bash commands of an assistant message that might park a seat (decided by is_park)."""
+    out = []
     for c in m.get("content") or ():
         if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "Bash":
             cmd = (c.get("input") or {}).get("command")
-            if isinstance(cmd, str) and PARK_MARK in cmd:
-                return True
-    return False
+            if isinstance(cmd, str) and any(h in cmd for h in PARK_HINTS):
+                out.append(cmd)
+    return out
+
+
+def is_park(cmd, seat):
+    """Whether a Bash command parks `seat`: stages its handoff, records its pointer, or commits a
+    handoff named for it."""
+    s = re.escape(seat)
+    if re.search(r"fleet-canonicals\s+stage\s+%s(\s|$)" % s, cmd):
+        return True
+    if re.search(r"fleet-canonicals\s+handoff\s+%s\s+(.*\s)?--set(\s|=|$)" % s, cmd):
+        return True
+    return bool(re.search(r"\bgit\b.*\bcommit\b", cmd, re.S)
+                and re.search(r"-%s-park\.md\b" % s, cmd))
+
+
+def parked(info, seat, end):
+    return any(ts >= end - PARK_WINDOW and is_park(cmd, seat) for ts, cmd in info["park_calls"])
 
 
 def read_requests(path, main):
@@ -350,7 +376,7 @@ def read_requests(path, main):
     With main=True, sidechain records (subagent turns written into the main file by older Claude
     Code builds) are left out, and the seat name, compactions and park are collected too."""
     reqs, anon = {}, 0
-    info = {"title": None, "agent_name": None, "compactions": 0, "parked": False, "cwd": None}
+    info = {"title": None, "agent_name": None, "compactions": 0, "park_calls": [], "cwd": None}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -375,10 +401,10 @@ def read_requests(path, main):
             if t != "assistant" or (main and r.get("isSidechain") is True):
                 continue
             m = r.get("message")
-            if main and isinstance(m, dict) and not info["parked"] and ran_park(m):
-                info["parked"] = True
-            vals = usage_vals(m)
             ts = parse_ts(r.get("timestamp"))
+            if main and isinstance(m, dict) and ts is not None:
+                info["park_calls"] += [(ts, cmd) for cmd in park_commands(m)]
+            vals = usage_vals(m)
             if vals is None or ts is None:
                 continue
             mid = m.get("id")
@@ -491,7 +517,7 @@ def build_sessions(root, cutoff, end, home, seats, sessions_dir):
                         sub_input += sum(ctx(q) for q in sr)
             total = sum(ctx(q) for q in reqs)
             live = alive.get(sid, False)
-            if info["parked"]:
+            if parked(info, seat, reqs[-1]["ts"]):
                 ended = "parked"
             elif live:
                 ended = "live"
