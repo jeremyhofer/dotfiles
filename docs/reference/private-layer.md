@@ -174,7 +174,8 @@ cat <<'EOF'
     "env": { "HTTPS_PROXY": "http://proxy.example.com:8080" },
     "sandbox": { "enabled": true }
   },
-  "retiredHooks": []
+  "retiredHooks": [],
+  "retiredEnv": []
 }
 EOF
 ```
@@ -200,6 +201,11 @@ Rules the merge imposes:
   so it also removes the base's own hooks: **a machine that may not run Claude Code hooks** (a
   managed work machine) lists `claude-worktree-hook`, the base's only hook script, and its
   `settings.json` then declares none of the base's hooks.
+- **`retiredEnv`** lists `env` keys to remove from the live file, for a key the fragment once
+  declared and has dropped: the merge can only add, so a dropped key would otherwise stay set on
+  every machine an earlier apply reached. A key that a layer still declares (the base, the
+  fragment, or the base's context cap) is kept with its declared value, so this list cannot strip
+  the base's own `env`. A running session keeps a removed key until it next starts.
 - Managed settings (`/etc/claude-code/managed-settings.json`, or the macOS equivalent) outrank this
   file; a key they enforce cannot be changed from here.
 - A fragment that fails or prints anything but a JSON object is skipped with a warning; the base's

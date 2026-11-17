@@ -17,7 +17,8 @@
 #   1. The base block below: preferences true on any machine (editor mode, UI, the status line),
 #      and the hooks of the tools this base ships (claude-worktree-hook; see that script's header).
 #   2. The domain's fragment: an executable at ~/.dotlocal/claude/settings-declared (or
-#      $CLAUDE_SETTINGS_FRAGMENT) that prints {"declared": {...}, "retiredHooks": [...]}. A private
+#      $CLAUDE_SETTINGS_FRAGMENT) that prints {"declared": {...}, "retiredHooks": [...]} (and
+#      optionally "ensureAllow" and "retiredEnv", below). A private
 #      layer supplies what only its domain has: plugins, hooks, sandbox paths, permission rules. It
 #      is a script rather than a JSON file so the reason for each entry can sit beside it. A private
 #      chezmoi instance changing it has to re-apply this target; a domain without one gets the base
@@ -61,7 +62,10 @@
 #
 # RETIRED ENV KEYS. The merge can only add, so a key dropped from this block stays in every live
 # file an earlier apply wrote. `retired_env` below names each such key once, and the merge removes
-# it from the live env: NX_SOCKET_DIR, replaced by the two keys above.
+# it from the live env: NX_SOCKET_DIR, replaced by the two keys above. The fragment may name its own
+# in "retiredEnv", for a key it once declared and has dropped. A retired key that any layer still
+# declares (the base, the fragment, the context cap) is kept with its declared value: retiring is
+# cleanup of keys nothing declares, so a fragment cannot strip the base's own env.
 #
 # THE CONTEXT CAP. ~/.dotlocal/claude/context-cap-percent (or $CLAUDE_CONTEXT_CAP_FILE), when it
 # holds one whole number from 1 to 100, becomes env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: Claude Code then
@@ -157,17 +161,26 @@ else
 fi
 
 frag_path=${CLAUDE_SETTINGS_FRAGMENT:-"$HOME/.dotlocal/claude/settings-declared"}
-domain='{}'; retired='[]'; ensure='[]'
+domain='{}'; retired='[]'; ensure='[]'; domain_retired_env='[]'
 if [ -f "$frag_path" ]; then
   if out=$(bash "$frag_path" 2>/dev/null) \
      && printf '%s' "$out" | jq -e '(type == "object") and ((.declared // {}) | type == "object")' >/dev/null 2>&1; then
     domain=$(printf '%s' "$out" | jq -c '.declared // {}')
     retired=$(printf '%s' "$out" | jq -c '[.retiredHooks // [] | .[] | strings]')
     ensure=$(printf '%s' "$out" | jq -c '[.ensureAllow // [] | .[] | strings]')
+    domain_retired_env=$(printf '%s' "$out" | jq -c '[.retiredEnv // [] | .[] | strings]')
   else
     printf 'modify_settings.json: settings fragment %s failed or did not print a JSON object; applying the base block only\n' "$frag_path" >&2
   fi
 fi
+
+# Every retired key, the base's and the fragment's, less any key a layer still declares.
+retired_env=$(jq -cn --argjson b "$retired_env" --argjson d "$domain_retired_env" \
+  --argjson base "$base" --argjson domain "$domain" --argjson cap "$cap" '
+  def obj: if type == "object" then . else {} end;
+  ((($base.env | obj) + ($domain.env | obj) + ($cap.env | obj)) | keys) as $declared
+  | ($b + $d) | unique | map(select(. as $k | $declared | index([$k]) | not))') \
+  || retired_env='["NX_SOCKET_DIR"]'
 
 printf '%s' "$live" | jq -S --argjson base "$base" --argjson domain "$domain" --argjson retired "$retired" --argjson ensure "$ensure" --argjson retiredEnv "$retired_env" --argjson cap "$cap" '
   ($base.hooks // {}) as $bh | ($domain.hooks // {}) as $dh

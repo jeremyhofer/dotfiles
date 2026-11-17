@@ -164,6 +164,34 @@ for bad in 0 101 50% abc '' 99999999999999999999; do
   grep -q 'context-cap' "$TMP/err" || { echo "FAIL: a malformed cap file ('$bad') must be reported on stderr"; fail=1; }
 done
 
+# I) retiredEnv: the fragment names env keys an earlier apply wrote and no layer declares any longer;
+# each is removed from the live env, since the merge alone only adds. Others survive, a non-string
+# entry is ignored, and a key some layer still declares is kept: retiring is cleanup of stale keys,
+# so a fragment cannot strip the base's own env (NX_DAEMON) or the context cap.
+renv_frag="$TMP/renv-frag"
+cat > "$renv_frag" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"declared": {"env": {"STILL_DECLARED": "1"}},
+ "retiredEnv": ["OLD_A", "OLD_B", "STILL_DECLARED", "NX_DAEMON", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 7]}
+JSON
+EOF
+live='{"env":{"OLD_A":"1","OLD_B":"x","KEEP_ME":"1","NX_DAEMON":"true"}}'
+out=$(CAP="$TMP/cap50" run "$live" "$renv_frag")
+[ "$(val "$out" '.env | keys | join(",")')" = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,KEEP_ME,NX_DAEMON,NX_ISOLATE_PLUGINS,STILL_DECLARED" ] \
+  || { echo "FAIL: retiredEnv must remove exactly the stale keys no layer declares: $(val "$out" '.env')"; fail=1; }
+[ "$(val "$out" '.env.NX_DAEMON')" = "false" ] && [ "$(val "$out" '.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')" = "50" ] \
+  || { echo "FAIL: a retired key that a layer declares keeps its declared value: $(val "$out" '.env')"; fail=1; }
+again=$(CAP="$TMP/cap50" run "$out" "$renv_frag")
+[ "$(printf '%s' "$again" | jq -S -c .)" = "$(printf '%s' "$out" | jq -S -c .)" ] || { echo "FAIL: retiredEnv applied twice must change nothing"; fail=1; }
+# The base's own retired key is still removed alongside the fragment's.
+out=$(run '{"env":{"NX_SOCKET_DIR":"/s","OLD_A":"1"}}' "$renv_frag")
+[ "$(val "$out" '.env.NX_SOCKET_DIR // "gone"')" = "gone" ] && [ "$(val "$out" '.env.OLD_A // "gone"')" = "gone" ] \
+  || { echo "FAIL: the base's and the fragment's retired keys must both be removed: $(val "$out" '.env')"; fail=1; }
+# A fragment with no retiredEnv removes nothing beyond the base's own list.
+out=$(run '{"env":{"OLD_A":"1"}}' "$frag")
+[ "$(val "$out" '.env.OLD_A')" = "1" ] || { echo "FAIL: without retiredEnv a live key must survive"; fail=1; }
+
 # F) no jq on PATH: byte-identical passthrough
 nojq="$TMP/nojq"; mkdir -p "$nojq"
 for t in bash cat printf; do p=$(command -v "$t") && ln -s "$p" "$nojq/$t"; done
