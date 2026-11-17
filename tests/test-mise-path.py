@@ -71,7 +71,7 @@ def chezmoi_argv(tmp: Path, os_name: str, flag: str) -> list[str]:
     cfg = tmp / f"c-{flag}.toml"
     cfg.write_text('[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n'
                    + FLAGS[flag])
-    return [CHEZMOI, "--config", str(cfg), "--source", str(ROOT),
+    return [CHEZMOI, "--config", str(cfg), "--source", str(ROOT), "--refresh-externals=never",
             "--persistent-state", str(tmp / f"s-{flag}.db"),
             "--override-data", '{"chezmoi":{"os":"%s"}}' % os_name]
 
@@ -87,7 +87,12 @@ def render_text(tmp: Path, text: str, os_name: str, flag: str) -> str:
 def deployed(tmp: Path, os_name: str, flag: str) -> set[str]:
     """The source paths, relative to the source root, that chezmoi deploys under the same scratch
     config: its own reading of .chezmoiignore, so a file ignored under that data is not in it."""
-    out = subprocess.run([*chezmoi_argv(tmp, os_name, flag), "managed",
+    # Externals are left out, and chezmoi_argv never refreshes them: past an external's refresh
+    # period chezmoi fetches its archive again, which needs the network, and this suite runs
+    # offline. Limit, measured: with chezmoi's cache EMPTY it still fetches every archive, so this
+    # holds on a machine that has applied, not on a fresh one. The units and agents checked here
+    # are never externals.
+    out = subprocess.run([*chezmoi_argv(tmp, os_name, flag), "managed", "--exclude", "externals",
                           "--path-style", "source-relative"],
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
