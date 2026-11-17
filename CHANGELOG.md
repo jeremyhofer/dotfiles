@@ -34,6 +34,12 @@ Entries are newest first.
 
 ## 2026-11-16
 
+### A new skill: `hermetic-gates`
+
+Nothing to do on adopting it; an apply deploys it. A gate, test suite or timed run takes no network
+access, and only explicit cache-filling steps reach a package registry: why, and how to run a
+package-manager workspace's checks offline. `test-independence` points to it.
+
 ### `claude-usage-override`: one temporary override for every usage throttle (ACTION, a private layer with its own)
 
 A new tool. `claude-usage-override set --until <ISO 8601 time with zone> --reason <text>` writes

@@ -30,7 +30,8 @@ on. It fixes the failing tests first, then turns it on.
 ## 2. Diagnosing an order-dependent failure
 
 1. **Replay the failing seed** and confirm it fails again. If it does not, the failure is not about
-   order; look at timing, the machine or the network instead (skill `fault-isolation`).
+   order; look at timing, the machine or the network instead (skill `fault-isolation`). A test or
+   gate that reaches the network at all is a defect of its own (skill `hermetic-gates`).
 2. **Bisect the tests that ran before it:** run the failing test after the first half of its
    predecessors, then the half that still fails, until one predecessor remains. That one leaves
    state behind, or the failing test relies on state it creates.
