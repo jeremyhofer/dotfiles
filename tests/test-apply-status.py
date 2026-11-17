@@ -253,6 +253,87 @@ def test_status_shows_a_refusal_with_its_detail(e):
     assert "test-x.sh" in e.run().stdout
 
 
+# --- a post-apply run's start ----------------------------------------------------------------------
+
+T0 = 1_800_000_000
+
+
+def planted_post(e, *tail):
+    src = e.repo()
+    h = e.head(src)
+    e.plant((iso(T0), "base", "start", h, ""), (iso(T0 + 30), "base", "deployed", h, ""),
+            (iso(T0 + 60), "base", "post-start", h, ""), *[(iso(t), "base", ev, h, d) for t, ev, d in tail])
+
+
+def test_append_accepts_a_post_start_event(e):
+    src = e.repo()
+    out = e.run("append", "--source", str(src), "base", "post-start")
+    assert (out.returncode, out.stderr) == (0, "")
+    assert e.lines()[0].split("\t")[3] == "post-start"
+
+
+def test_a_post_apply_run_in_progress_is_shown_with_its_age(e):
+    planted_post(e)
+    now = T0 + 60 + 7 * 60 + 20
+    b = status(e, APPLY_STATUS_NOW=str(now))["instances"]["base"]
+    assert b["post_run"] == {"state": "running", "since": iso(T0 + 60), "age_seconds": 440, "minutes": 7}
+    human = e.run(APPLY_STATUS_NOW=str(now)).stdout
+    assert "post-apply running since %s (7 min)" % iso(T0 + 60) in human
+
+
+def test_a_finished_post_apply_replaces_the_running_line(e):
+    planted_post(e, (T0 + 600, "post-pass", "log: /x"))
+    b = status(e, APPLY_STATUS_NOW=str(T0 + 900))["instances"]["base"]
+    assert b["post_run"] is None
+    assert b["post"]["event"] == "post-pass"
+    human = e.run(APPLY_STATUS_NOW=str(T0 + 900)).stdout
+    assert "post-apply running" not in human and "did not finish" not in human
+    assert "latest post result: post-pass" in human
+
+
+def test_a_failed_post_apply_is_not_running_either(e):
+    planted_post(e, (T0 + 600, "post-FAIL", "suites: test-x.sh; log: /x"))
+    assert status(e, APPLY_STATUS_NOW=str(T0 + 900))["instances"]["base"]["post_run"] is None
+
+
+def test_a_post_apply_overtaken_by_a_new_apply_did_not_finish(e):
+    planted_post(e, (T0 + 3600, "start", ""))
+    now = T0 + 3700
+    b = status(e, APPLY_STATUS_NOW=str(now))["instances"]["base"]
+    assert b["post_run"]["state"] == "unfinished"
+    assert b["post_run"]["since"] == iso(T0 + 60)
+    human = e.run(APPLY_STATUS_NOW=str(now)).stdout
+    assert "post-apply did not finish (started %s)" % iso(T0 + 60) in human
+    assert "post-apply running" not in human
+
+
+def test_a_second_post_apply_run_is_the_one_that_counts(e):
+    planted_post(e, (T0 + 100, "post-start", ""), (T0 + 400, "post-pass", "log: /x"))
+    assert status(e, APPLY_STATUS_NOW=str(T0 + 500))["instances"]["base"]["post_run"] is None
+
+
+def test_a_ledger_without_post_start_renders_as_before(e):
+    src = e.repo()
+    h = e.head(src)
+    e.plant((iso(T0), "base", "start", h, ""), (iso(T0 + 30), "base", "deployed", h, ""))
+    b = status(e, APPLY_STATUS_NOW=str(T0 + 5000))["instances"]["base"]
+    assert b["post_run"] is None
+    human = e.run(APPLY_STATUS_NOW=str(T0 + 5000)).stdout
+    assert "post-apply" not in human
+
+
+def test_wait_tolerates_a_post_start_line(e):
+    src = e.repo()
+    h = e.head(src)
+    e.plant(("2026-11-15T10:00:00Z", "base", "start", h, ""),
+            ("2026-11-15T10:00:30Z", "base", "deployed", h, ""),
+            ("2026-11-15T10:00:31Z", "base", "post-start", h, ""))
+    out = e.run("wait", "--since", "2026-11-15T09:00:00Z", "--instances", "base", "--timeout", "5s",
+                "--interval", "1s")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "post-start" in out.stdout
+
+
 def test_a_start_with_no_end_is_incomplete_with_its_age(e):
     src = e.repo()
     t0 = 1_800_000_000

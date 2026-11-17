@@ -34,6 +34,14 @@ Entries are newest first.
 
 ## 2026-11-17
 
+### The apply ledger records when a post-apply run starts
+
+Nothing to do on adopting it. `tests/post-apply.sh`'s run now appends a `post-start` event before its
+first suite, and `apply-status` prints `post-apply running since <time> (<N> min)` for a run with no
+result yet, or `post-apply did not finish` once a later apply began first; `--json` carries it as
+`post_run`. A private layer's own ledger reader that rejects an event name it does not know needs to
+accept `post-start`.
+
 ### The base's own gates run uv offline
 
 Nothing to do on adopting it. `tests/run-all.sh` (so the commit gate and `tests/land-gate.sh`) and

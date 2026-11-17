@@ -125,7 +125,9 @@ class Rig:
 rec = {str(self.rec)!r}
 with open(os.path.join(rec, "nx.calls"), "a") as f:
     f.write(json.dumps({{"argv": sys.argv[1:], "env": dict(os.environ),
-                        "seeded": os.path.exists(os.path.join(rec, "uv.calls"))}}) + "\\n")
+                        "seeded": os.path.exists(os.path.join(rec, "uv.calls")),
+                        "ledger": open({str(root / "state" / "dotfiles" / "apply.log")!r}).read()
+                                  if os.path.exists({str(root / "state" / "dotfiles" / "apply.log")!r}) else ""}}) + "\\n")
 if os.environ.get("NX_STUB_DIRTY"):
     open({str(self.src / "dirtied")!r}, "w").write("x")
 if os.environ.get("NX_STUB_HOLD"):
@@ -644,11 +646,17 @@ def test_a_missing_ledger_tool_changes_no_exit_code(rig):
 def test_post_records_deployed_before_the_run_it_detaches(rig):
     rig.run("post", NX_STUB_HOLD="1")
     assert rig.wait_for(rig.rec / "nx.calls"), "the run did not start"
-    assert rig.events() == ["deployed"], "deployed is written before the run's result"
+    assert rig.events() == ["deployed", "post-start"], "the run's start is written before its result"
     (rig.root / "release").touch()
     assert rig.wait_for(rig.status)
     rig.wait_idle()
-    assert rig.events() == ["deployed", "post-pass"]
+    assert rig.events() == ["deployed", "post-start", "post-pass"]
+
+
+def test_post_start_is_in_the_ledger_before_the_suites_run(rig):
+    rig.run("post", "--run")
+    [call] = rig.nx_calls()
+    assert "post-start" in call["ledger"], "nothing said the run had begun when Nx started"
 
 
 @pytest.mark.parametrize("why", ["switch", "tool"])
@@ -662,7 +670,7 @@ def test_post_records_deployed_even_when_its_suites_are_skipped(rig, why):
 
 def test_a_post_pass_names_its_log(rig):
     rig.run("post", "--run")
-    [(inst, event, _head, detail)] = rig.ledger()
+    [_start, (inst, event, _head, detail)] = rig.ledger()
     log = rig.status.read_text().split()[3]
     assert (inst, event) == ("base", "post-pass") and log in detail
 
@@ -670,7 +678,7 @@ def test_a_post_pass_names_its_log(rig):
 def test_a_post_failure_records_post_fail_with_the_suites_and_the_log(rig):
     rig.nx_out.write_text(NX_FAIL)
     rig.run("post", "--run", NX_STUB_RC="1")
-    [(inst, event, _head, detail)] = rig.ledger()
+    [_post_start, (inst, event, _head, detail)] = rig.ledger()
     log = rig.status.read_text().split()[3]
     assert (inst, event) == ("base", "post-FAIL")
     assert "test-broken.sh" in detail and log in detail
@@ -707,8 +715,9 @@ def test_a_slow_alert_hook_does_not_hold_up_post_run(rig):
 def test_a_dry_run_is_recorded_as_a_dry_run_not_an_apply(rig, args):
     rig.run("pre", CHEZMOI_ARGS=args)
     rig.run("post", "--run", CHEZMOI_ARGS=args)
-    assert rig.events() == ["dry-run", "dry-run"]
-    assert [r[3] for r in rig.ledger()] == ["start", "post-pass: log: " + rig.status.read_text().split()[3]]
+    assert rig.events() == ["dry-run", "dry-run", "dry-run"]
+    assert [r[3] for r in rig.ledger()] == ["start", "post-start",
+                                            "post-pass: log: " + rig.status.read_text().split()[3]]
 
 
 def test_a_refusal_in_a_dry_run_is_not_recorded_as_a_refusal(rig):
@@ -724,9 +733,10 @@ def test_a_hook_run_by_hand_is_recorded_as_by_hand(rig):
 
 def test_the_post_result_records_the_head_from_before_the_run(rig):
     rig.run("post", "--run", NX_STUB_DIRTY="1")
-    [(_inst, event, head, _detail)] = rig.ledger()
-    assert event == "post-pass"
-    assert not head.endswith("-dirty") and head == rig.git("rev-parse", "--short", "HEAD").strip()
+    [(_i, started, start_head, _d), (_inst, event, head, _detail)] = rig.ledger()
+    assert (started, event) == ("post-start", "post-pass")
+    want = rig.git("rev-parse", "--short", "HEAD").strip()
+    assert not head.endswith("-dirty") and head == want and start_head == want
 
 
 # --- the hooks -------------------------------------------------------------------------------------

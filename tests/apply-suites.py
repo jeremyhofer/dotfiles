@@ -60,7 +60,8 @@ CHEZMOI) as `by-hand`, each with the real event in its detail, and `apply-status
 `post --run` records the head from BEFORE its run, not after. `pre` writes `start` first,
 before any skip check, then `skipped` (with the reason) on each skip path, or `refused` (naming the
 failing suites and the report) when it aborts the apply. `post` writes `deployed` before it
-detaches, also on its skip paths, since the apply did deploy; `post --run` writes `post-pass` or
+detaches, also on its skip paths, since the apply did deploy; `post --run` writes `post-start` as it begins (before any suite, so `apply-status` can tell a run
+that is still going from one that died), then `post-pass` or
 `post-FAIL` (naming the failing suites and the log) when its run ends. A ledger failure of any kind
 is ignored here: it never changes a hook's exit code.
 
@@ -510,6 +511,7 @@ def post_run() -> int:
 def post_body(env: dict, sd: Path) -> int:
     tree = clean_tree(env)
     head = source_head()
+    ledger("post-start", "", head)
     logpath = sd / ("post-apply-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + ".log")
     with open(logpath, "w") as log:
         try:
