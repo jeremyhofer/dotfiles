@@ -154,8 +154,10 @@ running a suite where there is no network.
 
 Nothing to do on adopting it; an apply deploys the tool and the two changed hook commands together.
 The global `us-spelling-pre-commit` and `us-spelling-commit-msg` hooks now run
-`hook-launcher "$HOME/.local/bin/us-spelling-lint" ...` instead of the tool directly. Where mise's
-shim directory is not on `PATH`, nothing changes. Where it is and mise's `python3` starts, each hook
+`hook-launcher "$HOME/.local/bin/us-spelling-lint" ...` instead of the tool directly. The launcher
+takes mise's shim directory from `DOTFILES_MISE_SHIMS`, which the base exports only where
+`miseActive` is true; where it is unset, or the directory it names is not on `PATH`, nothing
+changes. Where that directory is on `PATH` and mise's `python3` starts, each hook
 costs one extra `python3` start. Where mise's `python3` will not start in the repository (an
 untrusted `mise.toml`, a config that does not parse, a Python release not installed, a SOPS file
 whose key is not loaded), the hook used to refuse every commit there; now it takes mise's shim

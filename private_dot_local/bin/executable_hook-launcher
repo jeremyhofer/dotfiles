@@ -17,8 +17,9 @@
 # WHY SHELL. Its job is to run a tool when `python3` does not start, which a Python launcher
 # cannot do; so it stays shell (tests/shell-allowlist.txt says the same).
 #
-# WHAT IT DOES. If mise's shim directory is not on PATH, it execs the tool untouched: a `python3`
-# failure there is not mise's, and the tool reports it for itself. Otherwise it runs `python3 -c ''`
+# WHAT IT DOES. If mise is not active on this machine, or its shim directory is not on PATH, it
+# execs the tool untouched: a `python3` failure there is not mise's, and the tool reports it for
+# itself. Otherwise it runs `python3 -c ''`
 # with stdin closed. If that starts, it execs the tool untouched. If not, it removes the shim
 # directory from PATH, prints one line naming the fix it matched in mise's error text, and execs the
 # tool, so the tool's exit status is the launcher's. The match: "not trusted" names `mise trust`; a
@@ -26,8 +27,11 @@
 # a config that does not parse gets mise's own error line, since none of those fixes applies;
 # anything else names all three.
 #
-# The shim directory is mise's own default: $MISE_DATA_DIR/shims, else
-# ${XDG_DATA_HOME:-$HOME/.local/share}/mise/shims.
+# The shim directory is the one the base exports as DOTFILES_MISE_SHIMS (~/.zshenv and the user
+# manager's environment.d), which it does only on a machine whose chezmoi data sets miseActive.
+# Unset or empty, mise is not active here and there is nothing to fall back from, so the tool runs
+# directly. The launcher never works out mise's default directory itself: the base's chezmoi data
+# holds that path once, and every consumer reads it from there.
 #
 # It covers the hooks only. A basic tool run by hand or by a service still fails with mise's error,
 # which is where that breakage should be seen. Tests: tests/test-hook-launcher.py.
@@ -37,9 +41,11 @@ if [ $# -eq 0 ]; then
   exit 2
 fi
 
-# Without mise's shim directory on PATH there is nothing to fall back from: the tool runs at no
-# extra cost. With it, the common case costs one interpreter start before the tool runs.
-shims=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims
+# Without mise active, or without its shim directory on PATH, there is nothing to fall back from:
+# the tool runs at no extra cost. With it, the common case costs one interpreter start first.
+shims=${DOTFILES_MISE_SHIMS:-}
+shims=${shims%/}
+[ -n "$shims" ] || exec "$@"
 case ":$PATH:" in
   *":$shims:"* | *":$shims/:"*) ;;
   *) exec "$@" ;;

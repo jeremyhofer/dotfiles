@@ -26,7 +26,9 @@ a config loads whose age key is missing while `sops.strict` is on (mise's defaul
 Also: a planted British spelling still refuses the commit while the launcher falls back; a tool's
 own exit status (3, 1, 0) passes through on both paths; mise's text matching no case names all
 three fixes; a `python3` failure that is not mise's shim prints no launcher line; the shim
-directory is found from mise's own default when MISE_DATA_DIR is unset.
+directory is the one DOTFILES_MISE_SHIMS names (the base exports it only where miseActive is on),
+and with it unset or empty the launcher starts no `python3` at all, even with a shim directory on
+PATH, and runs the tool directly.
 
 Everything runs in a scratch HOME with scratch mise config, data, state and cache directories, a
 scratch git config, and a stub fleet-decl that reports every repository as a fleet member (so the
@@ -188,6 +190,8 @@ class World:
             "GIT_CONFIG_GLOBAL": str(self.gitconfig),
             "GIT_CONFIG_NOSYSTEM": "1",
             "FLEET_RECORD": str(self.record),
+            # The base's seam: set only where miseActive is on, naming the shim directory.
+            "DOTFILES_MISE_SHIMS": str(self.shims),
         })
         for k, v in extra.items():
             if v is None:
@@ -393,7 +397,7 @@ def test_unknown_mise_text_names_all_three_fixes(world, tmp_path):
     (shims / "python3").chmod(0o755)
     r = world.repo("unknown")
     p = world.run([str(world.bin / "hook-launcher"), str(world.probe)], r, world.config_root,
-                  MISE_DATA_DIR=str(tmp_path / "share" / "mise"),
+                  DOTFILES_MISE_SHIMS=str(shims),
                   PATH=f"{shims}:{world.stub}:{world.base_path}")
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == world.machine_python
@@ -416,14 +420,31 @@ def test_a_failure_outside_the_shim_directory_prints_no_line(world, tmp_path):
     assert launcher_lines(p.stderr) == []
 
 
-def test_the_default_shim_directory_is_found_without_mise_data_dir(world):
-    """With MISE_DATA_DIR unset mise uses ~/.local/share/mise, and so must the launcher."""
-    r, cfg, extra = plant(world, "untrusted", "default-data-dir")
-    p = world.run([str(world.bin / "hook-launcher"), str(world.probe)], r, cfg,
-                  MISE_DATA_DIR=None, **extra)
-    assert p.returncode == 0, p.stderr
-    assert p.stdout.strip() == world.machine_python, p.stdout
-    assert CASES["untrusted"][1] in p.stderr
+@pytest.mark.parametrize("seam", ["set", "unset", "empty"])
+def test_without_the_seam_the_launcher_does_not_probe(world, tmp_path, seam):
+    """DOTFILES_MISE_SHIMS is what says mise is active on the machine. Unset or empty, the launcher
+    runs the tool directly, starting no `python3`, even with a shim directory on PATH and
+    MISE_DATA_DIR pointing at it (so a launcher working out mise's default directory would find it
+    and probe). Set, the same counting `python3` is seen to start once, so the count can see a
+    probe."""
+    data = tmp_path / "share" / "mise"
+    shims = data / "shims"
+    shims.mkdir(parents=True)
+    starts = tmp_path / "starts"
+    (shims / "python3").write_text(
+        f'#!/bin/sh\necho start >> "{starts}"\nexec "{world.machine_python}" "$@"\n')
+    (shims / "python3").chmod(0o755)
+    tool = tmp_path / "tool"
+    tool.write_text("#!/bin/sh\nexit 5\n")
+    tool.chmod(0o755)
+    value = {"set": str(shims), "unset": None, "empty": ""}[seam]
+    p = world.run([str(world.bin / "hook-launcher"), str(tool)], world.tmp, world.config_root,
+                  MISE_DATA_DIR=str(data), DOTFILES_MISE_SHIMS=value,
+                  PATH=f"{shims}:{world.stub}:{world.base_path}")
+    assert p.returncode == 5, (p.returncode, p.stderr)
+    assert p.stderr == "", p.stderr
+    count = starts.read_text().count("start") if starts.exists() else 0
+    assert count == (1 if seam == "set" else 0), f"{seam}: python3 started {count} times"
 
 
 def test_no_tool_is_a_usage_error(world):
