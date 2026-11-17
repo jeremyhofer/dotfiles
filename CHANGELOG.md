@@ -32,6 +32,28 @@ Entries are newest first.
 
 ---
 
+## 2026-11-17
+
+### `sops-key-loader`: the SOPS age key, decrypted into the runtime directory at login (ACTION, a Linux machine that sets `miseActive`)
+
+A new tool, a systemd user unit that runs it at login (`sops-key-loader.service`, enabled through
+`~/.config/systemd/user/default.target.wants/`), and one line in `~/.zshrc` that runs it when the key
+file is missing. Linux only. All three deploy only where the machine's chezmoi data sets
+`miseActive = true`; elsewhere `~/.zshrc` and the set of deployed files are exactly as before.
+
+The tool decrypts the machine's age key from its `systemd-creds` user credential into the file
+`SOPS_AGE_KEY_FILE` names, which must lie inside `$XDG_RUNTIME_DIR` (a tmpfs, gone at the last
+logout), mode 600, through a temporary file linked into place: never a partial file, never wider
+permissions, and a key file already there is left untouched. It never prints the key.
+
+**ACTION, before setting `miseActive = true` on a Linux machine:** make the credential, from the key
+on standard input, with `systemd-creds --user --name=sops-age-key encrypt - ~/.config/sops-key-loader/age-key.cred`
+(another path goes in `SOPS_KEY_LOADER_CREDENTIAL`, another name in
+`SOPS_KEY_LOADER_CREDENTIAL_NAME`, each set in both the shell and `~/.config/environment.d/`), and
+make sure `SOPS_AGE_KEY_FILE` reaches both. Without the credential the unit fails, visibly, at
+login and every new shell prints the loader's one-line error. `docs/reference/private-layer.md`,
+"Tool configuration", has the row.
+
 ## 2026-11-16
 
 ### A new skill: `hermetic-gates`

@@ -1,0 +1,154 @@
+#!/usr/bin/python3
+"""sops-key-loader -- put this machine's SOPS age key where SOPS and mise read it, once per login.
+
+WHY. On Linux the machine's age key, which opens the machine's SOPS files and nothing else, is kept
+encrypted as a systemd credential, bound to this machine. Decryption tools read a key FILE
+(SOPS_AGE_KEY_FILE), so the key has to exist as a file while the user is logged in, and nowhere
+that outlives the login. $XDG_RUNTIME_DIR is that place: a tmpfs owned by the user, removed when
+the user's last session ends. This tool decrypts the credential into the file SOPS_AGE_KEY_FILE
+names when that file is missing, and does nothing when it is present.
+
+    sops-key-loader [--key-file PATH] [--credential PATH] [--name NAME]
+
+A systemd user unit runs it at login, and ~/.zshrc runs it when the file is missing, so a shell
+started before the unit finished, or after the runtime directory was emptied, still gets the key.
+
+HOW IT WRITES. The decrypted bytes go into a temporary file created mode 600 beside the key file,
+then that file is linked to the key file's name and the temporary name removed. So the key file
+never exists partly written and never with wider permissions, a failed decryption leaves no file at
+all, and a key file another run created meanwhile is kept rather than replaced (the link refuses an
+existing name). The key is never printed or logged: it passes from `systemd-creds` straight into
+the file, and every message names paths only.
+
+CONFIGURATION (each flag overrides its variable):
+    SOPS_AGE_KEY_FILE                 the key file; required, and must lie inside $XDG_RUNTIME_DIR.
+                                      A missing parent directory is created mode 700.
+    SOPS_KEY_LOADER_CREDENTIAL        the encrypted credential; default
+                                      ${XDG_CONFIG_HOME:-~/.config}/sops-key-loader/age-key.cred
+    SOPS_KEY_LOADER_CREDENTIAL_NAME   the name the credential was encrypted under; default
+                                      sops-age-key
+The credential is made once, by the machine's owner, from the key on standard input:
+    systemd-creds --user --name=sops-age-key encrypt - <credential path>
+
+It runs as /usr/bin/python3, not through `env`, on purpose: where mise's shims come first on PATH
+and mise is set to fail a command whose SOPS file cannot be decrypted, the shimmed `python3` fails
+for exactly as long as this key is missing, which is when this tool must run.
+
+EXIT. 0 the key file is present (loaded now or already there); 1 the credential is missing, its
+decryption failed, or it did not hold an age key; 2 a usage or configuration error.
+
+Standard library only, Python 3.9 syntax. Linux only: systemd-creds is a systemd tool.
+"""
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+
+PROG = "sops-key-loader"
+DEFAULT_NAME = "sops-age-key"
+KEY_PREFIX = b"AGE-SECRET-KEY-"
+
+
+def say(msg):
+    print("%s: %s" % (PROG, msg), file=sys.stderr)
+
+
+def default_credential():
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config, PROG, "age-key.cred")
+
+
+def inside(path, root):
+    """True when PATH lies strictly below ROOT, after resolving symlinks and `..`."""
+    path, root = os.path.realpath(path), os.path.realpath(root)
+    return path != root and os.path.commonpath([path, root]) == root
+
+
+def holds_age_key(path):
+    with open(path, "rb") as f:
+        return any(line.startswith(KEY_PREFIX) for line in f.read().splitlines())
+
+
+def on_signal(signum, _frame):
+    # Turn a stop (logout, Ctrl-C) into an exception so the temporary file is removed on the way out.
+    raise SystemExit(128 + signum)
+
+
+def load(key_file, credential, name):
+    parent = os.path.dirname(key_file)
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".%s." % PROG, suffix=".tmp", dir=parent)  # mode 600
+    try:
+        with os.fdopen(fd, "wb") as out:
+            try:
+                rc = subprocess.run(["systemd-creds", "--user", "--name=%s" % name, "decrypt",
+                                     credential, "-"], stdin=subprocess.DEVNULL, stdout=out,
+                                    timeout=60).returncode
+            except FileNotFoundError:
+                say("systemd-creds is not installed")
+                return 1
+            except subprocess.TimeoutExpired:
+                say("systemd-creds did not finish within 60 seconds")
+                return 1
+            if rc != 0:
+                say("could not decrypt %s (systemd-creds exit %d); no key file written"
+                    % (credential, rc))
+                return 1
+            out.flush()
+            os.fsync(out.fileno())
+        if not holds_age_key(tmp):
+            say("%s decrypted to something that is not an age key; no key file written" % credential)
+            return 1
+        try:
+            os.link(tmp, key_file)
+        except FileExistsError:
+            pass  # another run loaded it meanwhile; keep that one
+        return 0
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog=PROG, description="Decrypt the SOPS age key into "
+                                 "$XDG_RUNTIME_DIR when the key file is missing.")
+    ap.add_argument("--key-file", default=os.environ.get("SOPS_AGE_KEY_FILE") or None,
+                    help="the key file (default: $SOPS_AGE_KEY_FILE)")
+    ap.add_argument("--credential",
+                    default=os.environ.get("SOPS_KEY_LOADER_CREDENTIAL") or default_credential(),
+                    help="the encrypted credential (default: $SOPS_KEY_LOADER_CREDENTIAL, else "
+                         "~/.config/%s/age-key.cred)" % PROG)
+    ap.add_argument("--name", default=os.environ.get("SOPS_KEY_LOADER_CREDENTIAL_NAME")
+                    or DEFAULT_NAME, help="the credential's name (default: "
+                    "$SOPS_KEY_LOADER_CREDENTIAL_NAME, else %s)" % DEFAULT_NAME)
+    args = ap.parse_args(argv)
+
+    if not args.key_file:
+        say("SOPS_AGE_KEY_FILE is not set, so there is no key file to load")
+        return 2
+    run_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not run_dir or not os.path.isdir(run_dir):
+        say("XDG_RUNTIME_DIR is not set or not a directory; the key goes nowhere else")
+        return 2
+    if not inside(args.key_file, run_dir):
+        say("the key file %s is not inside XDG_RUNTIME_DIR (%s); refusing to write the key "
+            "anywhere that outlives the login" % (args.key_file, run_dir))
+        return 2
+    if os.path.lexists(args.key_file):
+        return 0
+    if not os.path.isfile(args.credential):
+        say("no credential at %s (see `%s --help` for how to make one)" % (args.credential, PROG))
+        return 1
+
+    os.umask(0o077)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, on_signal)
+    return load(args.key_file, args.credential, args.name)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

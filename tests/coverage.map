@@ -111,6 +111,7 @@ test-machine-snapshot.sh            private_dot_local/bin/executable_machine-sna
 test-machine-snapshot-darwin.sh     private_dot_local/bin/executable_machine-snapshot
 test-memory-doctor.sh               private_dot_local/bin/executable_memory-doctor
 test-ntfy-inbox.sh                  private_dot_local/bin/executable_ntfy-inbox tests/stub-ntfy-server.py
+test-sops-key-loader.py             private_dot_local/bin/executable_sops-key-loader dot_zshrc.tmpl .chezmoiignore dot_config/systemd/user/sops-key-loader.service dot_config/systemd/user/default.target.wants/symlink_sops-key-loader.service
 test-portability-lint.sh            private_dot_local/bin/executable_portability-lint
 test-register.sh                    private_dot_local/bin/executable_register private_dot_local/bin/executable_fleet-decl
 test-register-lint.sh               private_dot_local/bin/executable_register-lint private_dot_local/bin/executable_register
