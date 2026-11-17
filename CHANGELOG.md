@@ -33,6 +33,15 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (tuicr from homebrew-core)
+
+### The Brewfile takes tuicr from homebrew-core; the `agavra/tap` tap is gone (ACTION, macOS)
+
+The author's tap stopped at tuicr 0.19.1 on 2026-07-13, while homebrew-core carries the current
+release (0.29.0 on 2026-11-17), so a Mac that installed from the tap has stayed on 0.19.1.
+**ACTION, on each Mac that has the tap's tuicr:** `brew uninstall agavra/tap/tuicr`, then
+`brew untap agavra/tap` and `brew install tuicr`. Arch is unaffected: it installs tuicr from `extra`.
+
 ## 2026-11-17 (mise task shell)
 
 ### `lint-tasknames` refuses an inline mise task that names no pipefail shell (ACTION, a repository with mise tasks)

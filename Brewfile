@@ -29,11 +29,9 @@ brew "git-delta"         # git diff/pager syntax highlighting (gitconfig [core] 
 brew "gitleaks"          # secret scanner. REQUIRED: the gitconfig secret-scan hook refuses every commit without it
 brew "codespell"         # the engine of us-spelling-lint. REQUIRED: its gitconfig hooks refuse every commit in a fleet-listed repository without it
 brew "lazygit"           # git TUI (LazyVim/snacks integration)
-# tuicr isn't in homebrew-core; this is the author's own tap. `trusted: true` declaratively trusts it
-# so `brew bundle` loads + installs tuicr with no separate `brew trust` step (Homebrew otherwise refuses
-# formulae from an untrusted third-party tap). Arch installs it from the official 'extra' repo.
-tap "agavra/tap", trusted: true
-brew "agavra/tap/tuicr"  # code-review TUI (git/jj), vim keys — local + PR/MR review
+# tuicr comes from homebrew-core, which carried 0.29.0 when checked on 2026-11-17; the author's own
+# tap (agavra/tap) stopped at 0.19.1 on 2026-07-13. Arch installs it from the official 'extra' repo.
+brew "tuicr"             # code-review TUI (git/jj), vim keys — local + PR/MR review
 brew "mani"              # multi-repo manager: declarative sync (mani sync) + run across repos (mani exec)
 brew "worktrunk"         # git worktree manager (wt): create/switch/list/merge, parallel-agent isolation
 brew "fnm"               # node version manager (per-project node)
