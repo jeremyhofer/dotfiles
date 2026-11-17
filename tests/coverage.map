@@ -152,6 +152,7 @@ test-npm-registry.py               package.json package-lock.json
 test-no-new-shell.py                tests/shell-allowlist.txt
 test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-mise-base.py                   dot_config/mise/** run_before_create-mise-state-dir.sh .chezmoiignore .chezmoi.toml.tmpl
+test-mise-path.py                   .chezmoidata.yaml dot_zshenv.tmpl dot_zprofile.tmpl dot_zshrc.tmpl dot_config/environment.d/session-env.conf.tmpl dot_config/systemd/user/*.service* private_Library/LaunchAgents/*
 test-spell-tier-name.sh             dot_config/nvim/lua/config/spell.lua
 test-tuicr-config.py                dot_config/tuicr/config.toml
 test-run-all.sh                     tests/run-all.sh
@@ -183,5 +184,5 @@ exempt .gitignore .us-spelling-lint
 # Configuration and content deployed as is.
 exempt dot_claude/CLAUDE.md.tmpl dot_claude/standards/** dot_claude/skills/** .claude/skills/*
 exempt dot_config/** private_Library/** private_dot_local/share/**
-exempt dot_editorconfig dot_ssh/** dot_tmux.conf dot_xbindkeysrc dot_xinitrc dot_Xresources.tmpl dot_zprofile.tmpl
+exempt dot_editorconfig dot_ssh/** dot_tmux.conf dot_xbindkeysrc dot_xinitrc dot_Xresources.tmpl
 exempt tests/land-gate.sh

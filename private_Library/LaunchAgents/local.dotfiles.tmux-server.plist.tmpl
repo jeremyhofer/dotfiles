@@ -21,6 +21,11 @@
     tmux kill-server; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.tmux-server.plist
   Check, from a new pane, over SSH or at the screen: `launchctl managername` prints Aqua. A server
   started over SSH prints Background there, which is the red this check was first seen to give.
+{{- if get . "miseActive" }}
+  mise's shims come first: this PATH is the starting PATH of every pane and of every command tmux
+  runs itself (run-shell, if-shell, its plugins), so a Node or Python tool reached from tmux
+  resolves through the shims even where no ~/.zshenv is read.
+{{- end }}
 -->
 <plist version="1.0">
 <dict>
@@ -33,7 +38,11 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+{{- if get . "miseActive" }}
+    <key>PATH</key><string>{{ .chezmoi.homeDir }}/{{ .mise_shims_dir }}:{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{{- else }}
     <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{{- end }}
     <key>LANG</key><string>en_US.UTF-8</string>
   </dict>
   <key>RunAtLoad</key><true/>

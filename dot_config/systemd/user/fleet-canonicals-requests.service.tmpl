@@ -11,6 +11,15 @@ Description=Serve the canonical lifecycle request queue (fleet-canonicals serve-
 
 [Service]
 Type=oneshot
+{{ if get . "miseActive" -}}
+# A user unit's PATH is the manager's, which lacks ~/.local/bin, where the base installs
+# fleet-canonicals and fleet-decl and where Claude Code installs `claude`. A session this runner
+# launches inherits this PATH, so it also needs Node (node, npm, npx), which a service never gets
+# from a shell's startup files (measured 2026-11-08: a refreshed canonical had no npm or npx).
+# mise's shims come first, so the runner, its uv-run queue and every session it launches resolve
+# Node and Python per directory, as a terminal does.
+Environment=PATH=%h/{{ .mise_shims_dir }}:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+{{ else -}}
 # A user unit's PATH is the manager's, which lacks ~/.local/bin, where the base installs
 # fleet-canonicals and fleet-decl and where Claude Code installs `claude`. A session this runner
 # launches inherits this PATH, so it also carries fnm's default Node (node, npm, npx), which an
@@ -18,6 +27,7 @@ Type=oneshot
 # canonical had no npm or npx). It is fnm's default alias, not a shell's per-session multishell
 # link, so every launch gets the same Node. A machine without fnm simply has no such directory.
 Environment=PATH=%h/.local/bin:%h/.local/share/fnm/aliases/default/bin:/usr/local/bin:/usr/bin:/bin
+{{ end -}}
 ExecStart=%h/.local/bin/fleet-canonicals serve-requests
 # A refresh waits for a stopped row and a launch; this bounds a pass that hangs.
 TimeoutStartSec=15min

@@ -33,7 +33,7 @@ file, then apply.
 | `overlayRepo` | git URL of the private source | where `chezmoi-overlay` clones it from |
 | `skipSkills` | list of base skill names | those skills are not deployed on this machine (an already-deployed one stays until removed by hand) |
 | `dpi` | number, Linux only | X11 `.Xresources` |
-| `miseActive` | `true` or `false`, never prompted; absent is `false` | the base's mise settings drop-in (`~/.config/mise/conf.d/10-base.toml`) deploys, and each apply creates mise's state directory at mode 700 where `mise` is installed; it switches one machine to mise before another while every apply stays a full one |
+| `miseActive` | `true` or `false`, never prompted; absent is `false` | the base's mise settings drop-in (`~/.config/mise/conf.d/10-base.toml`) deploys, and each apply creates mise's state directory at mode 700 where `mise` is installed; mise's shim directory goes first on `PATH` in `~/.zshenv`, `~/.zprofile` (macOS), `~/.config/environment.d` (Linux) and each base unit and LaunchAgent that sets `PATH`, `SOPS_AGE_KEY_FILE` is set on Linux, and `~/.zshrc` drops the direnv and fnm hooks (see Shell); it switches one machine to mise before another while every apply stays a full one |
 
 ```toml
 [data]
@@ -51,6 +51,15 @@ The base's zsh files source a private file at the end of each stage, if it exist
 | `~/.dotlocal/zshenv` | `~/.zshenv`, every zsh (scripts, ssh, GUI-launched shells) | environment variables and `PATH` additions the domain needs everywhere |
 | `~/.dotlocal/zprofile` | `~/.zprofile`, login shells only | login-time actions |
 | `~/.dotlocal/zshrc` | `~/.zshrc`, interactive shells, after oh-my-zsh and the base's tools load | aliases, functions, completions, and `FLEET_TAG` |
+
+Where `miseActive` is true, `~/.zshenv` puts mise's shim directory first on `PATH` and exports
+`DOTFILES_MISE_SHIMS`, its absolute path, before it sources `~/.dotlocal/zshenv`. A private script or
+agent that builds its own `PATH` starts it with `$DOTFILES_MISE_SHIMS` rather than writing the path;
+a private `zshenv` must not prepend a directory holding `node` or `python3` ahead of it. On Linux the
+base also exports `SOPS_AGE_KEY_FILE`, a file inside `$XDG_RUNTIME_DIR`, to shells and, through
+`~/.config/environment.d`, to user units; on macOS the base sets no key variable, and a domain sets
+its own. Both values are base data (`mise_shims_dir`, `sops_age_key_file` in `.chezmoidata.yaml`),
+not machine data.
 
 `FLEET_TAG` is the short machine marker at the head of the prompt (`[w]`, or `[ssh:w]` over ssh).
 Without it the prompt uses the host name's first letter.

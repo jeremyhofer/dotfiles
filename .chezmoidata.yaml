@@ -6,6 +6,22 @@ session_env:
   - { name: SSH_AUTH_SOCK, value: "${XDG_RUNTIME_DIR}/ssh-agent.socket" }
   - { name: SSH_ASKPASS_REQUIRE, value: "never" }
 
+# mise, on a machine whose generated config sets miseActive = true. Each value is stated once here
+# and rendered into every file that puts it in a context's environment; no template holds a copy.
+#
+# mise_shims_dir: mise's shim directory, relative to the home directory: mise's default data
+# directory (~/.local/share/mise, on macOS as on Linux) when neither MISE_DATA_DIR nor XDG_DATA_HOME
+# is set. ~/.zshenv puts it first on PATH and exports it as DOTFILES_MISE_SHIMS for scripts that
+# build their own PATH; ~/.zprofile (macOS) puts it first again after path_helper;
+# ~/.config/environment.d gives it to the systemd user manager (Linux); and each base unit and
+# LaunchAgent that sets its own PATH starts it there.
+mise_shims_dir: ".local/share/mise/shims"
+# sops_age_key_file (Linux): the file holding the machine's SOPS age key, inside $XDG_RUNTIME_DIR (a
+# tmpfs the login owns, gone with its last session), where sops-key-loader writes it. Exported as
+# SOPS_AGE_KEY_FILE by ~/.zshenv and ~/.config/environment.d, expanded where each reads it, as
+# SSH_AUTH_SOCK above is. macOS keeps its key in no file, so nothing there renders this.
+sops_age_key_file: "${XDG_RUNTIME_DIR}/sops-age-key.txt"
+
 # Pinned third-party SKILL externals. Stated once here and consumed by BOTH
 # .chezmoiexternal.toml.tmpl (which builds the download) and the verifier script (which checks
 # what actually landed). Only these four fields are hand-maintained: the archive root, the

@@ -4,3 +4,11 @@
 {{ range .session_env -}}
 {{ .name }}={{ .value }}
 {{ end -}}
+{{ if get . "miseActive" -}}
+# mise's shims first on the PATH the user manager gives every unit, as ~/.zshenv does for shells, and
+# the SOPS age key's file in the runtime directory. A unit that sets its own PATH starts it with the
+# shims itself.
+PATH={{ .chezmoi.homeDir }}/{{ .mise_shims_dir }}:${PATH}
+DOTFILES_MISE_SHIMS={{ .chezmoi.homeDir }}/{{ .mise_shims_dir }}
+SOPS_AGE_KEY_FILE={{ .sops_age_key_file }}
+{{ end -}}

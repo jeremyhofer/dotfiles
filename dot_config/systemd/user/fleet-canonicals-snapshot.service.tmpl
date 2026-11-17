@@ -14,7 +14,12 @@ Description=Snapshot the canonical sessions' state (fleet-canonicals snapshot)
 Type=oneshot
 # A user unit's PATH is the manager's, which lacks ~/.local/bin, where the base installs
 # fleet-canonicals and fleet-decl and where Claude Code installs `claude`.
+{{ if get . "miseActive" -}}
+# The snapshot runs a uv-run Python script, so mise's shims come first, as in a terminal.
+Environment=PATH=%h/{{ .mise_shims_dir }}:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+{{ else -}}
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+{{ end -}}
 ExecStart=%h/.local/bin/fleet-canonicals snapshot
 # One snapshot takes about half a second; a pass that hangs must not hold the next one off long.
 TimeoutStartSec=30s

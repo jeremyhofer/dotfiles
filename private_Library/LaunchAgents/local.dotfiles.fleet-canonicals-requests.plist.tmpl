@@ -8,8 +8,14 @@
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.dotfiles.fleet-canonicals-requests.plist
   PATH is set outright: a LaunchAgent's PATH is launchd's minimal one, and the runner needs bash,
   jq, uv and yq from Homebrew and fleet-canonicals, fleet-decl and claude from ~/.local/bin. A
+{{- if get . "miseActive" }}
+  session the runner launches inherits this PATH, so mise's shims come first: the runner, its
+  uv-run queue and every session it launches resolve Node and Python per directory, as a terminal
+  does, where launchd reads no shell startup file.
+{{- else }}
   session the runner launches inherits this PATH, so it also carries fnm's default Node (node, npm,
   npx), which an interactive shell gets from .zshrc and launchd never reads.
+{{- end }}
   ProcessType is Standard, not Background, for the reason the snapshot agent's comment gives:
   a pass makes the same kind of reads, which ran 6 to 30 times slower at Background there (this
   agent was not timed separately), and a queued lifecycle action waits on the pass.
@@ -24,7 +30,11 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+{{- if get . "miseActive" }}
+    <key>PATH</key><string>{{ .chezmoi.homeDir }}/{{ .mise_shims_dir }}:{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{{- else }}
     <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:{{ .chezmoi.homeDir }}/.local/share/fnm/aliases/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{{- end }}
   </dict>
   <key>StartInterval</key><integer>60</integer>
   <key>ProcessType</key><string>Standard</string>

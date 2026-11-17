@@ -34,6 +34,34 @@ Entries are newest first.
 
 ## 2026-11-17
 
+### `miseActive` now also puts mise's shims first on every PATH the base sets, and drops the direnv and fnm hooks
+
+On a machine whose generated config sets `miseActive = true` (and only there; with it false or
+absent every rendered file is byte-identical to before):
+
+- `~/.zshenv` puts mise's shim directory (`~/.local/share/mise/shims`) first on `PATH` and exports
+  `DOTFILES_MISE_SHIMS` naming it, and on Linux exports `SOPS_AGE_KEY_FILE`
+  (`${XDG_RUNTIME_DIR}/sops-age-key.txt`). It still starts no process.
+- `~/.zprofile` on macOS puts the shims first again after its Homebrew line, since path_helper
+  reorders `PATH` for login shells.
+- `~/.config/environment.d/session-env.conf` (Linux) gives the systemd user manager the shims first
+  on `PATH`, `DOTFILES_MISE_SHIMS` and `SOPS_AGE_KEY_FILE`, so every user unit and every
+  session-launched application gets them.
+- The units and LaunchAgents that set their own `PATH` start it with the shims:
+  `fleet-canonicals-requests` (in place of fnm's default alias), `fleet-canonicals-snapshot`, and the
+  macOS `tmux-server` agent. The two units are templates now (`*.service.tmpl`); their targets are
+  unchanged.
+- `~/.zshrc` renders neither `eval "$(direnv hook zsh)"` nor the `fnm env` hook.
+
+The shim directory and the key file are each one value in `.chezmoidata.yaml` (`mise_shims_dir`,
+`sops_age_key_file`), which every one of these files renders. A private layer that builds its own
+`PATH` reads `$DOTFILES_MISE_SHIMS` (`docs/reference/private-layer.md`, Shell). A machine switching
+`miseActive` on should have its Node and Python installed through mise first: a shim exists only for
+a tool with an installed version, and with the hooks gone nothing else selects one. Each change
+takes effect when its reader starts again: a shell at its next start, the user manager's environment
+when the manager next starts (usually the next login), a unit after `systemctl --user daemon-reload`,
+a LaunchAgent when launchd reloads it.
+
 ### `miseActive`: a per-machine switch for mise, and the base's mise settings behind it (ACTION: `chezmoi init`)
 
 A new key in the generated config's `[data]`, `miseActive`, never prompted and `false` by default,

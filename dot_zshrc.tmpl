@@ -201,8 +201,13 @@ nx() { npx nx "$@"; }   # the repo-local nx, via npx
 # It only execs, so nothing was lost by moving it; see the script's header for the full reasoning.
 # (Contrast wt() below, which must stay a function because it changes directory.)
 
+{{/* Where the chezmoi data sets miseActive, no shell hook selects a tool or loads an environment:
+      mise's shims, first on PATH from ~/.zshenv, do both in every context, so neither the direnv
+      nor the fnm hook renders. */ -}}
+{{ if not (get . "miseActive") -}}
 eval "$(direnv hook zsh)"
 eval "$(fnm env --use-on-cd --version-file-strategy recursive --shell zsh)"
+{{ end -}}
 # worktrunk: defines the dir-changing wt() wrapper + lazy completions (self-guards if wt absent)
 if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
 {{- if and (eq .chezmoi.os "linux") (get . "miseActive") }}

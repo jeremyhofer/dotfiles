@@ -12,6 +12,9 @@
   ProcessType is Standard, not Background: macOS throttles a Background job hard, and the snapshot
   must finish well inside snapshot-max-age (45 s). Measured 2026-11-12 on a 29-seat work machine:
   the same snapshot took 5.31 s from a terminal and 31 s to 169 s under this agent at Background.
+{{- if get . "miseActive" }}
+  The snapshot runs a uv-run Python script, so mise's shims come first, as in a terminal.
+{{- end }}
 -->
 <plist version="1.0">
 <dict>
@@ -23,7 +26,11 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+{{- if get . "miseActive" }}
+    <key>PATH</key><string>{{ .chezmoi.homeDir }}/{{ .mise_shims_dir }}:{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{{- else }}
     <key>PATH</key><string>{{ .chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+{{- end }}
   </dict>
   <key>StartInterval</key><integer>15</integer>
   <key>ProcessType</key><string>Standard</string>

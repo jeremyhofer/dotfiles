@@ -6,6 +6,10 @@
 # Re-assert Homebrew ahead of the system dirs: /etc/zprofile's path_helper ran after ~/.zshenv and
 # put /usr/bin first again (see ~/.zshenv). Needs `typeset -U path`, set there, to drop the old copy.
 [ -d /opt/homebrew/bin ] && path=(/opt/homebrew/bin /opt/homebrew/sbin $path)
+{{ if get . "miseActive" -}}
+# Then mise's shims ahead of Homebrew again, where ~/.zshenv put them (DOTFILES_MISE_SHIMS there).
+path=("$HOME/{{ .mise_shims_dir }}" $path)
+{{ end -}}
 {{ end -}}
 [ -f "$HOME/.dotlocal/zprofile" ] && source "$HOME/.dotlocal/zprofile"
 {{- if eq .chezmoi.os "linux" }}

@@ -12,6 +12,17 @@ path=($path "$HOME/.local/bin" "$HOME/go/bin")
 # system dirs back to the front, so ~/.zprofile prepends again. `typeset -U` keeps the first copy.
 [ -d /opt/homebrew/bin ] && path=(/opt/homebrew/bin /opt/homebrew/sbin $path)
 {{ end -}}
+{{ if get . "miseActive" -}}
+# mise's shims first, ahead of Homebrew and the system directories. A shim runs the tool version the
+# current directory's mise configuration names, with that configuration's environment, and needs no
+# shell hook, so a script, a unit or an agent's session gets the same answer as a terminal.
+# DOTFILES_MISE_SHIMS names the directory for a script that builds its own PATH. Assignments only:
+# this file still starts no process. On macOS ~/.zprofile puts the shims first again after
+# path_helper. A private layer's zshenv, sourced last, must not prepend a directory holding node or
+# python3 ahead of them.
+export DOTFILES_MISE_SHIMS="$HOME/{{ .mise_shims_dir }}"
+path=("$DOTFILES_MISE_SHIMS" $path)
+{{ end -}}
 # User completions dir, prepended so it's on fpath before omz runs compinit (zshenv precedes zshrc).
 # Holds generated tool completions (e.g. _mani) that aren't shipped as omz plugins.
 fpath=("$HOME/.local/share/zsh/completions" $fpath)
@@ -32,6 +43,11 @@ export DEV_TLS_KEY="${DEV_TLS_KEY:-$HOME/.local/share/devcerts/localhost-key.pem
 # so shells and the systemd/GUI session env can't drift.
 {{ range .session_env -}}
 export {{ .name }}="{{ .value }}"
+{{ end -}}
+{{ if get . "miseActive" -}}
+# The SOPS age key's file, in the runtime directory, where sops-key-loader writes it at login; the
+# same value ~/.config/environment.d gives the user manager.
+export SOPS_AGE_KEY_FILE="{{ .sops_age_key_file }}"
 {{ end -}}
 {{- end }}
 
