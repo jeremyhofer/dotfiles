@@ -118,10 +118,8 @@ coarser, even if the coarser plant is easier to author.
   **But a pipeline is only one layer that reports a status on a command's behalf, and the others
   look more authoritative** — the agent harness's own background-task summary, and wrapper or runner
   scripts that exit 0 while the tool they invoked failed. All three produced the same false green
-  within one sitting. _(The harness layer specifically was **fixed upstream in Claude Code 2.1.275**
-  and re-measured fixed on 2.1.278 — see `~/.claude/standards/working-style.md`. The other two were
-  never broken-and-fixed; they are how pipelines and runner scripts work, and they stand. The example
-  is kept because the lesson is the shape, not the count.)_ **So the rule is not "beware pipes": the
+  within one sitting. _(The harness layer was fixed in Claude Code 2.1.275; the other two are how
+  pipelines and runner scripts work, and stand.)_ **So the rule is not "beware pipes": the
   status you were HANDED is not evidence; the status the checked command itself produced is.** Read
   the body, not the summary. When a runner sits between you and the command, verify it propagates
   failure before trusting green.

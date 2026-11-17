@@ -28,16 +28,9 @@ foreground; a pure foreground pipeline of already-allowlisted read tools (`grep 
 fine. The trouble is specifically the redirect-plus-echo combination on a long command.
 
 **The harness's own background exit status is trustworthy from Claude Code 2.1.275**, so do not
-append `; echo "rc=$?"` to background commands as a habit. On an older build (a lagging machine, a
-pinned container) the old defect still holds and that workaround is still right. Check the version
-before assuming which regime you are in.
-
-**What survives, and is a different claim: a status handed to you by something OTHER than the
-harness is still not evidence.** Rule 4 of `~/.claude/standards/verification.md` names three layers
-that report a status on a command's behalf: the harness summary, a shell **pipeline**, and a
-**wrapper or runner script** that exits 0 while the tool it invoked failed. Only the first was
-fixed. A pipeline still reports its last command's status, and a runner script still reports
-whatever it chooses. Put the test on the command whose result you mean.
+append `; echo "rc=$?"` to background commands; on an older build the workaround is still right.
+A status reported by a pipeline or a runner script is still not evidence (rule 4 of
+`~/.claude/standards/verification.md`).
 
 ### Background worktree isolation is not containment
 
