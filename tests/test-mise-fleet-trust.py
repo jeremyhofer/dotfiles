@@ -16,8 +16,8 @@ What is held:
   `mise.toml` in a subdirectory of the project, one in a directory whose name merely starts with
   the project's, and one in a project that does not opt in all stay untrusted. A stub that trusts
   the project's directory as a prefix fails this check (seen red below).
-* The miserc the tool writes makes mise ignore a dependency's `node_modules/x/mise.toml` and a
-  `miseIgnore` path while the project's own configuration still applies, and stops the walk above
+* The miserc the tool writes makes mise ignore a dependency's `node_modules/x/mise.toml`, a
+  workspace package's `pkg/node_modules/y/mise.toml` and a `miseIgnore` path while the project's own configuration still applies, and stops the walk above
   the project (the ceiling); without it, mise reads and refuses them (the controls). A stub whose
   ignore list is empty fails the first check (seen red below). Measured with `mise config ls`.
 * The miserc is written at mise's configuration directory (MISE_CONFIG_DIR, else XDG_CONFIG_HOME),
@@ -86,6 +86,8 @@ class World:
             self.proj / "mise.local.toml": env_toml("LOCAL", "proj"),
             self.proj / "sub" / "mise.toml": env_toml("SUB", "sub"),
             self.proj / "node_modules" / "x" / "mise.toml": env_toml("DEP", "x"),
+            # A workspace package's own dependency, below the project's top level.
+            self.proj / "pkg" / "node_modules" / "y" / "mise.toml": env_toml("DEPY", "y"),
             self.proj / "fixtures" / "mise.toml": env_toml("FIX", "fixture"),
             # A directory whose name starts with the project's: trusted only by a string prefix.
             self.devel / "internal" / "proj-other" / "mise.toml": env_toml("OTHER", "other"),
@@ -179,7 +181,7 @@ def check_only_exact_files_trusted(w: World, tool: Path = TOOL) -> None:
 def check_dependency_ignored(w: World, tool: Path = TOOL) -> None:
     out = w.run(tool=tool)
     assert out.returncode == 0, out.stderr
-    for d in (w.proj / "node_modules" / "x", w.proj / "fixtures"):
+    for d in (w.proj / "node_modules" / "x", w.proj / "pkg" / "node_modules" / "y", w.proj / "fixtures"):
         got = w.config_ls(d)
         assert got.returncode == 0, f"{d.relative_to(w.tmp)} is read, not ignored: {got.stderr}"
         assert str(w.proj / "mise.toml") in got.stdout, "the project's own config is not listed"
@@ -241,10 +243,11 @@ def test_the_ceiling_stops_the_walk_above_the_project(world):
 def test_the_miserc_lists_every_opted_in_project(world):
     assert world.run().returncode == 0
     got = world.lists()
-    for name in ("node_modules", ".venv", "vendor", "fixtures"):
-        assert str(world.proj / name) in got["ignored_config_paths"], name
+    for name in ("node_modules", ".venv", "vendor"):
+        assert str(world.proj / "**" / name / "**") in got["ignored_config_paths"], name
+    assert str(world.proj / "fixtures") in got["ignored_config_paths"]
     # A project not on this machine still gets its entries, so a later clone is covered.
-    assert str(world.devel / "internal" / "away" / "node_modules") in got["ignored_config_paths"]
+    assert str(world.devel / "internal" / "away" / "**" / "node_modules" / "**") in got["ignored_config_paths"]
     assert got["ceiling_paths"] == [str(world.devel / "internal")]
     assert not any("optout" in p for p in got["ignored_config_paths"])
 

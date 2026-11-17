@@ -48,8 +48,9 @@ outside any sandbox, which trusts:
 - the dotfiles source's own `mise.toml`, on every machine, with or without a manifest.
 
 It also writes mise's miserc, `~/.config/mise/miserc.toml` (or under `$MISE_CONFIG_DIR`), replacing
-it whole at every run: `ignored_config_paths` (each opted-in project's `node_modules`, `.venv`,
-`vendor` and `miseIgnore` paths) and `ceiling_paths` (each project's parent) as top-level keys, then
+it whole at every run: `ignored_config_paths` (every `node_modules`, `.venv` and `vendor` at any
+depth inside each opted-in project, as an anchored glob such as `<project>/**/node_modules/**`, and
+its `miseIgnore` paths) and `ceiling_paths` (each project's parent) as top-level keys, then
 the domain's `~/.dotlocal/mise/miserc.extra.toml` verbatim. mise reads those settings before any
 configuration file, so a `conf.d/` drop-in, or a `[settings]` table in the miserc, has no effect on
 them. A fragment that sets either list is refused.

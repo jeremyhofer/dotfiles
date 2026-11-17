@@ -27,9 +27,10 @@ way stays trusted after an edit. An environment file a configuration loads (a SO
 separately and, under paranoid `env_files`, against its contents; this tool trusts none. mise runs
 here with the machine's own configuration, so any paranoid setting comes from the deployed drop-ins.
 
-THE MISERC. Two more settings complete the boundary: `ignored_config_paths` (each opted-in
-project's `node_modules`, `.venv` and `vendor`, and its `miseIgnore:` paths, so a dependency's
-configuration is never read, and `mise exec` there never trusts and runs it) and `ceiling_paths`
+THE MISERC. Two more settings complete the boundary: `ignored_config_paths` (every `node_modules`,
+`.venv` and `vendor` directory at any depth inside each opted-in project, as the glob
+`<dir>/**/node_modules/**`, and its `miseIgnore:` paths, so a dependency's configuration is never
+read, and `mise exec` there never trusts and runs it) and `ceiling_paths`
 (each project's parent, so the walk stops above the project). mise reads these before any
 configuration file, so they take effect only from its "miserc", `miserc.toml` in mise's
 configuration directory ($MISE_CONFIG_DIR, else $XDG_CONFIG_HOME/mise, else ~/.config/mise), as
@@ -39,7 +40,8 @@ top-level keys, or from the environment; set in a conf.d/ drop-in, in config.tom
 writes it at every run, atomically, mode 644:
 
     # (a header naming this tool)
-    ignored_config_paths = ["<dir>/.venv", "<dir>/fixtures", "<dir>/node_modules", "<dir>/vendor"]
+    ignored_config_paths = ["<dir>/**/.venv/**", "<dir>/**/node_modules/**", "<dir>/**/vendor/**",
+                            "<dir>/fixtures"]
     ceiling_paths = ["<parent of dir>"]
     # (then a domain's own miserc settings, copied verbatim)
 
@@ -47,8 +49,15 @@ The domain's settings come from ~/.dotlocal/mise/miserc.extra.toml, when it exis
 setting mise reads only from the miserc goes there. A fragment that names either list is refused,
 because the two are this tool's and a second assignment would make the file invalid or override
 them. The dependency directories are listed whether or not they exist yet, and so are opted-in
-projects not on disk here, so a clone or an `npm ci` after the apply is still covered. An entry
-matches the path it names, not a deeper directory of the same name.
+projects not on disk here, so a clone or an `npm ci` after the apply is still covered. The
+dependency globs are anchored at the project's directory and match at any depth below it, so a
+workspace package's own `node_modules` is covered too; a `miseIgnore` entry is a plain path and
+matches the directory it names and everything in it. Measured with mise 2026.11.5: the anchored glob
+works from the miserc and from the environment, an unanchored `**/node_modules/**` matches nothing,
+and a plain `<dir>/node_modules` misses `<dir>/pkg/node_modules`. The globs are per project, not one
+`/**/node_modules/**` for the machine, because a global pattern would also ignore the configuration
+of any project that sits under a directory of one of those names. A project whose directory itself
+holds a glob character (`*`, `?`, `[`) is refused, because its glob would match other paths.
 
 THE MANIFEST. Read through fleet-decl ($FLEET_RECORD, else ~/Devel/mani.yaml; a project's `path` is
 relative to $FLEET_DEVEL_ROOT, else ~/Devel, or absolute). No manifest file means no project is
@@ -192,12 +201,15 @@ def load_projects():
             errors += 1
             continue
         directory = project_dir(raw)
+        if any(c in directory for c in GLOB_CHARS):
+            raise Refuse("%s: its directory %s holds a glob character, so its ignore globs would "
+                         "match other paths; move or rename it" % (name, directory))
         projects.append(Project(name, directory, ignores.get(name, [])))
     return projects, errors
 
 
 def ignore_paths(project):
-    paths = [os.path.join(project.dir, d) for d in DEPENDENCY_DIRS]
+    paths = [os.path.join(project.dir, "**", d, "**") for d in DEPENDENCY_DIRS]
     paths += [os.path.join(project.dir, entry) for entry in project.ignores]
     return paths
 
