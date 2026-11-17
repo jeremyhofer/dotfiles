@@ -146,6 +146,7 @@ test-nx-suites.sh                   tools/nx/suites.js nx.json tests/coverage.ma
 test-npm-registry.py               package.json package-lock.json
 test-no-new-shell.py                tests/shell-allowlist.txt
 test-skip-skills.sh                 .chezmoiignore .chezmoi.toml.tmpl .chezmoidata.yaml .chezmoitemplates/**
+test-mise-base.py                   dot_config/mise/** run_before_create-mise-state-dir.sh .chezmoiignore .chezmoi.toml.tmpl
 test-spell-tier-name.sh             dot_config/nvim/lua/config/spell.lua
 test-tuicr-config.py                dot_config/tuicr/config.toml
 test-run-all.sh                     tests/run-all.sh

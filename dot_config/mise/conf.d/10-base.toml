@@ -1,0 +1,20 @@
+# The base's mise settings, on every machine where mise is switched on (miseActive in the chezmoi
+# data). Drop-ins in this directory load in name order, and this one is named to load first, so a
+# domain's own drop-in can set anything here again. A later drop-in REPLACES a list setting rather
+# than adding to it, so a domain that sets idiomatic_version_file_enable_tools states its whole list.
+# The dotfiles render no ~/.config/mise/config.toml: that file is left to the machine.
+
+# The oldest mise the fleet's settings and configuration syntax are known to work with. An older mise
+# refuses every command that loads configuration, naming the version required. mise itself is not
+# pinned; it follows the package manager, and this floor is raised when the fleet relies on
+# something newer.
+min_version = "2026.11.5"
+
+[settings]
+# Version lists come from each tool's own upstream, not from mise's author's server, and nothing is
+# reported to that server after an install.
+use_versions_host = false
+use_versions_host_track = false
+# Another tool's Node pin file (.nvmrc, .node-version) is obeyed, so a repository that has not moved
+# its pin into mise.toml keeps the Node it names.
+idiomatic_version_file_enable_tools = ["node"]

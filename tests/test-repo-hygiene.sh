@@ -62,7 +62,9 @@ echo "ok:   no source comment depends on context this tree cannot carry"
 # The base is an Nx workspace that runs from the source tree (the apply's suites run through it,
 # from tests/apply-suites.py), and nothing Nx uses may land in $HOME, where a package.json or
 # node_modules would sit as clutter at best and be picked up as a workspace by tools run there at
-# worst. .chezmoiignore is what keeps them out, and a line dropped from it would fail silently, so
+# worst. The same holds for the source's own mise configuration: a ~/mise.toml would be read by
+# mise in every directory under $HOME that has none of its own. .chezmoiignore is what keeps them
+# out, and a line dropped from it would fail silently, so
 # this asks chezmoi itself which targets the source
 # manages. It runs on a scratch copy without .chezmoiexternal*, whose downloads the question does not
 # need, under a scratch config, cache and destination, so nothing of this machine's is read or
@@ -82,13 +84,13 @@ if command -v chezmoi >/dev/null 2>&1; then
     echo "FAIL: chezmoi could not list the managed files: $(head -n 3 "$hyg/err")"; exit 1
   fi
   [ -n "$managed" ] || { echo "FAIL: chezmoi listed no managed files, so this check would see nothing"; exit 1; }
-  leaked=$(printf '%s\n' "$managed" | grep -E '^(package\.json|package-lock\.json|nx\.json|\.nvmrc|node_modules/|tools/|\.nx/)' || true)
+  leaked=$(printf '%s\n' "$managed" | grep -E '^(package\.json|package-lock\.json|nx\.json|\.nvmrc|mise\.toml|mise\.local\.toml|node_modules/|tools/|\.nx/)' || true)
   if [ -n "$leaked" ]; then
-    echo "FAIL: Nx development files would deploy to \$HOME (add them to .chezmoiignore):"
+    echo "FAIL: development files would deploy to \$HOME (add them to .chezmoiignore):"
     printf '%s\n' "$leaked" | sed 's/^/      /'
     exit 1
   fi
-  echo "ok:   no Nx development file deploys"
+  echo "ok:   no Nx or mise development file deploys"
 else
   echo "skip: chezmoi not installed, so the Nx deploy check did not run"
 fi

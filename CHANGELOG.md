@@ -32,6 +32,38 @@ Entries are newest first.
 
 ---
 
+## 2026-11-17
+
+### `miseActive`: a per-machine switch for mise, and the base's mise settings behind it (ACTION: `chezmoi init`)
+
+A new key in the generated config's `[data]`, `miseActive`, never prompted and `false` by default,
+like `machineSnapshot`. It lets one machine switch to mise before another while every apply stays a
+full one: what is active on a machine is a value `chezmoi data` shows, not a question of what was
+applied. While it is false or absent, the rendered home is unchanged. Set to `true` by editing
+`~/.config/chezmoi/chezmoi.toml`, it deploys:
+
+- `~/.config/mise/conf.d/10-base.toml`, the base's mise settings, named to load before any domain's
+  drop-in: `min_version = "2026.11.5"` (an older mise refuses every command that loads configuration,
+  though `mise --version` still answers), `use_versions_host = false` and
+  `use_versions_host_track = false` (version lists from each tool's upstream, nothing reported to
+  mise's author's server), and `idiomatic_version_file_enable_tools = ["node"]` (`.nvmrc` and
+  `.node-version` obeyed). A later drop-in replaces a list setting whole, so a domain that sets that
+  list states all of it. The base still renders no `~/.config/mise/config.toml`.
+- A `run_before_` step creating mise's state directory (`$MISE_STATE_DIR`, else
+  `${XDG_STATE_HOME:-~/.local/state}/mise`) at mode 700, narrowing a wider one, on every apply where
+  `mise` is on PATH. mise keeps its trust records there, and an agent sandbox cannot create it.
+
+Setting the key back to `false` stops future deploys only; a drop-in already deployed stays until
+removed by hand. chezmoi data is per instance, so a private layer that gates its own mise files keeps
+its own key in its own generated config and sets both together.
+
+The source's own `mise.toml` and `mise.local.toml` are now in `.chezmoiignore`, so neither deploys as
+`~/mise.toml`, and the repository hygiene suite refuses either one that would.
+
+**ACTION, every machine:** `chezmoi init` once. The apply warns "config file template has changed"
+until then; `init` keeps every answer and writes `miseActive = false`. Nothing else is needed until a
+machine switches.
+
 ## 2026-11-16
 
 ### A new skill: `hermetic-gates`
