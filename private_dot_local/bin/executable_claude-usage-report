@@ -8,10 +8,57 @@ main session or its subagents, which model, how many subagents. Claude Code's ow
 that data. This tool reads them and prints counts. It never prints transcript content: no prompts,
 no message text, no file contents, no subagent descriptions. It only reads; it writes nothing.
 
-    claude-usage-report [--days N | --since YYYY-MM-DD] [--json]
+    claude-usage-report [--days N | --since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+    claude-usage-report --sessions [--seat PATTERN]... [window flags] [--json]
 
 The window is the last 7 days by default, judged by each record's own timestamp. `--since` starts
-at local midnight of that date. `--json` prints the same report as one JSON object.
+at local midnight of that date; `--until` ends at the close of that local date. `--json` prints the
+same report as one JSON object.
+
+PER-SESSION VIEW (--sessions). One row per main-session transcript, for judging when a long-lived
+session should be refreshed. A session is listed when any of its requests falls in the window, and
+its row covers the whole session, so the context columns are not cut off at the window's edge.
+`--seat` keeps sessions whose seat name matches the shell-style pattern (`--seat 'mod-*'`); give it
+more than once for several. The columns:
+
+    seat         the session's name: its custom title (what the agents view shows), else its
+                 agent name, else "-".
+    session      the first 8 characters of the session id (the transcript's file name).
+    start, end   local time of the session's first and last request.
+    reqs         requests: API calls, counted once per unique message.id (see DOUBLE COUNTING).
+    ctx@1, ctx@10, ctx@50, ctx@end
+                 the context sent with request 1, 10, 50 and the last one: that request's input +
+                 cache-read + cache-write tokens, which is the whole prompt the model was given.
+                 ctx@1 is the session's fixed startup cost (system prompt, always-on context, the
+                 first message); the climb from there is the conversation accumulating. "-" when
+                 the session made fewer requests than that.
+    avg ctx      total input divided by reqs: the average prompt size.
+    total input  the sum over every request of input + cache-read + cache-write. This is the usage
+                 proxy, because every request re-sends the whole conversation, so the cost of a
+                 session grows with context size times request count, and this sum is exactly that
+                 product. Cache-read tokens are cheaper per token than fresh input, which this sum
+                 does not weigh (see BLIND SPOTS); it measures how much context was carried.
+    cache write  tokens written to the prompt cache, summed: new context, plus any context the
+                 cache had dropped and had to rebuild (a long pause between requests does this).
+    output       tokens the model generated, summed.
+    sub input    total input of the session's subagents, which run in their own contexts and are
+                 not part of any ctx column.
+    cmp          compactions: how many times the context was summarized and cut.
+    ended        how the session finished:
+                   parked     it ran `fleet-canonicals stage` (it wrote and staged a handoff).
+                   live       its process is still running.
+                   compacted  not parked and not running, and it compacted at least once.
+                   exited     not parked, not running, never compacted.
+                   open       not parked, and whether it is running cannot be seen from here:
+                              inside a sandbox with its own process namespace, other sessions'
+                              processes are invisible. Run it from a plain terminal to resolve.
+
+The live check reads Claude Code's session records ($CLAUDE_SESSIONS_DIR, default
+~/.claude/sessions): a record naming the session id whose process exists, and was started at the
+recorded time, so a reused process id does not count. Records only cover sessions on this machine.
+
+A session that was resumed or forked carries the earlier messages in its own transcript, so its
+row includes them, and summing rows across such sessions counts them twice.
 
 DATA SOURCE. Transcripts under $CLAUDE_PROJECTS_DIR (default ~/.claude/projects):
 
@@ -55,10 +102,12 @@ exists, each line {"ts": epoch seconds, "five_hour_pct", "seven_day_pct", ...} i
 per-day table: first and last seven_day_pct (their difference is how much of the weekly limit that
 day used) and the maximum five_hour_pct. When the file is absent the report says so in one line.
 
-Test hooks: CLAUDE_USAGE_NOW (epoch seconds) replaces the clock. Python 3 stdlib only.
+Test hooks: CLAUDE_USAGE_NOW (epoch seconds) replaces the clock; CLAUDE_USAGE_PID_NS replaces this
+process's pid namespace (the `pid:[N]` link) for the live check. Python 3 stdlib only.
 """
 import argparse
 import calendar
+import fnmatch
 import json
 import os
 import sys
@@ -216,8 +265,8 @@ def day_of(ts):
     return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
-def build(root, cutoff, home):
-    msgs = read_messages(root, cutoff, home)
+def build(root, cutoff, home, end=float("inf")):
+    msgs = [m for m in read_messages(root, cutoff, home) if m["ts"] < end]
     projects, days, sessions = {}, {}, {}
     by_type, by_model, agents = {}, {}, {}
     for m in msgs:
@@ -268,7 +317,238 @@ def build(root, cutoff, home):
     }
 
 
-def read_history(path, cutoff):
+PARK_MARK = "fleet-canonicals stage "
+
+
+def usage_vals(m):
+    """The four usage counts of an assistant message, or None when it carries no real usage."""
+    if not isinstance(m, dict) or not isinstance(m.get("usage"), dict):
+        return None
+    u = m["usage"]
+    vals = {}
+    for src, dst in USAGE_FIELDS:
+        v = u.get(src)
+        vals[dst] = v if isinstance(v, int) and v > 0 else 0
+    if m.get("model") == "<synthetic>" or not any(vals.values()):
+        return None
+    return vals
+
+
+def ran_park(m):
+    """Whether an assistant message holds a Bash tool call that stages a handoff."""
+    for c in m.get("content") or ():
+        if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "Bash":
+            cmd = (c.get("input") or {}).get("command")
+            if isinstance(cmd, str) and PARK_MARK in cmd:
+                return True
+    return False
+
+
+def read_requests(path, main):
+    """One transcript's requests in order, merged by message.id (each field's maximum).
+
+    With main=True, sidechain records (subagent turns written into the main file by older Claude
+    Code builds) are left out, and the seat name, compactions and park are collected too."""
+    reqs, anon = {}, 0
+    info = {"title": None, "agent_name": None, "compactions": 0, "parked": False, "cwd": None}
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return [], info
+    with fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(r, dict):
+                continue
+            t = r.get("type")
+            if info["cwd"] is None and isinstance(r.get("cwd"), str):
+                info["cwd"] = r["cwd"]
+            if main and t == "custom-title" and isinstance(r.get("customTitle"), str):
+                info["title"] = r["customTitle"]
+            elif main and t == "agent-name" and isinstance(r.get("agentName"), str):
+                info["agent_name"] = r["agentName"]
+            elif main and t == "system" and r.get("subtype") == "compact_boundary":
+                info["compactions"] += 1
+            if t != "assistant" or (main and r.get("isSidechain") is True):
+                continue
+            m = r.get("message")
+            if main and isinstance(m, dict) and not info["parked"] and ran_park(m):
+                info["parked"] = True
+            vals = usage_vals(m)
+            ts = parse_ts(r.get("timestamp"))
+            if vals is None or ts is None:
+                continue
+            mid = m.get("id")
+            if not isinstance(mid, str) or not mid:
+                anon += 1
+                mid = "\0anon%d" % anon
+            cur = reqs.get(mid)
+            if cur is None:
+                reqs[mid] = dict(ts=ts, **vals)
+            else:
+                for k, v in vals.items():
+                    cur[k] = max(cur[k], v)
+                cur["ts"] = min(cur["ts"], ts)
+    return sorted(reqs.values(), key=lambda q: q["ts"]), info
+
+
+def ctx(q):
+    return q["input"] + q["cache_read"] + q["cache_creation"]
+
+
+def own_pid_ns():
+    v = os.environ.get("CLAUDE_USAGE_PID_NS")
+    if v:
+        return v
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None  # no /proc (macOS): process ids are machine-wide, so a check is decisive
+
+
+def proc_alive(pid, start):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # exists, owned by someone else
+    except OSError:
+        return False
+    if start:
+        try:
+            with open("/proc/%d/stat" % pid) as fh:
+                # field 22 is the start time; the name in field 2 may hold spaces, so split after ")"
+                return fh.read().rsplit(")", 1)[1].split()[19] == str(start)
+        except (OSError, IndexError):
+            pass
+    return True
+
+
+def liveness(sessions_dir):
+    """Map session id -> True (running), False (record but not running) or None (cannot see)."""
+    out, ns = {}, own_pid_ns()
+    try:
+        names = os.listdir(sessions_dir)
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(sessions_dir, n), encoding="utf-8") as fh:
+                d = json.load(fh)
+            sid, pid = d["sessionId"], int(d["pid"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        dom = d.get("pidDomain")
+        if ns and isinstance(dom, str) and dom.startswith("linux:") and not dom.endswith(":" + ns):
+            state = None  # recorded in another pid namespace: invisible from here
+        else:
+            state = proc_alive(pid, d.get("procStart"))
+        prev = out.get(sid, False)
+        out[sid] = True if (state or prev) else (None if (state is None or prev is None) else False)
+    return out
+
+
+def build_sessions(root, cutoff, end, home, seats, sessions_dir):
+    alive = liveness(sessions_dir)
+    rows = []
+    try:
+        keys = sorted(os.listdir(root))
+    except OSError:
+        return rows
+    for key in keys:
+        kdir = os.path.join(root, key)
+        if not os.path.isdir(kdir):
+            continue
+        for name in sorted(os.listdir(kdir)):
+            path = os.path.join(kdir, name)
+            if not name.endswith(".jsonl") or not os.path.isfile(path):
+                continue
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    continue
+            except OSError:
+                continue
+            reqs, info = read_requests(path, True)
+            if not reqs or reqs[-1]["ts"] < cutoff or reqs[0]["ts"] >= end:
+                continue
+            seat = info["title"] or info["agent_name"] or "-"
+            if seats and not any(fnmatch.fnmatchcase(seat, p) for p in seats):
+                continue
+            sid = name[:-6]
+            sub_reqs, sub_input = 0, 0
+            sub = os.path.join(kdir, sid, "subagents")
+            if os.path.isdir(sub):
+                for f in sorted(os.listdir(sub)):
+                    if f.startswith("agent-") and f.endswith(".jsonl"):
+                        sr, _ = read_requests(os.path.join(sub, f), False)
+                        sub_reqs += len(sr)
+                        sub_input += sum(ctx(q) for q in sr)
+            total = sum(ctx(q) for q in reqs)
+            live = alive.get(sid, False)
+            if info["parked"]:
+                ended = "parked"
+            elif live:
+                ended = "live"
+            elif live is None:
+                ended = "open"
+            else:
+                ended = "compacted" if info["compactions"] else "exited"
+            rows.append({
+                "seat": seat, "session": sid, "project": project_of(info["cwd"], key, home),
+                "start": reqs[0]["ts"], "end": reqs[-1]["ts"], "requests": len(reqs),
+                "context": {"first": ctx(reqs[0]),
+                            "at_10": ctx(reqs[9]) if len(reqs) >= 10 else None,
+                            "at_50": ctx(reqs[49]) if len(reqs) >= 50 else None,
+                            "last": ctx(reqs[-1])},
+                "avg_context": round(total / len(reqs)),
+                "total_input": total,
+                "input": sum(q["input"] for q in reqs),
+                "cache_read": sum(q["cache_read"] for q in reqs),
+                "cache_write": sum(q["cache_creation"] for q in reqs),
+                "output": sum(q["output"] for q in reqs),
+                "subagent_requests": sub_reqs, "subagent_total_input": sub_input,
+                "compactions": info["compactions"], "ended": ended})
+    rows.sort(key=lambda s: (s["start"], s["session"]))
+    return rows
+
+
+def short(n):
+    if n is None:
+        return "-"
+    if n >= 1e9:
+        return "%.2fB" % (n / 1e9)
+    if n >= 1e6:
+        return "%.2fM" % (n / 1e6)
+    if n >= 1e3:
+        return "%.0fk" % (n / 1e3)
+    return str(n)
+
+
+def human_sessions(rows, window):
+    o = ["claude-usage-report --sessions: " + window, "",
+         "One row per session. ctx@N is the prompt sent with request N (input + cache-read +",
+         "cache-write); total input sums it over every request and is the usage proxy, because each",
+         "request re-sends the whole conversation. `claude-usage-report --help` defines every column.", ""]
+    head = ["seat", "session", "start", "end", "reqs", "ctx@1", "ctx@10", "ctx@50", "ctx@end",
+            "avg ctx", "total input", "cache write", "output", "sub input", "cmp", "ended"]
+    hm = lambda ts: time.strftime("%m-%d %H:%M", time.localtime(ts))
+    body = [[s["seat"], s["session"][:8], hm(s["start"]), hm(s["end"]), s["requests"],
+             short(s["context"]["first"]), short(s["context"]["at_10"]), short(s["context"]["at_50"]),
+             short(s["context"]["last"]), short(s["avg_context"]), short(s["total_input"]),
+             short(s["cache_write"]), short(s["output"]), short(s["subagent_total_input"]),
+             s["compactions"], s["ended"]] for s in rows]
+    if not body:
+        return "\n".join(o + ["No sessions in the window."])
+    return "\n".join(o + table(head, body))
+
+
+def read_history(path, cutoff, end=float("inf")):
     """Per-day limit usage from the history file, or None when it does not exist."""
     try:
         fh = open(path, encoding="utf-8", errors="replace")
@@ -282,7 +562,7 @@ def read_history(path, cutoff):
                 ts = float(r["ts"])
             except (ValueError, KeyError, TypeError):
                 continue
-            if isinstance(r, dict) and ts >= cutoff:
+            if isinstance(r, dict) and cutoff <= ts < end:
                 rows.append((ts, r))
     rows.sort(key=lambda x: x[0])
     out = {}
@@ -363,19 +643,30 @@ def human(rep, window):
     return "\n".join(o)
 
 
+def local_midnight(ap, flag, v):
+    try:
+        return time.mktime(time.strptime(v, "%Y-%m-%d"))
+    except ValueError:
+        ap.error("%s wants YYYY-MM-DD" % flag)
+
+
 def main(argv):
-    ap = argparse.ArgumentParser(prog="claude-usage-report", description="Token use from Claude Code transcripts.")
+    ap = argparse.ArgumentParser(prog="claude-usage-report", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--days", type=int, help="window: the last N days (default 7)")
     g.add_argument("--since", help="window: from local midnight of YYYY-MM-DD")
+    ap.add_argument("--until", help="window: through the end of local date YYYY-MM-DD")
+    ap.add_argument("--sessions", action="store_true", help="one row per session (see PER-SESSION VIEW)")
+    ap.add_argument("--seat", action="append", default=[], metavar="PATTERN",
+                    help="with --sessions: only seats matching this shell-style pattern; repeatable")
     ap.add_argument("--json", action="store_true", help="emit one JSON object")
     a = ap.parse_args(argv)
+    if a.seat and not a.sessions:
+        ap.error("--seat needs --sessions")
     now = now_epoch()
     if a.since:
-        try:
-            cutoff = time.mktime(time.strptime(a.since, "%Y-%m-%d"))
-        except ValueError:
-            ap.error("--since wants YYYY-MM-DD")
+        cutoff = local_midnight(ap, "--since", a.since)
         window = "since %s" % a.since
     else:
         days = 7 if a.days is None else a.days
@@ -383,12 +674,31 @@ def main(argv):
             ap.error("--days must not be negative")
         cutoff = now - days * 86400
         window = "last %d days" % days
+    end = float("inf")
+    if a.until:
+        # the next local midnight; mktime normalizes day 32 and the like, and handles DST
+        local_midnight(ap, "--until", a.until)  # refuses a malformed date
+        t = time.strptime(a.until, "%Y-%m-%d")
+        end = time.mktime((t.tm_year, t.tm_mon, t.tm_mday + 1, 0, 0, 0, 0, 0, -1))
+        window += " until %s" % a.until
     home = os.path.expanduser("~")
     root = os.environ.get("CLAUDE_PROJECTS_DIR") or os.path.join(home, ".claude", "projects")
+    if a.sessions:
+        sdir = os.environ.get("CLAUDE_SESSIONS_DIR") or os.path.join(home, ".claude", "sessions")
+        rows = build_sessions(root, cutoff, end, home, a.seat, sdir)
+        if a.json:
+            for r in rows:
+                r["start"] = datetime.fromtimestamp(r["start"], timezone.utc).isoformat()
+                r["end"] = datetime.fromtimestamp(r["end"], timezone.utc).isoformat()
+            print(json.dumps({"window": {"description": window, "from_epoch": int(cutoff),
+                                         "to_epoch": int(min(end, now))}, "sessions": rows}, indent=1))
+        else:
+            print(human_sessions(rows, window))
+        return 0
     hist = os.environ.get("CLAUDE_USAGE_HISTORY") or os.path.join(home, ".local", "state", "claude-usage", "history.jsonl")
-    rep = build(root, cutoff, home)
-    rep["window"] = {"description": window, "from_epoch": int(cutoff), "to_epoch": int(now)}
-    rep["limits"] = read_history(hist, cutoff)
+    rep = build(root, cutoff, home, end)
+    rep["window"] = {"description": window, "from_epoch": int(cutoff), "to_epoch": int(min(end, now))}
+    rep["limits"] = read_history(hist, cutoff, end)
     print(json.dumps(rep, indent=1) if a.json else human(rep, window))
     return 0
 

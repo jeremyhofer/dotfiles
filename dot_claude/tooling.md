@@ -40,12 +40,13 @@ codes, state files, caveats). This file is short on purpose: every session loads
   coordinating session's heartbeat, at most 55m) · `machine-snapshot` (what is loading the machine)
   · `apply-status` (the dotfiles apply ledger; `wait --since T`) · `launchagent-status` (macOS:
   deployed agents not loaded) · `chezmoi-overlay` (runs the private chezmoi instance).
-- Claude Code: `claude-usage-report` (where tokens went) · `claude-usage-override` (one temporary
-  override of usage throttles) · `context-footprint` (bytes of always-on context against a budget)
-  · `memory-doctor` (auto-memory store health) · `claude-context-probe` (what Claude Code loads) ·
-  `claude-project-settings` (writes declared repo and directory settings) · `claude-trust-check`
-  (unaccepted workspace-trust prompts) · `claude-mask-sweep` (stale sandbox placeholder files) ·
-  `install-claude-plugins` · `claude-dispatch-hook` (refuses a dispatch naming no model, or Fable without its opt-in) ·
+- Claude Code: `claude-usage-report` (where tokens went; `--sessions` per session) ·
+  `claude-usage-override` (one temporary override of usage throttles) · `context-footprint` (bytes
+  of always-on context against a budget) · `memory-doctor` (auto-memory store health) ·
+  `claude-context-probe` (what Claude Code loads) · `claude-project-settings` (writes declared repo
+  and directory settings) · `claude-trust-check` (unaccepted workspace-trust prompts) ·
+  `claude-mask-sweep` (stale sandbox placeholder files) · `install-claude-plugins` ·
+  `claude-dispatch-hook` (refuses a dispatch naming no model, or Fable without its opt-in) ·
   `claude-worklog-hook` (dispatch and work-note log) · `claude-worktree-hook` (worktree command
   guard) · `claude-scratch-hook` (scratch-tree tidying) · `skill-externals-sync` (pinned external
   skills).

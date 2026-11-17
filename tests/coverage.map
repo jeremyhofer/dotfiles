@@ -54,6 +54,7 @@ test-claude-project-settings.sh     private_dot_local/bin/executable_claude-proj
 test-claude-scratch-hook.sh         private_dot_local/bin/executable_claude-scratch-hook
 test-claude-trust-check.sh          private_dot_local/bin/executable_claude-trust-check private_dot_local/bin/executable_fleet-decl
 test-claude-usage-report.sh         private_dot_local/bin/executable_claude-usage-report
+test-claude-usage-report-sessions.py private_dot_local/bin/executable_claude-usage-report
 test-claude-usage-override.py       private_dot_local/bin/executable_claude-usage-override
 test-claude-worklog-hook.sh         private_dot_local/bin/executable_claude-worklog-hook
 test-claude-worktree-hook.sh        private_dot_local/bin/executable_claude-worktree-hook
