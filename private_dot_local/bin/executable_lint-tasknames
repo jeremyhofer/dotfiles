@@ -3,9 +3,9 @@
 
 Reads the category list FROM the deployed naming-build-tasks skill (single source;
 this tool deliberately carries no copy of the vocabulary), then reads every task
-name a repo declares through four readers — `just --summary`, package.json
-scripts, `make -qp`, and Nx (`nx show project --json` per project) — and checks
-each name for:
+name a repo declares through five readers — `just --summary`, package.json
+scripts, `make -qp`, Nx (`nx show project --json` per project) and mise
+(`mise tasks ls --json`) — and checks each name for:
 
   separator  the name carries a colon (the shape is `verb-qualifier`, hyphen)
   verb       the first hyphen-separated token is not a vocabulary category
@@ -14,8 +14,8 @@ Read-only. Exit 0 clean, 1 violations, 2 a READER ERROR (a build file exists but
 its reader could not enumerate tasks — reported loudly and separately, because a
 reader that silently reads nothing would be a green that means nothing).
 
-Discovery is TREE-WIDE for just/npm/make: any nested justfile / package.json /
-Makefile is read too (node_modules, .git, dist and similar are pruned), because a
+Discovery is TREE-WIDE for just/npm/make/mise: any nested justfile / package.json /
+Makefile / mise config is read too (node_modules, .git, dist and similar are pruned), because a
 single-directory read once hid an entire frontend/package.json of 32 scripts and
 under-reported a repo's true naming scope by half. Nx stays root-only on purpose:
 the workspace graph already enumerates every nested project. Findings from a
@@ -49,7 +49,17 @@ remains the control. A malformed allowlist is exit 2.
 Ecosystem-mandated names are exempt, not violations: npm lifecycle scripts
 (prepare, install, version, …, and pre<X>/post<X> of another script), npm's
 reserved `start`/`test` (kept as thin delegating aliases by convention), and
-just's `default` listing idiom.
+just's `default` listing idiom, and mise's `default`, the task `mise run` runs with no name.
+
+mise. A directory is read when it holds a mise config or task directory (`mise.toml`, `mise-tasks/`
+and mise's other spellings of both). `mise tasks ls --json --hidden` there also lists the tasks of
+every config ABOVE it (a parent directory's `mise.toml`, the global config), so only a task whose
+`source` lies inside that directory counts: the repository's own. Hidden tasks count, because `hide`
+only keeps a task out of mise's listing; it is still run by name. Aliases are not linted, as just's
+are not. A file task under a subdirectory of `mise-tasks/` gets mise's `group:name` name, which the
+separator rule reports. A config mise cannot parse, or a missing `mise`, is a READER ERROR. Listing
+needs no trust (measured with mise 2026.11.5), though mise records each config it read in its own
+state directory.
 """
 
 import json
@@ -75,6 +85,7 @@ NPM_LIFECYCLE = {
 }
 NPM_RESERVED_ALIASES = {"start", "test"}
 JUST_IDIOM = {"default"}
+MISE_IDIOM = {"default"}
 # Targets Nx itself (or its plugins) provides on inferred projects — machinery,
 # not authored names, and inference-first is the stated preference, so
 # these are ecosystem-mandated the same way npm lifecycle scripts are.
@@ -326,20 +337,21 @@ def is_fixture_dir(name):
     return n in FIXTURE_DIRS or n.startswith(("fixture-", "fixture_"))
 
 
-def find_dirs(repo, markers):
-    """Yield every dir under repo (repo first) containing one of the marker files."""
+def find_dirs(repo, markers, prune=()):
+    """Yield every dir under repo (repo first) containing one of the marker files, or, when
+    `markers` is a function, every dir it accepts. Directories named in `prune` are not walked."""
     hits = []
     for dirpath, dirnames, filenames in os.walk(repo):
         keep = []
         for d in sorted(dirnames):
-            if d in EXCLUDE_DIRS:
+            if d in EXCLUDE_DIRS or d in prune:
                 continue
             if is_fixture_dir(d):
                 SKIPPED_FIXTURES.add(Path(dirpath, d))
                 continue
             keep.append(d)
         dirnames[:] = keep
-        if any(m in filenames for m in markers):
+        if markers(Path(dirpath)) if callable(markers) else any(m in filenames for m in markers):
             hits.append(Path(dirpath))
     return hits
 
@@ -446,6 +458,65 @@ def read_nx(repo):
     return names
 
 
+# Where mise finds a directory's own config and task files, relative to that directory. Any one of
+# them makes the directory a mise directory. mise itself enumerates the tasks; this list only decides
+# where to ask, so a spelling missing here shows as `mise(-)`, a visible skip, never a wrong count.
+MISE_MARKERS = (
+    "mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml",
+    ".config/mise.toml", ".config/mise/config.toml", ".config/mise/mise.toml", ".config/mise/conf.d",
+    ".mise/config.toml", "mise/config.toml",
+    "mise-tasks", ".mise-tasks", "mise/tasks", ".mise/tasks", ".config/mise/tasks",
+)
+# Those locations' own directories: a directory's config, never a project of its own, so the walk
+# does not enter them (`.config/mise.toml` would otherwise make `.config` a second mise directory).
+MISE_OWN_DIRS = {".config", ".mise", "mise", "mise-tasks", ".mise-tasks"}
+MISE_BODY_MAX = 1 << 16  # bytes of a file task read for the triad check
+
+
+def is_mise_dir(d):
+    return any((d / m).exists() for m in MISE_MARKERS)
+
+
+def read_mise(repo):
+    if not is_mise_dir(repo):
+        return None
+    try:
+        r = subprocess.run(["mise", "tasks", "ls", "--json", "--hidden"], cwd=repo, capture_output=True,
+                           text=True, timeout=120, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise ReaderError("mise not found on PATH")
+    if r.returncode != 0:
+        err = [l.strip() for l in r.stderr.splitlines() if l.strip()]
+        why = next((l for l in err if l.startswith("×")), err[-1] if err else f"rc={r.returncode}")
+        raise ReaderError(f"mise tasks ls failed: {why}")
+    try:
+        listed = json.loads(r.stdout)
+        if not isinstance(listed, list):
+            raise ValueError("not a list")
+    except ValueError as e:
+        raise ReaderError(f"mise tasks ls --json gave no task list: {e}")
+    root = repo.resolve()
+    out = []
+    for t in listed:
+        try:
+            name, src = t["name"], Path(t["source"]).resolve()
+        except (KeyError, TypeError) as e:
+            raise ReaderError(f"mise tasks ls --json: a task without a name or source ({e})")
+        try:
+            rel = src.relative_to(root)  # outside: a parent's or the global config's task
+        except ValueError:
+            continue
+        body = " ".join(t.get("run") or [])
+        if t.get("file"):
+            try:
+                with open(t["file"], "rb") as f:
+                    body = f.read(MISE_BODY_MAX).decode("utf-8", "replace")
+            except OSError:
+                body = ""
+        out.append((name, None, body, rel.as_posix()))
+    return out
+
+
 # (tool, reader, marker filenames) — markers None => root-only (nx: the workspace
 # graph already covers nested projects; walking would double-count).
 READERS = [
@@ -453,6 +524,7 @@ READERS = [
     ("npm", read_npm, ("package.json",)),
     ("make", read_make, ("Makefile", "makefile", "GNUmakefile")),
     ("nx", read_nx, None),
+    ("mise", read_mise, is_mise_dir),
 ]
 
 
@@ -652,15 +724,15 @@ def lint_one(repo, key=None, why="", base=None):
     violations, tally, reader_errors, all_names = [], [], [], []
     mine = [a for a in ALLOWANCES[1] if key is not None and a["repo"] == key] if ALLOWANCES else []
     for tool, reader, markers in READERS:
-        dirs = [repo] if markers is None else find_dirs(repo, markers)
+        dirs = [repo] if markers is None else find_dirs(repo, markers, MISE_OWN_DIRS if tool == "mise" else ())
         tasks, errored, applicable = [], False, 0
         for d in dirs:
             rel = None if d == repo else str(d.relative_to(repo))
+            dr = d.relative_to(base).as_posix()
             if markers is None:
                 bfile = "nx.json"  # Nx has no build file per project; allowances use the workspace file
             else:
-                bfile = real_build_file(d, markers)
-                dr = d.relative_to(base).as_posix()
+                bfile = "mise.toml" if callable(markers) else real_build_file(d, markers)
                 bfile = bfile if dr == "." else f"{dr}/{bfile}"
             try:
                 found = reader(d)
@@ -675,7 +747,11 @@ def lint_one(repo, key=None, why="", base=None):
             for item in found:
                 name, ctx = item[0], item[1]
                 body = item[2] if len(item) > 2 else ""
-                tasks.append((name, ctx if ctx is not None else rel, body, bfile))
+                # A reader that knows each task's own file (mise: `mise.toml` or a task file) names it,
+                # relative to the directory read, so an allowance's `path` can say which.
+                own = item[3] if len(item) > 3 else None
+                tfile = bfile if own is None else (own if dr == "." else f"{dr}/{own}")
+                tasks.append((name, ctx if ctx is not None else rel, body, tfile))
         if errored:
             tally.append(f"{tool}(ERROR)")
             continue
@@ -687,6 +763,8 @@ def lint_one(repo, key=None, why="", base=None):
             if tool == "just" and name in JUST_IDIOM:
                 continue
             if tool == "nx" and name in NX_PROVIDED:
+                continue
+            if tool == "mise" and name in MISE_IDIOM:
                 continue
             all_names.append((name, bfile))
             where = f"{tool}:{ctx}" if ctx else tool
