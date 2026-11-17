@@ -181,6 +181,10 @@ directory, records the pointer, and with `--up` launches.
    describe the successor's work). It reports `BROKEN-CHAIN` for a handoff whose predecessor is
    neither in `handoffs-search` nor placed in the same run, and `NEEDS-JUDGMENT` for a staged file
    that is not a canonical's dated handoff; either leaves exit status 1, and the file in staging.
+   A staged handoff edited after its placement (content in no commit of the placed copy, and the
+   staging copy newer than that copy's latest commit) is placed again over it, `re-placed`, when
+   the placed copy has no uncommitted change and its latest commit is a placement; otherwise it is
+   `NEEDS-JUDGMENT`, for the hub to merge, since something written in the repository would be lost.
    Last, on every run, it removes each staging copy that nothing can need: one whose exact content
    is in a commit of its same-named placed copy (any commit, so a placed copy amended later still
    counts) and that no pointer names. It prints `removed` per file (`would remove` on a dry run)

@@ -347,7 +347,9 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     Run by the hub, or whichever session can write that directory.
                     Refuses a handoff whose predecessor resolves nowhere (BROKEN-CHAIN)
                     and leaves non-handoff drafts for a judgment call (NEEDS-JUDGMENT);
-                    either makes the exit status 1. Then removes each staging copy that
+                    either makes the exit status 1. A staged handoff edited after its
+                    placement is placed again (re-placed) when the placed copy is clean
+                    and its latest commit is a placement; otherwise NEEDS-JUDGMENT. Then removes each staging copy that
                     is no longer needed: its content is in a commit of its placed copy
                     and no pointer names it. Every other staging copy stays, counted.
   dedupe [--dry-run] [<name>]
@@ -1059,6 +1061,33 @@ unplaced_handoffs() {
     find "$HANDOFFS_SEARCH" -name "$base" -not -path '*/.git/*' -print -quit 2>/dev/null | grep -q . && continue
     declares_placed "$f" && continue
     printf '%s\n' "$base"
+  done
+}
+
+# edited_after_placement -- staged handoffs whose name is already placed but whose staging copy was
+# edited AFTER that placement, one "<base><TAB><placed path>" line each. Measured 2026-11-17: a seat
+# edited its staged handoff after `place` had committed it and re-set its pointer to the staging
+# copy; `place`, matching by name, said "nothing to place", so the committed copy kept the old text.
+# An edit means all three: the content differs from the placed file, is in no commit of it, and the
+# staging copy is newer than the placed file's latest commit. The last condition keeps out an old
+# draft that merely differs (prune_staging counts those as "kept"); a file git does not track has
+# no commit to be newer than, so it is never reported.
+edited_after_placement() {
+  local staging="$FLEET_STATE/handoff-staging" f base placed ct mt
+  [ -d "$staging" ] && [ -n "$HANDOFFS_SEARCH" ] && [ -d "$HANDOFFS_SEARCH" ] || return 0
+  for f in "$staging"/*.md; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f")
+    is_canonical_handoff "$base" "$1" || continue
+    declares_placed "$f" && continue
+    placed=$(find "$HANDOFFS_SEARCH" -name "$base" -not -path '*/.git/*' -print -quit 2>/dev/null)
+    [ -n "$placed" ] || continue
+    cmp -s "$f" "$placed" && continue
+    in_placed_history "$f" "$placed" && continue
+    ct=$(git -C "$(dirname "$placed")" log -1 --format=%ct -- "$(basename "$placed")" 2>/dev/null)
+    mt=$(file_mtime "$f") || continue
+    [ -n "$ct" ] && [ "$mt" -gt "$ct" ] || continue
+    printf '%s\t%s\n' "$base" "$placed"
   done
 }
 
@@ -2016,10 +2045,37 @@ cmd_place() {
     [ -n "$base" ] || continue
     if is_canonical_handoff "$base" "$names"; then cands="$cands$base"$'\n'; else judgment="$judgment$base"$'\n'; fi
   done < <(unplaced_handoffs)
+
+  # A staged handoff edited after its placement is placed again, over the placed copy, only when
+  # nothing written since in the repository would be lost: the placed copy is in the handoffs
+  # directory, has no uncommitted change, and its latest commit is a placement. Otherwise it is
+  # reported for the hub to merge by hand.
+  local replacing="" placed subj destp
+  if [ "$commit" -eq 1 ]; then
+    while IFS=$'\t' read -r base placed; do
+      [ -n "$base" ] || continue
+      destp=$(cd "$(dirname "$placed")" 2>/dev/null && pwd)
+      subj=$(git -C "$repo" log -1 --format='%h %s' -- "$placed" 2>/dev/null)
+      if [ "$destp" != "$dest" ]; then
+        printf 'NEEDS-JUDGMENT  %s  (edited in staging after placement, but placed outside %s: %s)\n' "$base" "$dest" "$placed"
+        left=1
+      elif ! git -C "$repo" diff --quiet HEAD -- "$placed" 2>/dev/null; then
+        printf 'NEEDS-JUDGMENT  %s  (edited in staging after placement, and the placed copy has uncommitted changes)\n' "$base"
+        left=1
+      else
+        case "${subj#* }" in
+          "handoffs: place "*|"handoffs: re-place "*) replacing="$replacing$base"$'\n' ;;
+          *) printf 'NEEDS-JUDGMENT  %s  (edited in staging after placement, and the placed copy was changed since, in %s; diff the two and merge by hand)\n' "$base" "$subj"
+             left=1 ;;
+        esac
+      fi
+    done < <(edited_after_placement "$names")
+    cands="$cands$replacing"
+  fi
   if [ -z "$cands" ] && [ -z "$judgment" ]; then
-    printf 'nothing to place: every staged handoff is already in %s\n' "$prog"
+    [ "$left" -eq 1 ] || printf 'nothing to place: every staged handoff is already in %s\n' "$prog"
     prune_staging "$dry"
-    return 0
+    return "$left"
   fi
 
   while IFS= read -r base; do
@@ -2065,7 +2121,10 @@ cmd_place() {
   local staging_abs ptr pname target stamp
   staging_abs=$(cd "$staging" && pwd -P)
   if [ "$dry" -eq 1 ]; then
-    while IFS= read -r base; do printf 'would place     %s -> %s/\n' "$base" "$dest"; done <<< "$placing"
+    while IFS= read -r base; do
+      if in_list "$base" "$replacing"; then printf 'would re-place  %s -> %s/  (edited in staging after placement)\n' "$base" "$dest"
+      else printf 'would place     %s -> %s/\n' "$base" "$dest"; fi
+    done <<< "$placing"
     prune_staging "$dry"
     return "$left"
   fi
@@ -2074,14 +2133,23 @@ cmd_place() {
   while IFS= read -r base; do
     cp "$staging/$base" "$dest/$base" || die "place: could not copy $base into $dest"
     paths+=("$dest/$base")
-    printf 'placed          %s\n' "$base"
+    if in_list "$base" "$replacing"; then printf 're-placed       %s  (edited in staging after placement)\n' "$base"
+    else printf 'placed          %s\n' "$base"; fi
   done <<< "$placing"
   # Never empty here (placing is non-empty), but bash 3.2 aborts on an empty "${arr[@]}" under set -u.
   [ "${#paths[@]}" -gt 0 ] || die "place: nothing was copied"
   if [ "$commit" -eq 1 ]; then
     git -C "$repo" add -- "${paths[@]}" || die "place: git add failed; the files are copied but not committed"
     # Paths on the commit line: only these files are committed, whatever else is in the index.
-    git -C "$repo" commit -q -m "handoffs: place $(tr '\n' ' ' <<< "$placing" | sed 's/ $//') from staging" -- "${paths[@]}" \
+    local fresh again subject
+    fresh=$(while IFS= read -r base; do in_list "$base" "$replacing" || printf '%s ' "$base"; done <<< "$placing")
+    again=$(while IFS= read -r base; do in_list "$base" "$replacing" && printf '%s ' "$base"; done <<< "$placing")
+    # Each subject starts "handoffs: place " or "handoffs: re-place ", which is how a later run
+    # knows the placed copy's latest commit was a placement.
+    if [ -n "$fresh" ] && [ -n "$again" ]; then subject="handoffs: place ${fresh% } and re-place ${again% } from staging"
+    elif [ -n "$fresh" ]; then subject="handoffs: place ${fresh% } from staging"
+    else subject="handoffs: re-place ${again% } from staging (edited after placement)"; fi
+    git -C "$repo" commit -q -m "$subject" -- "${paths[@]}" \
       || die "place: commit failed; the files are copied and staged but NOT committed, and no pointer was moved"
     printf 'committed       %s in %s (not pushed)\n' "$(git -C "$repo" rev-parse --short HEAD)" "$repo"
   else

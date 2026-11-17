@@ -329,5 +329,50 @@ out=$(bash "$TOOL" place 2>&1); rc=$?
 [ -f "$STG/$OLD" ] \
   && ok "keeps a copy whose placed file was never committed" || bad "removed a copy git does not hold" "$out"
 
+printf '\n== a staged handoff edited after it was placed ==\n'
+# Measured 2026-11-17: a seat edited its staged handoff after `place` had committed it, and re-set its
+# pointer to the staging copy. `place` said "nothing to place" (the name was already placed), so the
+# committed copy kept the old text and the pointer kept naming staging, until the hub fixed it by hand.
+E=2026-09-28-1200-alpha-canonical-park.md
+placed_at() { # place $E through the tool, its commit dated $1
+  handoff "$STG/$E" 2026-09-01-0900-alpha-canonical-park.md
+  GIT_COMMITTER_DATE="$1" GIT_AUTHOR_DATE="$1" bash "$TOOL" place >/dev/null 2>&1
+}
+setup
+placed_at "2026-01-01T00:00:00Z"
+printf 'edited after placing\n' >> "$STG/$E"
+printf '%s\n# set-at 1222222222\n' "$STG/$E" > "$STATE/alpha-canonical.handoff"
+before=$(commits)
+out=$(bash "$TOOL" place --dry-run 2>&1); rc=$?
+has "$out" "would re-place  $E" && ! grep -q 'edited after placing' "$HO/$E" \
+  && ok "--dry-run names the re-placement and changes nothing" || bad "dry run wrong" "rc=$rc: $out"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$STG/$E" "$HO/$E" && [ "$(commits)" -eq $((before + 1)) ] \
+  && has "$(git -C "$R" log -1 --format=%s)" "re-place $E" && has "$out" "re-placed       $E" \
+  && ok "re-places a staged copy edited after its placement, in one commit" || bad "not re-placed" "rc=$rc: $out"
+[ "$(first_line "$STATE/alpha-canonical.handoff")" = "$HO/$E" ] && has "$(cat "$STATE/alpha-canonical.handoff")" 'set-at 1222222222' \
+  && ok "repoints a pointer naming the staging copy, keeping its set-at" || bad "pointer not repointed" "$(cat "$STATE/alpha-canonical.handoff")"
+setup
+placed_at "2026-01-01T00:00:00Z"
+printf '\n> amended in the repository\n' >> "$HO/$E"; GIT_COMMITTER_DATE=2026-01-02T00:00:00Z git -C "$R" commit -q -am "amend the placed copy"
+printf 'edited after placing\n' >> "$STG/$E"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ "$rc" -ne 0 ] && has "$out" "NEEDS-JUDGMENT  $E" && grep -q 'amended in the repository' "$HO/$E" && ! grep -q 'edited after placing' "$HO/$E" \
+  && ok "leaves a placed copy amended since its placement, and says so" || bad "overwrote an amended placed copy" "rc=$rc: $out"
+setup
+placed_at "2026-01-01T00:00:00Z"
+printf 'uncommitted edit\n' >> "$HO/$E"
+printf 'edited after placing\n' >> "$STG/$E"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ "$rc" -ne 0 ] && has "$out" "NEEDS-JUDGMENT  $E" && grep -q 'uncommitted edit' "$HO/$E" \
+  && ok "leaves a placed copy with uncommitted changes, and says so" || bad "overwrote uncommitted work" "rc=$rc: $out"
+setup
+placed_at "2030-01-01T00:00:00Z"
+printf 'an old draft\n' >> "$STG/$E"
+touch -t 202901010000 "$STG/$E"
+out=$(bash "$TOOL" place 2>&1); rc=$?
+[ "$rc" -eq 0 ] && has "$out" 'nothing to place' && ! grep -q 'an old draft' "$HO/$E" \
+  && ok "a staging copy older than its placement is a stale draft, not an edit" || bad "re-placed a stale draft" "rc=$rc: $out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

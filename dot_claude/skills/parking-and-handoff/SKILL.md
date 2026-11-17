@@ -170,8 +170,10 @@ intact.
   not a canonical's dated handoff for a judgment call (`NEEDS-JUDGMENT`), and repoints each pointer
   that named the staged copy. Then it removes each staging copy whose content is in a commit of its
   placed copy and that no pointer names; it keeps, and counts, any whose content is in no commit.
-  **So do not edit your staged handoff after it is placed:** the edit reaches no commit, and the
-  copy then sits in staging for the hub to judge.
+  An edit to a staged handoff after it was placed is placed again at the next `place`, unless the
+  placed copy was changed in the repository since, which leaves it for the hub to merge by hand
+  (`NEEDS-JUDGMENT`). **So prefer not to edit a staged handoff once it is placed;** if you must,
+  tell the hub, and point your pointer at the staging copy only until it is re-placed.
 
 **Placement is durability, not continuity, so the hub is not a prerequisite for parking.** `--set`
 only checks that the target exists. A canonical parking while the hub is down or busy leaves its
