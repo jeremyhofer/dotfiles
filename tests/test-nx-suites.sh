@@ -191,7 +191,11 @@ if [ -d "$ws/tests" ] && printf '#!/bin/sh\nexit 0\n' > "$ws/tests/test-zz-hash-
   printf '#!/bin/sh\necho "1999.1.1 stand-in"\n' > "$tmp/stub/mise"; chmod +x "$tmp/stub/mise"
   hashes() { ls "$tmp/nxcache" | grep -E '^[0-9]+$' | sort | tr '\n' ' '; }
   hprobe() { # $1: a directory put first on PATH, or ""
-    (NX_CACHE_DIRECTORY="$tmp/nxcache" NX_CACHE_PROJECT_GRAPH=false \
+    # The cache must be on in the nested run, or it writes no entry to count. A run under
+    # `--skip-nx-cache` (the post-apply suite's) exports NX_SKIP_NX_CACHE=true to every task, and
+    # the nested Nx would inherit it, so both switches are cleared here.
+    (unset NX_SKIP_NX_CACHE NX_DISABLE_NX_CACHE
+     NX_CACHE_DIRECTORY="$tmp/nxcache" NX_CACHE_PROJECT_GRAPH=false \
      MISE_CONFIG_DIR="$tmp/mise/config" MISE_DATA_DIR="$tmp/mise/data" \
      MISE_STATE_DIR="$tmp/mise/state" MISE_CACHE_DIR="$tmp/mise/cache" \
      PATH="${1:+$1:}$PATH"
