@@ -19,7 +19,8 @@ trim cannot lose a line). One line per event, seven tab-separated columns:
     1 time      UTC, ISO 8601 (2026-11-15T10:09:00Z)
     2 host      the short hostname
     3 instance  base | overlay
-    4 event     start | skipped | refused | deployed | post-pass | post-FAIL | dry-run | by-hand
+    4 event     start | skipped | refused | deployed | post-start | post-pass | post-FAIL | dry-run |
+                by-hand
     5 head      the source checkout's short HEAD, `-dirty` appended when its working tree has
                 changes (what an apply deploys), or `unknown` when git cannot say
     6 source    the source checkout's directory (so `status` can compare its HEAD now)
@@ -28,8 +29,10 @@ trim cannot lose a line). One line per event, seven tab-separated columns:
 EVENTS. `start`: the pre-apply hook began. `skipped`: the pre-apply suites did not run (detail says
 why) and the apply goes ahead. `refused`: the suites failed or could not run, so chezmoi aborted
 the apply (detail names the suites and the report). `deployed`: chezmoi wrote the targets (the
-post-apply hook ran). `post-pass`, `post-FAIL`: the after-apply suite run's result (detail names
-the failing suites and the log). The private layer's hooks write only `start` and `deployed`.
+post-apply hook ran). `post-start`: the after-apply suite run began (before its first suite, so a
+run that is still going is told from one that died). `post-pass`, `post-FAIL`: that run's result
+(detail names the failing suites and the log). The private layer's hooks write only `start` and
+`deployed`.
 
 HOOKS AND `--hook`. A hook passes --hook, and the tool then reads chezmoi's context from its own
 environment: with CHEZMOI unset the hook script was run by hand, so the event is recorded as
@@ -42,7 +45,12 @@ head from before a long run). `apply-status head DIR` prints the head string a l
 STATUS. For each instance: the events since its latest `start`, the deployed head, whether the
 source checkout's HEAD now differs from it ("source is ahead of what is deployed"), and the latest
 post result. A `start` with neither `deployed` nor `refused` after it is `incomplete`, with its age:
-still running, or aborted for another reason. `--json` prints one stable object.
+still running, or aborted for another reason. A `post-start` with no `post-pass` or `post-FAIL` after
+it prints `post-apply running since <time> (<N> min)`; when a later `start` came first it prints
+`post-apply did not finish (started <time>)` instead, since that run was overtaken or died. `--json`
+prints one stable object; its `post_run` is null, or `{"state": "running" | "unfinished", "since",
+"age_seconds", "minutes"}` for that run (`post` stays the latest result event). A ledger that never
+had a `post-start` renders as it always did.
 
 On macOS only, the view ends with an `agents` line from `launchagent-status --json` (15 s limit):
 the LaunchAgent plists that are deployed but not loaded in launchd, or `not checked: <why>` when
@@ -90,7 +98,8 @@ import sys
 import time
 
 INSTANCES = ("base", "overlay")
-EVENTS = ("start", "skipped", "refused", "deployed", "post-pass", "post-FAIL", "dry-run", "by-hand")
+EVENTS = ("start", "skipped", "refused", "deployed", "post-start", "post-pass", "post-FAIL", "dry-run",
+          "by-hand")
 IGNORED = ("dry-run", "by-hand")
 MAX_LINES = 1000
 COLUMNS = 7
@@ -281,6 +290,22 @@ def cmd_head(argv):
 
 # --- status ----------------------------------------------------------------------------------------
 
+def post_run_view(mine, at_now):
+    """The latest post-apply run that has no result: None when there is none (no `post-start`, or a
+    `post-pass`/`post-FAIL` after the latest one), else its state (`running`, or `unfinished` when a
+    later `start` came first), when it began and how long ago."""
+    starts = [i for i, r in enumerate(mine) if r["event"] == "post-start"]
+    if not starts:
+        return None
+    after = mine[starts[-1] + 1:]
+    if any(r["event"] in ("post-pass", "post-FAIL") for r in after):
+        return None
+    began = mine[starts[-1]]
+    age = max(0, int(at_now - began["at"]))
+    return {"state": "unfinished" if any(r["event"] == "start" for r in after) else "running",
+            "since": began["time"], "age_seconds": age, "minutes": age // 60}
+
+
 def instance_view(rows, inst, at_now):
     mine = [r for r in rows if r["instance"] == inst]
     starts = [i for i, r in enumerate(mine) if r["event"] == "start"]
@@ -302,7 +327,8 @@ def instance_view(rows, inst, at_now):
             "deployed_at": deployed[-1]["time"] if deployed else None,
             "source": mine[-1]["source"] if mine else None,
             "source_head": None, "source_ahead": None,
-            "post": event_dict(posts[-1]) if posts else None}
+            "post": event_dict(posts[-1]) if posts else None,
+            "post_run": post_run_view(mine, at_now)}
     if deployed and view["source"]:
         view["source_head"] = git_head(view["source"])
         if view["source_head"] != "unknown":
@@ -408,6 +434,12 @@ def human(inst, v):
         else:
             tail = "source head unknown"
         out.append("         deployed head %s at %s; %s" % (v["deployed_head"], v["deployed_at"], tail))
+    run = v["post_run"]
+    if run and run["state"] == "running":
+        out.append("         post-apply running since %s (%d min)" % (run["since"], run["minutes"]))
+    elif run:
+        out.append("         post-apply did not finish (started %s): a later apply began with no result"
+                   % run["since"])
     if v["post"]:
         out.append("         latest post result: %s at %s%s" % (
             v["post"]["event"], v["post"]["time"], " (" + v["post"]["detail"] + ")" if v["post"]["detail"] else ""))

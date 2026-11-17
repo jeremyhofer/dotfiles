@@ -19,6 +19,7 @@ No task runner; the commands are plain.
   runs and run in `sh tests/land-gate.sh`, every suite with them included. Set it once per clone,
   from a terminal: `git config land.gate 'sh tests/land-gate.sh'`; then `land check` runs it and
   `land` merges only a tree that passed.
+  Every gate runs uv offline: `tests/run-all.sh` sets `UV_OFFLINE=1` unless the caller set it, so a `uv run --script` suite takes its pinned packages from uv's cache and a sandbox without network passes. `python3 tests/seed-uv-cache.py` fills that cache (the one step that needs the network; both apply hooks run it first); a suite that fails for a missing package says to run it.
   A new file needs a line in `tests/coverage.map`, or every commit runs every suite and
   `sh tests/select-suites.sh --check` refuses.
 - `chezmoi diff`, then `chezmoi apply`: deploy this source to the machine. The private layer is a

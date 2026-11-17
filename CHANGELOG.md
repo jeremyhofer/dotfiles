@@ -84,6 +84,23 @@ make sure `SOPS_AGE_KEY_FILE` reaches both. Without the credential the unit fail
 login and every new shell prints the loader's one-line error. `docs/reference/private-layer.md`,
 "Tool configuration", has the row.
 
+### The apply ledger records when a post-apply run starts
+
+Nothing to do on adopting it. `tests/post-apply.sh`'s run now appends a `post-start` event before its
+first suite, and `apply-status` prints `post-apply running since <time> (<N> min)` for a run with no
+result yet, or `post-apply did not finish` once a later apply began first; `--json` carries it as
+`post_run`. A private layer's own ledger reader that rejects an event name it does not know needs to
+accept `post-start`.
+
+### The base's own gates run uv offline
+
+Nothing to do on adopting it. `tests/run-all.sh` (so the commit gate and `tests/land-gate.sh`) and
+the apply hooks' Nx runs now set `UV_OFFLINE=1` unless the caller set `UV_OFFLINE`, so a
+`uv run --script` suite reads its pinned packages from uv's cache and fetches nothing. The new
+`tests/seed-uv-cache.py` fills that cache with the network, and both apply hooks run it first, so
+every apply refreshes it. On a machine that has not applied since, run it once by hand before
+running a suite where there is no network.
+
 ## 2026-11-16
 
 ### A new skill: `hermetic-gates`
