@@ -135,6 +135,20 @@ directory off `PATH`, prints one stderr line per hook naming the fix, and runs t
 machine's Python, its exit status passed through, so a British spelling still refuses the commit.
 The launcher is shell on purpose (`tests/shell-allowlist.txt`).
 
+### `fleet-canonicals`: no launch over SSH on macOS, and a launch fragment (a new optional seam)
+
+On macOS, `up`, `refresh` and `resume` now refuse while `SSH_CONNECTION` is set, because an SSH
+login cannot read the login Keychain and a Claude Code daemon it starts passes that on to every
+background session after it. Start sessions there from a terminal at the Mac, or queue them with
+`fleet-canonicals request` for the request runner's LaunchAgent. `refresh` refuses before it stops
+anything. Linux is unchanged.
+
+A domain may now supply `~/.dotlocal/fleet-canonicals/launch.env`, `KEY=VALUE` lines the tool
+exports into the environment it starts `claude` in, read only when `SSH_CONNECTION` is unset; a
+malformed line refuses the launch. Nothing to do without one; format and caveats in
+`docs/reference/private-layer.md`, "Session launches". `FLEET_MANAGERNAME_CMD` is a hook for a
+launchd-domain check on macOS that runs nothing unless set.
+
 ## 2026-11-16
 
 ### A new skill: `hermetic-gates`

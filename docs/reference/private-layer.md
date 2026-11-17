@@ -270,6 +270,35 @@ has an environment variable that overrides it for one run (`fleet-canonicals --h
 is meant for a Claude Code hook the private layer declares in its settings fragment; where hooks are
 not permitted it can be run by hand.
 
+## Session launches: `~/.dotlocal/fleet-canonicals/launch.env`
+
+A session `fleet-canonicals` starts is handed to Claude Code's background daemon, which keeps the
+environment of whatever first started it. When the request runner's LaunchAgent starts it, that
+environment has no shell behind it, so a variable the domain's `zshenv` sets never reaches the
+sessions. A domain that needs variables in every launched session (a key command, a setting for a
+decrypter) lists them in this fragment, and `fleet-canonicals` exports them into the environment it
+starts `claude` in, for `up`, `refresh` and `resume` (its wake and its fork alike). The tool reads
+the file at each launch, so there is no plist to reload, whether it runs from a terminal or from
+the LaunchAgent. The variables reach sessions through the daemon, though: a launch that starts the
+daemon gives it these variables, while a daemon already running keeps the environment it started
+with, so a change reaches sessions once the daemon has been stopped and a launch has started it again.
+
+```text
+# ~/.dotlocal/fleet-canonicals/launch.env
+EXAMPLE_KEY_CMD=/usr/bin/some-reader --item example
+EXAMPLE_SETTING=false
+```
+
+One `KEY=VALUE` per line; blank lines and lines starting with `#` are ignored. The key is a shell
+variable name; the value is everything after the first `=`, taken literally: the file is never
+sourced, so quotes stay in the value and nothing is expanded. A line of any other shape refuses the
+launch, naming the file and the line, rather than starting a session with part of its environment.
+The file is read only when `SSH_CONNECTION` is unset, so a launch from an SSH login gets none of
+it. On macOS such a launch is refused outright: an SSH login cannot read the login Keychain, and a
+daemon it started would pass that on to every session after it. `FLEET_LAUNCH_ENV` names another
+file for one run. Without the file nothing is exported and launches are unchanged. The base never
+writes it. `fleet-canonicals up --dry-run` names the file and how many variables it would export.
+
 ## Context budget: `~/.dotlocal/context-budget`
 
 `context-footprint` measures the always-on context a Claude Code session carries and compares it

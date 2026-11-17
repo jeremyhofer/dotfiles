@@ -21,6 +21,9 @@ export FLEET_PID_RECORD_DIR="$_srcbin/pids" FLEET_PROC_ROOT="$_srcbin/proc" FLEE
 # Handoffs are accepted only inside a known handoff tree, and a launch's scratch root goes under
 # this prefix rather than the real /tmp.
 export FLEET_HANDOFFS_SEARCH="$TMPROOT" FLEET_TMPROOT_PREFIX="$TMPROOT/tmproots"
+# No launch fragment, and no SSH_CONNECTION from the session this runs in (on macOS a launch over
+# SSH is refused).
+export FLEET_LAUNCH_ENV="$_srcbin/no-launch-env"; unset SSH_CONNECTION
 mkdir -p "$FLEET_PID_RECORD_DIR" "$FLEET_PROC_ROOT" "$FLEET_STATE"
 print 'projects:\n  seed:\n    scope: seed' > "$FLEET_RECORD"
 

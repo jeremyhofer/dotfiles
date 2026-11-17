@@ -242,6 +242,9 @@ class Fleet:
         self.trust_names.write_text("")
         for k in [k for k in os.environ if k.startswith(("FLEET_", "CLAUDE_"))]:
             monkeypatch.delenv(k)
+        # On macOS a launch over SSH is refused, so the SSH session a run happens to be in must not
+        # reach a case. The launch fragment's default is under HOME, which is the fixture's below.
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
         env = {
             "HOME": T / "home", "XDG_STATE_HOME": T / "xdg-state", "XDG_CONFIG_HOME": T / "xdg-config",
             "FLEET_RECORD": world / "rec.yaml", "FLEET_DEVEL_ROOT": world, "FLEET_ROOT": world,

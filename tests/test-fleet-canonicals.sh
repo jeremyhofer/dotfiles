@@ -27,6 +27,10 @@ TOOL="$HERE/../private_dot_local/bin/executable_fleet-canonicals"
 # handoffs directory and hub into every case below. Pointed at a path that does not exist, so each
 # case starts from the defaults and sets what it needs.
 export FLEET_CANONICALS_CONFIG="$_srcbin/no-config"
+# A launch reads the domain's launch fragment and, on macOS, refuses over SSH, so neither the
+# machine's own fragment nor the SSH session a suite happens to run in reaches a case: every case
+# starts with no fragment and no SSH_CONNECTION, and the cases about them set their own.
+export FLEET_LAUNCH_ENV="$_srcbin/no-launch-env"; unset SSH_CONNECTION
 # Claude Code's per-process records and /proc, which `up` and `status` consult for a live process
 # holding a name, are fixtures too, so no case reads the machine's real sessions.
 export FLEET_PID_RECORD_DIR="$_srcbin/pids" FLEET_PROC_ROOT="$_srcbin/proc"
@@ -1112,6 +1116,106 @@ a=$(RCREC="$LEAK/rec-rc-on.yaml" rcup FLEET_REMOTE_CONTROL=)
 rc_fork_count=$(awk '/^cmd_resume\(\)/,/^\}/' "$TOOL" | grep -c -- '-n "\$name" ${rc_args\[@\]+"${rc_args\[@\]}"} --resume "\$uuid"')
 [[ "$rc_fork_count" -eq 2 ]] && ok "BOTH resume --fork invocations carry the Remote Control arguments" \
     || bad "expected the Remote Control arguments on both fork invocations, found $rc_fork_count"
+
+# ---- the launch environment: macOS refuses a launch over SSH; the launch fragment -------------
+# On macOS a session started over SSH lands in the background login session, which cannot read the
+# login Keychain, and a Claude Code daemon it starts keeps that environment for every session after
+# it. So on macOS a launch is refused while SSH_CONNECTION is set; on Linux it is not. A domain may
+# supply ~/.dotlocal/fleet-canonicals/launch.env, KEY=VALUE lines the launch exports into the
+# environment it starts `claude` in, read only when SSH_CONNECTION is unset. FLEET_OS stands in for
+# `uname -s`, and the stub writes the environment it was started with, per launched name.
+cat > "$LEAK/envstub" <<'STUB'
+#!/bin/sh
+name=""; prev=""
+for a in "$@"; do [ "$prev" = "-n" ] && name=$a; prev=$a; done
+env > "$LEAKDIR/$name.env"
+STUB
+chmod +x "$LEAK/envstub"
+LE="$LEAK/launch.frag"
+printf '# a comment, then a blank line\n\nFLEET_T13_PROBE=from the fragment, spaces kept\nFLEET_T13_QUOTED="kept literally"\n' > "$LE"
+SSHC='192.0.2.1 50000 192.0.2.2 22'
+leup() {  # leup [VAR=VALUE...] [-- verb args...]; `up one-canonical` by default, fresh env capture
+  local vars=()
+  while [[ $# -gt 0 && "$1" != -- ]]; do vars+=("$1"); shift; done
+  [[ "${1:-}" == -- ]] && shift
+  [[ $# -gt 0 ]] || set -- up one-canonical
+  rm -f "$LEAK"/*-canonical.env(N)
+  env -u SSH_CONNECTION FLEET_LAUNCH_ENV="$LE" "${vars[@]}" FLEET_ROOT="$LEAK" FLEET_RECORD="$LEAK/rec.yaml" \
+    FLEET_STATE="$LEAK/st" FLEET_CLAUDE_CMD="$LEAK/envstub" LEAKDIR="$LEAK" \
+    FLEET_AGENTS_JSON_CMD="cat ${LEAGENTS:-$LEAK/agents.json}" bash "$TOOL" "$@" 2>&1
+}
+out=$(leup FLEET_OS=Darwin SSH_CONNECTION="$SSHC"); rc=$?
+[[ $rc -ne 0 && "$out" == *REFUSED*one-canonical*SSH* && ! -e "$LEAK/one-canonical.env" ]] \
+    && ok "macOS: a launch with SSH_CONNECTION set is refused, and nothing is started" \
+    || bad "macOS over SSH: a launch proceeded or was not refused (rc=$rc, started=$([[ -e $LEAK/one-canonical.env ]] && echo yes || echo no)): $out"
+out=$(leup FLEET_OS=Darwin SSH_CONNECTION="$SSHC" -- up --dry-run one-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *REFUSED*SSH* && "$out" != *"would start"* ]] \
+    && ok "macOS: the dry run refuses over SSH, as the real launch would" \
+    || bad "macOS over SSH: the dry run did not refuse (rc=$rc): $out"
+out=$(leup FLEET_OS=Darwin); rc=$?
+grep -qxF 'FLEET_T13_PROBE=from the fragment, spaces kept' "$LEAK/one-canonical.env" 2>/dev/null \
+    && ok "macOS, not over SSH: a launch fragment variable reaches the launched claude's environment" \
+    || bad "the fragment's variable never reached the launched claude (rc=$rc): $out"
+grep -qxF 'FLEET_T13_QUOTED="kept literally"' "$LEAK/one-canonical.env" 2>/dev/null \
+    && ok "a fragment value is taken literally: no quote removal, no expansion" \
+    || bad "a fragment value was not kept literally: $(grep FLEET_T13_QUOTED "$LEAK/one-canonical.env" 2>/dev/null)"
+out=$(leup FLEET_OS=Linux SSH_CONNECTION="$SSHC"); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
+    && ok "Linux: SSH_CONNECTION set does not refuse a launch (the refusal is macOS-only)" \
+    || bad "Linux over SSH: the launch was refused or did not start (rc=$rc): $out"
+[[ -e "$LEAK/one-canonical.env" ]] && ! grep -q '^FLEET_T13_PROBE=' "$LEAK/one-canonical.env" \
+    && ok "over SSH the launch fragment is not read" \
+    || bad "the fragment was read over SSH, or nothing launched: $(grep FLEET_T13 "$LEAK/one-canonical.env" 2>/dev/null)"
+out=$(leup FLEET_OS=Linux); rc=$?
+grep -qxF 'FLEET_T13_PROBE=from the fragment, spaces kept' "$LEAK/one-canonical.env" 2>/dev/null \
+    && ok "Linux, not over SSH: the fragment is read too (the base reads it wherever a domain puts it)" \
+    || bad "Linux, not over SSH: the fragment was not read (rc=$rc): $out"
+out=$(leup FLEET_OS=Darwin FLEET_LAUNCH_ENV="$LEAK/no-such-launch.frag"); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] && ! grep -q '^FLEET_T13_PROBE=' "$LEAK/one-canonical.env" \
+    && ok "with no fragment a launch proceeds unchanged" \
+    || bad "a missing fragment changed the launch (rc=$rc): $out"
+printf 'FLEET_T13_PROBE=fine\nexport NOT_A_LINE=x\n' > "$LEAK/bad.frag"
+out=$(leup FLEET_OS=Darwin FLEET_LAUNCH_ENV="$LEAK/bad.frag"); rc=$?
+[[ $rc -ne 0 && "$out" == *REFUSED*"$LEAK/bad.frag"*"line 2"* && ! -e "$LEAK/one-canonical.env" ]] \
+    && ok "a fragment line that is not KEY=VALUE refuses the launch, naming the file and line" \
+    || bad "a malformed fragment was not refused (rc=$rc): $out"
+printf 'NO_EQUALS_SIGN\n' > "$LEAK/bad2.frag"
+out=$(leup FLEET_OS=Linux FLEET_LAUNCH_ENV="$LEAK/bad2.frag"); rc=$?
+[[ $rc -ne 0 && "$out" == *REFUSED*"line 1"* && ! -e "$LEAK/one-canonical.env" ]] \
+    && ok "a fragment line with no = refuses the launch" \
+    || bad "a fragment line with no = was not refused (rc=$rc): $out"
+# refresh stops a session before it launches the successor, so the refusal must come first: a
+# refresh refused only at its launch would leave the seat down.
+print '[{"pid":90444,"id":"le1","cwd":"/x","kind":"background","startedAt":1000,"sessionId":"sle1","name":"one-canonical","status":"idle","state":"done"}]' > "$LEAK/agents-le.json"
+out=$(LEAGENTS="$LEAK/agents-le.json" leup FLEET_OS=Darwin SSH_CONNECTION="$SSHC" -- refresh --dry-run one-canonical); rc=$?
+[[ $rc -ne 0 && "$out" == *SSH* && "$out" != *stopping* && "$out" != *"would start"* ]] \
+    && ok "macOS: refresh over SSH refuses before it stops anything" \
+    || bad "macOS over SSH: refresh did not refuse up front (rc=$rc): $out"
+# resume wakes or forks a session, a launch either way.
+print '[{"pid":null,"id":"le2","cwd":"/x","kind":"background","startedAt":1000,"sessionId":"sle2","name":"one-canonical","status":"idle","state":"done"}]' > "$LEAK/agents-le2.json"
+out=$(LEAGENTS="$LEAK/agents-le2.json" leup FLEET_OS=Darwin SSH_CONNECTION="$SSHC" -- resume one-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *SSH* && "$out" != *"would wake"* ]] \
+    && ok "macOS: resume over SSH is refused before it wakes or forks" \
+    || bad "macOS over SSH: resume was not refused (rc=$rc): $out"
+le_resume_count=$(awk '/^cmd_resume\(\)/,/^\}/' "$TOOL" | grep -c 'apply_launch_env')
+[[ "$le_resume_count" -eq 3 ]] && ok "resume applies the launch fragment to the wake and to BOTH fork invocations" \
+    || bad "expected apply_launch_env on resume's wake and both forks, found $le_resume_count"
+# The launchd-domain hook: unused unless FLEET_MANAGERNAME_CMD names a command. When it does, on
+# macOS a launch proceeds only where it prints Aqua.
+print '#!/bin/sh\necho Background' > "$LEAK/mn-bg"; print '#!/bin/sh\necho Aqua' > "$LEAK/mn-aqua"
+chmod +x "$LEAK/mn-bg" "$LEAK/mn-aqua"
+out=$(leup FLEET_OS=Darwin FLEET_MANAGERNAME_CMD="$LEAK/mn-bg"); rc=$?
+[[ $rc -ne 0 && "$out" == *REFUSED*Background* && ! -e "$LEAK/one-canonical.env" ]] \
+    && ok "macOS: with the launchd-domain hook set, a launch outside Aqua is refused" \
+    || bad "the launchd-domain hook did not refuse a Background launch (rc=$rc): $out"
+out=$(leup FLEET_OS=Darwin FLEET_MANAGERNAME_CMD="$LEAK/mn-aqua"); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
+    && ok "macOS: with the launchd-domain hook set, a launch in Aqua proceeds" \
+    || bad "the launchd-domain hook refused an Aqua launch (rc=$rc): $out"
+out=$(leup FLEET_OS=Linux FLEET_MANAGERNAME_CMD="$LEAK/mn-bg"); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
+    && ok "Linux: the launchd-domain hook is not consulted" \
+    || bad "the launchd-domain hook was consulted on Linux (rc=$rc): $out"
 
 # ---- the handoff a launch may name: inside the handoffs trees, and committed where it is in git ---
 # A launch hands its successor one file as the work to resume, so that file must be a handoff the

@@ -489,6 +489,13 @@ environment:
   FLEET_AGENTS_JSON_ALL_CMD  the same including exited sessions (default: the above --all, or
                           the above unchanged when it was overridden)
   FLEET_CLAUDE_CMD        the claude binary, for launch, rm, attach, fork and respawn (default: claude)
+  FLEET_LAUNCH_ENV        the launch fragment, KEY=VALUE lines exported into every launch, wake and
+                          fork when SSH_CONNECTION is unset; a line that is not KEY=VALUE refuses
+                          (default ~/.dotlocal/fleet-canonicals/launch.env; absent: nothing)
+  FLEET_OS                the operating system, as `uname -s` prints it (default: uname -s). On
+                          Darwin, up, refresh and resume refuse while SSH_CONNECTION is set
+  FLEET_MANAGERNAME_CMD   on Darwin, a command that must print Aqua for a launch to proceed, such
+                          as `launchctl managername` (default: none, nothing is run)
   FLEET_CANONICALS_QUEUE  the request queue's script (default: fleet-canonicals-queue beside this)
   USAGE_WINDOW            5h: a 5-hour window is expected, so an empty cache is "not cached yet"
 USAGE
@@ -664,6 +671,102 @@ compose_settings() {
     || { printf 'could not merge the seat settings file %s (canonicalLaunchSettings %s)\n' "$file" "$rel" >&2; return 1; }
 }
 
+# ---- the launch environment: where a launch may start, and what it carries -----------------
+# A `claude --bg` launch hands the session to Claude Code's daemon, and the daemon keeps the
+# environment of whatever first started it: every later background session inherits THAT, not the
+# shell that asked for it. So the context a launch runs in decides what every session after it can
+# reach.
+#
+# ON MACOS, NOT OVER SSH. An SSH login lands in the background login session, which cannot read the
+# login Keychain, so a daemon started over SSH gives every session it runs an environment without
+# the Keychain, and nothing in that session says why. A launch on macOS is therefore REFUSED while
+# SSH_CONNECTION is set; start it from a terminal at the Mac, or let the request runner's
+# LaunchAgent start it (`request`). Linux has no such split, so the test is macOS-only. A bare
+# `claude --bg` typed over SSH is not this tool's to check. SSH_CONNECTION is the stand-in, and it
+# can be wrong: a tmux server started over SSH hands it to every pane, and an at-the-screen pane
+# attached from an SSH client carries it.
+#
+# THE LAUNCH FRAGMENT. A domain whose sessions need variables a LaunchAgent does not get from a
+# shell (a key command, a setting for a decrypter) writes them to $FLEET_LAUNCH_ENV, default
+# ~/.dotlocal/fleet-canonicals/launch.env: one KEY=VALUE per line, blank lines and `#` lines
+# ignored, the value everything after the first `=`, literally (no quotes removed, nothing
+# expanded; the file is never sourced). Each is exported into the environment `claude` is started
+# in, which is this process's own, so it holds whether this runs from a terminal or a LaunchAgent,
+# with no plist to reload. It reaches sessions only through a daemon this launch starts: a daemon
+# already running keeps its own environment (above), so a changed fragment takes effect once the
+# daemon is stopped and started again by a launch. It is read only when SSH_CONNECTION is unset
+# (a session started over SSH is meant to get none of it), and a line that is not KEY=VALUE refuses
+# the launch rather than starting a session with half its environment. No file: nothing is
+# exported. The base never writes it.
+#
+# THE LAUNCHD DOMAIN HOOK, UNUSED BY DEFAULT. `launchctl managername` prints which login session a
+# process is in (Aqua at the screen, Background over SSH), which would test the Keychain condition
+# directly instead of through SSH_CONNECTION. Whether it is reliable from every context this runs in
+# has not been measured, so nothing runs it: FLEET_MANAGERNAME_CMD is empty unless set. When it names
+# a command, on macOS a launch proceeds only where that command prints `Aqua`.
+FLEET_OS=${FLEET_OS:-$(uname -s 2>/dev/null)}
+FLEET_LAUNCH_ENV=${FLEET_LAUNCH_ENV:-"$HOME/.dotlocal/fleet-canonicals/launch.env"}
+FLEET_MANAGERNAME_CMD=${FLEET_MANAGERNAME_CMD:-}
+LAUNCH_ENV=()
+
+over_ssh() { [ -n "${SSH_CONNECTION:-}" ]; }
+
+# launch_refusal -- print why a launch may not start from here and return 0; return 1 when it may.
+launch_refusal() {
+  local got
+  [ "$FLEET_OS" = Darwin ] || return 1
+  if over_ssh; then
+    printf 'on macOS a launch over SSH is refused (SSH_CONNECTION is set): a daemon started here cannot read the login Keychain; start it from a terminal at the Mac, or through `fleet-canonicals request`\n'
+    return 0
+  fi
+  [ -n "$FLEET_MANAGERNAME_CMD" ] || return 1
+  # Split on spaces on purpose: the variable is a command line, as FLEET_AGENTS_JSON_CMD is.
+  # shellcheck disable=SC2086
+  got=$(run_bounded 10 $FLEET_MANAGERNAME_CMD </dev/null 2>/dev/null | head -n1)
+  [ "$got" = Aqua ] && return 1
+  printf 'on macOS a launch must run in the Aqua login session; %s printed %s\n' "$FLEET_MANAGERNAME_CMD" "${got:-nothing}"
+  return 0
+}
+
+# read_launch_env -- fill LAUNCH_ENV from the launch fragment. Returns 1, with the reason on stderr,
+# when the fragment cannot be used; an absent fragment, or one skipped over SSH, is an empty list.
+read_launch_env() {
+  local line key n=0
+  LAUNCH_ENV=()
+  [ -e "$FLEET_LAUNCH_ENV" ] || return 0
+  over_ssh && return 0
+  if [ ! -f "$FLEET_LAUNCH_ENV" ] || [ ! -r "$FLEET_LAUNCH_ENV" ]; then
+    printf 'the launch fragment %s is not a readable file\n' "$FLEET_LAUNCH_ENV" >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in ''|'#'*) continue ;; esac
+    key=${line%%=*}
+    if [ "$key" = "$line" ] || ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      printf 'the launch fragment %s line %s is not KEY=VALUE\n' "$FLEET_LAUNCH_ENV" "$n" >&2
+      LAUNCH_ENV=()
+      return 1
+    fi
+    LAUNCH_ENV+=("$line")
+  done < "$FLEET_LAUNCH_ENV"
+}
+
+# apply_launch_env -- export what read_launch_env read. Called inside the subshell that starts
+# `claude`, so the variables reach the launch and nothing else this tool does.
+apply_launch_env() {
+  local kv
+  for kv in ${LAUNCH_ENV[@]+"${LAUNCH_ENV[@]}"}; do export "${kv?}"; done
+}
+
+# launch_preflight -- both checks, the reason on stdout; for the verbs that refuse before acting.
+launch_preflight() {
+  local why
+  launch_refusal && return 1
+  why=$(read_launch_env 2>&1 >/dev/null) || { printf '%s\n' "$why"; return 1; }
+  return 0
+}
+
 # ---- per-launch temp root ----------------------------------------------------
 # Every session this tool starts gets its OWN scratch root, passed via `--settings`'s env block
 # rather than exported into the launching shell: a `claude --bg` session does NOT inherit the
@@ -777,6 +880,10 @@ cleanup_tmproot_if_gone() {
 # silently never started. Observed 2026-08-29.
 launch_canonical() {
   local name=$1 dir model identity handoff root settings rc_args=() l
+  # Checked again here, not only in the callers' pre-flights: this is the one place every launch
+  # passes, so a caller that forgot its pre-flight still cannot start a session from over SSH.
+  launch_refusal >/dev/null && return 1
+  read_launch_env 2>/dev/null || return 1
   dir=$(fleet-decl --canonical "$name" canonicalLaunchDir 2>/dev/null)     || return 1
   model=$(fleet-decl --canonical "$name" canonicalLaunchModel 2>/dev/null) || return 1
   identity=$(fleet-decl --canonical "$name" canonicalIdentity 2>/dev/null) || return 1
@@ -787,7 +894,7 @@ launch_canonical() {
   settings=$(compose_settings "$name" "$root" 2>/dev/null) || { rmdir "$root" 2>/dev/null; return 1; }
   record_tmproot "$name" "$root" || return 1
   while IFS= read -r l; do rc_args+=("$l"); done < <(remote_control_args "$name" </dev/null)
-  ( cd "$FLEET_ROOT/$dir" \
+  ( apply_launch_env && cd "$FLEET_ROOT/$dir" \
     && exec "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --model "$model" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} --settings "$settings" \
        "This session is $name, $identity. The previous session's handoff is at $handoff: read it first and resume the work it describes.${CTX_NOTE:+ $CTX_NOTE} Reply with one line confirming you have resumed, then begin." \
   ) </dev/null
@@ -1062,6 +1169,13 @@ cmd_up() {
       refused=1
       continue
     fi
+    # Where this runs, and the launch fragment: before the dry-run branch, so a rehearsal refuses
+    # what the real launch would.
+    if ! why=$(launch_preflight); then
+      printf 'REFUSED %-24s %s\n' "$name" "$why" >&2
+      refused=1
+      continue
+    fi
     if ! script=$(launch_desc "$name"); then
       # Deliberately refuse rather than synthesize a launch. The declaration carries the working
       # directory, the model tier and the role; a guessed launch would start a session that looks
@@ -1092,6 +1206,8 @@ cmd_up() {
       printf 'would start %-20s %s\n' "$name" "$script"
       prepare_context "$name" 2>/dev/null
       [ -z "$CTX_PATH" ] || printf '  seat record %s\n' "$CTX_PATH"
+      read_launch_env 2>/dev/null
+      [ -z "${LAUNCH_ENV[*]+x}" ] || printf '  launch env %s (%s variables)\n' "$FLEET_LAUNCH_ENV" "${#LAUNCH_ENV[@]}"
       started=$((started + 1))
       continue
     fi
@@ -2438,6 +2554,10 @@ cmd_refresh() {
     die "refresh: $why
   Refusing to stop a session whose successor cannot be launched."
   fi
+  if ! why=$(launch_preflight); then
+    die "refresh: $why
+  Refusing to stop a session whose successor cannot be launched."
+  fi
 
   json=$(agents_json)
   rows=$(printf '%s' "$json" | jq -r --arg n "$name" '[.[]|select(.name==$n)]|.[]|"\(.pid) \(.id)"')
@@ -2782,6 +2902,11 @@ cmd_resume() {
         fi
         return 0
       fi
+      # Waking and forking both start a session, so both pass the launch environment's checks;
+      # the live branch above starts nothing and is left alone. Every path past this point that
+      # starts a session goes through here: with no row, the fork path below refuses.
+      why=$(launch_preflight) || die "resume: $why"
+      read_launch_env 2>/dev/null
       # Present but stopped: wake it in place. No new session id, no duplicated transcript.
       if [ "$force_fork" = "1" ]; then
         : # stopped + --fork: a deliberate branch from a settled transcript. Fall through.
@@ -2793,7 +2918,8 @@ cmd_resume() {
       printf 'waking   %-24s id %s (in place -- same session, same transcript)\n' "$name" "$row_id"
       # attach opens a TUI. Detaching from it leaves the session running -- that is documented and
       # measured. A bounded run is enough to trigger the wake; the terminal side is discarded.
-      run_bounded 20 "$(claude_bin)" attach "$row_id" </dev/null >/dev/null 2>&1 || true
+      # In a subshell with the launch fragment exported: a wake can start the daemon too.
+      ( apply_launch_env; run_bounded 20 "$(claude_bin)" attach "$row_id" ) </dev/null >/dev/null 2>&1 || true
       waited=0
       while [ "$waited" -lt 30 ]; do
         sleep 2; waited=$((waited + 2))
@@ -2891,12 +3017,12 @@ cmd_resume() {
   local src_cwd
   src_cwd=$(printf '%s' "$json" | jq -r --arg i "$old_id" '.[]|select(.id==$i)|.cwd // empty' | head -n1)
   if [ -n "$src_cwd" ] && [ -d "$src_cwd" ]; then
-    ( cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} "$prompt" </dev/null >/dev/null 2>&1 ) \
+    ( apply_launch_env && cd "$src_cwd" && "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} "$prompt" </dev/null >/dev/null 2>&1 ) \
       || die "resume: launch failed for '$name' (from $src_cwd)"
   else
     printf 'note     %-24s source cwd unknown or gone (%s) -- launching from %s\n' \
       "$name" "${src_cwd:-none}" "$(pwd)"
-    "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} "$prompt" </dev/null >/dev/null 2>&1 \
+    ( apply_launch_env && "$(claude_bin)" --bg -n "$name" ${rc_args[@]+"${rc_args[@]}"} --resume "$uuid" --settings "$settings" ${CTX_ARGS[@]+"${CTX_ARGS[@]}"} "$prompt" </dev/null >/dev/null 2>&1 ) \
       || die "resume: launch failed for '$name'"
   fi
 

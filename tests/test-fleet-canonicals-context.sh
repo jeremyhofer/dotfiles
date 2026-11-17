@@ -127,6 +127,9 @@ print '{"type":"user"}' > "$T/transcripts/proj/old1.jsonl"
 export LAUNCHLOG="$T/launches.log" FORK_CWD="$ROOT/alpha"
 export FLEET_CANONICALS_CONFIG="$T/no-config" FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc"
 export FLEET_HANDOFFS_SEARCH="$T"
+# No launch fragment, and no SSH_CONNECTION from the session this runs in (on macOS a launch over
+# SSH is refused).
+export FLEET_LAUNCH_ENV="$T/no-launch-env"; unset SSH_CONNECTION
 fc() { FLEET_RECORD="$T/rec.yaml" FLEET_ROOT="$ROOT" FLEET_STATE="$STATE" FLEET_CLAUDE_CMD="$T/claude-stub" \
        FLEET_TMPROOT_PREFIX="$T/tmproots" FLEET_TRANSCRIPT_DIR="$T/transcripts" \
        FLEET_AGENTS_JSON_CMD="$T/agents-cmd" KB_ROOT="${KB_ROOT-$KB}" XDG_CONFIG_HOME="$T/xdg" FLEET_SEAT_SETTINGS_ROOT="${FLEET_SEAT_SETTINGS_ROOT-$SEATSET}" \

@@ -72,6 +72,13 @@ nothing: `up` prints `REFUSED <name>` with the reason (on `--dry-run` too), and 
 refuse before stopping the session, `--force` included. Only `--stub`, which writes a new handoff,
 gets past it. Read the pointer back after recording it all the same.
 
+**On macOS, no launch over SSH.** `up`, `refresh` and `resume` refuse while `SSH_CONNECTION` is set
+(`refresh` before it stops anything): an SSH login cannot read the login Keychain, and the daemon it
+would start keeps that environment for every background session after it. Launch from a terminal at
+the Mac, or `request` it for the request runner. A launch also exports the domain's launch fragment,
+`~/.dotlocal/fleet-canonicals/launch.env`, when not over SSH; a malformed line there refuses it
+(the base's `docs/reference/private-layer.md`, "Session launches").
+
 **The model is declared, never inherited.** A launch with no `--model` inherits the account's saved
 default, and running `/model` in any session and confirming the pick writes the `model` key into
 `~/.claude/settings.json` for every session started afterwards. One interactive switch made for a
