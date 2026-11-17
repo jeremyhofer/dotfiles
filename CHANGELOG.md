@@ -213,9 +213,9 @@ applied. While it is false or absent, the rendered home is unchanged. Set to `tr
   mise's author's server), and `idiomatic_version_file_enable_tools = ["node"]` (`.nvmrc` and
   `.node-version` obeyed). A later drop-in replaces a list setting whole, so a domain that sets that
   list states all of it. The base still renders no `~/.config/mise/config.toml`.
-- A `run_before_` step creating mise's state directory (`$MISE_STATE_DIR`, else
-  `${XDG_STATE_HOME:-~/.local/state}/mise`) at mode 700, narrowing a wider one, on every apply where
-  `mise` is on PATH. mise keeps its trust records there, and an agent sandbox cannot create it.
+- A `run_before_` step, `run_before_create-mise-state-dir.sh`, creating mise's state directory
+  (`$MISE_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/mise`) at mode 700, narrowing a wider
+  one, on every apply where `mise` is on PATH. mise keeps its trust records there, and an agent sandbox cannot create it.
 
 Setting the key back to `false` stops future deploys only; a drop-in already deployed stays until
 removed by hand. chezmoi data is per instance, so a private layer that gates its own mise files keeps
