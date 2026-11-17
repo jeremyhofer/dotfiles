@@ -221,6 +221,79 @@ kb_findings() {
   done
 }
 
+# miseTrust: a project's opt-in to mise trust. The apply trusts an opted-in project's own mise.toml
+# and mise.local.toml as exact files, and nothing else is trusted, so a repository that COMMITS a
+# mise.toml at its top level, or holds a .mise.secrets.sops.json there, without `miseTrust: true`
+# is a defect: untrusted, its pins and [env] fail every shim run with no terminal to approve them
+# (a service, an agent session, a hook), and the failure names mise, not the missing opt-in. Both
+# facts are read from the checkout at the entry's `path`, so the check speaks for this machine's
+# checkouts only; one that is not on disk here is skipped. `false` is not an exemption: the record
+# says such a repository opts in, so anything but true is refused.
+# miseIgnore: paths inside the project whose mise configs are ignored (a vendored tree, a fixture
+# holding a mise.toml). Each is joined onto the project's directory by the trust render, so one that
+# is absolute, ~-relative, globbed or climbing out with `..` would ignore something outside the
+# project, or mean something different to each reader. It is read only beside `miseTrust: true`; on
+# any other project it would be silently unused.
+# mise_findings -- print one finding per defect, nothing when there is none. Exit 2 when the record
+# cannot be queried: a failed query read as "no projects" would make the check clean.
+mise_findings() {
+  # One parse for every project's facts. Every field is a word except the path, which goes LAST: a
+  # tab is a whitespace IFS character, so an empty field between two tabs would vanish and shift
+  # every field after it.
+  _rows=$(yq -r '.projects | to_entries[]
+                 | .key + "\t"
+                   + ((((.value.miseTrust | tag) == "!!bool") and (.value.miseTrust == true)) | tostring) + "\t"
+                   + (((.value | has("miseTrust")) and ((.value.miseTrust | tag) != "!!bool")) | tostring) + "\t"
+                   + (.value | has("miseIgnore") | tostring) + "\t" + (.value.path // "" | tostring)' \
+          "$RECORD" 2>/dev/null) || die_unusable "--check: the mise query failed on $RECORD -- refusing to report it clean"
+  [ -n "$_rows" ] || return 0
+  printf '%s\n' "$_rows" | while IFS="$(printf '\t')" read -r _mp _mtrust _mbadt _mhasi _mpath; do
+    if [ "$_mbadt" = true ]; then
+      printf '[miseTrust-value] %s: miseTrust must be true or false, unquoted\n' "$_mp"
+    fi
+    if [ "$_mhasi" = true ]; then
+      [ "$_mtrust" = true ] \
+        || printf '[miseIgnore-value] %s: miseIgnore is read only for a project with miseTrust: true\n' "$_mp"
+      if [ "$(yq -r ".projects.\"$_mp\".miseIgnore | tag" "$RECORD" 2>/dev/null)" != '!!seq' ]; then
+        printf '[miseIgnore-value] %s: miseIgnore must be a list of paths inside the project\n' "$_mp"
+      else
+        yq -r ".projects.\"$_mp\".miseIgnore[] | (tag) + \"\t\" + (. | tostring)" "$RECORD" 2>/dev/null \
+          | while IFS="$(printf '\t')" read -r _it _iv; do
+          _bad=""
+          [ "$_it" = '!!str' ] || _bad="is not a string"
+          case "$_iv" in
+            '') _bad=${_bad:-"is empty"} ;;
+            /*|'~'*) _bad=${_bad:-"is not relative to the project"} ;;
+          esac
+          case "/$_iv/" in */../*|*/./*|*//*) _bad=${_bad:-"has an empty, . or .. component"} ;; esac
+          case "$_iv" in *'*'*|*'?'*|*'['*) _bad=${_bad:-"has a glob character"} ;; esac
+          [ -z "$_bad" ] || printf '[miseIgnore-value] %s: miseIgnore entry %s %s\n' "$_mp" "'$_iv'" "$_bad"
+        done
+      fi
+    fi
+    [ "$_mtrust" = true ] && continue
+    [ -n "$_mpath" ] || continue
+    case "$_mpath" in /*) _md=$_mpath ;; *) _md="$DEVEL_ROOT/$_mpath" ;; esac
+    [ -d "$_md" ] || continue
+    if [ -e "$_md/.mise.secrets.sops.json" ] || [ -L "$_md/.mise.secrets.sops.json" ]; then
+      printf '[miseTrust-missing] %s: %s holds .mise.secrets.sops.json but miseTrust is not true\n' "$_mp" "$_mpath"
+    fi
+    # Only a checkout's own .git: without one, git would search upward and answer for whatever
+    # repository encloses the directory. The exported git variables are cleared because inside a
+    # hook they name the repository being committed, and ls-files would read that index instead.
+    [ -e "$_md/.git" ] || continue
+    if _mt=$(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+                   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+             git -C "$_md" -c core.fsmonitor=false ls-files -- mise.toml 2>/dev/null); then
+      [ -z "$_mt" ] \
+        || printf '[miseTrust-missing] %s: %s tracks mise.toml but miseTrust is not true\n' "$_mp" "$_mpath"
+    else
+      printf '[miseTrust-unreadable] %s: %s has a .git that git cannot read, so whether it tracks mise.toml is unknown\n' "$_mp" "$_mpath"
+    fi
+  done
+  :
+}
+
 valid_key() {
   case "$1" in
     ""|*[!${_UPPER}${_LOWER}0123456789_.]*) printf 'fleet-decl: key %s is not an identifier path\n' "$1" >&2; exit 2 ;;
@@ -468,13 +541,15 @@ case "${1:-}" in
           kbDomain) ;;                 # read by fleet-repo link (shape checked below)
           canonicalContext) ;;         # read by fleet-canonicals (shape checked below)
           canonicalLaunchSettings) ;;  # read by fleet-canonicals (shape checked below)
-          leak*|canonical*|container*|claude*|Claude*|live*|Live*|kb*|Kb*)
+          miseTrust|miseIgnore) ;;     # read by the mise trust render (checked below)
+          leak*|canonical*|container*|claude*|Claude*|live*|Live*|kb*|Kb*|mise*|Mise*)
             printf '[unknown-key] %s: %s is not a declaration this fleet reads (typo?)\n' "$p" "$k"; rc=1 ;;
         esac
       done
     done
     _f=$(live_findings); [ -z "$_f" ] || { printf '%s\n' "$_f"; rc=1; }
     _f=$(kb_findings); [ -z "$_f" ] || { printf '%s\n' "$_f"; rc=1; }
+    _f=$(mise_findings) || exit 2; [ -z "$_f" ] || { printf '%s\n' "$_f"; rc=1; }
     # The worktrunk block is read by a generator that writes worktrunk's config. A value it does not
     # understand has to be refused somewhere every caller passes through, and this is that place --
     # otherwise the generator either guesses or silently drops the setting.

@@ -711,5 +711,83 @@ printf 'projects:\n  alpha:\n    scope: internal/alpha\n    leakPolicy: private\
 out=$(FLEET_RECORD="$TMP/kb-typo.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
 [ "$rc" -eq 1 ] && [[ "$out" == *"[unknown-key] alpha: kbDomains"* ]] && ok "--check flags a near-miss of kbDomain" || bad "kbDomain typo" "rc=$rc $out"
 
+# miseTrust and miseIgnore: a project's opt-in to mise trust, and the paths inside it whose mise
+# configs are ignored. A repository that COMMITS a mise.toml at its top level, or holds a SOPS
+# secrets file there, without `miseTrust: true` is refused: untrusted, its pins and [env] fail every
+# shim run that has no terminal to approve them, and nothing else says why. The facts are read from
+# the checkout at the entry's `path`, so the fixtures are real git repositories. Exported git
+# variables are cleared first: inside a hook they name the repository being committed, and the
+# fixture setup below would write to it.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
+mkrepo() { mkdir -p "$1" && git -C "$1" init -q >/dev/null 2>&1; }
+mkrepo "$ROOT/m/tracked";   : > "$ROOT/m/tracked/mise.toml";   git -C "$ROOT/m/tracked" add mise.toml
+mkrepo "$ROOT/m/untracked"; : > "$ROOT/m/untracked/mise.toml"
+mkrepo "$ROOT/m/nested";    mkdir -p "$ROOT/m/nested/sub"; : > "$ROOT/m/nested/sub/mise.toml"; git -C "$ROOT/m/nested" add sub/mise.toml
+mkrepo "$ROOT/m/secrets";   : > "$ROOT/m/secrets/.mise.secrets.sops.json"
+mkrepo "$ROOT/m/clean"
+mkdir -p "$ROOT/m/broken";  printf 'gitdir: %s/no-such-gitdir\n' "$TMP" > "$ROOT/m/broken/.git"
+: > "$ROOT/m/broken/mise.toml"
+mkrepo "$TMP/other-repo"    # tracks nothing: the exported-GIT_DIR case below points at it
+mise_check() {   # <path> <extra entry lines, \n-separated>: runs --check, sets out and rc
+  printf 'projects:\n  alpha:\n    path: %s\n    scope: %s\n    leakPolicy: private\n' "$1" "$1" > "$TMP/mise.yaml"
+  [ -z "$2" ] || printf '%b\n' "$2" >> "$TMP/mise.yaml"
+  out=$(FLEET_RECORD="$TMP/mise.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+}
+while IFS='|' read -r label repo extra want; do
+  [ "$extra" = - ] && extra=""
+  mise_check "$repo" "$extra"
+  if [ "$want" = clean ]; then
+    [ "$rc" -eq 0 ] && ok "--check accepts $label" || bad "--check $label" "rc=$rc out=$out"
+  else
+    [ "$rc" -eq 1 ] && [[ "$out" == *"$want"* ]] && ok "--check refuses $label" || bad "--check $label" "rc=$rc want=$want out=$out"
+  fi
+done <<'CASES'
+a tracked mise.toml with no miseTrust|m/tracked|-|[miseTrust-missing] alpha: m/tracked tracks mise.toml
+a tracked mise.toml with miseTrust false|m/tracked|    miseTrust: false|[miseTrust-missing] alpha: m/tracked tracks mise.toml
+a tracked mise.toml with miseTrust true|m/tracked|    miseTrust: true|clean
+an untracked mise.toml with no miseTrust|m/untracked|-|clean
+a mise.toml tracked below the top level with no miseTrust|m/nested|-|clean
+a secrets file with no miseTrust|m/secrets|-|[miseTrust-missing] alpha: m/secrets holds .mise.secrets.sops.json
+a secrets file with miseTrust true|m/secrets|    miseTrust: true|clean
+a checkout with neither, and no miseTrust|m/clean|-|clean
+a checkout not on this machine|m/absent|-|clean
+a checkout whose .git cannot be read|m/broken|-|[miseTrust-unreadable] alpha: m/broken
+a quoted miseTrust|m/clean|    miseTrust: "true"|[miseTrust-value] alpha: miseTrust
+miseTrust: yes, a string in YAML 1.2|m/clean|    miseTrust: yes|[miseTrust-value] alpha: miseTrust
+a quoted miseTrust over a tracked mise.toml|m/tracked|    miseTrust: "true"|[miseTrust-missing] alpha: m/tracked
+a valid miseIgnore|m/tracked|    miseTrust: true\n    miseIgnore: [test/fixtures, tools/vendor/x]|clean
+miseIgnore without miseTrust true|m/clean|    miseIgnore: [test/fixtures]|[miseIgnore-value] alpha: miseIgnore is read only
+miseIgnore that is not a list|m/clean|    miseTrust: true\n    miseIgnore: test/fixtures|[miseIgnore-value] alpha: miseIgnore must be a list
+an absolute miseIgnore path|m/clean|    miseTrust: true\n    miseIgnore: [/etc/x]|[miseIgnore-value] alpha: miseIgnore entry '/etc/x'
+a home-relative miseIgnore path|m/clean|    miseTrust: true\n    miseIgnore: ["~/x"]|[miseIgnore-value] alpha: miseIgnore entry '~/x'
+a miseIgnore path climbing out|m/clean|    miseTrust: true\n    miseIgnore: [../other]|[miseIgnore-value] alpha: miseIgnore entry '../other'
+a miseIgnore path with an inner ..|m/clean|    miseTrust: true\n    miseIgnore: [a/../../b]|[miseIgnore-value] alpha: miseIgnore entry 'a/../../b'
+a miseIgnore path that is the project itself|m/clean|    miseTrust: true\n    miseIgnore: [.]|[miseIgnore-value] alpha: miseIgnore entry '.'
+an empty miseIgnore path|m/clean|    miseTrust: true\n    miseIgnore: [""]|[miseIgnore-value] alpha: miseIgnore entry ''
+a globbed miseIgnore path|m/clean|    miseTrust: true\n    miseIgnore: ["fixtures/*"]|[miseIgnore-value] alpha: miseIgnore entry 'fixtures/*'
+a miseIgnore entry that is a number|m/clean|    miseTrust: true\n    miseIgnore: [42]|[miseIgnore-value] alpha: miseIgnore entry '42'
+a near-miss of miseTrust|m/clean|    misetrust: true|[unknown-key] alpha: misetrust
+a capitalized miseIgnore|m/clean|    MiseIgnore: [x]|[unknown-key] alpha: MiseIgnore
+a near-miss of miseIgnore|m/clean|    miseIgnored: [x]|[unknown-key] alpha: miseIgnored
+CASES
+# Inside a git hook git exports GIT_DIR. Pointed at another repository, an unguarded ls-files reads
+# THAT index, finds no mise.toml and reports the checkout clean.
+mise_check m/tracked ""
+out=$(GIT_DIR="$TMP/other-repo/.git" GIT_INDEX_FILE="$TMP/other-repo/.git/index" \
+      FLEET_RECORD="$TMP/mise.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"[miseTrust-missing] alpha: m/tracked"* ]] \
+  && ok "--check reads the checkout's own index with another repository's GIT_DIR exported" \
+  || bad "--check under an exported GIT_DIR" "rc=$rc out=$out"
+# An absolute `path` is used as written, not joined onto the Devel root.
+printf 'projects:\n  alpha:\n    path: %s\n    leakPolicy: private\n' "$ROOT/m/tracked" > "$TMP/mise-abs.yaml"
+out=$(FLEET_RECORD="$TMP/mise-abs.yaml" FLEET_DEVEL_ROOT="$TMP/elsewhere" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"[miseTrust-missing] alpha:"* ]] \
+  && ok "--check finds a checkout named by an absolute path" || bad "--check absolute path" "rc=$rc out=$out"
+# An entry with no `path` (a fleet-only one) still has its keys read correctly: an empty field in
+# the tab-separated rows the check reads must not shift the fields after it.
+printf 'projects:\n  hub:\n    canonical: hub-c\n    canonicalIdentity: hub\n    canonicalLaunchDir: x\n    canonicalLaunchModel: m\n    canonicalMachines: [h]\n    miseTrust: true\n    miseIgnore: [fixtures]\n' > "$TMP/mise-nopath.yaml"
+out=$(FLEET_RECORD="$TMP/mise-nopath.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "--check reads miseTrust and miseIgnore on an entry with no path" || bad "--check mise keys without a path" "rc=$rc out=$out"
+
 printf '\nfleet-decl: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
