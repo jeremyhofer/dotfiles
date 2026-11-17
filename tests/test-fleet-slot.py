@@ -633,3 +633,64 @@ def test_records_from_before_grant_load_existed_still_render(isolated):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+# ---- a free slot with a grant pending is not a go --------------------------------------------
+
+def queue_up(who):
+    r = slot("request", who, "--minutes", "5", "--what", who, "--as", who)
+    assert r.returncode == 0, r.stderr
+
+
+def test_with_an_arbiter_a_free_slot_and_a_queue_is_a_go_for_nobody(isolated):
+    queue_up("bravo")
+    assert state(isolated)["holder"] is None
+    r = slot("check", "alpha")
+    assert r.returncode == 1 and "grant is pending" in r.stdout
+    assert slot("check", "bravo").returncode == 1
+    r = slot("wait", "--as", "alpha", "--timeout", "1", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    assert r.returncode == 3 and "ran" not in r.stdout and "grant is pending" in r.stderr
+    assert slot("wait", "--free", "--timeout", "1", "--interval", "0.1").returncode == 3
+
+
+def test_with_an_arbiter_the_grantee_goes_and_others_wait_until_the_queue_empties(isolated):
+    queue_up("bravo")
+    assert slot("grant", "bravo", "--as", "director-canonical").returncode == 0
+    assert slot("check", "bravo").returncode == 0
+    assert slot("check", "alpha").returncode == 1
+    assert slot("release", "bravo", "--as", "bravo").returncode == 0
+    assert state(isolated)["queue"] == []
+    assert slot("check", "alpha").returncode == 0
+    r = slot("wait", "--as", "alpha", "--timeout", "1", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    assert r.returncode == 0 and r.stdout.strip() == "ran", r.stderr
+
+
+def test_with_an_arbiter_a_wait_started_in_the_gap_holds_until_the_grant_then_the_release(isolated):
+    queue_up("bravo")
+    w = wait_bg("--as", "alpha", "--timeout", "20", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    time.sleep(0.6)
+    assert w.poll() is None
+    assert slot("grant", "bravo", "--as", "director-canonical").returncode == 0
+    time.sleep(0.6)
+    assert w.poll() is None
+    assert slot("release", "bravo", "--as", "bravo").returncode == 0
+    out, err = w.communicate(timeout=10)
+    assert w.returncode == 0 and out.strip() == "ran", err
+
+
+def test_with_no_arbiter_only_the_head_of_a_free_slots_queue_may_go(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "none")
+    # a free slot with a queue is a transient state here (a release grants the head at once), so
+    # plant it in the state file
+    (isolated / "slot").mkdir()
+    (isolated / "slot" / "slot.json").write_text(json.dumps({
+        "holder": None,
+        "queue": [{"name": n, "minutes": 5, "what": n, "since": 1} for n in ("bravo", "charlie")]}))
+    assert slot("check", "bravo").returncode == 0
+    assert slot("check", "charlie").returncode == 1
+    assert slot("check", "alpha").returncode == 1
+    r = slot("wait", "--as", "charlie", "--timeout", "1", "--interval", "0.1")
+    assert r.returncode == 3
+    r = slot("wait", "--as", "bravo", "--timeout", "1", "--interval", "0.1")
+    assert r.returncode == 0, r.stderr
+    assert slot("wait", "--free", "--timeout", "1", "--interval", "0.1").returncode == 3

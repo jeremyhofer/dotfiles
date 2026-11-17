@@ -34,6 +34,15 @@ Entries are newest first.
 
 ## 2026-11-17
 
+### `fleet-slot` no longer says go on a free slot while a grant is pending
+
+Nothing to do. `fleet-slot check` and `wait` (one shared rule) treated a free slot as a go for
+everyone, so in the gap between an arbiter's release and its grant a third session started work
+inside the next holder's timed measurements. Now a free slot is a go only when the queue is empty;
+with a non-empty queue it is a go for nobody when an arbiter grants, and for the queue's head alone
+when none does. `check` exits 1 with `free, but a grant is pending`; `wait --free` means free with
+no grant pending. `loop-time run` and the commit gate's warning read that exit unchanged.
+
 ### The apply's Node pin may come from `mise.toml`, and runs through mise where mise is active
 
 Nothing to do on a machine where mise is not active. `tests/apply-suites.py` (both apply hooks) and

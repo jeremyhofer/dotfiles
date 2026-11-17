@@ -656,7 +656,7 @@ def slot_check(holder, ignore):
     if ignore:
         return {"state": "other" if rc == 1 else "error", "holder": other, "override": True}
     if rc == 1:
-        raise SlotError(f"another session holds the timing slot ({msg}); a sample timed now measures "
+        raise SlotError(f"another session holds the timing slot or has a grant pending ({msg}); a sample timed now measures "
                         "its work too. Wait until `fleet-slot status` shows the slot free or yours, or "
                         "pass --ignore-slot to measure anyway (each record says it was overridden)")
     raise SlotError(f"`fleet-slot check` failed (exit {rc}: {msg}), so whether the slot is free is "

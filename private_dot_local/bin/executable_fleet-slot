@@ -26,6 +26,11 @@ With none (that, or `slot-arbiter =` set empty), a request on a free slot takes 
 passes the slot to the next in the queue; each such grant is recorded as `first-come`. A waiting
 session learns it holds the slot from `check` or `status`, since there is no arbiter to tell it.
 
+A FREE SLOT IS A GO ONLY WHEN NO GRANT IS PENDING. With an arbiter, a free slot and a non-empty
+queue means the arbiter is about to grant it: `check` exits 1 and `wait` keeps waiting for
+everyone, until the grant is made (a go for the grantee) or the queue empties (a go for all). With
+no arbiter, only the head of the queue may go.
+
 ONE SLOT PER MACHINE. The state is local. A session on another machine has its own slot.
 
 THE TRUST IS COOPERATIVE. Anyone who can write the state directory can write the slot, and the tool
@@ -84,13 +89,17 @@ usage: fleet-slot <command> [arguments]
               says GRANTED-UNDER-LOAD (the load is recorded at every grant, never a refusal)
   wait [--free] [--load N] [--steady SECONDS] [--timeout SECONDS] [--interval SECONDS]
        [--as NAME] [-- COMMAND...]
-              block until the slot is free (or the caller's own; --free: only free) and, with
+              block until the slot is free with no grant pending (or the caller's own; --free:
+              only free; with an arbiter a free slot with a queue is a grant about to be made,
+              with none it is the queue head's) and, with
               --load, the 1-minute load average is under N, both holding for --steady seconds;
               then run COMMAND in this process, or print one line and exit 0. --timeout gives
               up with exit 3. For untimed heavy work that must not land on another session's
               timed sample: it waits, it never takes the slot
   check [<holder>]
-              exit 0 when <holder> has the slot or nobody does, 1 when someone else does.
+              exit 0 when <holder> has the slot, or the slot is free with no grant pending; 1 when
+              someone else holds it, or it is free but a grant is pending (with an arbiter, any
+              queued request means one; with none, only the queue's head may go).
               Without <holder>, the calling session's name (the status line's usage
               file, else $FLEET_SLOT_AS, else the agents listing, asked only when the slot is
               held); when that cannot be read, any held slot is someone else's
@@ -102,6 +111,10 @@ written; empty means no arbiter. Unset, the arbiter is director-canonical when t
 declares it for this machine (read through fleet-decl, $FLEET_DECL_CMD), else there is none. With
 no arbiter the slot goes first come, first served: a request on a free slot takes it, and a release
 passes it to the next in the queue.
+
+A FREE SLOT IS NOT ALWAYS A GO. Between an arbiter's release and its grant the slot is free while
+the queue is not; a session that started then would land inside the next holder's measurements.
+So `check` and `wait` treat a free slot as a go only when no grant is pending (see go_ahead).
 
 exit status: 0 done; 1 refused, or (check) another holder has the slot; 2 usage, configuration or
 an unreadable state file; 3 (wait) the timeout passed first. After wait runs COMMAND, the status is
@@ -310,6 +323,21 @@ def first_come(d: Path, st: dict, who: str, t: int) -> str | None:
                        "grant_load": gl})
     warn_if_loaded(e["name"], gl)
     return e["name"]
+
+
+def go_ahead(st: dict, me: str | None) -> tuple[bool, str]:
+    """May `me` start work now? (go, why not). The one rule `check` and `wait` both use, so they
+    cannot disagree. A free slot is a go only when no grant is pending: with an arbiter, a queued
+    request means the arbiter is about to grant it, so a free slot with a non-empty queue is a go
+    for nobody; with no arbiter, it is a go for the head of the queue alone. A held slot is a go for
+    its holder alone. `me` None (unnamed, or `wait --free`) is never the holder or the head."""
+    h = st["holder"]
+    if h:
+        return (me is not None and h["name"] == me), f"the slot is held by {h['name']}"
+    q = [e["name"] for e in st["queue"]]
+    if not q or (not arbiters() and me is not None and me == q[0]):
+        return True, ""
+    return False, f"the slot is free but a grant is pending (queue: {', '.join(q)})"
 
 
 # ---- who is asking ---------------------------------------------------------------------------
@@ -677,12 +705,20 @@ def cmd_check(argv: list[str]) -> int:
     with locked(write=False) as d:
         st = load(d)
     h = st["holder"]
-    if not h:
+    if not h and not st["queue"]:
         print("free")
         return 0
-    if not holder:
+    if not holder and (h or not arbiters()):
         holder = session_name(listing=True)
-    if holder and h["name"] == holder:
+    ok, why = go_ahead(st, holder)
+    if not h:
+        # free, with a grant pending: a go only for the head of the queue when no arbiter grants
+        if ok:
+            print(f"free, and {holder} is next in line")
+            return 0
+        print(f"free, but a grant is pending (queue: {', '.join(e['name'] for e in st['queue'])})")
+        return EXIT_REFUSED
+    if ok:
         print(f"held by {holder} (you)")
         return 0
     end = int(h["since"]) + 60 * int(h["minutes"])
@@ -738,8 +774,9 @@ def cmd_wait(argv: list[str]) -> int:
     ok_since: float | None = None
     while True:
         with locked(write=False) as d:
-            h = load(d)["holder"]
-        slot_ok = not h or (me is not None and h["name"] == me)
+            st = load(d)
+        h = st["holder"]
+        slot_ok, slot_why = go_ahead(st, me)
         cur = current_load() if limit is not None else None
         load_ok = cur is None or cur < limit
         t = time.monotonic()
@@ -752,7 +789,7 @@ def cmd_wait(argv: list[str]) -> int:
         if timeout is not None and t - start >= timeout:
             why = []
             if not slot_ok:
-                why.append(f"the slot is held by {h['name']}")
+                why.append(slot_why)
             if not load_ok:
                 why.append(f"load {cur:.2f} is not under {limit:g}")
             print(f"fleet-slot: wait: gave up after {timeout:g}s: " + (" and ".join(why) or
