@@ -58,12 +58,15 @@
 # Refuses a commit that adds a British spelling (staged markdown lines, and the commit message),
 # only in a repository the fleet manifest lists and does not tag `upstream`; any other repository,
 # and a machine with no manifest, passes untouched. Refuses when codespell is missing. Needs
-# git 2.54+; older git skips it silently.
+# git 2.54+; older git skips it silently. Both run through hook-launcher, so a repository where
+# mise's python3 will not start (an untrusted or broken config, a release not installed, a key
+# not loaded) runs the check on the machine's Python with one stderr line naming the fix,
+# instead of refusing every commit there.
 [hook "us-spelling-pre-commit"]
-	command = \"$HOME/.local/bin/us-spelling-lint\" --hook pre-commit
+	command = \"$HOME/.local/bin/hook-launcher\" \"$HOME/.local/bin/us-spelling-lint\" --hook pre-commit
 	event = pre-commit
 [hook "us-spelling-commit-msg"]
-	command = \"$HOME/.local/bin/us-spelling-lint\" --hook commit-msg
+	command = \"$HOME/.local/bin/hook-launcher\" \"$HOME/.local/bin/us-spelling-lint\" --hook commit-msg
 	event = commit-msg
 [gpg]
 	format = ssh

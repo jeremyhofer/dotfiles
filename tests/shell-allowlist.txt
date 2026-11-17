@@ -24,6 +24,9 @@ private_dot_local/bin/executable_git-secret-scan
 private_dot_local/bin/executable_git-snapshot
 private_dot_local/bin/executable_git-staged-run
 private_dot_local/bin/executable_hook-doctor
+# hook-launcher stays shell: its job is to run a Python tool when python3 itself will not start,
+# which a Python launcher cannot do.
+private_dot_local/bin/executable_hook-launcher  # bootstrap
 private_dot_local/bin/executable_install-claude-plugins
 private_dot_local/bin/executable_install-test-gate
 private_dot_local/bin/executable_kb

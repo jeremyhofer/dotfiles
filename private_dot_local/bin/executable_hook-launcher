@@ -1,0 +1,92 @@
+#!/bin/sh
+# hook-launcher -- run a basic Python tool from a git hook, on the machine's own Python when mise's
+# `python3` will not start in the repository.
+#
+# usage: hook-launcher <tool> [arguments...]
+#
+# WHY. A basic tool is a stdlib-only `#!/usr/bin/env python3` script that also runs on an old
+# system Python (3.9). Where mise's shim directory comes first on PATH, `python3` is mise's, and
+# mise refuses to start it, with exit 1 and a `mise ERROR`, when the repository holds a config it
+# cannot apply: a `mise.toml` never trusted, a config that does not parse, a Python release the
+# config names but nobody installed, or a SOPS file whose key is not loaded. A commit hook run
+# through the shim then refuses every commit in that repository for a reason unrelated to the
+# change, which invites `git commit --no-verify` and skips every other hook with it. The tool's
+# result does not depend on which Python runs it, so the launcher runs it on the machine's Python
+# instead and says, in ONE stderr line, what is wrong with mise there and how to fix it.
+#
+# WHY SHELL. Its job is to run a tool when `python3` does not start, which a Python launcher
+# cannot do; so it stays shell (tests/shell-allowlist.txt says the same).
+#
+# WHAT IT DOES. If mise's shim directory is not on PATH, it execs the tool untouched: a `python3`
+# failure there is not mise's, and the tool reports it for itself. Otherwise it runs `python3 -c ''`
+# with stdin closed. If that starts, it execs the tool untouched. If not, it removes the shim
+# directory from PATH, prints one line naming the fix it matched in mise's error text, and execs the
+# tool, so the tool's exit status is the launcher's. The match: "not trusted" names `mise trust`; a
+# tool not installed names `mise install`; a SOPS file that would not decrypt names loading the key;
+# a config that does not parse gets mise's own error line, since none of those fixes applies;
+# anything else names all three.
+#
+# The shim directory is mise's own default: $MISE_DATA_DIR/shims, else
+# ${XDG_DATA_HOME:-$HOME/.local/share}/mise/shims.
+#
+# It covers the hooks only. A basic tool run by hand or by a service still fails with mise's error,
+# which is where that breakage should be seen. Tests: tests/test-hook-launcher.py.
+
+if [ $# -eq 0 ]; then
+  echo "usage: hook-launcher <tool> [arguments...]" >&2
+  exit 2
+fi
+
+# Without mise's shim directory on PATH there is nothing to fall back from: the tool runs at no
+# extra cost. With it, the common case costs one interpreter start before the tool runs.
+shims=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}/shims
+case ":$PATH:" in
+  *":$shims:"* | *":$shims/:"*) ;;
+  *) exec "$@" ;;
+esac
+err=$(python3 -c '' 2>&1 </dev/null >/dev/null) && exec "$@"
+
+rest=
+old_ifs=$IFS
+IFS=:
+set -f
+for dir in $PATH; do
+  case $dir in
+    "$shims" | "$shims/") ;;
+    *) rest=${rest:+$rest:}$dir ;;
+  esac
+done
+set +f
+IFS=$old_ifs
+PATH=$rest
+export PATH
+
+case $err in
+  *"not trusted"*)
+    fix="a mise config here is not trusted: read it, then run \`mise trust\` (or \`mise trust --ignore\` to leave it unapplied)" ;;
+  *"Tool not installed"* | *"Missing tool version"*)
+    fix="a release mise's config names is not installed: run \`mise install\`" ;;
+  *"failed to decrypt sops file"* | *"no data key retrieved"*)
+    fix="a SOPS file mise loads could not be decrypted: load the SOPS age key" ;;
+  *"TOML parse error"* | *"Invalid TOML"*)
+    # mise's own report spans several lines; keep its first line that says what failed, and the
+    # file and position from its source excerpt when that line does not name the file.
+    said=$(printf '%s\n' "$err" | awk '
+      loc == "" && index($0, "─[") { s = $0; sub(/^.*─\[/, "", s); sub(/\].*$/, "", s); loc = s }
+      msg == "" && /TOML parse error|Invalid TOML/ {
+        m = $0; sub(/^[[:space:]]*/, "", m); sub(/^×[[:space:]]*/, "", m)
+        sub(/^mise (WARN|ERROR)[[:space:]]*/, "", m); msg = m
+      }
+      END { if (loc != "" && index(msg, "/") == 0) msg = msg " " loc; print msg }')
+    fix="mise said: $said" ;;
+  *)
+    fix="mise's error matched no known case: run \`mise trust\` for an untrusted config, \`mise install\` for a missing release, or load the SOPS age key" ;;
+esac
+
+tool=${1##*/}
+if command -v python3 >/dev/null 2>&1; then
+  echo "hook-launcher: python3 did not start under mise here, so $tool ran on the machine's Python; $fix" >&2
+else
+  echo "hook-launcher: python3 did not start under mise here, and no other python3 is on PATH for $tool; $fix" >&2
+fi
+exec "$@"
