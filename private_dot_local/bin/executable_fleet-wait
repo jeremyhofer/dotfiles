@@ -8,7 +8,9 @@
   usage: fleet-wait --heartbeat DURATION [--interval DURATION] [--ci] [--ci-every DURATION] [--once]
          fleet-wait --armed [--json]
 
-A heartbeat for a coordinating session on a machine with no cron and no /loop. The session runs this
+A heartbeat for a coordinating session on a machine with no cron and no /loop. --heartbeat is at
+most 55m: a wake after Claude Code's one-hour prompt cache expires rewrites the session's whole
+context instead of reading it, so a longer heartbeat is refused (exit 2). The session runs this
 through its Bash tool's background mode; a background command that exits wakes its session, even
 an idle one. On each wake the session sweeps, then arms the next wait.
 
@@ -89,6 +91,10 @@ SNAPSHOT = STATE / "sessions.json"
 CONFIG = Path(os.environ.get("FLEET_CANONICALS_CONFIG") or
               Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "fleet-canonicals" / "config")
 HEARTBEATS = STATE / "heartbeats"
+# Claude Code keeps a main conversation's prompt cache for one hour on a subscription. A wake after it
+# expires rewrites the whole context at the cache-write price (2x an input token) instead of reading
+# it (0.05x), so a heartbeat is held to 55 minutes, leaving room for the session's own turn.
+MAX_HEARTBEAT = 55 * 60
 CI_CMD = (os.environ.get("FLEET_WAIT_CI_CMD") or "ci-trigger status").split()
 
 
@@ -464,6 +470,10 @@ def main(argv: list[str]) -> int:
         return armed(as_json)
     if heartbeat is None:
         usage("--heartbeat is required: the wait must end on its own")
+    if heartbeat > MAX_HEARTBEAT:
+        usage(f"--heartbeat {hb_text} is past {MAX_HEARTBEAT // 60:.0f}m: Claude Code's main-conversation prompt "
+              "cache lives one hour, so a wake after it rewrites the session's whole context at the cache-write "
+              "price instead of reading it; use 50m or less")
     interval = interval or 30.0
 
     stop = {"sig": None}

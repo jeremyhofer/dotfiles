@@ -254,6 +254,16 @@ def test_several_changes_print_one_line_each(fl):
 
 
 # ---- --once, signals, usage --------------------------------------------------------------------
+def test_a_heartbeat_past_the_cache_lifetime_is_refused(fl):
+    # A session woken after Claude Code's 1-hour prompt cache has expired rewrites its whole context
+    # at the cache-write price instead of reading it, so the heartbeat stays at 55 minutes or under.
+    p = subprocess.run([str(TOOL), "--heartbeat", "56m", "--interval", "0.2s", "--once"],
+                       capture_output=True, text=True, timeout=30, env=dict(os.environ))
+    assert p.returncode == 2 and "cache" in p.stderr, (p.returncode, p.stderr)
+    assert run("--heartbeat", "2h", "--interval", "0.2s", "--once")[0] == 2
+    assert run("--heartbeat", "55m", "--interval", "0.2s", "--once")[0] == 1
+
+
 
 def test_once_with_no_change_exits_1(fl):
     assert run("--heartbeat", "30m", "--interval", "0.2s", "--once")[0] == 1

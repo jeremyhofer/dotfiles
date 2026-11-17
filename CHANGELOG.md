@@ -33,6 +33,14 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (heartbeat)
+
+### `fleet-wait --heartbeat` is refused above 55 minutes (ACTION if a caller passes more)
+
+A wake after Claude Code's one-hour prompt cache has expired rewrites the session's whole context at
+the cache-write price instead of reading it, so a heartbeat over 55 minutes now exits 2 with the
+reason. Any script or skill that passes a longer one must pass 50m or less.
+
 ## 2026-11-17 (context cap)
 
 ### A configurable context cap: `~/.dotlocal/claude/context-cap-percent` (optional)
