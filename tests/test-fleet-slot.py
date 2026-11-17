@@ -50,7 +50,18 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("FLEET_AGENTS_JSON_CMD", "echo []")
     monkeypatch.delenv("FLEET_AGENTS_JSON_ALL_CMD", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setenv("FLEET_SLOT_PRESSURE_DIR", str(tmp_path / "pressure"))
+    pressure(tmp_path)
     return tmp_path
+
+
+def pressure(tmp_path, cpu=0.0, mem=0.0):
+    """Fake /proc/pressure: the real files' line shapes."""
+    d = tmp_path / "pressure"
+    d.mkdir(exist_ok=True)
+    (d / "cpu").write_text(f"some avg10={cpu:.2f} avg60=1.00 avg300=1.00 total=123\n")
+    (d / "memory").write_text(f"some avg10=9.00 avg60=1.00 avg300=1.00 total=1\n"
+                              f"full avg10={mem:.2f} avg60=1.00 avg300=1.00 total=1\n")
 
 
 def slot(*args, env=None):
@@ -471,6 +482,153 @@ def test_unknown_command_and_option_are_usage_errors(isolated):
     assert slot("frob").returncode == 2
     assert slot("status", "--frob").returncode == 2
     assert slot().returncode == 2
+
+
+# ---- the load at grant time ------------------------------------------------------------------
+# A grant onto a loaded machine is reported, never refused: the record is what makes it visible.
+
+def holder_load(tmp_path):
+    return state(tmp_path)["holder"]["grant_load"]
+
+
+def test_a_grant_on_a_quiet_machine_records_pressure_and_is_not_under_load(isolated):
+    pressure(isolated, cpu=12.3, mem=0.4)
+    r = slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    g = slot("grant", "alpha", "--as", "director-canonical")
+    assert g.returncode == 0 and g.stderr == ""
+    gl = holder_load(isolated)
+    assert gl["measure"] == "pressure" and gl["under_load"] is False
+    assert gl["cpu_some_avg10"] == 12.3 and gl["mem_full_avg10"] == 0.4
+    assert "load1" in gl and "cpus" in gl
+    assert history(isolated)[-1]["grant_load"] == gl
+    out = slot("status").stdout
+    assert "UNDER-LOAD" not in out
+
+
+def test_a_grant_under_cpu_pressure_warns_and_still_grants(isolated):
+    pressure(isolated, cpu=63.0, mem=2.0)
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    g = slot("grant", "alpha", "--as", "director-canonical")
+    assert g.returncode == 0
+    assert "under load" in g.stderr and "63" in g.stderr
+    assert holder_load(isolated)["under_load"] is True
+    out = slot("status").stdout
+    assert "GRANTED-UNDER-LOAD (cpu some 63%, mem full 2% at grant)" in out
+
+
+def test_a_grant_under_memory_pressure_is_under_load(isolated):
+    pressure(isolated, cpu=1.0, mem=11.0)
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    g = slot("grant", "alpha", "--as", "director-canonical")
+    assert g.returncode == 0 and "under load" in g.stderr
+    assert holder_load(isolated)["under_load"] is True
+
+
+def test_the_thresholds_come_from_the_config(isolated):
+    (isolated / "config").write_text("slot-grant-cpu-some-pct = 5\nslot-grant-mem-full-pct = 90\n")
+    pressure(isolated, cpu=6.0, mem=11.0)
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    assert slot("grant", "alpha", "--as", "director-canonical").returncode == 0
+    assert holder_load(isolated)["under_load"] is True
+    assert slot("release", "alpha", "--as", "alpha").returncode == 0
+    pressure(isolated, cpu=4.0, mem=11.0)
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    slot("grant", "alpha", "--as", "director-canonical")
+    assert holder_load(isolated)["under_load"] is False
+
+
+def test_a_grant_exactly_at_a_threshold_is_not_under_load(isolated):
+    pressure(isolated, cpu=50.0, mem=10.0)
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    slot("grant", "alpha", "--as", "director-canonical")
+    assert holder_load(isolated)["under_load"] is False
+
+
+def test_without_pressure_files_the_load_average_stands_in(isolated):
+    lf = isolated / "load"
+    env = {"FLEET_SLOT_PRESSURE_DIR": str(isolated / "nowhere"), "FLEET_SLOT_LOAD": str(lf),
+           "FLEET_SLOT_CPUS": "8"}
+    lf.write_text("9.50 1 1\n")
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    g = slot("grant", "alpha", "--as", "director-canonical", env=env)
+    assert g.returncode == 0 and "under load" in g.stderr
+    gl = holder_load(isolated)
+    assert gl["measure"] == "load" and gl["under_load"] is True
+    assert gl["load1"] == 9.5 and gl["cpus"] == 8 and "cpu_some_avg10" not in gl
+    assert "GRANTED-UNDER-LOAD (load 9.50 on 8 CPUs at grant)" in slot("status").stdout
+    slot("release", "alpha", "--as", "alpha")
+    lf.write_text("7.99 1 1\n")
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    slot("grant", "alpha", "--as", "director-canonical", env=env)
+    assert holder_load(isolated)["under_load"] is False
+
+
+def test_unreadable_pressure_and_load_record_none_and_never_break_the_grant(isolated):
+    lf = isolated / "load"
+    lf.write_text("garbage")
+    env = {"FLEET_SLOT_PRESSURE_DIR": str(isolated / "nowhere"), "FLEET_SLOT_LOAD": str(lf)}
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    g = slot("grant", "alpha", "--as", "director-canonical", env=env)
+    assert g.returncode == 0 and g.stderr == ""
+    gl = holder_load(isolated)
+    assert gl["measure"] == "none" and gl["under_load"] is None
+    assert "UNDER-LOAD" not in slot("status").stdout
+
+
+def test_a_garbled_pressure_file_falls_back_rather_than_crashing(isolated):
+    (isolated / "pressure" / "cpu").write_text("nonsense\n")
+    slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    assert slot("grant", "alpha", "--as", "director-canonical").returncode == 0
+    assert holder_load(isolated)["measure"] in ("load", "none")
+
+
+def test_the_first_come_path_records_the_load_too(isolated, monkeypatch):
+    monkeypatch.setenv("STUB_DECL", "none")
+    pressure(isolated, cpu=80.0, mem=0.0)
+    r = slot("request", "alpha", "--minutes", "5", "--what", "x", "--as", "alpha")
+    assert r.returncode == 0 and "under load" in r.stderr
+    assert holder_load(isolated)["under_load"] is True
+    assert history(isolated)[-1]["rule"] == "first-come"
+    assert history(isolated)[-1]["grant_load"]["under_load"] is True
+    # and the slot passed on by a release
+    slot("request", "beta", "--minutes", "5", "--what", "y", "--as", "beta")
+    pressure(isolated, cpu=0.0, mem=0.0)
+    slot("release", "alpha", "--as", "alpha")
+    assert holder_load(isolated)["under_load"] is False
+
+
+def test_recent_lines_and_json_carry_the_grant_load(isolated):
+    pressure(isolated, cpu=70.0, mem=3.0)
+    granted("alpha")
+    slot("release", "alpha", "--as", "alpha")
+    pressure(isolated, cpu=1.0, mem=0.0)
+    granted("beta")
+    slot("release", "beta", "--as", "beta")
+    out = slot("status").stdout
+    recent = [l for l in out.splitlines() if "alpha" in l and "-" in l]
+    assert any("GRANTED-UNDER-LOAD (cpu some 70%, mem full 3% at grant)" in l for l in recent), out
+    assert not any("UNDER-LOAD" in l for l in out.splitlines() if "beta" in l)
+    js = json.loads(slot("status", "--json").stdout)
+    by = {e["holder"]: e for e in js["recent"]}
+    assert by["alpha"]["grant_load"]["under_load"] is True
+    assert by["beta"]["grant_load"]["under_load"] is False
+    granted("gamma")
+    assert json.loads(slot("status", "--json").stdout)["holder"]["grant_load"]["under_load"] is False
+
+
+def test_records_from_before_grant_load_existed_still_render(isolated):
+    d = isolated / "slot"
+    d.mkdir()
+    now = int(time.time())
+    (d / "slot.json").write_text(json.dumps({"holder": {"name": "old", "since": now, "minutes": 5,
+                                                         "what": "w", "granted_by": "x"}, "queue": []}))
+    (d / "history.jsonl").write_text(json.dumps({"event": "release", "holder": "older", "since": now - 60,
+                                                 "minutes": 5, "what": "w", "held_seconds": 30}) + "\n")
+    r = slot("status")
+    assert r.returncode == 0 and "held by old" in r.stdout and "older" in r.stdout
+    assert "UNDER-LOAD" not in r.stdout
+    js = json.loads(slot("status", "--json").stdout)
+    assert "grant_load" not in js["holder"]
 
 
 if __name__ == "__main__":

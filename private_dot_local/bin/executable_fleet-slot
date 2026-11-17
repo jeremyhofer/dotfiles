@@ -40,6 +40,16 @@ $FLEET_STATE/slot, else $XDG_STATE_HOME/fleet-canonicals/slot, else ~/.local/sta
   slot.json      the holder and the queue, rewritten atomically under the lock
   history.jsonl  one line per change, appended, never rewritten
   lock           the flock every command takes
+
+THE LOAD AT GRANT TIME. Every grant (an arbiter's, and a first-come one) records the machine's load
+at that moment as `grant_load` on the holder and on the history events, and `status` marks a slot
+granted onto a loaded machine, so a coordinator that skipped the check leaves a visible trace. It
+reports and never refuses. On Linux the measure is pressure: /proc/pressure/cpu `some avg10` over
+`slot-grant-cpu-some-pct` (default 50) or /proc/pressure/memory `full avg10` over
+`slot-grant-mem-full-pct` (default 10). Where those files are missing (macOS) it is the 1-minute load
+average at or above the CPU count; where neither can be read it is `none`, never an error.
+Environment, for tests: FLEET_SLOT_PRESSURE_DIR (default /proc/pressure), FLEET_SLOT_LOAD (a file
+holding the load average, also read by `wait`), FLEET_SLOT_CPUS (the CPU count).
 """
 from __future__ import annotations
 
@@ -70,7 +80,8 @@ usage: fleet-slot <command> [arguments]
               withdraw <holder>'s queued request
   status [--json] [--recent N]
               the holder, since when, its expected end and how far overdue; the queue; the
-              last slots; the machine's load
+              last slots; the machine's load. A slot granted while the machine was loaded
+              says GRANTED-UNDER-LOAD (the load is recorded at every grant, never a refusal)
   wait [--free] [--load N] [--steady SECONDS] [--timeout SECONDS] [--interval SECONDS]
        [--as NAME] [-- COMMAND...]
               block until the slot is free (or the caller's own; --free: only free) and, with
@@ -84,7 +95,8 @@ usage: fleet-slot <command> [arguments]
               file, else $FLEET_SLOT_AS, else the agents listing, asked only when the slot is
               held); when that cannot be read, any held slot is someone else's
 
-configuration: the key `slot-arbiter` (a list) in the fleet-canonicals config file
+configuration: the keys `slot-grant-cpu-some-pct` and `slot-grant-mem-full-pct` (numbers; defaults 50
+and 10) set when a grant counts as under load; the key `slot-arbiter` (a list) in the fleet-canonicals config file
 ($FLEET_CANONICALS_CONFIG, else $XDG_CONFIG_HOME/fleet-canonicals/config). A value is used as
 written; empty means no arbiter. Unset, the arbiter is director-canonical when the fleet record
 declares it for this machine (read through fleet-decl, $FLEET_DECL_CMD), else there is none. With
@@ -213,16 +225,90 @@ def arbiters() -> list[str]:
     return arbitration()[0]
 
 
+def pressure_avg10(name: str, kind: str) -> float | None:
+    """`avg10` of the `kind` ("some" or "full") line of a pressure file, or None."""
+    try:
+        text = (Path(os.environ.get("FLEET_SLOT_PRESSURE_DIR") or "/proc/pressure") / name).read_text(
+            encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if parts and parts[0] == kind:
+            for f in parts[1:]:
+                if f.startswith("avg10="):
+                    try:
+                        return float(f[len("avg10="):])
+                    except ValueError:
+                        return None
+    return None
+
+
+def threshold(key: str, default: float) -> float:
+    try:
+        return float(config().get(key, default))
+    except ValueError:
+        return default
+
+
+def grant_load() -> dict:
+    """The machine's load right now, for the record of a grant. Never raises."""
+    try:
+        try:
+            load1: float | None = current_load()
+        except (OSError, ValueError, IndexError):
+            load1 = None
+        try:
+            cpus = int(os.environ["FLEET_SLOT_CPUS"]) if os.environ.get("FLEET_SLOT_CPUS") else os.cpu_count()
+        except ValueError:
+            cpus = os.cpu_count()
+        base = {"load1": load1, "cpus": cpus}
+        cpu = pressure_avg10("cpu", "some")
+        mem = pressure_avg10("memory", "full")
+        if cpu is not None and mem is not None:
+            over = (cpu > threshold("slot-grant-cpu-some-pct", 50.0)
+                    or mem > threshold("slot-grant-mem-full-pct", 10.0))
+            return {"measure": "pressure", "cpu_some_avg10": cpu, "mem_full_avg10": mem, **base,
+                    "under_load": over}
+        if load1 is not None and cpus:
+            return {"measure": "load", **base, "under_load": load1 >= cpus}
+        return {"measure": "none", "under_load": None}
+    except Exception:
+        return {"measure": "none", "under_load": None}
+
+
+def describe_load(gl: dict) -> str:
+    """The measures of a grant_load, in a few words."""
+    if gl.get("measure") == "pressure":
+        return f"cpu some {gl['cpu_some_avg10']:.0f}%, mem full {gl['mem_full_avg10']:.0f}%"
+    if gl.get("measure") == "load":
+        return f"load {gl['load1']:.2f} on {gl['cpus']} CPUs"
+    return "load unknown"
+
+
+def under_load_note(gl: dict | None) -> str:
+    return f"GRANTED-UNDER-LOAD ({describe_load(gl)} at grant)" if gl and gl.get("under_load") else ""
+
+
+def warn_if_loaded(holder: str, gl: dict) -> None:
+    if gl.get("under_load"):
+        print(f"fleet-slot: warning: granted {holder} the slot under load ({describe_load(gl)}); "
+              "it is recorded, not refused", file=sys.stderr)
+
+
 def first_come(d: Path, st: dict, who: str, t: int) -> str | None:
     """With no arbiter, give a free slot to the head of the queue. Returns the new holder."""
     if arbiters() or st["holder"] or not st["queue"]:
         return None
     e = st["queue"].pop(0)
+    gl = grant_load()
     st["holder"] = {"name": e["name"], "since": t, "minutes": int(e["minutes"]), "what": e["what"],
-                    "granted_by": FIRST_COME}
+                    "granted_by": FIRST_COME, "grant_load": gl}
     save(d, st)
     append_history(d, {"at": iso(t), "t": t, "event": "grant", "holder": e["name"], "by": who,
-                       "rule": FIRST_COME, "minutes": int(e["minutes"]), "what": e["what"]})
+                       "rule": FIRST_COME, "minutes": int(e["minutes"]), "what": e["what"],
+                       "grant_load": gl})
+    warn_if_loaded(e["name"], gl)
     return e["name"]
 
 
@@ -462,11 +548,13 @@ def cmd_grant(argv: list[str]) -> int:
             raise Usage(f"grant: '{holder}' is not queued, so give --minutes and --what")
         t = now()
         st["queue"] = [e for e in st["queue"] if e["name"] != holder]
+        gl = grant_load()
         st["holder"] = {"name": holder, "since": t, "minutes": int(minutes), "what": what,
-                        "granted_by": who}
+                        "granted_by": who, "grant_load": gl}
         save(d, st)
         append_history(d, {"at": iso(t), "t": t, "event": "grant", "holder": holder, "by": who,
-                           "minutes": int(minutes), "what": what})
+                           "minutes": int(minutes), "what": what, "grant_load": gl})
+    warn_if_loaded(holder, gl)
     print(f"granted {holder} the slot at {clock(t)} for {minutes} min: {what}")
     print("        the tool sends nothing: tell the holder it may go")
     return 0
@@ -489,7 +577,8 @@ def cmd_release(argv: list[str]) -> int:
             save(d, st)
             append_history(d, {"at": iso(t), "t": t, "event": "release", "holder": holder, "by": who,
                                "since": h["since"], "minutes": h["minutes"], "what": h["what"],
-                               "held_seconds": held})
+                               "held_seconds": held,
+                               **({"grant_load": h["grant_load"]} if h.get("grant_load") else {})})
             over = mins(held) - int(h["minutes"])
             note = f", {over} min over" if over > 0 else ""
             print(f"released {holder}: held {mins(held)} of {h['minutes']} min{note}")
@@ -555,7 +644,8 @@ def cmd_status(argv: list[str]) -> int:
         late = f", OVERDUE by {h['overdue_minutes']} min" if h["overdue_minutes"] else ""
         print(f"slot     held by {h['name']} since {clock(int(h['since']))} ({h['held_minutes']} min of "
               f"{h['minutes']}, expected end {clock(int(h['since']) + 60 * int(h['minutes']))}{late})")
-        print(f"         {h['what']}  (granted by {h['granted_by']})")
+        note = under_load_note(h.get("grant_load"))
+        print(f"         {h['what']}  (granted by {h['granted_by']})" + (f"  {note}" if note else ""))
     else:
         print("slot     free")
     if s["queue"]:
@@ -568,7 +658,7 @@ def cmd_status(argv: list[str]) -> int:
         start = int(e["since"])
         print(f"{'recent' if i == 0 else '':8} {e['holder']} "
               f"{clock(start)}-{clock(start + int(e['held_seconds']))}, {mins(int(e['held_seconds']))} "
-              f"of {e['minutes']} min: {e['what']}")
+              f"of {e['minutes']} min: {e['what']}" + (f"  {n}" if (n := under_load_note(e.get("grant_load"))) else ""))
     if s["arbiters"]:
         print(f"arbiter  {', '.join(s['arbiters'])}")
     else:
