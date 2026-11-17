@@ -529,7 +529,19 @@ def test_the_ledger_survives_concurrent_appends_and_trims(e):
     ("chezmoi apply --dry-run=true", "dry-run"),
     ("chezmoi apply --dry-run=false", "start"),
     ("chezmoi apply --exclude=externals", "start"),
-    ("chezmoi apply -- -n", "start"),
+    ("chezmoi apply -- -n", "targeted"),
+    # A target on the command line: only those files are applied, so the line is not a full apply.
+    # Shapes measured from chezmoi 2.74's CHEZMOI_ARGS, 2026-11-17.
+    ("chezmoi apply --no-tty /home/u/.claude/settings.json", "targeted"),
+    ("chezmoi -S /s -D /d apply --force -- /d/.b", "targeted"),
+    ("chezmoi apply -n /home/u/.zshrc", "dry-run"),
+    # Option values are not targets, whether before or after the verb, long or short, joined or not.
+    ("chezmoi --config /x/c.toml --source /x/s --persistent-state /x/p --cache /x/k apply", "start"),
+    ("chezmoi apply --config-format toml", "start"),
+    ("chezmoi apply -x scripts", "start"),
+    ("chezmoi apply -vx scripts", "start"),
+    ("chezmoi apply -Sdir", "start"),
+    ("chezmoi apply --color auto --mode file -W /w -o /o", "start"),
 ])
 def test_a_hook_append_records_what_chezmoi_context_says(e, args, event):
     src = e.repo()
@@ -539,6 +551,23 @@ def test_a_hook_append_records_what_chezmoi_context_says(e, args, event):
     cols = e.lines()[0].split("\t")
     assert cols[3] == event
     assert cols[6] == ("why" if event == "start" else "start: why")
+
+
+def test_a_targeted_apply_inside_an_apply_does_not_overtake_its_post_run(e):
+    # The private layer's onchange settings merge runs `chezmoi apply <one file>` of the base while
+    # the overlay applies, which fires the base's hooks. Measured on both machines 2026-11-17: its
+    # `start` landed after the base's `post-start`, and status said the post-apply run "did not
+    # finish" while it was still running.
+    src = e.repo()
+    full = {"CHEZMOI": "1", "CHEZMOI_ARGS": "chezmoi apply"}
+    nested = {"CHEZMOI": "1", "CHEZMOI_ARGS": "chezmoi apply --no-tty /home/u/.claude/settings.json"}
+    for event, env in (("start", full), ("deployed", full), ("post-start", {}), ("start", nested),
+                       ("deployed", nested)):
+        args = ["append", "--source", str(src)] + (["--hook"] if env else []) + ["base", event]
+        assert e.run(*args, **env).returncode == 0
+    b = status(e)["instances"]["base"]
+    assert b["post_run"] is not None and b["post_run"]["state"] == "running", b
+    assert "did not finish" not in e.run().stdout
 
 
 def test_without_the_hook_flag_the_event_is_recorded_as_given(e):

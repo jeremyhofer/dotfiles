@@ -20,7 +20,7 @@ trim cannot lose a line). One line per event, seven tab-separated columns:
     2 host      the short hostname
     3 instance  base | overlay
     4 event     start | skipped | refused | deployed | post-start | post-pass | post-FAIL | dry-run |
-                by-hand
+                by-hand | targeted
     5 head      the source checkout's short HEAD, `-dirty` appended when its working tree has
                 changes (what an apply deploys), or `unknown` when git cannot say
     6 source    the source checkout's directory (so `status` can compare its HEAD now)
@@ -37,8 +37,10 @@ run that is still going is told from one that died). `post-pass`, `post-FAIL`: t
 HOOKS AND `--hook`. A hook passes --hook, and the tool then reads chezmoi's context from its own
 environment: with CHEZMOI unset the hook script was run by hand, so the event is recorded as
 `by-hand`; with CHEZMOI_ARGS holding --dry-run (or --dry-run=true, or a short-flag cluster with n,
-as -n or -vn) the apply is a preview, recorded as `dry-run`. Either way the real event moves into the
-detail ("deployed: ...") and `status` and `wait` ignore the line. Without --hook the event is
+as -n or -vn) the apply is a preview, recorded as `dry-run`; with targets named on it (`chezmoi apply
+<file>`) only those files were applied, recorded as `targeted`. Each way the real event moves into
+the detail ("deployed: ...") and `status` and `wait` ignore the line. A targeted apply can run inside
+a full one: the private layer's settings merge applies one base file while the overlay applies. Without --hook the event is
 recorded as given. --head H records H instead of reading the checkout's head (a hook that wants the
 head from before a long run). `apply-status head DIR` prints the head string a line would carry.
 
@@ -76,8 +78,9 @@ EXIT. append: 0 always, including when the ledger cannot be written (one line on
 a hook can never abort an apply); 2 a usage error. status: 0. wait: 0, 1, 3 as above; 2 usage.
 
 WHAT IT CANNOT TELL. The ledger records what the hooks saw, not that the owner ran the full
-command: a targeted apply writes the same lines, and shows as an apply whose head differs from the
-pushed one. A `start` is not a deploy. A hook that never ran leaves no line: a machine whose generated
+command: an apply of one instance writes only that instance's lines, and an apply from a checkout
+behind the forge shows as one whose head differs from the pushed one. A targeted apply is told apart
+only through a hook (`--hook`), from chezmoi's own command line. A `start` is not a deploy. A hook that never ran leaves no line: a machine whose generated
 chezmoi config predates the hooks (it gets them at the next `chezmoi init`) writes nothing. Another machine's ledger is not read here.
 
 ENVIRONMENT. XDG_STATE_HOME moves the ledger. APPLY_STATUS_NOW (epoch seconds) fixes the clock
@@ -99,8 +102,18 @@ import time
 
 INSTANCES = ("base", "overlay")
 EVENTS = ("start", "skipped", "refused", "deployed", "post-start", "post-pass", "post-FAIL", "dry-run",
-          "by-hand")
-IGNORED = ("dry-run", "by-hand")
+          "by-hand", "targeted")
+IGNORED = ("dry-run", "by-hand", "targeted")
+
+# chezmoi's options that take their value as the next word (chezmoi 2.74, `chezmoi apply --help`,
+# read 2026-11-17), so that value is not read as a target. --refresh-externals is not here: its
+# value is optional and only ever joined with "=".
+VALUE_LONG = frozenset((
+    "--exclude", "--include", "--age-recipient", "--age-recipient-file", "--cache", "--color",
+    "--config", "--config-format", "--destination", "--mode", "--output", "--override-data",
+    "--override-data-file", "--persistent-state", "--progress", "--source", "--use-builtin-age",
+    "--use-builtin-git", "--working-tree"))
+VALUE_SHORT = frozenset("xicDoSW")
 MAX_LINES = 1000
 COLUMNS = 7
 DEFAULT_TIMEOUT = 30 * 60
@@ -240,14 +253,50 @@ def is_dry_run(chezmoi_args):
     return False
 
 
+def is_targeted(chezmoi_args):
+    """True when chezmoi's command line (CHEZMOI_ARGS: the program, then its arguments, space-joined)
+    is an `apply` naming targets, so that only those files were applied. A target is a word after
+    the verb that is neither an option nor an option's value; everything after a bare -- is one.
+    The first such word before it is the verb itself."""
+    words = chezmoi_args.split()[1:]
+    verb = None
+    i = 0
+    while i < len(words):
+        w = words[i]
+        i += 1
+        if w == "--":
+            return verb == "apply" and i < len(words)
+        if w.startswith("--"):
+            if "=" not in w and w in VALUE_LONG:
+                i += 1
+            continue
+        if w.startswith("-") and len(w) > 1:
+            for j, c in enumerate(w[1:]):
+                if c in VALUE_SHORT:
+                    if j == len(w) - 2:
+                        i += 1
+                    break
+            continue
+        if verb is None:
+            verb = w
+        else:
+            return verb == "apply"
+    return False
+
+
 def hook_context(event, detail):
-    """What a hook's event is worth. Under chezmoi (CHEZMOI is set) a real apply keeps its event; a
-    dry run, or a hook script run by hand (no CHEZMOI), is recorded as `dry-run` or `by-hand` with
-    the event in the detail, and status and wait ignore both."""
+    """What a hook's event is worth. Under chezmoi (CHEZMOI is set) a full apply keeps its event; a
+    dry run, an apply of named targets only, or a hook script run by hand (no CHEZMOI), is recorded
+    as `dry-run`, `targeted` or `by-hand` with the event in the detail, and status and wait ignore
+    all three. A targeted apply is not a deploy of the head, and one can run INSIDE a full apply:
+    the private layer's settings merge applies one base file while the overlay applies, and its
+    `start` read as a new apply overtaking the base's post-apply run (measured 2026-11-17)."""
     if not os.environ.get("CHEZMOI"):
         kind = "by-hand"
     elif is_dry_run(os.environ.get("CHEZMOI_ARGS", "")):
         kind = "dry-run"
+    elif is_targeted(os.environ.get("CHEZMOI_ARGS", "")):
+        kind = "targeted"
     else:
         return event, detail
     return kind, (event + ": " + detail) if detail else event

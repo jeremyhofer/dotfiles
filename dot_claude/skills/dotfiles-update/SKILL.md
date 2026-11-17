@@ -172,8 +172,9 @@ what makes them safe to move off it.
   head, a local comparison, not against the pushed head), and `apply-status wait --since <time>`
   blocks until both instances deployed (exit 0; `--instances base` on a machine with no overlay), one
   was refused and not retried (1) or it timed out (3). The time needs a zone: `Z`, `+HH:MM` or epoch
-  seconds (`date -u +%Y-%m-%dT%H:%M:%SZ`); a zoneless time is exit 2. A `chezmoi apply -n` preview
-  and a hook script run by hand are recorded as `dry-run` and `by-hand` and ignored. It reads only
+  seconds (`date -u +%Y-%m-%dT%H:%M:%SZ`); a zoneless time is exit 2. A `chezmoi apply -n` preview,
+  an apply naming targets (the private layer's settings merge runs one inside the overlay's apply)
+  and a hook script run by hand are recorded as `dry-run`, `targeted` and `by-hand` and ignored. It reads only
   the local file; for another machine run `ssh <host> apply-status wait --since <time>` as the whole
   command. A machine whose config
   predates the hook needs `chezmoi init` once; until then its apply runs no suite.
