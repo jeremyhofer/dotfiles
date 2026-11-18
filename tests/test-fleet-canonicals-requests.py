@@ -1727,6 +1727,77 @@ def test_up_refuses_a_seat_the_snapshot_reads_stopped_though_unlisted_here(fleet
         "up: a seat the snapshot reads stopped, missing from the listing here, is refused (rc=%s): %s" % (r.status, r.out)
 
 
+def test_status_a_snapshot_stopped_seat_missing_from_the_listing_reads_listed_stopped(fleet):
+    # The sessions list here has no row for the seat (the sandbox case), the snapshot says stopped.
+    fleet.write_snapshot(5, "gamma-canonical", "stopped", "listed (blocked), but no live pid record (fixture)")
+    r, line = _status_line(fleet, "gamma-canonical")
+    assert r.status != 0 and "LISTED-STOPPED" in line and "MISSING" not in line \
+        and "fleet-canonicals refresh gamma-canonical" in line, \
+        "status: an unlisted seat the snapshot reads stopped is LISTED-STOPPED, not MISSING (rc=%s): %s" % (r.status, r.out)
+
+
+# resume decides liveness from `kill -0` on the row's pid, which a sandbox cannot see; the snapshot
+# is the second signal. The row's pid below is not running, so only the snapshot can say live.
+
+def _resume_row(fleet, name, pid):
+    fleet.done_row("rs000001", name, "s-rs")
+    rows = fleet._rows()
+    rows[-1]["pid"] = pid
+    fleet.agents.write_text(json.dumps(rows))
+
+
+def test_resume_refuses_when_the_snapshot_says_live_though_the_pid_is_not_running(fleet):
+    _resume_row(fleet, "gamma-canonical", 2999999)
+    fleet.write_snapshot(5, "gamma-canonical", "live", "pid 2999999 (fixture)")
+    for extra in ([], ["--dry-run"]):
+        r = fleet.fc("resume", "gamma-canonical", *extra)
+        assert r.status != 0 and re.search(r"REFUSED.*gamma-canonical.*running", r.out, re.S) \
+            and "would wake" not in r.out and "waking" not in r.out, \
+            "resume %s: a snapshot-live seat is refused before waking (rc=%s): %s" % (extra, r.status, r.out)
+
+
+def test_resume_refuses_when_the_snapshot_says_unknown(fleet):
+    _resume_row(fleet, "gamma-canonical", None)
+    fleet.write_snapshot(5, "gamma-canonical", "unknown", "no readable source (fixture)")
+    r = fleet.fc("resume", "gamma-canonical", "--dry-run")
+    assert r.status != 0 and re.search(r"REFUSED.*gamma-canonical.*UNKNOWN", r.out, re.S) and "would wake" not in r.out, \
+        "resume: an unknown seat is refused (rc=%s): %s" % (r.status, r.out)
+
+
+def test_resume_of_a_snapshot_stopped_seat_proceeds(fleet):
+    _resume_row(fleet, "gamma-canonical", None)
+    fleet.write_snapshot(5, "gamma-canonical", "stopped", "listed (done), but no live pid record (fixture)")
+    r = fleet.fc("resume", "gamma-canonical", "--dry-run")
+    assert r.status == 0 and "would wake" in r.out, \
+        "resume: a snapshot-stopped seat still takes the wake path (rc=%s): %s" % (r.status, r.out)
+
+
+def test_resume_refuses_a_missing_snapshot(fleet):
+    _resume_row(fleet, "gamma-canonical", None)
+    fleet.no_snapshot()
+    r = fleet.fc("resume", "gamma-canonical", "--dry-run")
+    assert r.status != 0 and "no session snapshot" in r.out and "would wake" not in r.out, \
+        "resume refuses a missing snapshot (rc=%s): %s" % (r.status, r.out)
+
+
+def test_snapshot_an_absent_roster_reads_an_unlisted_seat_dead(fleet):
+    # Pins the deliberate reading: no roster file means no daemon has written one.
+    fleet.roster.unlink()
+    fleet.snapshot()
+    seat = json.loads(fleet.snap.read_text())
+    assert seat["sources"]["roster"] == "absent" and fleet.snap_seat("gamma-canonical") == "dead", \
+        "snapshot: an absent roster, an unlisted seat with no live pid record is dead: %s" % fleet.snap.read_text()
+
+
+def test_snapshot_an_absent_roster_never_reads_a_listed_seat_stopped(fleet):
+    # A listed seat is stopped only when the roster was READ; absent leaves it live.
+    fleet.roster.unlink()
+    fleet.live_row("st000005", "gamma-canonical", "blocked", "s-st")
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "live", \
+        "snapshot: an absent roster cannot prove a listed seat stopped: %s" % fleet.snap.read_text()
+
+
 def test_snapshot_refuses_inside_a_sandbox(fleet):
     fleet.no_snapshot()
     (fleet.proc / "1").mkdir()

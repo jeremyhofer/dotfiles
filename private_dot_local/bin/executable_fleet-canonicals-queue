@@ -903,7 +903,9 @@ ROSTER = Path(os.environ.get("FLEET_DAEMON_ROSTER") or HOME / ".claude" / "daemo
 def roster_session_ids() -> set[str] | None:
     """The session ids of the daemon's running workers, from ~/.claude/daemon/roster.json (an
     undocumented file: `workers` maps a short id to a record carrying `sessionId`). None when it
-    cannot be read, which never counts as "no workers"."""
+    cannot be read: a file that exists but is unreadable or malformed is an error and never counts
+    as "no workers". A file that does not exist is also None here, and take_snapshot tells the two
+    apart (`absent` against `error`); an absent roster is read as "no daemon has written one"."""
     try:
         d = json.loads(ROSTER.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1481,7 +1483,17 @@ def seat_context(model: str, sids: set[str], cfg: dict[str, str]) -> dict | None
 
 
 def take_snapshot(host: str, seat_list: list[str], models: dict[str, str]) -> dict:
-    """SEAT_LIST and MODELS are seat_declarations(HOST), read once by the caller."""
+    """SEAT_LIST and MODELS are seat_declarations(HOST), read once by the caller.
+
+    Roster handling, deliberately: `roster_state` is `ok` (read), `absent` (no file) or `error`
+    (exists, unreadable). The roster only ever ADDS evidence that a seat is live. A seat reads
+    `dead` only when the sessions list and the pid records were both read and show nothing, so an
+    `absent` roster does not make a seat unknown (only `error` counts as an unread source). A
+    listed seat reads `stopped` only when the roster was read (`ok`); with it absent or in error
+    the seat stays `live`. An absent roster is read as "no daemon has written one". The case this
+    would get wrong is a sandbox hiding ~/.claude/daemon, which makes a real roster look absent:
+    on Linux in_sandbox() detects that and the snapshot refuses to run; on macOS in_sandbox() does
+    not detect a sandbox, a known gap."""
     t = now()
     cfg = config()
     live = agents()

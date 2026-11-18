@@ -979,6 +979,8 @@ report_line() {
        case "$sst" in
          live)    printf '%-28s LIVE-UNLISTED (%s; the sessions list here omits it)%s\n' "$name" "$swhy" "$(snapshot_context "$name")"; return ;;
          unknown) printf '%-28s UNKNOWN (%s)\n' "$name" "$swhy"; return ;;
+         # Not MISSING: `up` reads that word as absent, and a stopped seat's old row would remain.
+         stopped) printf '%-28s LISTED-STOPPED (%s; refresh it: fleet-canonicals refresh %s)\n' "$name" "$swhy" "$name"; return ;;
        esac
        holder=$(live_holder "$name")
        # Not "MISSING": the word is what `up` and the health check read as absent.
@@ -3045,6 +3047,19 @@ cmd_resume() {
     esac
   done
   [ -n "$name" ] || die "resume: a canonical name is required (usage: resume <name> [--dry-run])"
+
+  # A sandboxed session's `kill -0` cannot see another session's process, so the snapshot (taken
+  # outside every sandbox) is the second liveness signal: either one saying live refuses, before
+  # anything is woken or forked, and --dry-run included.
+  snapshot_gate resume
+  local rst="" rwhy=""
+  IFS=$'\t' read -r rst rwhy <<<"$(snapshot_seat "$name")"
+  case "$rst" in
+    live)    printf 'REFUSED %-24s the session snapshot shows it running: %s; nothing to resume (attach to it instead; if it stopped since the snapshot was taken, retry after the next one)\n' "$name" "$rwhy" >&2
+             return 1 ;;
+    unknown) printf 'REFUSED %-24s UNKNOWN in the session snapshot (%s); not waking or forking a seat whose state cannot be read\n' "$name" "$rwhy" >&2
+             return 1 ;;
+  esac
 
   # --- Prefer waking the existing session over forking a copy of it. ------------------------
   # `--all` so a STOPPED session is visible: those are exactly the ones worth waking, and the
