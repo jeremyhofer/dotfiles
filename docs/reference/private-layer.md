@@ -323,7 +323,10 @@ sourced, so quotes stay in the value and nothing is expanded. A line of any othe
 launch, naming the file and the line, rather than starting a session with part of its environment.
 The file is read only when `SSH_CONNECTION` is unset, so a launch from an SSH login gets none of
 it. On macOS such a launch is refused outright: an SSH login cannot read the login Keychain, and a
-daemon it started would pass that on to every session after it. `FLEET_LAUNCH_ENV` names another
+daemon it started would pass that on to every session after it. A macOS launch is also refused
+unless `launchctl managername` prints `Aqua`, which catches a tmux pane in the Background session
+that carries no `SSH_CONNECTION` (`FLEET_MANAGERNAME_CMD=`, set empty, turns that check off for one
+run). `FLEET_LAUNCH_ENV` names another
 file for one run. Without the file nothing is exported and launches are unchanged. The base never
 writes it. `fleet-canonicals up --dry-run` names the file and how many variables it would export.
 

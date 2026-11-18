@@ -33,6 +33,16 @@ Entries are newest first.
 ---
 
 
+## 2026-11-18 (a macOS launch must run in the Aqua session)
+
+On macOS, `fleet-canonicals` `up`, `refresh` and `resume` now also run `launchctl managername` once
+and refuse unless it prints `Aqua`. It catches what the `SSH_CONNECTION` test misses: a pane of a
+tmux server started over SSH and later attached at the screen has no `SSH_CONNECTION`, but runs in
+the Background session, which cannot read the login Keychain. A terminal at the Mac and the request
+runner's LaunchAgent print `Aqua` and are unchanged. Nothing to do; if a launch is refused, start it
+from a fresh terminal at the Mac or with `fleet-canonicals request`. `FLEET_MANAGERNAME_CMD=` (set
+empty) turns the check off for one run. Linux is unchanged.
+
 ## 2026-11-18 (seam-probe starts Claude Code sessions; two session cases)
 
 `seam-probe` gains the session primitives (`session launch|ask|stop|resume|rm`), `wait mark`, the

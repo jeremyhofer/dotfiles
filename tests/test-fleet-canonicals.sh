@@ -31,6 +31,10 @@ export FLEET_CANONICALS_CONFIG="$_srcbin/no-config"
 # machine's own fragment nor the SSH session a suite happens to run in reaches a case: every case
 # starts with no fragment and no SSH_CONNECTION, and the cases about them set their own.
 export FLEET_LAUNCH_ENV="$_srcbin/no-launch-env"; unset SSH_CONNECTION
+# On macOS a launch also asks `launchctl managername` for its login session unless
+# FLEET_MANAGERNAME_CMD is set; set empty, the check is off, so a suite run on a Mac does not depend
+# on which session it runs in. The cases about that check set their own.
+export FLEET_MANAGERNAME_CMD=
 # Claude Code's per-process records and /proc, which `up` and `status` consult for a live process
 # holding a name, are fixtures too, so no case reads the machine's real sessions.
 export FLEET_PID_RECORD_DIR="$_srcbin/pids" FLEET_PROC_ROOT="$_srcbin/proc"
@@ -1293,8 +1297,8 @@ out=$(LEAGENTS="$LEAK/agents-le2.json" leup FLEET_OS=Darwin SSH_CONNECTION="$SSH
 le_resume_count=$(awk '/^cmd_resume\(\)/,/^\}/' "$TOOL" | grep -c 'apply_launch_env')
 [[ "$le_resume_count" -eq 3 ]] && ok "resume applies the launch fragment to the wake and to BOTH fork invocations" \
     || bad "expected apply_launch_env on resume's wake and both forks, found $le_resume_count"
-# The launchd-domain hook: unused unless FLEET_MANAGERNAME_CMD names a command. When it does, on
-# macOS a launch proceeds only where it prints Aqua.
+# The launchd-domain hook: FLEET_MANAGERNAME_CMD names the command (the suite sets it empty, off).
+# When it names one, on macOS a launch proceeds only where it prints Aqua.
 print '#!/bin/sh\necho Background' > "$LEAK/mn-bg"; print '#!/bin/sh\necho Aqua' > "$LEAK/mn-aqua"
 chmod +x "$LEAK/mn-bg" "$LEAK/mn-aqua"
 out=$(leup FLEET_OS=Darwin FLEET_MANAGERNAME_CMD="$LEAK/mn-bg"); rc=$?
@@ -1309,6 +1313,32 @@ out=$(leup FLEET_OS=Linux FLEET_MANAGERNAME_CMD="$LEAK/mn-bg"); rc=$?
 [[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
     && ok "Linux: the launchd-domain hook is not consulted" \
     || bad "the launchd-domain hook was consulted on Linux (rc=$rc): $out"
+# Unset, the hook defaults to `launchctl managername` on macOS.
+# A stub `launchctl` first on PATH stands in for the real one; set empty, the check is off.
+mkdir -p "$LEAK/lc-bg" "$LEAK/lc-aqua"
+print '#!/bin/sh\n[ "$1" = managername ] && echo Background' > "$LEAK/lc-bg/launchctl"
+print '#!/bin/sh\n[ "$1" = managername ] && echo Aqua' > "$LEAK/lc-aqua/launchctl"
+chmod +x "$LEAK/lc-bg/launchctl" "$LEAK/lc-aqua/launchctl"
+leup_unset_mn() {  # leup with FLEET_MANAGERNAME_CMD unset, and the given launchctl stub first on PATH
+  local lcdir=$1; shift
+  ( unset FLEET_MANAGERNAME_CMD; PATH="$lcdir:$PATH" leup "$@" )
+}
+out=$(leup_unset_mn "$LEAK/lc-bg" FLEET_OS=Darwin); rc=$?
+[[ $rc -ne 0 && "$out" == *REFUSED*Background* && ! -e "$LEAK/one-canonical.env" ]] \
+    && ok "macOS: unset, the hook runs launchctl managername and refuses a launch outside Aqua" \
+    || bad "macOS: the default hook did not refuse a Background launch (rc=$rc): $out"
+out=$(leup_unset_mn "$LEAK/lc-aqua" FLEET_OS=Darwin); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
+    && ok "macOS: unset, the hook lets a launch in Aqua proceed" \
+    || bad "macOS: the default hook refused an Aqua launch (rc=$rc): $out"
+out=$(leup_unset_mn "$LEAK/lc-bg" FLEET_OS=Darwin FLEET_MANAGERNAME_CMD=); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
+    && ok "macOS: FLEET_MANAGERNAME_CMD set empty turns the check off" \
+    || bad "macOS: an empty FLEET_MANAGERNAME_CMD still ran the check (rc=$rc): $out"
+out=$(leup_unset_mn "$LEAK/lc-bg" FLEET_OS=Linux); rc=$?
+[[ $rc -eq 0 && -e "$LEAK/one-canonical.env" ]] \
+    && ok "Linux: unset, the hook still runs nothing" \
+    || bad "Linux: the default hook was consulted (rc=$rc): $out"
 
 # ---- the handoff a launch may name: inside the handoffs trees, and committed where it is in git ---
 # A launch hands its successor one file as the work to resume, so that file must be a handoff the

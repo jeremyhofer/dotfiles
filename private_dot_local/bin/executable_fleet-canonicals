@@ -496,8 +496,8 @@ environment:
                           (default ~/.dotlocal/fleet-canonicals/launch.env; absent: nothing)
   FLEET_OS                the operating system, as `uname -s` prints it (default: uname -s). On
                           Darwin, up, refresh and resume refuse while SSH_CONNECTION is set
-  FLEET_MANAGERNAME_CMD   on Darwin, a command that must print Aqua for a launch to proceed, such
-                          as `launchctl managername` (default: none, nothing is run)
+  FLEET_MANAGERNAME_CMD   on Darwin, a command that must print Aqua for a launch to proceed
+                          (default: launchctl managername; set empty, the check is off)
   FLEET_CANONICALS_QUEUE  the request queue's script (default: fleet-canonicals-queue beside this)
   USAGE_WINDOW            5h: a 5-hour window is expected, so an empty cache is "not cached yet"
 USAGE
@@ -701,14 +701,19 @@ compose_settings() {
 # the launch rather than starting a session with half its environment. No file: nothing is
 # exported. The base never writes it.
 #
-# THE LAUNCHD DOMAIN HOOK, UNUSED BY DEFAULT. `launchctl managername` prints which login session a
-# process is in (Aqua at the screen, Background over SSH), which would test the Keychain condition
-# directly instead of through SSH_CONNECTION. Whether it is reliable from every context this runs in
-# has not been measured, so nothing runs it: FLEET_MANAGERNAME_CMD is empty unless set. When it names
-# a command, on macOS a launch proceeds only where that command prints `Aqua`.
+# THE LAUNCHD DOMAIN CHECK. `launchctl managername` prints which login session a process is in (Aqua
+# at the screen, Background over SSH), which tests the Keychain condition directly rather than
+# through SSH_CONNECTION, and closes one hole in that stand-in: a pane of a tmux server started over
+# SSH, later attached at the screen, has no SSH_CONNECTION but is in Background. Measured on macOS
+# 26 in eleven contexts (a terminal, a daemon started from one and from a LaunchAgent, each with its
+# command sandboxed and not, tmux servers born each way, SSH): it printed Aqua exactly where the
+# Keychain was readable and Background exactly where it was not. So on macOS, unless
+# FLEET_MANAGERNAME_CMD is set, a launch runs `launchctl managername` once and proceeds only where
+# it prints `Aqua`. Set it to another command to substitute one (the tests' stubs), or set it EMPTY
+# to turn the check off, leaving SSH_CONNECTION alone. It runs per launch, never per shell.
 FLEET_OS=${FLEET_OS:-$(uname -s 2>/dev/null)}
 FLEET_LAUNCH_ENV=${FLEET_LAUNCH_ENV:-"$HOME/.dotlocal/fleet-canonicals/launch.env"}
-FLEET_MANAGERNAME_CMD=${FLEET_MANAGERNAME_CMD:-}
+FLEET_MANAGERNAME_CMD=${FLEET_MANAGERNAME_CMD-launchctl managername}
 LAUNCH_ENV=()
 
 over_ssh() { [ -n "${SSH_CONNECTION:-}" ]; }
