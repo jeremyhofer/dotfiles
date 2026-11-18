@@ -46,8 +46,8 @@ under the drop-ins this machine deploys; MISE_GLOBAL_CONFIG_FILE is never set, s
 that configuration. A pin is a fake install of an impossible Node version in the scratch data
 directory, so nothing is downloaded and the check needs no network.
 
-THE PROBES' ENVIRONMENT. Every MISE_* and SOPS_* variable of the caller is dropped, then only the
-check's own are set: so a machine key (SOPS_AGE_KEY_FILE, SOPS_AGE_KEY, SOPS_AGE_KEY_CMD) never
+THE PROBES' ENVIRONMENT. Every MISE_*, __MISE_* and SOPS_* variable of the caller is dropped, then
+only the check's own are set: so a machine key (SOPS_AGE_KEY_FILE, SOPS_AGE_KEY, SOPS_AGE_KEY_CMD) never
 reaches a probe, the decrypt check uses its throwaway key alone, and a caller's
 MISE_TRUSTED_CONFIG_PATHS cannot trust the untrusted fixture. MISE_SOPS_STRICT=false for every
 probe: a domain drop-in may load a SOPS file of its own, which the throwaway key cannot open, and
@@ -159,7 +159,11 @@ def required_files_problems(home: Path) -> list:
 def probe_env(caller: dict, config_dir: Path, root: Path, home: Path) -> dict:
     """The caller's environment without its MISE_* and SOPS_* variables, plus scratch mise directories
     under `root` and the machine's config dir. MISE_GLOBAL_CONFIG_FILE is never set."""
-    env = {k: v for k, v in caller.items() if not k.startswith(("MISE_", "SOPS_"))}
+    # __MISE_* too: `mise exec` passes its own tool choice to child mise processes in
+    # __MISE_DIFF and __MISE_TASK_TOOL_ARGS, and kept, they make every probe resolve the caller's
+    # versions instead of the fixture's pin (seen 2026-11-18, once the suite runner ran under
+    # `mise exec`).
+    env = {k: v for k, v in caller.items() if not k.startswith(("MISE_", "__MISE_", "SOPS_"))}
     env.update({
         "HOME": str(home),
         "MISE_CONFIG_DIR": str(config_dir),

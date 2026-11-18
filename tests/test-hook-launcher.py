@@ -184,7 +184,7 @@ class World:
 
     def env(self, cfg: Path, **extra):
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("MISE_", "SOPS_", "GIT_", "XDG_", "VIRTUAL_ENV", "DOTFILES_"))}
+               if not k.startswith(("MISE_", "__MISE_", "SOPS_", "GIT_", "XDG_", "VIRTUAL_ENV", "DOTFILES_"))}
         env.update({
             "HOME": str(self.home),
             "PATH": f"{self.shims}:{self.stub}:{self.base_path}",
@@ -209,7 +209,11 @@ class World:
     def mise(self, cfg, *args):
         env = self.env(cfg)
         env["PATH"] = f"{self.stub}:{self.base_path}"
-        r = subprocess.run(["mise", *args], capture_output=True, text=True, env=env,
+        # Run from the scratch home, never the checkout: mise looks for project configs in every
+        # directory above the working directory, and with HOME pointed elsewhere a checkout under
+        # the real home finds the real ~/.config/mise/conf.d/ as an untrusted project config, which
+        # fails every call once a drop-in there carries [env] (first seen 2026-11-18).
+        r = subprocess.run(["mise", *args], capture_output=True, text=True, env=env, cwd=str(self.home),
                            stdin=subprocess.DEVNULL, timeout=60)
         assert r.returncode == 0, f"mise {' '.join(args)}: {r.stderr}"
         return r

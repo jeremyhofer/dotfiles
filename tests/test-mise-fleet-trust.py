@@ -115,7 +115,7 @@ class World:
         self.fragment.write_text(text)
 
     def env(self, extra: dict | None = None, drop: tuple = ()) -> dict:
-        env = {k: v for k, v in os.environ.items() if not k.startswith("MISE_")}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("MISE_", "__MISE_"))}
         for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
             env.pop(var, None)
         env.update(

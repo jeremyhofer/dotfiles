@@ -54,7 +54,7 @@ needs_chezmoi = pytest.mark.skipif(CHEZMOI is None, reason="chezmoi not installe
 
 def mise_env(tmp: Path) -> dict:
     """The caller's environment without any MISE_ variable, pointed at scratch directories."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MISE_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("MISE_", "__MISE_"))}
     for name in ("home", "config/conf.d", "data", "state", "cache", "cwd"):
         (tmp / name).mkdir(parents=True, exist_ok=True)
     env.update(
