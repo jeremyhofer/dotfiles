@@ -799,4 +799,4 @@ def test_claude_worktree_skips_without_its_grants(fake, untrusted, unapproved, n
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider", *sys.argv[1:]]))
