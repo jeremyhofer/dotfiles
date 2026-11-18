@@ -134,6 +134,10 @@ printf '{"version":1,"takenAt":%s,"seats":{}}\n' "$(date +%s)" > "$FLEET_SNAPSHO
 # No launch fragment, and no SSH_CONNECTION from the session this runs in (on macOS a launch over
 # SSH is refused).
 export FLEET_LAUNCH_ENV="$T/no-launch-env"; unset SSH_CONNECTION
+# On macOS a launch also asks `launchctl managername` for its login session unless
+# FLEET_MANAGERNAME_CMD is set; set empty, the check is off, so a run over SSH (Background) or at
+# the screen gives the same result.
+export FLEET_MANAGERNAME_CMD=
 fc() { FLEET_RECORD="$T/rec.yaml" FLEET_ROOT="$ROOT" FLEET_STATE="$STATE" FLEET_CLAUDE_CMD="$T/claude-stub" \
        FLEET_TMPROOT_PREFIX="$T/tmproots" FLEET_TRANSCRIPT_DIR="$T/transcripts" \
        FLEET_AGENTS_JSON_CMD="$T/agents-cmd" KB_ROOT="${KB_ROOT-$KB}" XDG_CONFIG_HOME="$T/xdg" FLEET_SEAT_SETTINGS_ROOT="${FLEET_SEAT_SETTINGS_ROOT-$SEATSET}" \

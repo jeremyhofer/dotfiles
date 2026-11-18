@@ -252,6 +252,9 @@ class Fleet:
             "FLEET_HANDOFFS_SEARCH": world, "FLEET_TRANSCRIPT_DIR": T / "transcripts",
             "XDG_RUNTIME_DIR": T / "run", "FLEET_CANONICALS_CONFIG": self.config,
             "FLEET_RESPAWN_WAIT": "0",
+            # On macOS a launch also asks `launchctl managername` for its login session unless this is
+            # set; empty turns the check off, so a run over SSH (Background) or at the screen agrees.
+            "FLEET_MANAGERNAME_CMD": "",
             "FLEET_PID_RECORD_DIR": self.pids, "FLEET_PROC_ROOT": self.proc, "FLEET_JOBS_DIR": self.jobs,
             "FLEET_DAEMON_ROSTER": self.roster, "ROSTER": self.roster,
             "FLEET_AGENTS_JSON_CMD": "jq -c map(select(.live)) %s" % self.agents,

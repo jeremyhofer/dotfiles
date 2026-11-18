@@ -24,6 +24,10 @@ export FLEET_HANDOFFS_SEARCH="$TMPROOT" FLEET_TMPROOT_PREFIX="$TMPROOT/tmproots"
 # No launch fragment, and no SSH_CONNECTION from the session this runs in (on macOS a launch over
 # SSH is refused).
 export FLEET_LAUNCH_ENV="$_srcbin/no-launch-env"; unset SSH_CONNECTION
+# On macOS a launch also asks `launchctl managername` for its login session unless
+# FLEET_MANAGERNAME_CMD is set; set empty, the check is off, so a run over SSH (Background) or at
+# the screen gives the same result.
+export FLEET_MANAGERNAME_CMD=
 mkdir -p "$FLEET_PID_RECORD_DIR" "$FLEET_PROC_ROOT" "$FLEET_STATE"
 # A session snapshot holding no seats: up, status, clean and refresh refuse without one (since
 # 2026-11-17). Why it is shaped this way: tests/test-fleet-canonicals.sh, where the same fixture is set up.
