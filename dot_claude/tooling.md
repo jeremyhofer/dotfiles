@@ -53,7 +53,7 @@ codes, state files, caveats). This file is short on purpose: every session loads
 - Alerts and services: `ntfy-inbox` (local copy of ntfy alerts) · `alert-digest` (new alerts since a
   reader last looked) · `hc-status` (Healthchecks.io states) · `bing-webmaster` (Bing search
   statistics) · `image-bump` (personal domain: move a digest-pinned image behind a scan gate).
-- Build and test: `loop-time` (time a project's iteration loops reproducibly) · `verify-task-io`
+- Build and test: `loop-time` (time a project's iteration loops reproducibly) · `seam-probe` (declared suites measuring tool and harness behavior no unit test reaches) · `verify-task-io`
   (does each cached Nx target declare its files) · `install-test-gate` (a test-suite commit gate) ·
   `ui-shot` (headless render for visual review) · `sops-key-loader` (Linux: the machine's SOPS age
   key file, once per login) · `nvim-healthdump` · `spell-capture`.

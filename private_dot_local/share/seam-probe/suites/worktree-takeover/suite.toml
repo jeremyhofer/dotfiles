@@ -1,0 +1,21 @@
+# The worktree-takeover suite: whether a Claude Code session can create, enter, commit in and leave
+# a worktree at <repo>/.claude/worktrees/<branch> under this setup's real settings, and whether
+# nothing on the path to that directory breaks Claude Code's checks. Cases are added one at a time,
+# each before the build step it bears on; `seam-probe list worktree-takeover` shows them.
+suite = "worktree-takeover"
+description = "creating, entering and committing in worktrees under .claude/worktrees/"
+
+[[case]]
+id = "no-symlink"
+question = "Is any component of <repo>/.claude/worktrees/, from the repository root down, a symlink, for each repository the fleet manifest declares on this machine?"
+relies = "No component from the root down is a symlink: Claude Code refuses a WorktreeCreate hook's path that goes through a symlink inside the project, so one there breaks every worktree a session creates in that repository. A symlink above the root is reported, not judged."
+bears-on = "turning the .claude/worktrees/ location on, per machine"
+regimes = ["none"]
+script = "no-symlink.sh"
+controls = ["a clean fixture repository must pass the same check", "zero repositories enumerated is INCONCLUSIVE"]
+plants = [
+  { id = "symlink-dotclaude", expect = "FAIL" },
+  { id = "symlink-worktrees", expect = "FAIL" },
+  { id = "control-symlinked", expect = "VOID" },
+]
+minutes = 1

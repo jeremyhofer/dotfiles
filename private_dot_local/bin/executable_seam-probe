@@ -1,0 +1,767 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""seam-probe -- run declared suites that measure behavior at a seam no unit test reaches.
+
+A seam is a boundary between this setup's own code and a tool it does not control, where behavior
+depends on that tool's version and configuration: what Claude Code's sandbox lets a session write,
+which hooks a `claude rm` runs, where worktrunk's plugin places a worktree. A unit test of our own
+code cannot see it, because the other side is not our code, and nothing announces when it changes.
+
+A SUITE is a directory holding suite.toml and the case scripts it names. A CASE answers one
+question by running the real tools and reading an ARTIFACT (a commit in git, a marker file, a
+path's type), never a model's own report of what it did. Each case declares what the decision it
+serves RELIES on (its PASS condition), its CONTROLS (steps in the same run whose outcome is known:
+a grant control must succeed, a refusal control must fail with its declared text; one that comes
+out otherwise makes the case VOID), and its PLANTS (deliberate defects that must turn it FAIL, or
+VOID for a plant that breaks a control). Running the plants (`red`) is how a case is SEEN RED: a
+check never seen to fail is of unknown value, so a PASS whose plants have no recorded red for the
+current case script, tool versions and regime reports "not seen red" (exit 4), not 0.
+
+Standard library only. The case scripts are bash, run from the terminal by this tool; they call
+this tool's primitives (fixture, evidence, manual, verdict) and end with one verdict per arm.
+"""
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+EXIT_FAIL = 1
+EXIT_USAGE = 2
+EXIT_UNKNOWN = 3   # VOID, INCONCLUSIVE, REFUSED: the instrument or the model, not the seam
+EXIT_BLIND = 4     # a plant came out PASS, or a PASS was never seen red
+EXIT_DENIED = 5
+EXIT_SKIPPED = 6
+
+VERDICTS = ("PASS", "FAIL", "VOID", "INCONCLUSIVE", "REFUSED", "DENIED", "SKIPPED")
+VERDICT_EXIT = {"PASS": 0, "FAIL": EXIT_FAIL, "VOID": EXIT_UNKNOWN, "INCONCLUSIVE": EXIT_UNKNOWN,
+                "REFUSED": EXIT_UNKNOWN, "DENIED": EXIT_DENIED, "SKIPPED": EXIT_SKIPPED,
+                "BLIND": EXIT_BLIND, "NOT-SEEN-RED": EXIT_BLIND}
+REGIMES = ("real", "bare", "candidate", "none")
+CASE_KEYS = {"id", "question", "relies", "bears-on", "regimes", "script", "controls", "plants",
+             "manual", "minutes", "heavy", "commands"}
+REQUIRED = ("id", "question", "relies", "bears-on", "regimes", "script", "plants", "minutes")
+PLANT_KEYS = {"id", "expect", "arm"}
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# One command per Bash call in every probe session prompt: some guards refuse a compound command,
+# and a chained command can run wholly sandboxed where the same command alone was exempt.
+COMPOUND = (";", "&&", "||", "|", "$(", "`")
+
+EPILOG = """\
+commands (read only, allowed anywhere):
+  list [SUITE]             the suites, or one suite's cases
+  show SUITE CASE          one case's declaration and its seen-red record
+  lint [SUITE...]          check declarations (default: every suite)
+commands that run cases (a case that starts Claude Code sessions is refused inside one: run it
+from a plain terminal; a case in the `none` regime runs anywhere):
+  run SUITE [CASE...]      run cases, each in its first declared regime unless --regime
+  red SUITE CASE           run a case once per declared plant; each must come out as it expects
+  trust SUITE              print the one interactive step a fixture needs once per machine
+primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set):
+  fixture repo NAME        a fresh git repository at the run's fixture path; prints its path
+  fixture worktree REPO NAME [--path P]
+                           a worktree made with git directly (default REPO/.claude/worktrees/NAME)
+  evidence no-symlink ROOT REL
+                           exit 1 if any component from ROOT down to ROOT/REL is a symlink
+  manual TEXT              print an instruction for the person at the terminal; wait for Enter
+  verdict [--arm A] V REASON
+                           the case's (or one arm's) result, once: PASS FAIL VOID INCONCLUSIVE
+                           REFUSED DENIED SKIPPED
+
+exit: 0 every case PASS and seen red; 1 any FAIL (it wins over the rest); otherwise the highest of
+3 (VOID, INCONCLUSIVE, REFUSED), 4 (BLIND, or a PASS not seen red), 5 (DENIED), 6 (SKIPPED);
+2 usage or declaration error.
+
+where: suites from $SEAM_PROBE_SUITES (colon-separated directories) else
+~/.local/share/seam-probe/suites; fixtures only under $SEAM_PROBE_SANDBOX (default
+~/.claude-probe-sandbox)/seams/SUITE; results in $SEAM_PROBE_STATE (default
+~/.local/state/seam-probe)/SUITE/RUN-ID/ (results.jsonl, summary.txt), and the seen-red record in
+.../SUITE/reds.jsonl. summary.txt names no path, user or machine, so it can be pasted into a record.
+"""
+
+
+class Usage(Exception):
+    pass
+
+
+# ---- locations ---------------------------------------------------------------------------------
+
+def home() -> Path:
+    return Path(os.environ.get("HOME", str(Path.home())))
+
+
+def suite_dirs() -> list[Path]:
+    env = os.environ.get("SEAM_PROBE_SUITES")
+    if env:
+        return [Path(p).expanduser() for p in env.split(":") if p]
+    return [home() / ".local/share/seam-probe/suites"]
+
+
+def sandbox_root() -> Path:
+    return Path(os.environ.get("SEAM_PROBE_SANDBOX", str(home() / ".claude-probe-sandbox"))).expanduser()
+
+
+def state_root() -> Path:
+    return Path(os.environ.get("SEAM_PROBE_STATE", str(home() / ".local/state/seam-probe"))).expanduser()
+
+
+def fixture_root(suite: str) -> Path:
+    return sandbox_root() / "seams" / suite
+
+
+def inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+# ---- declarations ------------------------------------------------------------------------------
+
+def find_suite(name: str) -> Path:
+    for d in suite_dirs():
+        cand = d / name
+        if (cand / "suite.toml").is_file():
+            return cand
+    raise Usage(f"no suite named {name!r} in {':'.join(str(d) for d in suite_dirs())}")
+
+
+def all_suites() -> list[str]:
+    seen = []
+    for d in suite_dirs():
+        if d.is_dir():
+            for c in sorted(d.iterdir()):
+                if (c / "suite.toml").is_file() and c.name not in seen:
+                    seen.append(c.name)
+    return seen
+
+
+def load(suite_dir: Path) -> tuple[dict, list[str]]:
+    """The parsed suite and its declaration errors (empty when it is valid)."""
+    errs: list[str] = []
+    try:
+        data = tomllib.loads((suite_dir / "suite.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return {}, [f"suite.toml cannot be read: {e}"]
+    if data.get("suite") != suite_dir.name:
+        errs.append(f"`suite` must be {suite_dir.name!r}, the directory's name")
+    extra = set(data) - {"suite", "description", "case"}
+    if extra:
+        errs.append(f"unknown top-level keys: {', '.join(sorted(extra))}")
+    cases = data.get("case")
+    if not isinstance(cases, list) or not cases:
+        errs.append("no [[case]] declared")
+        cases = []
+    ids = set()
+    for i, c in enumerate(cases):
+        where = f"case {c.get('id', i + 1)!s}"
+        for k in REQUIRED:
+            if k not in c:
+                errs.append(f"{where}: `{k}` is required")
+        if set(c) - CASE_KEYS:
+            errs.append(f"{where}: unknown keys {', '.join(sorted(set(c) - CASE_KEYS))}")
+        cid = c.get("id", "")
+        if not isinstance(cid, str) or not ID_RE.match(cid):
+            errs.append(f"{where}: `id` must be lower-case letters, digits and dashes")
+        elif cid in ids:
+            errs.append(f"{where}: duplicate id")
+        ids.add(cid)
+        for k in ("question", "relies", "bears-on"):
+            if k in c and (not isinstance(c[k], str) or not c[k].strip()):
+                errs.append(f"{where}: `{k}` must be a non-empty string")
+        regs = c.get("regimes", [])
+        if not isinstance(regs, list) or not regs or any(r not in REGIMES for r in regs):
+            errs.append(f"{where}: `regimes` must be a non-empty list of {', '.join(REGIMES)}")
+        script = c.get("script")
+        if isinstance(script, str):
+            sp = suite_dir / script
+            if "/" in script or not sp.is_file():
+                errs.append(f"{where}: script {script!r} is not a file in the suite directory")
+        plants = c.get("plants", [])
+        if not isinstance(plants, list) or not plants:
+            errs.append(f"{where}: at least one plant is required (a case never seen red is of unknown value)")
+            plants = []
+        pids = set()
+        for p in plants:
+            if not isinstance(p, dict) or set(p) - PLANT_KEYS or "id" not in p:
+                errs.append(f"{where}: each plant is a table with `id`, `expect` and an optional `arm`")
+                continue
+            if not ID_RE.match(str(p["id"])) or p["id"] in pids:
+                errs.append(f"{where}: plant id {p['id']!r} is malformed or repeated")
+            pids.add(p["id"])
+            if p.get("expect") not in ("FAIL", "VOID"):
+                errs.append(f"{where}: plant {p['id']!r} must expect FAIL, or VOID for a plant that breaks a control")
+        m = c.get("minutes")
+        if "minutes" in c and (not isinstance(m, int) or isinstance(m, bool) or m < 1):
+            errs.append(f"{where}: `minutes` must be a positive whole number")
+        if "heavy" in c and not isinstance(c["heavy"], bool):
+            errs.append(f"{where}: `heavy` must be true or false")
+        for k in ("controls", "manual"):
+            if k in c and (not isinstance(c[k], list) or not all(isinstance(x, str) for x in c[k])):
+                errs.append(f"{where}: `{k}` must be a list of strings")
+        cmds = c.get("commands", {})
+        if not isinstance(cmds, dict):
+            errs.append(f"{where}: `commands` must be a table of name = command")
+            cmds = {}
+        for name, cmd in cmds.items():
+            if not isinstance(cmd, str):
+                errs.append(f"{where}: command {name!r} must be a string")
+            elif any(tok in cmd for tok in COMPOUND):
+                errs.append(f"{where}: command {name!r} is compound; a probe session runs one command per Bash call")
+    return data, errs
+
+
+def get_case(data: dict, cid: str) -> dict:
+    for c in data.get("case", []):
+        if c.get("id") == cid:
+            return c
+    raise Usage(f"no case {cid!r} in suite {data.get('suite')!r}")
+
+
+def load_valid(name: str) -> tuple[Path, dict]:
+    d = find_suite(name)
+    data, errs = load(d)
+    if errs:
+        raise Usage(f"suite {name!r} is not valid; run `seam-probe lint {name}`:\n  " + "\n  ".join(errs))
+    return d, data
+
+
+# ---- the ledger: what a run created, and each verdict -------------------------------------------
+
+def ledger_path() -> Path:
+    p = os.environ.get("SEAM_PROBE_RUN")
+    if not p:
+        raise Usage("this is a primitive for a case script; it needs SEAM_PROBE_RUN, which `run` and `red` set")
+    return Path(p)
+
+
+def ledger_append(entry: dict) -> None:
+    with open(ledger_path(), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def ledger_read(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+# ---- primitives --------------------------------------------------------------------------------
+
+def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    exe = shutil.which("git")
+    if not exe:
+        raise Usage("git is not on PATH")
+    # Always the binary: a shell's git() wrapper never runs here, so no key loading inside a probe.
+    return subprocess.run([exe, *args], cwd=cwd, capture_output=True, text=True)
+
+
+MARKER = ".seam-probe-fixture"
+
+
+def remove_fixture(path: Path, root: Path) -> None:
+    """Remove a directory only when it is inside the fixture root and carries the fixture marker."""
+    if not path.exists() and not path.is_symlink():
+        return
+    if not inside(path, root) or not (path / MARKER).exists():
+        raise Usage(f"refusing to remove {path}: not a fixture this tool made under {root}")
+    shutil.rmtree(path)
+
+
+def prim_fixture_repo(name: str) -> int:
+    if not ID_RE.match(name):
+        raise Usage("a fixture name is lower-case letters, digits and dashes")
+    root = Path(os.environ["SEAM_PROBE_FIXTURES"])
+    if not inside(root, sandbox_root()):
+        raise Usage(f"the fixture root {root} is outside {sandbox_root()}; refusing")
+    root.mkdir(parents=True, exist_ok=True)
+    repo, remote = root / name, root / f"{name}.remote.git"
+    for p in (repo, remote):
+        remove_fixture(p, root)
+    remote.mkdir()
+    (remote / MARKER).write_text("seam-probe fixture\n")
+    for args, cwd in ((("init", "-q", "--bare", "-b", "main", str(remote)), None),
+                      (("init", "-q", "-b", "main", str(repo)), None)):
+        r = git(*args, cwd=cwd)
+        if r.returncode:
+            print(r.stderr, file=sys.stderr)
+            return 1
+    (repo / MARKER).write_text("seam-probe fixture\n")
+    (repo / ".git/seam-probe-no-hooks").mkdir()
+    for k, v in (("user.name", "seam-probe"), ("user.email", "seam-probe@invalid"),
+                 ("commit.gpgsign", "false"), ("tag.gpgsign", "false"),
+                 ("core.hooksPath", str(repo / ".git/seam-probe-no-hooks"))):
+        git("config", "--local", k, v, cwd=repo)
+    (repo / ".gitignore").write_text(f"{MARKER}\nseam-probe-*\n")
+    (repo / "README.md").write_text(f"seam-probe fixture {name}\n")
+    for args in (("add", ".gitignore", "README.md"), ("commit", "-q", "-m", "fixture"),
+                 ("remote", "add", "origin", str(remote)), ("push", "-q", "origin", "main")):
+        r = git(*args, cwd=repo)
+        if r.returncode:
+            print(r.stderr, file=sys.stderr)
+            return 1
+    ledger_append({"kind": "fixture", "path": str(repo)})
+    ledger_append({"kind": "fixture", "path": str(remote)})
+    print(repo)
+    return 0
+
+
+def prim_fixture_worktree(repo: str, name: str, path: str | None) -> int:
+    root = Path(os.environ["SEAM_PROBE_FIXTURES"])
+    rp = Path(repo)
+    if not inside(rp, root) or not (rp / MARKER).exists():
+        raise Usage(f"{repo} is not a fixture repository of this run")
+    wt = Path(path) if path else rp / ".claude/worktrees" / name
+    if not inside(wt, root):
+        raise Usage(f"{wt} is outside the fixture root")
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    r = git("worktree", "add", "-q", "-b", name, str(wt), cwd=rp)
+    if r.returncode:
+        print(r.stderr, file=sys.stderr)
+        return 1
+    ledger_append({"kind": "worktree", "repo": str(rp), "path": str(wt), "branch": name})
+    print(wt)
+    return 0
+
+
+def prim_no_symlink(root: str, rel: str) -> int:
+    """Exit 1 if any component from ROOT down to ROOT/REL is a symlink. A component that does not
+    exist ends the walk (nothing below it can be a symlink). A symlink at or above ROOT is reported
+    on stdout and does not change the exit."""
+    r = Path(root)
+    if r.is_symlink() or os.path.realpath(r) != os.path.abspath(r):
+        print("note: a symlink at or above the repository root")
+    cur, found = r, []
+    for part in Path(rel).parts:
+        cur = cur / part
+        if cur.is_symlink():
+            found.append(str(cur.relative_to(r)))
+            break
+        if not cur.exists():
+            print(f"absent from {cur.relative_to(r)}")
+            break
+    for f in found:
+        print(f"symlink: {f}")
+    return 1 if found else 0
+
+
+def prim_manual(text: str) -> int:
+    t0 = time.monotonic()
+    print(f"\n>>> MANUAL STEP: {text}\n>>> press Enter when done", flush=True)
+    try:
+        with open("/dev/tty") as tty:
+            tty.readline()
+    except OSError:
+        raise Usage("a manual step needs a terminal")
+    ledger_append({"kind": "manual", "text": text, "waited_s": round(time.monotonic() - t0, 1)})
+    return 0
+
+
+def prim_verdict(verdict: str, reason: str, arm: str | None) -> int:
+    if verdict not in VERDICTS:
+        raise Usage(f"a verdict is one of {', '.join(VERDICTS)}")
+    case = os.environ.get("SEAM_PROBE_CASE", "")
+    for e in ledger_read(ledger_path()):
+        if e.get("kind") == "verdict" and e.get("case") == case and e.get("arm") == arm:
+            raise Usage(f"a verdict for {case}{'/' + arm if arm else ''} was already given")
+    ledger_append({"kind": "verdict", "case": case, "arm": arm, "verdict": verdict, "reason": reason})
+    return 0
+
+
+# ---- running cases -----------------------------------------------------------------------------
+
+def first_line(cmd: list[str]) -> str:
+    exe = shutil.which(cmd[0])
+    if not exe:
+        return "absent"
+    try:
+        p = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=30)
+        return (p.stdout.strip().splitlines() or ["unknown"])[0] if p.returncode == 0 else "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
+def versions() -> dict:
+    return {"claude": first_line(["claude", "--version"]), "worktrunk": first_line(["wt", "--version"])}
+
+
+def sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def red_key(case: dict, suite_dir: Path, regime: str, vers: dict, plant: str) -> dict:
+    return {"case": case["id"], "script_sha256": sha(suite_dir / case["script"]), "regime": regime,
+            "claude": vers["claude"], "worktrunk": vers["worktrunk"], "plant": plant}
+
+
+def reds_path(suite: str) -> Path:
+    return state_root() / suite / "reds.jsonl"
+
+
+def seen_red(suite: str, key: dict) -> bool:
+    return any(all(e.get(k) == v for k, v in key.items()) for e in ledger_read(reds_path(suite)))
+
+
+def sanitize(text: str, fixtures: Path) -> str:
+    out = text.replace(str(fixtures), "<fixtures>").replace(str(home()), "~")
+    try:
+        user = getpass.getuser()
+        if len(user) > 2:
+            out = re.sub(rf"\b{re.escape(user)}\b", "<user>", out)
+    except (OSError, KeyError):
+        pass
+    host = os.uname().nodename.split(".")[0]
+    if len(host) > 2:
+        out = re.sub(rf"\b{re.escape(host)}\b", "<host>", out)
+    return out
+
+
+def slot_state(holder: str) -> tuple[str, str | None]:
+    """free, own, other (with the holder), error, or unchecked when fleet-slot is not installed."""
+    exe = shutil.which("fleet-slot")
+    if not exe:
+        return "unchecked", None
+    try:
+        p = subprocess.run([exe, "check", holder], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return "error", None
+    msg = p.stdout.strip() or p.stderr.strip()
+    m = re.match(r"held by (\S+)", msg)
+    if p.returncode == 0:
+        return ("own" if m else "free"), (m.group(1) if m else None)
+    if p.returncode == 1:
+        return "other", (m.group(1) if m else None)
+    return "error", None
+
+
+def cleanup(ledger: Path, fixtures: Path, keep: bool) -> list[str]:
+    """Undo what the ledger records, newest first. Returns the steps that failed."""
+    failed = []
+    if keep:
+        return failed
+    for e in reversed(ledger_read(ledger)):
+        try:
+            if e.get("kind") == "worktree" and Path(e["repo"]).exists():
+                git("worktree", "remove", "--force", e["path"], cwd=Path(e["repo"]))
+            elif e.get("kind") == "fixture":
+                remove_fixture(Path(e["path"]), fixtures)
+        except (Usage, OSError, KeyError) as ex:
+            failed.append(f"{e.get('kind')}: {ex}")
+    return failed
+
+
+class Interrupted(Exception):
+    pass
+
+
+def run_one(suite_dir: Path, case: dict, regime: str, plant: str | None, run_dir: Path,
+            fixtures: Path, keep: bool) -> dict:
+    """Run one case script once. Returns its result record (without the seen-red reading)."""
+    ledger = run_dir / f"ledger-{case['id']}{'-' + plant if plant else ''}.jsonl"
+    env = dict(os.environ)
+    env.update({"SEAM_PROBE": str(Path(sys.argv[0]).resolve()), "SEAM_PROBE_RUN": str(ledger),
+                "SEAM_PROBE_CASE": case["id"], "SEAM_PROBE_REGIME": regime,
+                "SEAM_PROBE_PLANT": plant or "", "SEAM_PROBE_FIXTURES": str(fixtures),
+                "SEAM_PROBE_SUITE_DIR": str(suite_dir), "SEAM_PROBE_CALLER_PWD": os.getcwd()})
+    env.pop("CLAUDECODE", None)
+    timeout = max(120, case["minutes"] * 60 * 2)
+    t0 = datetime.now(timezone.utc)
+    rc, note = None, ""
+    proc = subprocess.Popen(["bash", str(suite_dir / case["script"])], cwd=run_dir, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        note = f"the case script ran past {timeout}s and was stopped"
+    except KeyboardInterrupt:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        cleanup(ledger, fixtures, keep)
+        raise Interrupted()
+    (run_dir / f"output-{case['id']}{'-' + plant if plant else ''}.txt").write_text(out or "")
+    verdicts = [e for e in ledger_read(ledger) if e.get("kind") == "verdict"]
+    failed = cleanup(ledger, fixtures, keep)
+    if note or not verdicts:
+        verdicts = [{"arm": None, "verdict": "INCONCLUSIVE",
+                     "reason": note or f"the case script gave no verdict (exit {rc})"}]
+    return {"case": case["id"], "regime": regime, "plant": plant, "start": t0.isoformat(),
+            "end": datetime.now(timezone.utc).isoformat(), "exit": rc,
+            "arms": [{"arm": v.get("arm"), "verdict": v["verdict"], "reason": v.get("reason", "")}
+                     for v in verdicts],
+            "cleanup_failed": failed}
+
+
+def red_reading(result: dict, plant: dict) -> str:
+    """RED when the plant turned the case (or its named arm) the way it expects; BLIND when it
+    came out PASS; otherwise the verdict it gave, which is neither."""
+    arms = [a for a in result["arms"] if plant.get("arm") is None or a["arm"] == plant.get("arm")]
+    if not arms:
+        return "INCONCLUSIVE"
+    got = {a["verdict"] for a in arms}
+    if got == {plant["expect"]}:
+        return "RED"
+    if "PASS" in got:
+        return "BLIND"
+    return sorted(got, key=lambda v: -VERDICT_EXIT[v])[0]
+
+
+def combine(codes: list[int]) -> int:
+    if EXIT_FAIL in codes:
+        return EXIT_FAIL
+    return max(codes, default=0)
+
+
+def refuse_in_session(regimes: list[str]) -> None:
+    """A case that starts Claude Code sessions runs from a plain terminal: a sandboxed session's
+    nested `claude` is refused. A case in the `none` regime starts none, so it may run anywhere."""
+    if os.environ.get("CLAUDECODE") and any(r != "none" for r in regimes):
+        raise Usage("refused inside a Claude Code session: a case that starts sessions runs from a "
+                    "plain terminal, since a sandboxed session's nested `claude` is refused")
+
+
+def confirm(lines: list[str], yes: bool) -> None:
+    print("\n".join(lines))
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        raise Usage("no terminal to confirm on; pass --yes to run without the prompt")
+    print("press Enter to start, Ctrl-C to stop", flush=True)
+    sys.stdin.readline()
+
+
+def new_run_dir(suite: str) -> Path:
+    rid = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{os.getpid()}"
+    d = state_root() / suite / rid
+    d.mkdir(parents=True)
+    return d
+
+
+def write_outputs(run_dir: Path, suite: str, records: list[dict], vers: dict, fixtures: Path,
+                  mode: str) -> None:
+    with open(run_dir / "results.jsonl", "w") as f:
+        for r in records:
+            f.write(json.dumps({**r, "suite": suite, "mode": mode, **{f"version_{k}": v for k, v in vers.items()},
+                                "os": sys.platform}) + "\n")
+    lines = [f"seam-probe {suite} ({mode}), claude {vers['claude']}, worktrunk {vers['worktrunk']}, {sys.platform}"]
+    for r in records:
+        for a in r["arms"]:
+            name = r["case"] + (f"/{a['arm']}" if a["arm"] else "") + (f" [plant {r['plant']}]" if r["plant"] else "")
+            shown = r.get("reading", a["verdict"]) if r["plant"] else a.get("shown", a["verdict"])
+            lines.append(f"  {name:<40} {shown:<14} {sanitize(a['reason'], fixtures)}")
+        for c in r["cleanup_failed"]:
+            lines.append(f"  {r['case']:<40} CLEANUP-FAILED {sanitize(c, fixtures)}")
+    (run_dir / "summary.txt").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    print(f"\nresults: {run_dir}")
+
+
+def cmd_run(args) -> int:
+    suite_dir, data = load_valid(args.suite)
+    cases = [get_case(data, c) for c in args.cases] if args.cases else data["case"]
+    plan, chosen = [], []
+    for c in cases:
+        regime = args.regime or c["regimes"][0]
+        if regime not in c["regimes"]:
+            raise Usage(f"case {c['id']} does not run in the {regime} regime ({', '.join(c['regimes'])})")
+        chosen.append((c, regime))
+        plan.append(f"  {c['id']:<22} {regime:<10} ~{c['minutes']} min{'  heavy' if c.get('heavy') else ''}  {c['question']}")
+    refuse_in_session([r for _, r in chosen])
+    fixtures = fixture_root(args.suite)
+    state, holder = slot_state(args.slot_holder)
+    lines = [f"seam-probe run {args.suite}: {len(chosen)} case(s)", *plan,
+             f"writes: fixtures under {fixtures}, results under {state_root() / args.suite}",
+             f"timing slot: {state}{' (held by ' + holder + ')' if holder and state == 'other' else ''}"]
+    confirm(lines, args.yes)
+    vers = versions()
+    run_dir = new_run_dir(args.suite)
+    records, codes = [], []
+    try:
+        for c, regime in chosen:
+            if c.get("heavy") and state == "other":
+                rec = {"case": c["id"], "regime": regime, "plant": None, "exit": None, "cleanup_failed": [],
+                       "arms": [{"arm": None, "verdict": "SKIPPED",
+                                 "reason": f"heavy, and the timing slot is held by {holder or 'another session'}"}]}
+            else:
+                rec = run_one(suite_dir, c, regime, None, run_dir, fixtures, args.keep)
+            for a in rec["arms"]:
+                shown = a["verdict"]
+                if shown == "PASS":
+                    unseen = [p["id"] for p in c["plants"]
+                              if (p.get("arm") is None or p.get("arm") == a["arm"])
+                              and not seen_red(args.suite, red_key(c, suite_dir, regime, vers, p["id"]))]
+                    if unseen:
+                        shown = "NOT-SEEN-RED"
+                        a["reason"] += f" (no red recorded for plant {', '.join(unseen)} at this script and version; run `seam-probe red`)"
+                a["shown"] = shown
+                codes.append(VERDICT_EXIT[shown])
+            records.append(rec)
+    except Interrupted:
+        print("interrupted; what the stopped case created was removed", file=sys.stderr)
+        write_outputs(run_dir, args.suite, records, vers, fixtures, "run")
+        return 130
+    write_outputs(run_dir, args.suite, records, vers, fixtures, "run")
+    return combine(codes)
+
+
+def cmd_red(args) -> int:
+    suite_dir, data = load_valid(args.suite)
+    c = get_case(data, args.case)
+    regime = args.regime or c["regimes"][0]
+    if regime not in c["regimes"]:
+        raise Usage(f"case {c['id']} does not run in the {regime} regime")
+    refuse_in_session([regime])
+    fixtures = fixture_root(args.suite)
+    confirm([f"seam-probe red {args.suite} {c['id']} ({regime}): {len(c['plants'])} plant run(s), ~{c['minutes']} min each",
+             *[f"  plant {p['id']}: must come out {p['expect']}{' on arm ' + p['arm'] if p.get('arm') else ''}" for p in c["plants"]]],
+            args.yes)
+    vers = versions()
+    run_dir = new_run_dir(args.suite)
+    records, codes = [], []
+    try:
+        for p in c["plants"]:
+            rec = run_one(suite_dir, c, regime, p["id"], run_dir, fixtures, args.keep)
+            reading = red_reading(rec, p)
+            rec["reading"] = reading
+            if reading == "RED":
+                key = red_key(c, suite_dir, regime, vers, p["id"])
+                reds_path(args.suite).parent.mkdir(parents=True, exist_ok=True)
+                with open(reds_path(args.suite), "a") as f:
+                    f.write(json.dumps({**key, "at": datetime.now(timezone.utc).isoformat()}) + "\n")
+                codes.append(0)
+            else:
+                codes.append(VERDICT_EXIT.get(reading, EXIT_UNKNOWN))
+            records.append(rec)
+    except Interrupted:
+        write_outputs(run_dir, args.suite, records, vers, fixtures, "red")
+        return 130
+    write_outputs(run_dir, args.suite, records, vers, fixtures, "red")
+    # A plant that turned the case FAIL is the red sought, so FAIL does not win here.
+    return max(codes, default=0)
+
+
+def cmd_list(args) -> int:
+    if not args.suite:
+        for s in all_suites():
+            data, errs = load(find_suite(s))
+            print(f"{s:<24} {len(data.get('case', []))} case(s){'  INVALID' if errs else ''}  {data.get('description', '')}")
+        return 0
+    _, data = load_valid(args.suite)
+    for c in data["case"]:
+        print(f"{c['id']:<22} {','.join(c['regimes']):<16} {c['bears-on']}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    suite_dir, data = load_valid(args.suite)
+    c = get_case(data, args.case)
+    for k in ("id", "question", "relies", "bears-on", "regimes", "controls", "manual", "minutes", "heavy"):
+        if k in c:
+            print(f"{k}: {c[k]}")
+    for p in c["plants"]:
+        print(f"plant {p['id']}: must come out {p['expect']}{' on arm ' + p['arm'] if p.get('arm') else ''}")
+    reds = [e for e in ledger_read(reds_path(args.suite)) if e.get("case") == c["id"]]
+    cur = sha(suite_dir / c["script"])
+    print(f"script sha256: {cur}")
+    for e in reds:
+        print(f"red: plant {e['plant']} {e['regime']} claude {e['claude']} worktrunk {e['worktrunk']} "
+              f"{'current script' if e['script_sha256'] == cur else 'an older script'} at {e['at']}")
+    if not reds:
+        print("red: none recorded")
+    return 0
+
+
+def cmd_lint(args) -> int:
+    names = args.suites or all_suites()
+    if not names:
+        print("no suites found", file=sys.stderr)
+        return EXIT_USAGE
+    bad = 0
+    for n in names:
+        _, errs = load(find_suite(n))
+        for e in errs:
+            print(f"{n}: {e}")
+        bad += bool(errs)
+    return EXIT_USAGE if bad else 0
+
+
+def cmd_trust(args) -> int:
+    find_suite(args.suite)
+    f = fixture_root(args.suite)
+    print(f"A background session refuses an untrusted workspace, and trust is granted only by accepting\n"
+          f"Claude Code's dialog in an interactive session. Once per machine, from a plain terminal:\n"
+          f"  mkdir -p {shlex.quote(str(f))} && cd {shlex.quote(str(f))} && claude\n"
+          f"then accept the trust dialog and /exit.")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="seam-probe", description=__doc__.splitlines()[0],
+                                 epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("list"); p.add_argument("suite", nargs="?")
+    p = sub.add_parser("show"); p.add_argument("suite"); p.add_argument("case")
+    p = sub.add_parser("lint"); p.add_argument("suites", nargs="*")
+    for name in ("run", "red"):
+        p = sub.add_parser(name)
+        p.add_argument("suite")
+        p.add_argument("cases" if name == "run" else "case", nargs="*" if name == "run" else None)
+        p.add_argument("--regime", choices=REGIMES)
+        p.add_argument("--yes", action="store_true", help="start without the confirmation prompt")
+        p.add_argument("--keep", action="store_true", help="leave fixtures in place")
+        p.add_argument("--slot-holder", default=os.environ.get("FLEET_SLOT_AS", "seam-probe"))
+    p = sub.add_parser("trust"); p.add_argument("suite")
+    p = sub.add_parser("fixture"); fs = p.add_subparsers(dest="what", required=True)
+    q = fs.add_parser("repo"); q.add_argument("name")
+    q = fs.add_parser("worktree"); q.add_argument("repo"); q.add_argument("name"); q.add_argument("--path")
+    p = sub.add_parser("evidence"); es = p.add_subparsers(dest="what", required=True)
+    q = es.add_parser("no-symlink"); q.add_argument("root"); q.add_argument("rel")
+    p = sub.add_parser("manual"); p.add_argument("text")
+    p = sub.add_parser("verdict"); p.add_argument("--arm"); p.add_argument("verdict"); p.add_argument("reason", nargs="+")
+    a = ap.parse_args(argv)
+    try:
+        match a.cmd:
+            case "list": return cmd_list(a)
+            case "show": return cmd_show(a)
+            case "lint": return cmd_lint(a)
+            case "run": return cmd_run(a)
+            case "red": return cmd_red(a)
+            case "trust": return cmd_trust(a)
+            case "fixture":
+                return prim_fixture_repo(a.name) if a.what == "repo" else prim_fixture_worktree(a.repo, a.name, a.path)
+            case "evidence": return prim_no_symlink(a.root, a.rel)
+            case "manual": return prim_manual(a.text)
+            case "verdict": return prim_verdict(a.verdict, " ".join(a.reason), a.arm)
+    except Usage as e:
+        print(f"seam-probe: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
