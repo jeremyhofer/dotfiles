@@ -33,6 +33,13 @@ tree test-tooling-inventory.sh  private_dot_local/bin/**
 tree test-repo-hygiene.sh       **
 tree test-coverage-map.py      **
 tree test-no-new-shell.py       private_dot_local/bin/** tests/**
+# chezmoi run against the whole source (a scratch copy of it, or the checkout itself) reads every
+# file it does not ignore, so these verdicts can change with any of them (verify-task-io, at landing,
+# measured 376, 376 and 306 of 383 tracked files read on 2026-11-17). All three run in about 6 s
+# together, so re-running them on every commit is cheap.
+tree test-sops-key-loader.py    **
+tree test-mise-base.py          **
+tree test-mise-path.py          **
 
 # --- the map, and the runs of the suites ---------------------------------------------------------
 test-coverage-map.py   tests/coverage.map tools/nx/suites.js
