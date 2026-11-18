@@ -914,6 +914,39 @@ def roster_session_ids() -> set[str] | None:
     return {str(w["sessionId"]) for w in workers.values() if isinstance(w, dict) and w.get("sessionId")}
 
 
+def standard_handoff_stamp(path: str, name: str) -> int | None:
+    """The epoch of a standard staged-handoff name for the seat, else None. Standard is exactly
+    YYYY-MM-DD-HHMM-<name>-park.md or -checkpoint.md (what `fleet-canonicals stage` writes), the seat
+    name literal, so `x-life-canonical` never matches `life-canonical`. The stamp is local time at
+    minute precision. Reads names only to refuse, never to pick a pointer (see pointer_path in
+    fleet-canonicals); the gate in that file's handoff_gate has the same semantics."""
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2}-\d{4})-" + re.escape(name) + r"-(?:park|checkpoint)\.md",
+                     os.path.basename(path))
+    if not m:
+        return None
+    try:
+        return int(time.mktime(time.strptime(m.group(1), "%Y-%m-%d-%H%M")))
+    except (ValueError, OverflowError):
+        return None
+
+
+def handoff_dirs(placed_under: str = "") -> list[Path]:
+    """Where a seat's handoff files live: the staging directory, the placed handoffs directory
+    (FLEET_HANDOFFS_DIR or the config's `handoffs`) and, when given, `placed_under`."""
+    dirs = [STATE / "handoff-staging"]
+    configured = os.environ.get("FLEET_HANDOFFS_DIR") or config().get("handoffs") or ""
+    for d in (configured, placed_under):
+        if d:
+            dirs.append(Path(os.path.expanduser(d)))
+    seen, out = set(), []
+    for d in dirs:
+        real = os.path.realpath(d)
+        if real not in seen and d.is_dir():
+            seen.add(real)
+            out.append(d)
+    return out
+
+
 def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> str | None:
     """None when the handoff pointer names an existing file, under `placed_under` when one is given
     (a placed copy, not a staged draft), recorded after the session's work began; else what fails."""
@@ -932,6 +965,26 @@ def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> s
         return "the session's transcript gives no start time to compare the handoff against"
     if set_at <= start:
         return "its handoff was recorded before the session started, so it has not parked since"
+    # The pointer was recorded after the start; the DOCUMENT it names may still be older, or a newer
+    # one may exist. Only standard names are read, and only to refuse.
+    start_min = start - start % 60
+    target_stamp = standard_handoff_stamp(target, name)
+    if target_stamp is not None and target_stamp < start_min:
+        return (f"the handoff pointer names a document stamped "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(target_stamp))}, written before the session "
+                f"started ({time.strftime('%Y-%m-%d %H:%M', time.localtime(start_min))}): {target}")
+    floor = target_stamp if target_stamp is not None else set_at - set_at % 60
+    newest: tuple[int, Path] | None = None
+    for d in handoff_dirs(placed_under):
+        for f in sorted(d.glob("*.md")):
+            stamp = standard_handoff_stamp(f.name, name)
+            if (stamp is not None and f.is_file() and f.name != os.path.basename(target)
+                    and stamp > floor and (newest is None or stamp > newest[0])):
+                newest = (stamp, f)
+    if newest is not None:
+        return (f"a newer handoff than the recorded one exists ({newest[1]}, stamped "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(newest[0]))}); record it with "
+                f"`fleet-canonicals handoff {name} --set {newest[1]}`")
     return None
 
 

@@ -1737,6 +1737,11 @@ cmd_resume_at() {
 # from the filesystem was measured and killed: two handoffs for one canonical shared a date and
 # lexical sort picked the wrong one; mtime picked the right one only on this machine and would be
 # wrong on a fresh clone; and most handoff filenames carry no canonical name at all.
+#
+# The freshness gate (handoff_gate) does read file names, but only to REFUSE, never to choose: it
+# looks at names matching the standard `stage` shape exactly (date, HHMM, this seat's literal name,
+# park or checkpoint), and a name that does not match is ignored, so the measured failures above
+# cannot recur through it. The pointer stays whatever the operator recorded.
 
 pointer_path() { printf '%s/%s.handoff' "$FLEET_STATE" "$1"; }
 
@@ -2421,6 +2426,40 @@ write_stub_handoff() {
   printf '%s\n' "$file"
 }
 
+# std_handoff_epoch FILE NAME -- when FILE's basename is exactly the standard staged-handoff name
+# for seat NAME (YYYY-MM-DD-HHMM-NAME-park.md or -checkpoint.md), print its stamp as epoch seconds
+# (local time, minute precision) and return 0; return 1 for any other name. NAME is compared as a
+# literal string, never as a pattern, so `x-life-canonical` does not match `life-canonical`.
+std_handoff_epoch() {
+  local base rest stamp
+  base=${1##*/}
+  case "$base" in
+    *-park.md)       rest=${base%-park.md} ;;
+    *-checkpoint.md) rest=${base%-checkpoint.md} ;;
+    *) return 1 ;;
+  esac
+  stamp=${rest:0:15}
+  [ "${rest:15}" = "-$2" ] || return 1
+  [[ "$stamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}$ ]] || return 1
+  parse_time "${stamp:0:10} ${stamp:11:2}:${stamp:13:2}"
+}
+
+# newest_standard_handoff NAME -- "<epoch> <path>" of the newest standard-named handoff for NAME in
+# the staging and handoffs directories (top level only); return 1 when there is none.
+newest_standard_handoff() {
+  local n=$1 d f e best="" best_e=0
+  for d in "$FLEET_STATE/handoff-staging" "$HANDOFFS_DIR"; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    for f in "$d"/*.md; do
+      [ -f "$f" ] || continue
+      e=$(std_handoff_epoch "$f" "$n") || continue
+      if [ -z "$best" ] || [ "$e" -gt "$best_e" ]; then best=$f; best_e=$e; fi
+    done
+  done
+  [ -n "$best" ] || return 1
+  printf '%s %s\n' "$best_e" "$best"
+}
+
 # handoff_gate NAME JSON STUB_SET STUB_TEXT VERB FORCE_SET FORCE_TEXT
 #   -- returns 0 to proceed, dies when it refuses.
 #
@@ -2432,6 +2471,7 @@ handoff_gate() {
   local name="$1" json="$2" stub_set="$3" stub_text="$4" verb="$5"
   local force_set="${6:-0}" force_text="${7:-}"
   local started started_s set_at set_at_s ptr_target stub_file now sid true_s
+  local started_min tgt_e floor_e newest newest_e newest_p
 
   started=$(holder_field "$json" "$name" startedAt)
   started_s=$(to_secs "$started") || started_s=""
@@ -2507,6 +2547,20 @@ handoff_gate() {
   --force is for when a GOOD handoff exists and only the comparison is wrong."
   fi
 
+  # Only when a row for the name exists: a name with no session anywhere in the listing (a refresh
+  # that launches a seat that never ran) has no session whose start could be compared.
+  if [ -z "$started_s" ] && [ -n "$(holder_field "$json" "$name" name)" ]; then
+    die "$verb: the start of '$name''s session is not known (the listing has no startedAt and no
+  transcript was found), so the handoff recorded for it cannot be compared against the session.
+  Park properly, then retry once the session's start can be read:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD and only the comparison cannot be made,
+  keep the pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+  fi
+
   if [ -n "$started_s" ] && [ "$set_at_s" -lt "$started_s" ]; then
     die "$verb: the handoff recorded for '$name' PREDATES the session it would replace.
       handoff recorded   $(fmt_epoch "$set_at_s" '%Y-%m-%d %H:%M')
@@ -2521,6 +2575,45 @@ handoff_gate() {
       fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
   Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+  fi
+
+  ptr_target=$(read_pointer "$name") || ptr_target=""
+  if tgt_e=$(std_handoff_epoch "$ptr_target" "$name"); then
+    started_min=$(( ${started_s:-0} - ${started_s:-0} % 60 ))
+    if [ -n "$started_s" ] && [ "$tgt_e" -lt "$started_min" ]; then
+      die "$verb: the handoff recorded for '$name' names a document written BEFORE the session started.
+      document           $ptr_target
+      document stamped   $(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
+      session started    $(fmt_epoch "$started_min" '%Y-%m-%d %H:%M')
+  The pointer was recorded after the start, but it names a superseded document, so the successor
+  would read an earlier sitting's park as current.
+  Park properly, then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD (a resumed session rewrites its start
+  time), keep the pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+    fi
+    floor_e=$tgt_e
+  else
+    floor_e=$(( set_at_s - set_at_s % 60 ))
+  fi
+  if newest=$(newest_standard_handoff "$name"); then
+    newest_e=${newest%% *}; newest_p=${newest#* }
+    if [ "${newest_p##*/}" != "${ptr_target##*/}" ] && [ "$newest_e" -gt "$floor_e" ]; then
+      die "$verb: a NEWER handoff exists for '$name' than the one recorded.
+      recorded           $ptr_target
+      newer              $newest_p  (stamped $(fmt_epoch "$newest_e" '%Y-%m-%d %H:%M'))
+  The recorded pointer would hand the successor an older document than the newest one written.
+  If the newer one is the park for this sitting, record it, then retry:
+      fleet-canonicals handoff $name --set $newest_p
+  Or, if the RECORDED HANDOFF IS GOOD and the newer file is not for this
+  sitting, keep the pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+    fi
   fi
 
   now=$(date +%s)

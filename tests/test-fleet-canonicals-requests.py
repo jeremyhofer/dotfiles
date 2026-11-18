@@ -1063,6 +1063,102 @@ def test_serve_blocked_session_parked_before_it_started_waits(fleet):
         "...and the reason says the handoff predates the session: %s" % fleet.result("r-pk3", "detail")
 
 
+# the handoff DOCUMENT, not only the pointer: a standard name (YYYY-MM-DD-HHMM-<seat>-park|checkpoint.md)
+# is read, only to refuse, in the same terms as the gate in fleet-canonicals
+
+TRANSCRIPT_START = 1794099600   # 2026-11-08T01:00:00Z, the start `transcript()` writes
+
+
+def _stamp(epoch):
+    return time.strftime("%Y-%m-%d-%H%M", time.localtime(epoch))
+
+
+def _parked_blocked(fleet, label):
+    fleet.live_row(label, "alpha-canonical", "blocked", "s-pk"); fleet.transcript("s-pk", "ended")
+    fleet.pid_for(5200, "alpha-canonical", "s-pk", "idle")
+
+
+def _doc(fleet, where, name, epoch, seat="alpha-canonical", kind="park", suffix=""):
+    d = fleet.state / "handoff-staging" if where == "staged" else fleet.T / "placed"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / ("%s-%s-%s%s.md" % (_stamp(epoch), seat, kind, suffix) if name is None else name)
+    f.write_text("handoff\n")
+    return f
+
+
+def _serve_one(fleet, rid):
+    fleet.plant(rid, "refresh", "alpha-canonical", "director-canonical")
+    fleet.serve()
+
+
+def test_serve_a_pointer_naming_a_document_stamped_before_the_session_waits(fleet):
+    _parked_blocked(fleet, "dc000001")
+    fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, TRANSCRIPT_START - 7200)))
+    _serve_one(fleet, "r-dc1")
+    fleet.expect("r-dc1", "waiting", "working", "a pointer recorded now naming a document stamped before the start waits")
+    assert "written before the session started" in fleet.result("r-dc1", "detail"), fleet.result_doc("r-dc1")
+
+
+def test_serve_a_document_stamped_in_the_start_minute_is_served(fleet):
+    _parked_blocked(fleet, "dc000002")
+    fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, TRANSCRIPT_START)))
+    _serve_one(fleet, "r-dc2")
+    fleet.expect("r-dc2", "done", "", "a standard document stamped in the start's own minute passes")
+
+
+def test_serve_a_newer_standard_handoff_than_the_recorded_one_waits(fleet):
+    _parked_blocked(fleet, "dc000003")
+    target = fleet.S / "alpha.handoff.md"
+    fleet.set_handoff("alpha-canonical", str(target))
+    newer = _doc(fleet, "staged", None, int(time.time()) + 3600)
+    _serve_one(fleet, "r-dc3")
+    fleet.expect("r-dc3", "waiting", "working", "a standard file stamped after the pointer was set waits")
+    detail = fleet.result("r-dc3", "detail")
+    assert "newer handoff" in detail and "handoff alpha-canonical --set %s" % newer in detail, detail
+
+
+def test_serve_a_newer_placed_handoff_than_a_standard_target_waits(fleet):
+    _parked_blocked(fleet, "dc000004")
+    fleet.set_config("handoffs = %s" % (fleet.T / "placed"))
+    fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, TRANSCRIPT_START + 600)))
+    _doc(fleet, "placed", None, TRANSCRIPT_START + 1800)
+    _serve_one(fleet, "r-dc4")
+    fleet.expect("r-dc4", "waiting", "working", "a newer file in the configured handoffs directory waits")
+    assert "newer handoff" in fleet.result("r-dc4", "detail"), fleet.result_doc("r-dc4")
+
+
+def test_serve_non_standard_target_with_no_newer_standard_file_is_served(fleet):
+    _parked_blocked(fleet, "dc000005")
+    target = fleet.S / "alpha.handoff.md"
+    fleet.set_handoff("alpha-canonical", str(target))
+    _doc(fleet, "staged", None, int(time.time()) - 7200)
+    _serve_one(fleet, "r-dc5")
+    fleet.expect("r-dc5", "done", "", "an older standard file does not stop a plain target")
+
+
+def test_serve_a_placed_and_staged_copy_of_the_target_are_not_newer(fleet):
+    _parked_blocked(fleet, "dc000006")
+    fleet.set_config("handoffs = %s" % (fleet.T / "placed"))
+    staged = _doc(fleet, "staged", None, TRANSCRIPT_START + 600)
+    _doc(fleet, "placed", staged.name, 0)
+    fleet.set_handoff("alpha-canonical", str(staged))
+    _serve_one(fleet, "r-dc6")
+    fleet.expect("r-dc6", "done", "", "the same basename staged and placed never triggers the newer check")
+
+
+def test_serve_other_seats_and_non_standard_names_are_not_read(fleet):
+    _parked_blocked(fleet, "dc000007")
+    target = fleet.S / "alpha.handoff.md"
+    fleet.set_handoff("alpha-canonical", str(target))
+    later = int(time.time()) + 3600
+    _doc(fleet, "staged", None, later, seat="beta-canonical")
+    _doc(fleet, "staged", None, later, seat="x-alpha-canonical")
+    _doc(fleet, "staged", None, later, suffix="-notes")
+    _serve_one(fleet, "r-dc7")
+    fleet.expect("r-dc7", "done", "", "another seat's file, a longer seat name ending with this one and a "
+                 "-park-notes.md name are not read")
+
+
 def test_serve_blocked_with_a_real_waiting_for_waits(fleet):
     fleet.live_row("pk000004", "alpha-canonical", "blocked", "s-pk", waitingFor="permission prompt")
     fleet.transcript("s-pk", "ended")

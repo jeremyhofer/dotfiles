@@ -860,6 +860,92 @@ out=$(zfc refresh zeta-canonical --dry-run); rc=$?
 [[ "$out" != *"PREDATES"* ]] && ok "gate converts startedAt ms to seconds before comparing" \
     || bad "gate compared ms against s and refused a fresh handoff: $out"
 
+# --- the gate reads the DOCUMENT the pointer names, by its standard name only ---
+# A pointer recorded after the start can still name a superseded document, or miss a newer one.
+# Standard name: YYYY-MM-DD-HHMM-<seat>-(park|checkpoint).md, exactly; anything else is not read.
+# Each refusal below is paired with a control that must pass, so a gate that always refuses fails.
+GS2="$TMPROOT/gstate2"; GH2="$TMPROOT/ghandoffs"
+gstamp() { date -d "@$1" +%Y-%m-%d-%H%M 2>/dev/null || date -r "$1" +%Y-%m-%d-%H%M; }
+gzfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" \
+         FLEET_AGENTS_JSON_CMD="cat ${GJSON:-$TMPROOT/zeta.json}" bash "$TOOL" "$@" 2>&1 }
+gfresh() {  # gfresh <target-path-or-"-" for the plain file> <set-at epoch>
+  rm -rf "$GS2" "$GH2"; mkdir -p "$GS2/handoff-staging" "$GH2"
+  local t=$1; [[ $t == - ]] && t="$TMPROOT/zeta-handoff.md"
+  print "$t"           >  "$GS2/zeta-canonical.handoff"
+  print "# set-at $2"   >> "$GS2/zeta-canonical.handoff"
+}
+gdoc() { print "x" > "$1"; }   # gdoc <path>
+GSTART=$(( NOW - 3600 ))
+GS_NAME="zeta-canonical-park.md"
+
+# 1. The target's stamp predates the session.
+gfresh "$GS2/handoff-staging/$(gstamp $(( GSTART - 7200 )))-$GS_NAME" $(( NOW - 60 ))
+gdoc "$GS2/handoff-staging/$(gstamp $(( GSTART - 7200 )))-$GS_NAME"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"BEFORE the session started"* ]] \
+    && ok "gate refuses a pointer, recorded after the start, naming a document stamped before it" \
+    || bad "document predating the session passed (rc=$rc): $out"
+out=$(gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force skips the document-stamp refusal" || bad "--force (rc=$rc): $out"
+out=$(gzfc refresh zeta-canonical --stub 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"stub written"* ]] && ok "--stub replaces over the document-stamp refusal" || bad "--stub (rc=$rc): $out"
+# control: stamped in the same minute as the session's start
+f="$GS2/handoff-staging/$(gstamp $GSTART)-$GS_NAME"; gfresh "$f" $(( NOW - 60 )); gdoc "$f"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "gate passes a standard target stamped in the same minute as the start" \
+    || bad "same-minute target refused (rc=$rc): $out"
+
+# 2. A newer standard handoff for the seat exists.
+f="$GS2/handoff-staging/$(gstamp $(( GSTART + 600 )))-$GS_NAME"; gfresh "$f" $(( NOW - 60 )); gdoc "$f"
+newer="$GH2/$(gstamp $(( GSTART + 1800 )))-$GS_NAME"; gdoc "$newer"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"NEWER handoff"* && "$out" == *"handoff zeta-canonical --set $newer"* ]] \
+    && ok "gate refuses a standard target while a newer one is placed, naming it and the command" \
+    || bad "newer placed handoff not caught (rc=$rc): $out"
+out=$(gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force skips the newer-handoff refusal" || bad "--force newer (rc=$rc): $out"
+# a non-standard target is compared by the pointer's set-at minute
+gfresh - $(( NOW - 60 )); newer="$GS2/handoff-staging/$(gstamp $NOW)-$GS_NAME"; gdoc "$newer"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"NEWER handoff"* && "$out" == *"--set $newer"* ]] \
+    && ok "gate refuses a non-standard target when a standard file is stamped after the pointer was set" \
+    || bad "newer staged file vs non-standard target (rc=$rc): $out"
+# controls that must pass
+gfresh - $(( NOW - 60 )); gdoc "$GS2/handoff-staging/$(gstamp $(( NOW - 1800 )))-$GS_NAME"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "gate passes a non-standard target with no newer standard file" || bad "no-newer control refused (rc=$rc): $out"
+f="$GS2/handoff-staging/$(gstamp $(( GSTART + 600 )))-$GS_NAME"; gfresh "$f" $(( NOW - 60 )); gdoc "$f"
+gdoc "$GH2/${f##*/}"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "a placed and a staged copy sharing the target's basename do not trigger the newer check" \
+    || bad "same-basename copies refused (rc=$rc): $out"
+gfresh - $(( NOW - 60 ))
+gdoc "$GS2/handoff-staging/$(gstamp $NOW)-eta-canonical-park.md"
+gdoc "$GH2/$(gstamp $NOW)-x-zeta-canonical-park.md"
+gdoc "$GH2/$(gstamp $NOW)-zeta-canonical-checkpoint.md.bak"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "another seat's newer file, including one whose name ends with this seat's, is ignored" \
+    || bad "other seat's newer file refused (rc=$rc): $out"
+gfresh - $(( NOW - 60 )); gdoc "$GH2/$(gstamp $NOW)-zeta-canonical-park-notes.md"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "a name that is not exactly standard (...-park-notes.md) is not read" \
+    || bad "non-standard name refused (rc=$rc): $out"
+
+# 3. No known session start: neither a listing startedAt nor a transcript.
+print '[{"pid":90444,"id":"ddd4","name":"zeta-canonical","sessionId":"sz"}]' > "$TMPROOT/zeta-nostart.json"
+gfresh - $(( NOW - 60 ))
+out=$(GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"start of 'zeta-canonical''s session is not known"* ]] \
+    && ok "gate refuses rather than skips when no session start is known" \
+    || bad "no-start gate passed (rc=$rc): $out"
+out=$(GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force passes a session with no known start" || bad "--force no-start (rc=$rc): $out"
+
 # --- --stub ---
 rm -rf "$GSTATE"
 out=$(zfc refresh zeta-canonical --stub 'nothing in flight' --dry-run); rc=$?
