@@ -19,3 +19,40 @@ plants = [
   { id = "control-symlinked", expect = "VOID" },
 ]
 minutes = 1
+
+[[case]]
+id = "local-md"
+question = "Does a session started in a worktree at <repo>/.claude/worktrees/<name> see the repository root's CLAUDE.local.md, which is untracked, so the worktree has no copy of its own?"
+relies = "The root's CLAUDE.local.md reaches a session started in the nested worktree: Claude Code reads instruction files from the working directory's parents, and the repository root is one of them, so moving worktrees under .claude/worktrees/ keeps a repository's local instructions in every worktree session."
+bears-on = "turning the .claude/worktrees/ location on"
+regimes = ["real"]
+script = "local-md.sh"
+controls = ["positive: the root CLAUDE.md's codeword is seen", "negative: a codeword in a file nothing references is not seen"]
+plants = [
+  { id = "local-moved", expect = "FAIL" },
+  { id = "positive-absent", expect = "VOID" },
+  { id = "negative-referenced", expect = "VOID" },
+]
+minutes = 3
+
+[[case]]
+id = "claude-worktree"
+question = "Under real settings with worktree-path at <repo>/.claude/worktrees/<branch>, where does `claude --bg --worktree <name>` put the worktree, does worktrunk's setup run, and does the session commit there?"
+relies = "worktrunk's plugin creates the session's worktree at <repo>/.claude/worktrees/<name>, the repository's worktrunk post-start hook runs in it, and the session commits there with `git -c commit.gpgsign=false commit`, read from git."
+bears-on = "turning the .claude/worktrees/ location on, and the skills' text on --worktree"
+regimes = ["real"]
+script = "claude-worktree.sh"
+controls = ["grant: a commit in a worktree given by --add-dir must land", "refusal: a commit in a worktree made outside the session and never granted must fail with git's \"Read-only file system\""]
+plants = [
+  { id = "plugin-off", expect = "FAIL", arm = "setup" },
+  { id = "grant-withheld", expect = "VOID" },
+]
+minutes = 8
+
+# Each runs as its own Bash call from the session's worktree; the output goes to a mark the case
+# reads, and the commits are read from git.
+[case.commands]
+own = "git -c commit.gpgsign=false commit --allow-empty -m seam-probe-own > seam-probe-mark-own 2>&1"
+grant = "git -C {grant} -c commit.gpgsign=false commit --allow-empty -m seam-probe-grant > seam-probe-mark-grant 2>&1"
+refuse = "git -C {refuse} -c commit.gpgsign=false commit --allow-empty -m seam-probe-refuse > seam-probe-mark-refuse 2>&1"
+done = "echo done > seam-probe-mark-done"

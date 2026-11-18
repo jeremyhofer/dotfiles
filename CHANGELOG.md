@@ -33,6 +33,17 @@ Entries are newest first.
 ---
 
 
+## 2026-11-18 (seam-probe starts Claude Code sessions; two session cases)
+
+`seam-probe` gains the session primitives (`session launch|ask|stop|resume|rm`), `wait mark`, the
+evidence primitives (`committed`, `refused`, `codeword`, `path`, `trusted`) and `prompt`, and its
+`worktree-takeover` suite two cases that start real sessions: `local-md` and `claude-worktree`. A
+run cleans up every session it started and those sessions' transcripts. `run` and `red` now refuse
+an unwritable state directory with one line instead of a traceback. Nothing to change on a machine;
+the session cases run from a plain terminal, never inside a Claude Code session, and
+`claude-worktree` reports SKIPPED, naming the step, until its fixture is trusted and its worktrunk
+hook approved once (`seam-probe trust worktree-takeover`).
+
 ## 2026-11-17 (a listed seat with no process reads LISTED-STOPPED)
 
 The session snapshot (`fleet-canonicals snapshot`, written by its timer) records a seat as `stopped`

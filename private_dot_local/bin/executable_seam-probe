@@ -21,7 +21,8 @@ check never seen to fail is of unknown value, so a PASS whose plants have no rec
 current case script, tool versions and regime reports "not seen red" (exit 4), not 0.
 
 Standard library only. The case scripts are bash, run from the terminal by this tool; they call
-this tool's primitives (fixture, evidence, manual, verdict) and end with one verdict per arm.
+this tool's primitives (fixture, session, wait, evidence, prompt, manual, verdict) and end with
+one verdict per arm.
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from datetime import datetime, timezone
@@ -71,13 +73,40 @@ commands that run cases (a case that starts Claude Code sessions is refused insi
 from a plain terminal; a case in the `none` regime runs anywhere):
   run SUITE [CASE...]      run cases, each in its first declared regime unless --regime
   red SUITE CASE           run a case once per declared plant; each must come out as it expects
-  trust SUITE              print the one interactive step a fixture needs once per machine
+  trust SUITE              print the steps a fixture needs once per machine (trust, approvals)
 primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set):
   fixture repo NAME        a fresh git repository at the run's fixture path; prints its path
   fixture worktree REPO NAME [--path P]
                            a worktree made with git directly (default REPO/.claude/worktrees/NAME)
-  evidence no-symlink ROOT REL
-                           exit 1 if any component from ROOT down to ROOT/REL is a symlink
+  fixture keep PATH        leave one fixture repository in place after the case (for a grant only
+                           a person can give: Claude Code's trust, worktrunk's hook approval)
+  fixture settings PATH JSON
+                           write a settings file, only inside the run's fixture directory
+  evidence ...             each prints what it read; exit 0 it shows the thing, 1 it shows
+                           otherwise, 3 it could not be read (INCONCLUSIVE, never a result):
+    no-symlink ROOT REL    any component from ROOT down to ROOT/REL a symlink (exit 1)
+    path P --exists|--absent|--no-symlink [--root R]
+    committed WORKTREE REF-BEFORE [--message SUBJECT]
+                           a commit on WORKTREE's HEAD since REF-BEFORE, read from git
+    refused MARK [--text T]...
+                           a declared refusal text (default git's "Read-only file system")
+    codeword SOURCE WORD   WORD in a reply: an output file, or a session or ask of this run by name
+    trusted REPO           Claude Code's workspace trust for REPO's root
+  wait mark PATH | --under DIR NAME [--seconds N] [--line TEXT]
+                           wait for a mark a session writes; prints its path; missing: exit 3
+  session launch NAME --regime real|bare|candidate --cwd DIR [--add-dir D]... [--settings F]
+          [--worktree W] [--allow RULE]... [--model M] [--candidate-source SRC] -- PROMPT
+                           `claude --bg`, haiku unless --model, the prompt after `--`; prints the id
+  session ask NAME --regime R --cwd DIR [--tools T] [--model M] -- PROMPT
+                           headless `claude -p`, tools off unless --tools, prompt on stdin; prints
+                           the reply's file; exit 4 when the model declined the prompt
+  session stop NAME        `claude stop`, then confirmed against the listing, else exit 3
+  session resume NAME [--prompt P]
+                           flagless `claude --bg --resume <uuid>` from the session's directory;
+                           exit 0 same id, 1 a new id or a copy, 3 unknown
+  session rm NAME          `claude rm`, its whole output kept as evidence
+  prompt [KEY...] [NAME=VALUE...]
+                           a session prompt from the case's declared commands, one Bash call each
   manual TEXT              print an instruction for the person at the terminal; wait for Enter
   verdict [--arm A] V REASON
                            the case's (or one arm's) result, once: PASS FAIL VOID INCONCLUSIVE
@@ -91,7 +120,11 @@ where: suites from $SEAM_PROBE_SUITES (colon-separated directories) else
 ~/.local/share/seam-probe/suites; fixtures only under $SEAM_PROBE_SANDBOX (default
 ~/.claude-probe-sandbox)/seams/SUITE; results in $SEAM_PROBE_STATE (default
 ~/.local/state/seam-probe)/SUITE/RUN-ID/ (results.jsonl, summary.txt), and the seen-red record in
-.../SUITE/reds.jsonl. summary.txt names no path, user or machine, so it can be pasted into a record.
+.../SUITE/reds.jsonl; `run` and `red` refuse an unwritable state directory first. summary.txt names
+no path, user or machine, so it can be pasted into a record. Each session a run starts is stopped and
+removed at its end and on Ctrl-C (`claude rm`, retried once with the flag values it reports), and
+its transcript under ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/ removed, only under a project key
+derived from a fixture path. SEAM_PROBE_CLAUDE names the claude binary.
 """
 
 
@@ -122,6 +155,42 @@ def state_root() -> Path:
 
 def fixture_root(suite: str) -> Path:
     return sandbox_root() / "seams" / suite
+
+
+def check_state_root() -> None:
+    """Refuse a run whose results could not be written, before anything else happens. Inside a
+    sandboxed session the default state directory is read-only, which once surfaced as a traceback
+    halfway through a run."""
+    root = state_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=root, prefix=".write-check-"):
+            pass
+    except OSError as e:
+        raise Usage(f"the state directory {root} cannot be written ({e.strerror or e}); "
+                    f"set SEAM_PROBE_STATE to a writable directory")
+
+
+def fixtures_dir() -> Path:
+    """The run's fixture directory, which the orchestrator names; only under the sandbox root."""
+    f = os.environ.get("SEAM_PROBE_FIXTURES")
+    if not f:
+        raise Usage("this is a primitive for a case script; it needs SEAM_PROBE_FIXTURES, which `run` and `red` set")
+    root = Path(f)
+    if not inside(root, sandbox_root()):
+        raise Usage(f"the fixture root {root} is outside {sandbox_root()}; refusing")
+    return root
+
+
+def claude_config_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR", str(home() / ".claude"))).expanduser()
+
+
+def env_seconds(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        raise Usage(f"{name} must be a number of seconds")
 
 
 def inside(path: Path, root: Path) -> bool:
@@ -293,9 +362,7 @@ def remove_fixture(path: Path, root: Path) -> None:
 def prim_fixture_repo(name: str) -> int:
     if not ID_RE.match(name):
         raise Usage("a fixture name is lower-case letters, digits and dashes")
-    root = Path(os.environ["SEAM_PROBE_FIXTURES"])
-    if not inside(root, sandbox_root()):
-        raise Usage(f"the fixture root {root} is outside {sandbox_root()}; refusing")
+    root = fixtures_dir()
     root.mkdir(parents=True, exist_ok=True)
     repo, remote = root / name, root / f"{name}.remote.git"
     for p in (repo, remote):
@@ -314,7 +381,10 @@ def prim_fixture_repo(name: str) -> int:
                  ("commit.gpgsign", "false"), ("tag.gpgsign", "false"),
                  ("core.hooksPath", str(repo / ".git/seam-probe-no-hooks"))):
         git("config", "--local", k, v, cwd=repo)
-    (repo / ".gitignore").write_text(f"{MARKER}\nseam-probe-*\n")
+    # The probe's own files, a regime's project settings and nested worktrees never read as a
+    # change, so `claude rm` and git's clean checks see the fixture as its commits left it.
+    (repo / ".gitignore").write_text(f"{MARKER}\nseam-probe-*\n/.claude/settings.json\n"
+                                     "/.claude/settings.local.json\n/.claude/worktrees/\n")
     (repo / "README.md").write_text(f"seam-probe fixture {name}\n")
     for args in (("add", ".gitignore", "README.md"), ("commit", "-q", "-m", "fixture"),
                  ("remote", "add", "origin", str(remote)), ("push", "-q", "origin", "main")):
@@ -329,7 +399,7 @@ def prim_fixture_repo(name: str) -> int:
 
 
 def prim_fixture_worktree(repo: str, name: str, path: str | None) -> int:
-    root = Path(os.environ["SEAM_PROBE_FIXTURES"])
+    root = fixtures_dir()
     rp = Path(repo)
     if not inside(rp, root) or not (rp / MARKER).exists():
         raise Usage(f"{repo} is not a fixture repository of this run")
@@ -343,6 +413,44 @@ def prim_fixture_worktree(repo: str, name: str, path: str | None) -> int:
         return 1
     ledger_append({"kind": "worktree", "repo": str(rp), "path": str(wt), "branch": name})
     print(wt)
+    return 0
+
+
+def prim_fixture_keep(path: str) -> int:
+    """Leave one fixture repository (and its remote) in place after the case, so a person can grant
+    it something only a person can (Claude Code's trust, worktrunk's hook approval). The next run
+    rebuilds it at the same path, which is what keeps that grant."""
+    p = Path(path)
+    made = {e.get("path") for e in ledger_read(ledger_path()) if e.get("kind") == "fixture"}
+    if str(p) not in made:
+        raise Usage(f"{path} is not a fixture this run made")
+    ledger_append({"kind": "keep", "path": str(p)})
+    ledger_append({"kind": "keep", "path": str(p.parent / f"{p.name}.remote.git")})
+    print(p)
+    return 0
+
+
+def write_settings(path: Path, data: dict) -> Path:
+    """The one way this tool writes a settings file: only inside the run's fixture directory, and
+    never through a symlink, so no user, project or dotfiles settings file can be touched."""
+    root = fixtures_dir()
+    p = Path(path)
+    if not p.is_absolute() or not inside(p, root) or p.resolve() == root.resolve() or p.is_symlink():
+        raise Usage(f"refusing to write the settings file {p}: it is outside the run's fixture directory {root}")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+    ledger_append({"kind": "file", "path": str(p)})
+    return p
+
+
+def prim_fixture_settings(path: str, text: str) -> int:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise Usage(f"the settings are not JSON: {e}")
+    if not isinstance(data, dict):
+        raise Usage("the settings must be a JSON object")
+    print(write_settings(Path(path), data))
     return 0
 
 
@@ -365,6 +473,538 @@ def prim_no_symlink(root: str, rel: str) -> int:
     for f in found:
         print(f"symlink: {f}")
     return 1 if found else 0
+
+
+# ---- evidence: each prints what it read and exits 0 (it shows the thing), 1 (it shows otherwise)
+# or 3 (it could not be read: a missing mark or worktree is INCONCLUSIVE, never a result) ---------
+
+EV_YES, EV_NO, EV_UNREAD = 0, 1, 3
+
+
+def prim_path(p: str, mode: str, root: str | None) -> int:
+    path = Path(p)
+    kind = ("symlink" if path.is_symlink() else "directory" if path.is_dir() else
+            "file" if path.exists() else "absent")
+    if mode == "no-symlink":
+        if not root:
+            raise Usage("--no-symlink needs --root, the directory the walk starts from")
+        rel = os.path.relpath(os.path.abspath(p), os.path.abspath(root))
+        if rel == ".." or rel.startswith(".." + os.sep):
+            raise Usage(f"{p} is not below {root}")
+        return prim_no_symlink(root, rel)
+    print(f"{p}: {kind}")
+    present = kind != "absent"
+    return EV_YES if present == (mode == "exists") else EV_NO
+
+
+def prim_committed(worktree: str, before: str, message: str | None) -> int:
+    wt = Path(worktree)
+    if not wt.is_dir():
+        print(f"INCONCLUSIVE: no worktree at {worktree}")
+        return EV_UNREAD
+    head = git("rev-parse", "HEAD", cwd=wt)
+    base = git("rev-parse", "--verify", f"{before}^{{commit}}", cwd=wt)
+    if head.returncode or base.returncode:
+        print(f"INCONCLUSIVE: git cannot read {worktree}: {(head.stderr or base.stderr).strip()}")
+        return EV_UNREAD
+    h, b = head.stdout.strip(), base.stdout.strip()
+    if h == b:
+        print(f"no commit: HEAD is still {h[:12]}")
+        return EV_NO
+    log = git("log", "--format=%h %s", f"{b}..{h}", cwd=wt).stdout.strip().splitlines()
+    if message and not any(line.split(" ", 1)[-1] == message for line in log):
+        print(f"no commit with the subject {message!r} since {b[:12]}; new: {'; '.join(log) or 'none'}")
+        return EV_NO
+    print(f"committed since {b[:12]}: {'; '.join(log)}")
+    return EV_YES
+
+
+REFUSAL_DEFAULT = ("Read-only file system",)
+
+
+def prim_refused(mark: str, texts: list[str] | None) -> int:
+    """A declared refusal text in a mark the session wrote. A missing mark means the command never
+    ran, which is the instrument failing, not a refusal."""
+    m = Path(mark)
+    if not m.is_file():
+        print(f"INCONCLUSIVE: no mark at {mark} (the command never ran)")
+        return EV_UNREAD
+    body = m.read_text(errors="replace")
+    for t in texts or REFUSAL_DEFAULT:
+        for line in body.splitlines():
+            if t in line:
+                print(f"refused: {line.strip()}")
+                return EV_YES
+    flat = " ".join(body.split())
+    print(f"not refused: {flat[:400] or '(the mark is empty)'}")
+    return EV_NO
+
+
+# What a refused PROMPT reads like (the model declining, not a tool refusing), matched as fixed
+# strings; the same list claude-context-probe matches.
+PROMPT_REFUSALS = ("This prompt contains unsafe content and cannot be processed.",)
+
+
+def project_key(path: Path | str) -> str:
+    """Claude Code's directory name for a project under ~/.claude/projects/."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def transcript_files(uuid: str) -> list[Path]:
+    root = claude_config_dir() / "projects"
+    if not uuid or not root.is_dir():
+        return []
+    return sorted(root.glob(f"*/{uuid}.jsonl"))
+
+
+def assistant_text(transcript: Path) -> str:
+    out = []
+    for line in transcript.read_text(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("type") != "assistant":
+            continue
+        content = (e.get("message") or {}).get("content")
+        if isinstance(content, str):
+            out.append(content)
+        elif isinstance(content, list):
+            out += [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+    return "\n".join(out)
+
+
+def prim_codeword(src: str, word: str) -> int:
+    """Whether a codeword appears in what the model replied: a file (a `session ask` output), or a
+    session this run launched or asked, by name (its transcript's assistant text)."""
+    text, where = None, src
+    if Path(src).is_file():
+        text = Path(src).read_text(errors="replace")
+    else:
+        for e in reversed(ledger_read(ledger_path())):
+            if e.get("name") != src:
+                continue
+            if e.get("kind") == "ask" and Path(e.get("output", "")).is_file():
+                text, where = Path(e["output"]).read_text(errors="replace"), e["output"]
+                break
+            if e.get("kind") == "session":
+                s = session_entry(src)
+                files = transcript_files(s.get("uuid", ""))
+                if files:
+                    text, where = assistant_text(files[0]), str(files[0])
+                break
+    if text is None:
+        print(f"INCONCLUSIVE: nothing to read for {src} (no output file, no transcript)")
+        return EV_UNREAD
+    if word in text:
+        print(f"seen: {word} in {where}")
+        return EV_YES
+    print(f"not seen: {word} in {where}")
+    return EV_NO
+
+
+def prim_trusted(repo: str) -> int:
+    """Whether Claude Code has accepted the workspace trust dialog for a repository, read where
+    claude-trust-check reads it: the key is the repository's root, and a parent's trust does not
+    extend to it. A background session refuses an untrusted workspace."""
+    keys = {str(Path(repo)), str(Path(repo).resolve())}
+    for f in (claude_config_dir() / ".config.json", home() / ".claude.json"):
+        try:
+            projects = json.loads(f.read_text()).get("projects")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+        if not isinstance(projects, dict):
+            continue
+        ok = any((projects.get(k) or {}).get("hasTrustDialogAccepted") is True for k in keys)
+        print(f"{repo}: {'trusted' if ok else 'not trusted'} (read from {f.name})")
+        return EV_YES if ok else EV_NO
+    print("INCONCLUSIVE: no Claude Code state file with a projects table was found")
+    return EV_UNREAD
+
+
+def prim_wait_mark(path: str | None, under: str | None, name: str | None, seconds: float,
+                   line: str | None) -> int:
+    """Wait for a mark the session writes, and print its path. A mark that never appears is
+    INCONCLUSIVE (the prompt never ran), never a refusal."""
+    poll = env_seconds("SEAM_PROBE_POLL", 2)
+    t0 = time.monotonic()
+
+    def find() -> Path | None:
+        if path:
+            return Path(path) if Path(path).is_file() else None
+        for d, dirs, files in os.walk(under):
+            dirs[:] = sorted(x for x in dirs if x != ".git")
+            if name in files:
+                return Path(d) / name
+        return None
+
+    want = path or f"{name} under {under}"
+    while True:
+        found = find()
+        if found and (not line or line in found.read_text(errors="replace").splitlines()):
+            ledger_append({"kind": "wait", "mark": str(found), "waited_s": round(time.monotonic() - t0, 1)})
+            print(found)
+            return 0
+        if time.monotonic() - t0 >= seconds:
+            ledger_append({"kind": "wait", "mark": want, "found": False, "waited_s": round(time.monotonic() - t0, 1)})
+            print(f"INCONCLUSIVE: no mark {want} after {seconds:g}s (the prompt's command never ran)")
+            return EV_UNREAD
+        time.sleep(poll)
+
+
+# ---- sessions ----------------------------------------------------------------------------------
+# Every Claude Code call goes to the binary SEAM_PROBE_CLAUDE names (default `claude` on PATH), so a
+# test can stand a fake in. A session primitive exits 0 when it did what it says, 1 when Claude Code
+# refused or failed, 3 when the outcome could not be confirmed (INCONCLUSIVE), and `session ask` 4
+# when the model declined the prompt (REFUSED).
+
+LIVE_STATES = {"running", "working", "busy", "blocked", "waiting", "starting", "active"}
+ID_RES = (re.compile(r"backgrounded\W+([0-9a-f]{6,})"),
+          re.compile(r"^\s*claude (?:logs|attach|stop) +([0-9a-f]{6,})", re.M))
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+BARE_SETTINGS = {"worktree": {"bgIsolation": "none"},
+                 "sandbox": {"enabled": True, "allowUnsandboxedCommands": False}}
+CANDIDATE_HOOK = "private_dot_local/bin/executable_claude-worktree-hook"
+
+
+def claude_bin() -> str:
+    name = os.environ.get("SEAM_PROBE_CLAUDE", "claude")
+    exe = shutil.which(name)
+    if not exe:
+        raise Usage(f"{name} is not on PATH (SEAM_PROBE_CLAUDE names the claude binary)")
+    return exe
+
+
+def claude(*args: str, cwd: Path | str | None = None, stdin_text: str | None = None,
+           timeout: float = 120) -> subprocess.CompletedProcess:
+    kw = {"input": stdin_text} if stdin_text is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        return subprocess.run([claude_bin(), *args], cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout, **kw)
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        return subprocess.CompletedProcess(e.cmd, 124, out, f"timed out after {timeout:g}s")
+
+
+def rows_of(obj) -> list[dict]:
+    """Every object in an agents listing that has both a session id and a short id."""
+    out = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "sessionId" in o and "id" in o:
+                out.append(o)
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(obj)
+    return out
+
+
+def listing(include_done: bool) -> list[dict] | None:
+    p = claude("agents", "--json", *(["--all"] if include_done else []), timeout=60)
+    if p.returncode:
+        return None
+    try:
+        return rows_of(json.loads(p.stdout))
+    except json.JSONDecodeError:
+        return None
+
+
+def pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+
+
+def liveness(sid: str) -> tuple[str, str]:
+    """gone, stopped, live or unknown, and what was seen. Live when the session is in the active
+    listing, has a live pid, or shows a working state; a row with none of these is stopped."""
+    everything, active = listing(True), listing(False)
+    if everything is None or active is None:
+        return "unknown", "the agents listing failed"
+    rows = [r for r in everything if r.get("id") == sid]
+    if not rows:
+        return "gone", f"no row for {sid}"
+    n_active = sum(1 for r in active if r.get("id") == sid)
+    seen = "; ".join(f"state={r.get('state', '-')} pid={r.get('pid', '-')}" for r in rows)
+    live = (n_active > 0 or any(pid_alive(r.get("pid")) for r in rows if r.get("pid") is not None)
+            or any(str(r.get("state", "")).lower() in LIVE_STATES for r in rows))
+    return ("live" if live else "stopped"), f"{seen}; in the active listing: {n_active}"
+
+
+def confirm_stopped(sid: str, seconds: float) -> tuple[bool, str]:
+    poll, t0, last = env_seconds("SEAM_PROBE_POLL", 2), time.monotonic(), ""
+    while True:
+        state, last = liveness(sid)
+        if state in ("gone", "stopped"):
+            return True, f"{state}: {last}"
+        if time.monotonic() - t0 >= seconds:
+            return False, f"{state}: {last}"
+        time.sleep(poll)
+
+
+def id_from_output(out: str) -> str | None:
+    for r in ID_RES:
+        m = r.search(out)
+        if m:
+            return m.group(1)
+    return None
+
+
+def session_entry(name: str) -> dict:
+    """A session's ledger record, merged from every entry under its name (the later winning)."""
+    merged: dict = {}
+    for e in ledger_read(ledger_path()):
+        if e.get("kind") == "session" and e.get("name") == name:
+            merged.update({k: v for k, v in e.items() if v is not None})
+    return merged
+
+
+def ledger_sessions(ledger: Path) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for e in ledger_read(ledger):
+        if e.get("kind") == "session":
+            out.setdefault(e["name"], {}).update({k: v for k, v in e.items() if v is not None})
+    return out
+
+
+def find_row(display: str | None = None, sid: str | None = None) -> dict | None:
+    rows = listing(True) or []
+    hits = [r for r in rows if (sid and r.get("id") == sid) or (display and r.get("name") == display)]
+    return max(hits, key=lambda r: str(r.get("startedAt", ""))) if hits else None
+
+
+def await_row(display: str | None, sid: str | None) -> dict | None:
+    poll, wait, t0 = env_seconds("SEAM_PROBE_POLL", 2), env_seconds("SEAM_PROBE_LIST_WAIT", 30), time.monotonic()
+    while True:
+        r = find_row(display, sid)
+        if (r and UUID_RE.match(str(r.get("sessionId", "")))) or time.monotonic() - t0 >= wait:
+            return r
+        time.sleep(poll)
+
+
+def session_cwd(cwd: str) -> Path:
+    p = Path(cwd)
+    if not p.is_dir() or not inside(p, fixtures_dir()):
+        raise Usage(f"a probe session runs only in a fixture directory of this run; {cwd} is not one")
+    return p
+
+
+def regime_flags(regime: str, cwd: Path, candidate_source: str | None) -> list[str]:
+    """The flags a regime adds. real: none, so the user's settings, hooks and plugins apply.
+    bare: project settings only, from a fixture project file that turns background isolation off
+    and the sandbox on, unsandboxed commands refused, as a home seat runs. candidate: bare, plus
+    the worktree hook wired from a dotfiles source tree and worktrunk's plugin enabled."""
+    if regime == "real":
+        return []
+    data = json.loads(json.dumps(BARE_SETTINGS))
+    if regime == "candidate":
+        src = candidate_source or os.environ.get("SEAM_PROBE_CANDIDATE_SOURCE")
+        if not src:
+            raise Usage("the candidate regime needs --candidate-source (or SEAM_PROBE_CANDIDATE_SOURCE): a dotfiles source tree")
+        hook = Path(src).expanduser().resolve() / CANDIDATE_HOOK
+        if not hook.is_file():
+            raise Usage(f"the candidate regime's hook {hook} does not exist")
+
+        def wired(arg: str) -> list[dict]:
+            return [{"type": "command", "command": f"{shlex.quote(str(hook))} {arg}"}]
+        data["enabledPlugins"] = {"worktrunk@worktrunk": True}
+        data["hooks"] = {"PreToolUse": [{"matcher": "Bash", "hooks": wired("bash")},
+                                        {"matcher": "EnterWorktree", "hooks": wired("enter-worktree")}],
+                         "SubagentStart": [{"hooks": wired("subagent-start")}]}
+    write_settings(cwd / ".claude/settings.json", data)
+    return ["--setting-sources", "project"]
+
+
+def evidence_file(stem: str) -> Path:
+    case = os.environ.get("SEAM_PROBE_CASE", "case")
+    return ledger_path().parent / f"session-{case}-{stem}.txt"
+
+
+def prim_session_launch(a) -> int:
+    name = a.name
+    if not ID_RE.match(name):
+        raise Usage("a session name is lower-case letters, digits and dashes")
+    if session_entry(name):
+        raise Usage(f"a session named {name} was already launched in this run")
+    cwd = session_cwd(a.cwd)
+    display = f"seam-probe-{name}-{hashlib.sha256(str(ledger_path()).encode()).hexdigest()[:6]}"
+    args = ["--bg", "-n", display, "--model", a.model or "haiku"]
+    args += regime_flags(a.regime, cwd, a.candidate_source)
+    for d in a.add_dir:
+        args += ["--add-dir", d]
+    if a.settings:
+        if not inside(Path(a.settings), fixtures_dir()):
+            raise Usage(f"a session's --settings file must be one this run wrote in its fixture directory, not {a.settings}")
+        args += ["--settings", a.settings]
+    if a.worktree:
+        args += ["--worktree", a.worktree]
+    if a.allow:
+        args += ["--allowedTools", *a.allow]
+    # The prompt always follows `--`: --add-dir and --allowedTools take several values and would
+    # take a prompt after them for one more.
+    args += ["--", a.prompt]
+    # Recorded before the call, so a launch interrupted half way is still found by its name.
+    ledger_append({"kind": "session", "name": name, "display": display, "cwd": str(cwd),
+                   "regime": a.regime, "argv": args})
+    p = claude(*args, cwd=cwd)
+    out = (p.stdout or "") + (p.stderr or "")
+    evidence_file(f"{name}-launch").write_text(f"$ claude {shlex.join(args)}\nexit {p.returncode}\n{out}")
+    if p.returncode:
+        print(f"launch failed (exit {p.returncode}): {' '.join(out.split())[:400]}")
+        return 1
+    sid = id_from_output(out)
+    row = await_row(None if sid else display, sid)
+    if not sid and row:
+        sid = row.get("id")
+    uuid = row.get("sessionId") if row else None
+    # The listing's cwd is where the session works (its worktree, with --worktree), which is where
+    # a wake is issued from.
+    ledger_append({"kind": "session", "name": name, "id": sid, "uuid": uuid,
+                   "workdir": row.get("cwd") if row else None})
+    if not sid:
+        print(f"INCONCLUSIVE: no session id in the launch output or the listing: {' '.join(out.split())[:300]}")
+        return 3
+    print(f"id {sid} uuid {uuid or 'unknown'}")
+    return 0
+
+
+def known_session(name: str) -> dict:
+    e = session_entry(name)
+    if not e:
+        raise Usage(f"no session named {name} in this run")
+    if not e.get("id"):
+        row = find_row(e.get("display"))
+        if row:
+            e.update({"id": row.get("id"), "uuid": row.get("sessionId")})
+            ledger_append({"kind": "session", "name": name, "id": e["id"], "uuid": e["uuid"]})
+    return e
+
+
+def prim_session_stop(name: str) -> int:
+    e = known_session(name)
+    sid = e.get("id")
+    if not sid:
+        print(f"INCONCLUSIVE: session {name} has no known id")
+        return 3
+    p = claude("stop", sid)
+    print(f"claude stop {sid}: {' '.join(((p.stdout or '') + (p.stderr or '')).split())}")
+    ok, seen = confirm_stopped(sid, env_seconds("SEAM_PROBE_STOP_WAIT", 90))
+    ledger_append({"kind": "session-stop", "name": name, "id": sid, "confirmed": ok, "seen": seen})
+    if ok:
+        print(f"stop confirmed: {seen}")
+        return 0
+    print(f"INCONCLUSIVE: stop not confirmed: {seen}")
+    return 3
+
+
+def prim_session_resume(name: str, prompt: str | None) -> int:
+    """A flagless `claude --bg --resume <full uuid>` from the session's recorded directory: the wake
+    a seat gets. Reports whether the same id came back."""
+    e = known_session(name)
+    uuid = e.get("uuid") or (find_row(e.get("display"), e.get("id")) or {}).get("sessionId")
+    if not uuid or not UUID_RE.match(str(uuid)):
+        print(f"INCONCLUSIVE: session {name} has no known session uuid")
+        return 3
+    args = ["--bg", "--resume", uuid] + (["--", prompt] if prompt else [])
+    wd = e.get("workdir")
+    cwd = wd if wd and Path(wd).is_dir() and inside(Path(wd), fixtures_dir()) else e["cwd"]
+    p = claude(*args, cwd=cwd)
+    out = (p.stdout or "") + (p.stderr or "")
+    n = sum(1 for x in ledger_read(ledger_path()) if x.get("kind") == "session-resume" and x.get("name") == name) + 1
+    evidence_file(f"{name}-resume{n}").write_text(f"$ claude {shlex.join(args)}\nexit {p.returncode}\n{out}")
+    nid = id_from_output(out)
+    copy = "copy" in out.lower()
+    ledger_append({"kind": "session-resume", "name": name, "rc": p.returncode, "id": nid, "copy": copy})
+    if nid and nid != e.get("id"):
+        # A copy is a session this run started, so cleanup removes it too.
+        ledger_append({"kind": "session", "name": f"{name}-resume{n}", "id": nid, "cwd": cwd})
+    if p.returncode or not nid:
+        print(f"INCONCLUSIVE: the resume {'failed (exit ' + str(p.returncode) + ')' if p.returncode else 'printed no id'}: "
+              f"{' '.join(out.split())[:300]}")
+        return 3
+    if nid == e.get("id") and not copy:
+        print(f"same id {nid}")
+        return 0
+    print(f"new id {nid} (was {e.get('id')}){'; the output mentions a copy' if copy else ''}")
+    return 1
+
+
+def prim_session_rm(name: str) -> int:
+    e = known_session(name)
+    sid = e.get("id")
+    if not sid:
+        print(f"INCONCLUSIVE: session {name} has no known id")
+        return 3
+    p = claude("rm", sid)
+    out = (p.stdout or "") + (p.stderr or "")
+    evidence_file(f"{name}-rm").write_text(f"$ claude rm {sid}\nexit {p.returncode}\n{out}")
+    ledger_append({"kind": "session-rm", "name": name, "id": sid, "rc": p.returncode, "output": out})
+    print(out.rstrip() or f"(claude rm printed nothing, exit {p.returncode})")
+    return 0 if p.returncode == 0 else 1
+
+
+def prim_session_ask(a) -> int:
+    """A headless `claude -p` with its tools off, as claude-context-probe runs its sessions: what
+    reaches the model's context, read from its reply. The prompt goes on stdin, the form
+    claude-context-probe has run for real, so no list-valued flag can take it; no transcript is
+    kept (--no-session-persistence). The reply is kept as the codeword evidence."""
+    if not ID_RE.match(a.name):
+        raise Usage("a session name is lower-case letters, digits and dashes")
+    cwd = session_cwd(a.cwd)
+    args = ["-p", "--no-session-persistence", "--model", a.model or "haiku", "--max-turns", "1"]
+    args += regime_flags(a.regime, cwd, a.candidate_source)
+    args += ["--tools", a.tools]
+    out = evidence_file(f"{a.name}-ask")
+    ledger_append({"kind": "ask", "name": a.name, "cwd": str(cwd), "argv": args, "output": str(out)})
+    p = claude(*args, cwd=cwd, stdin_text=a.prompt, timeout=env_seconds("SEAM_PROBE_ASK_WAIT", 300))
+    out.write_text(p.stdout or "")
+    out.with_suffix(".err").write_text(f"$ claude {shlex.join(args)} <prompt on stdin>\nexit {p.returncode}\n{p.stderr or ''}")
+    print(out)
+    for r in PROMPT_REFUSALS:
+        if r in (p.stdout or "") + (p.stderr or ""):
+            print(f"REFUSED: {r}", file=sys.stderr)
+            return 4
+    if p.returncode:
+        print(f"the call failed (exit {p.returncode}): {' '.join((p.stderr or '').split())[:300]}", file=sys.stderr)
+        return 1
+    return 0
+
+
+PROMPT_HEAD = ("Run the following shell commands with the Bash tool, exactly as written, each as its "
+               "own separate Bash call, in this order. Do not change directory, do not combine "
+               "commands, and do not run anything else. If a command fails, go on to the next one. "
+               "When all have run, reply with the single word DONE.\n")
+PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9-]*)\}")
+
+
+def prim_prompt(keys: list[str]) -> int:
+    """A session prompt built from the case's declared `commands` (the ones `lint` checked), in
+    the order named, each {placeholder} filled from a key=value argument."""
+    suite_dir = Path(os.environ.get("SEAM_PROBE_SUITE_DIR", ""))
+    data, _ = load(suite_dir)
+    cmds = get_case(data, os.environ.get("SEAM_PROBE_CASE", "")).get("commands", {})
+    vals = dict(k.split("=", 1) for k in keys if "=" in k)
+    names = [k for k in keys if "=" not in k] or list(cmds)
+    lines = []
+    for i, n in enumerate(names, 1):
+        if n not in cmds:
+            raise Usage(f"the case declares no command named {n!r}")
+
+        def fill(m):
+            if m.group(1) not in vals:
+                raise Usage(f"command {n!r} needs a value for {{{m.group(1)}}}")
+            return shlex.quote(vals[m.group(1)])
+        lines.append(f"{i}. {PLACEHOLDER.sub(fill, cmds[n])}")
+    print(PROMPT_HEAD + "\n".join(lines))
+    return 0
 
 
 def prim_manual(text: str) -> int:
@@ -404,7 +1044,8 @@ def first_line(cmd: list[str]) -> str:
 
 
 def versions() -> dict:
-    return {"claude": first_line(["claude", "--version"]), "worktrunk": first_line(["wt", "--version"])}
+    return {"claude": first_line([os.environ.get("SEAM_PROBE_CLAUDE", "claude"), "--version"]),
+            "worktrunk": first_line(["wt", "--version"])}
 
 
 def sha(path: Path) -> str:
@@ -456,19 +1097,91 @@ def slot_state(holder: str) -> tuple[str, str | None]:
     return "error", None
 
 
-def cleanup(ledger: Path, fixtures: Path, keep: bool) -> list[str]:
-    """Undo what the ledger records, newest first. Returns the steps that failed."""
+def rm_flags(out: str) -> list[str]:
+    """The flag values a refused `claude rm` reported (its --help: pass the value a previous
+    `claude rm <id>` reported), and only those two flags."""
+    flags = []
+    for f in ("--force-remove-worktree", "--discard-unpushed"):
+        m = re.search(re.escape(f) + r"""[ =]['"]?([A-Za-z0-9@._/-]+)""", out)
+        if m:
+            flags += [f, m.group(1)]
+    return flags
+
+
+def cleanup_sessions(ledger: Path, fixtures: Path, log: list[str]) -> list[str]:
+    """Stop and remove every session the ledger says this run started, then their transcripts, but
+    only those under a project key derived from a fixture path."""
     failed = []
-    if keep:
+    sessions = ledger_sessions(ledger)
+    if not sessions:
         return failed
-    for e in reversed(ledger_read(ledger)):
+    stop_wait = env_seconds("SEAM_PROBE_STOP_WAIT", 90)
+    for name, e in sessions.items():
         try:
-            if e.get("kind") == "worktree" and Path(e["repo"]).exists():
-                git("worktree", "remove", "--force", e["path"], cwd=Path(e["repo"]))
-            elif e.get("kind") == "fixture":
-                remove_fixture(Path(e["path"]), fixtures)
-        except (Usage, OSError, KeyError) as ex:
-            failed.append(f"{e.get('kind')}: {ex}")
+            sid = e.get("id") or (find_row(e.get("display")) or {}).get("id")
+            if not sid:
+                failed.append(f"session {name}: no id to remove it by")
+                continue
+            state, seen = liveness(sid)
+            log.append(f"session {name} ({sid}): {state}: {seen}")
+            if state == "gone":
+                continue
+            if state in ("live", "unknown"):
+                claude("stop", sid)
+                ok, seen = confirm_stopped(sid, stop_wait)
+                log.append(f"  stop {'confirmed' if ok else 'NOT confirmed'}: {seen}")
+            p = claude("rm", sid)
+            out = (p.stdout or "") + (p.stderr or "")
+            log.append(f"  claude rm {sid}: exit {p.returncode}: {' '.join(out.split())}")
+            flags = rm_flags(out) if p.returncode else []
+            # The force values discard a worktree and its commits, so only for a session that ran in
+            # this run's fixture directory, whose worktrees are throwaway.
+            if flags and inside(Path(e.get("cwd", "/")), fixtures):
+                p = claude("rm", sid, *flags)
+                out = (p.stdout or "") + (p.stderr or "")
+                log.append(f"  claude rm {sid} {' '.join(flags)}: exit {p.returncode}: {' '.join(out.split())}")
+            if p.returncode:
+                failed.append(f"session {name}: claude rm exit {p.returncode}: {' '.join(out.split())[:200]}")
+        except (Usage, OSError) as ex:
+            failed.append(f"session {name}: {ex}")
+    prefixes = {project_key(fixtures), project_key(fixtures.resolve())}
+    for e in sessions.values():
+        for f in transcript_files(e.get("uuid", "")):
+            if not any(f.parent.name == k or f.parent.name.startswith(k + "-") for k in prefixes):
+                continue
+            try:
+                f.unlink()
+                side = f.with_suffix("")
+                if side.is_dir():
+                    shutil.rmtree(side)
+                log.append(f"transcript removed: {f.parent.name}/{f.name}")
+            except OSError as ex:
+                failed.append(f"transcript {f.name}: {ex}")
+    return failed
+
+
+def cleanup(ledger: Path, fixtures: Path, keep: bool) -> list[str]:
+    """Undo what the ledger records: sessions first (their removal runs hooks in the fixture
+    repositories), then fixtures, newest first. --keep leaves fixtures, never sessions. Returns the
+    steps that failed; what was done is written beside the ledger."""
+    log: list[str] = []
+    failed = cleanup_sessions(ledger, fixtures, log)
+    entries = ledger_read(ledger)
+    kept = {e.get("path") for e in entries if e.get("kind") == "keep"}
+    if not keep:
+        for e in reversed(entries):
+            try:
+                if e.get("kind") == "worktree" and e.get("repo") not in kept and Path(e["repo"]).exists():
+                    git("worktree", "remove", "--force", e["path"], cwd=Path(e["repo"]))
+                elif e.get("kind") == "fixture" and e.get("path") not in kept:
+                    remove_fixture(Path(e["path"]), fixtures)
+                elif e.get("kind") == "file" and inside(Path(e["path"]), fixtures) and Path(e["path"]).is_file():
+                    Path(e["path"]).unlink()
+            except (Usage, OSError, KeyError) as ex:
+                failed.append(f"{e.get('kind')}: {ex}")
+    if log:
+        with open(ledger.with_name(ledger.name.replace("ledger-", "cleanup-").replace(".jsonl", ".txt")), "a") as f:
+            f.write("\n".join(log) + "\n")
     return failed
 
 
@@ -572,7 +1285,12 @@ def write_outputs(run_dir: Path, suite: str, records: list[dict], vers: dict, fi
     for r in records:
         for a in r["arms"]:
             name = r["case"] + (f"/{a['arm']}" if a["arm"] else "") + (f" [plant {r['plant']}]" if r["plant"] else "")
-            shown = r.get("reading", a["verdict"]) if r["plant"] else a.get("shown", a["verdict"])
+            if r["plant"]:
+                # A plant read on one arm says nothing about the others: they show their verdicts.
+                on = r.get("plant_arm") in (None, a["arm"])
+                shown = r.get("reading", a["verdict"]) if on else a["verdict"]
+            else:
+                shown = a.get("shown", a["verdict"])
             lines.append(f"  {name:<40} {shown:<14} {sanitize(a['reason'], fixtures)}")
         for c in r["cleanup_failed"]:
             lines.append(f"  {r['case']:<40} CLEANUP-FAILED {sanitize(c, fixtures)}")
@@ -582,6 +1300,7 @@ def write_outputs(run_dir: Path, suite: str, records: list[dict], vers: dict, fi
 
 
 def cmd_run(args) -> int:
+    check_state_root()
     suite_dir, data = load_valid(args.suite)
     cases = [get_case(data, c) for c in args.cases] if args.cases else data["case"]
     plan, chosen = [], []
@@ -630,6 +1349,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_red(args) -> int:
+    check_state_root()
     suite_dir, data = load_valid(args.suite)
     c = get_case(data, args.case)
     regime = args.regime or c["regimes"][0]
@@ -647,7 +1367,7 @@ def cmd_red(args) -> int:
         for p in c["plants"]:
             rec = run_one(suite_dir, c, regime, p["id"], run_dir, fixtures, args.keep)
             reading = red_reading(rec, p)
-            rec["reading"] = reading
+            rec["reading"], rec["plant_arm"] = reading, p.get("arm")
             if reading == "RED":
                 key = red_key(c, suite_dir, regime, vers, p["id"])
                 reds_path(args.suite).parent.mkdir(parents=True, exist_ok=True)
@@ -714,9 +1434,18 @@ def cmd_trust(args) -> int:
     find_suite(args.suite)
     f = fixture_root(args.suite)
     print(f"A background session refuses an untrusted workspace, and trust is granted only by accepting\n"
-          f"Claude Code's dialog in an interactive session. Once per machine, from a plain terminal:\n"
-          f"  mkdir -p {shlex.quote(str(f))} && cd {shlex.quote(str(f))} && claude\n"
-          f"then accept the trust dialog and /exit.")
+          f"Claude Code's dialog in an interactive session. Trust is keyed by each repository's own root;\n"
+          f"a parent directory's trust does not reach a repository below it. So a case that needs it\n"
+          f"reports SKIPPED naming the fixture repository, which it leaves in place under\n"
+          f"  {f}\n"
+          f"and, once per machine, from a plain terminal:\n"
+          f"  cd <that repository> && claude\n"
+          f"then accept the trust dialog and /exit. A case whose fixture carries a worktrunk project hook\n"
+          f"also needs that hook approved once: wt -C <that repository> config approvals add\n"
+          f"Each run rebuilds a fixture at the same path, so both grants hold across runs.")
+    left = sorted(d for d in f.iterdir() if (d / MARKER).exists() and not d.name.endswith(".remote.git")) if f.is_dir() else []
+    for d in left:
+        print(f"left in place: {shlex.quote(str(d))}")
     return 0
 
 
@@ -739,8 +1468,37 @@ def main(argv: list[str]) -> int:
     p = sub.add_parser("fixture"); fs = p.add_subparsers(dest="what", required=True)
     q = fs.add_parser("repo"); q.add_argument("name")
     q = fs.add_parser("worktree"); q.add_argument("repo"); q.add_argument("name"); q.add_argument("--path")
+    q = fs.add_parser("keep"); q.add_argument("path")
+    q = fs.add_parser("settings"); q.add_argument("path"); q.add_argument("json")
     p = sub.add_parser("evidence"); es = p.add_subparsers(dest="what", required=True)
     q = es.add_parser("no-symlink"); q.add_argument("root"); q.add_argument("rel")
+    q = es.add_parser("path"); q.add_argument("path"); q.add_argument("--root")
+    g = q.add_mutually_exclusive_group(required=True)
+    for m in ("exists", "absent", "no-symlink"):
+        g.add_argument(f"--{m}", dest="mode", action="store_const", const=m)
+    q = es.add_parser("committed"); q.add_argument("worktree"); q.add_argument("before"); q.add_argument("--message")
+    q = es.add_parser("refused"); q.add_argument("mark"); q.add_argument("--text", action="append")
+    q = es.add_parser("codeword"); q.add_argument("source"); q.add_argument("word")
+    q = es.add_parser("trusted"); q.add_argument("repo")
+    p = sub.add_parser("wait"); ws = p.add_subparsers(dest="what", required=True)
+    q = ws.add_parser("mark"); q.add_argument("path", nargs="?"); q.add_argument("--under", nargs=2, metavar=("DIR", "NAME"))
+    q.add_argument("--seconds", type=float, default=180); q.add_argument("--line")
+    p = sub.add_parser("session"); ss = p.add_subparsers(dest="what", required=True)
+    for verb in ("launch", "ask"):
+        q = ss.add_parser(verb); q.add_argument("name")
+        q.add_argument("--regime", required=True, choices=("real", "bare", "candidate"))
+        q.add_argument("--cwd", required=True); q.add_argument("--model")
+        q.add_argument("--candidate-source")
+        if verb == "launch":
+            q.add_argument("--add-dir", action="append", default=[]); q.add_argument("--settings")
+            q.add_argument("--worktree"); q.add_argument("--allow", action="append", default=[])
+        else:
+            q.add_argument("--tools", default="")
+        q.add_argument("prompt")
+    for verb in ("stop", "rm"):
+        q = ss.add_parser(verb); q.add_argument("name")
+    q = ss.add_parser("resume"); q.add_argument("name"); q.add_argument("--prompt")
+    p = sub.add_parser("prompt"); p.add_argument("keys", nargs="*")
     p = sub.add_parser("manual"); p.add_argument("text")
     p = sub.add_parser("verdict"); p.add_argument("--arm"); p.add_argument("verdict"); p.add_argument("reason", nargs="+")
     a = ap.parse_args(argv)
@@ -753,8 +1511,31 @@ def main(argv: list[str]) -> int:
             case "red": return cmd_red(a)
             case "trust": return cmd_trust(a)
             case "fixture":
-                return prim_fixture_repo(a.name) if a.what == "repo" else prim_fixture_worktree(a.repo, a.name, a.path)
-            case "evidence": return prim_no_symlink(a.root, a.rel)
+                match a.what:
+                    case "repo": return prim_fixture_repo(a.name)
+                    case "worktree": return prim_fixture_worktree(a.repo, a.name, a.path)
+                    case "keep": return prim_fixture_keep(a.path)
+                    case "settings": return prim_fixture_settings(a.path, a.json)
+            case "evidence":
+                match a.what:
+                    case "no-symlink": return prim_no_symlink(a.root, a.rel)
+                    case "path": return prim_path(a.path, a.mode, a.root)
+                    case "committed": return prim_committed(a.worktree, a.before, a.message)
+                    case "refused": return prim_refused(a.mark, a.text)
+                    case "codeword": return prim_codeword(a.source, a.word)
+                    case "trusted": return prim_trusted(a.repo)
+            case "wait":
+                if bool(a.path) == bool(a.under):
+                    raise Usage("wait mark takes a PATH, or --under DIR NAME")
+                return prim_wait_mark(a.path, *(a.under or (None, None)), a.seconds, a.line)
+            case "session":
+                match a.what:
+                    case "launch": return prim_session_launch(a)
+                    case "ask": return prim_session_ask(a)
+                    case "stop": return prim_session_stop(a.name)
+                    case "resume": return prim_session_resume(a.name, a.prompt)
+                    case "rm": return prim_session_rm(a.name)
+            case "prompt": return prim_prompt(a.keys)
             case "manual": return prim_manual(a.text)
             case "verdict": return prim_verdict(a.verdict, " ".join(a.reason), a.arm)
     except Usage as e:
