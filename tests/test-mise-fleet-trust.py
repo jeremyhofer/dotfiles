@@ -7,7 +7,7 @@
 opts in and writes mise's miserc, and for the apply script and `.chezmoiignore` lines that run it
 only where `miseActive` is true.
 
-Run: sh tests/run-all.sh --only test-mise-fleet-trust.py
+Run: npx nx run suite-mise-fleet-trust:test
  or: uv run --script tests/test-mise-fleet-trust.py [-k <pattern>]
 
 What is held:

@@ -5,7 +5,7 @@
 # ///
 """Tests for claude-usage-report's per-session view (--sessions).
 
-Run: sh tests/run-all.sh --only test-claude-usage-report-sessions.py
+Run: npx nx run suite-claude-usage-report-sessions:test
  or: uv run --script tests/test-claude-usage-report-sessions.py [-k <pattern>]
 
 What is held: a streamed message, written as several records with one message.id and cumulative
