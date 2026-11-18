@@ -1,6 +1,6 @@
 ---
 name: parking-and-handoff
-description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, why every turn of a background session ends with a statement rather than a question, what the coordinating seat tells its peers before its own refresh, the timestamp and kickoff-block shape a successor reads, and why a handoff cites no scratch path for anything its successor needs (the `scratch-ok:` marker).
+description: Use when a session is stopping, pausing, handing over, or being recycled — on any pause/stop/bedtime signal, when a usage ramp-down warning or gate fires, when writing or refreshing a dated handoff, when staging, placing or recording a canonical's handoff pointer, or when arming a resume for after a usage window resets. Also fires on "park", "wrap up", "checkpoint", "hand over", "recycle this session", `fleet-canonicals stage`, `place`, `handoff --set`, `wait-for-reset`, `resume-at`, `request refresh`. Covers the five park steps and which two are conditional, the audit of subagents and background jobs a park must enumerate and ask about rather than silently kill or silently abandon, why most pauses are checkpoints rather than parks, where the handoff file goes and how the pointer is recorded, closing the outgoing session, why every turn of a background session ends with a statement rather than a question, what the coordinating seat tells its peers before its own refresh, the timestamp and kickoff-block shape a successor reads, the line every park carries saying what follows it (refresh now, stop until a named time, or stop) and how a seat refreshed when it should have stopped is stopped, and why a handoff cites no scratch path for anything its successor needs (the `scratch-ok:` marker).
 ---
 
 # Parking, checkpointing and handoff
@@ -132,7 +132,8 @@ matters**; it is cheap, preserves the actual work, and makes any stop safe.
 - A usage window, a break, the end of a working day: **checkpoint**. Finish, commit, update the
   tracker, start nothing new, leave the session up.
 - A deliberate recycle or a handover: **park**. All five steps, because a successor will read the
-  handoff.
+  handoff. A park at the end of the day, or at the human's word to stop, is followed by a stop, not
+  a refresh ("What follows the park", below).
 
 The one thing that costs real headroom is an **idle gap longer than the prompt-cache lifetime**: the
 next request rebuilds the cache at a premium, in proportion to context depth. That is a reason to
@@ -265,11 +266,44 @@ approval" is not a reason: it is the case the rule exists for. Where the handoff
 `.doc-lint` sets `scratch-path:`, `doc-lint` refuses an unmarked citation, and a configured
 `stage-check` refuses it at `stage`, before it can hold up a `place` run.
 
+### What follows the park
+
+A park handoff says what happens to the seat after it, and when, in one line near the top (within
+its first 15 lines, beside the `Supersedes` line) and again in the park message to the hub. The
+line names one of three:
+
+1. **Refresh now, to continue working.** A successor starts at once and takes the next item.
+2. **Stop, brought back up at a named time or event:** "tomorrow morning", "when the human starts
+   the release work".
+3. **Stop, with no return planned.**
+
+For example: `**What follows this park: (2) stop, brought back up tomorrow morning.**`
+
+The seat that acts on the line (the hub, or the human where no hub runs) reads it rather than
+inferring from the prose. **A refresh is for a seat that will keep working now.** A park at the end
+of the day, or at the human's word to stop, is (2) or (3), never (1): a refresh then launches a
+successor that pays its whole startup context and sits idle until morning. Bringing a stopped seat
+back at its named time or event is the hub's, on its first sweep after it (or the human's); the
+handoff the seat parked with is still its pointer, and `up` reads it.
+
+**A seat refreshed when it should have stopped** is stopped, but the stop is refused: the gate on
+`down` wants a handoff recorded after the session it ends started, and the fresh session has none.
+The fresh session itself re-records the handoff it read (`fleet-canonicals handoff <name> --set
+<the same path>`), which is accurate only because it has done nothing but read it, and only that
+session knows it has done nothing; then the stop goes through. Or the human runs `down --force` from
+a terminal. No other session re-records a seat's pointer for it: the gate exists so that the holder
+of the sitting attests that a handoff describes it. The request queue does not take `--force`
+either, and that is not a gap to fill: it cannot tell who wrote a request, so escape hatches stay
+the operator's, from a terminal.
+
 ### The kickoff block
 
 Every park handoff ends with a "Next session kickoff" block in two parts.
 
-**(a) User steps:** what the human runs. Normally `fleet-canonicals refresh <name>`, which
+**(a) User steps:** what the human runs, matching the "what follows" line above. For a stop, the
+seat is stopped (`fleet-canonicals down <name>`, or a queued `request down` from a seat allowed to
+act on others), and the block says when it comes back and who brings it up. For a refresh, normally
+`fleet-canonicals refresh <name>`, which
 pre-flights the declared launch, stops the outgoing session, checks its row cleared, and launches
 the successor. It refuses inside the target session, so the parking canonical cannot run it; the
 human does. The by-hand launch, if the tool is unavailable, is in skill `canonical-takeover`.
