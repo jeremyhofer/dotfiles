@@ -36,7 +36,7 @@ codes, state files, caveats). This file is short on purpose: every session loads
   `wt-config-gen` (worktrunk's user config).
 - The fleet: `fleet-canonicals` (the long-running named sessions: status, up/down, refresh,
   handoffs, the request queue; skill `canonical-takeover`) · `fleet-canonicals-queue` (behind
-  `fleet-canonicals request`) · `fleet-slot` (the timing slot for heavy work) · `fleet-wait` (a
+  `fleet-canonicals request`) · `fleet-slot` (the timing slot, held only for timing measurements) · `fleet-wait` (a
   coordinating session's heartbeat, at most 55m) · `machine-snapshot` (what is loading the machine)
   · `apply-status` (the dotfiles apply ledger; `wait --since T`) · `launchagent-status` (macOS:
   deployed agents not loaded) · `chezmoi-overlay` (runs the private chezmoi instance).
