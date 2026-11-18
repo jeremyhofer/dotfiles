@@ -603,9 +603,12 @@ class PressureSampler:
 
 # ---- load guard --------------------------------------------------------------------------
 
-def wait_for_load(max_load, force, getload=read_loadavg, sleep=time.sleep, wait=120, interval=5):
+def wait_for_load(max_load, force, getload=None, sleep=time.sleep, wait=120, interval=5):
     """Return True when the sample must be marked under_load. Waits up to `wait` seconds for the
-    1-minute load to fall to max_load, then raises LoadError, unless force (no waiting, mark it)."""
+    1-minute load to fall to max_load, then raises LoadError, unless force (no waiting, mark it).
+    The load is read through the module's read_loadavg at call time, not bound as a default, so a
+    replacement of it (the tests make the machine look busy that way) is the one read."""
+    getload = getload or read_loadavg
     waited = 0
     while True:
         load = getload()

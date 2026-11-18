@@ -310,6 +310,14 @@ def test_load_guard_force_records_under_load():
     assert lt.wait_for_load(1.0, True, getload=lambda: 9.0, sleep=lambda s: None, wait=10, interval=5) is True
 
 
+def test_load_guard_reads_the_load_through_the_module_at_call_time(monkeypatch):
+    # The run commands' tests replace lt.read_loadavg; the guard must see the replacement, not the
+    # function bound when the module loaded. No reading (None) passes, and a max of -1 is below any
+    # real load, so this passes only if the replacement is the one read.
+    monkeypatch.setattr(lt, "read_loadavg", lambda: None)
+    assert lt.wait_for_load(-1.0, False, sleep=lambda s: None, wait=0) is False
+
+
 def test_load_guard_through_the_cli(decl_path, tmp_path):
     res = tmp_path / "r.jsonl"
     r = subprocess.run([str(TOOL), "run", str(decl_path), "listy", "--max-load=-1", "--load-wait", "0",
