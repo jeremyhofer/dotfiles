@@ -1560,6 +1560,7 @@ def test_contract_serve_requests_usage_errors(fleet):
 
 def test_snapshot_states(fleet):
     fleet.live_row("11111111", "alpha-canonical", "idle", "sa")
+    fleet.pid_record(4242, "alpha-canonical", "800"); fleet.proc_alive(4242, 800)
     fleet.pid_record(4343, "beta-canonical", "900"); fleet.proc_alive(4343, 900)
     r = fleet.snapshot()
     states = {n: fleet.snap_seat(n) for n in ("alpha-canonical", "beta-canonical", "gamma-canonical", "elsewhere-canonical")}
@@ -1575,6 +1576,59 @@ def test_snapshot_unreadable_list_is_unknown_never_dead(fleet):
     fleet.snapshot()
     assert fleet.snap_seat("gamma-canonical") == "unknown" and fleet.snap_seat("beta-canonical") == "live", \
         "snapshot: an unreadable sessions list makes an unseen seat unknown, never dead: %s" % fleet.snap.read_text()
+
+
+# A listed seat whose process is provably gone (no live pid record holds the name, and the daemon
+# roster, read, lists no worker) is `stopped`, not `live`: measured 2026-11-08 (12:14), keystone and
+# life listed `blocked` with no process while `status` read both OK. Without proof it stays `live`.
+
+def test_snapshot_a_listed_seat_with_no_process_is_stopped(fleet):
+    fleet.live_row("st000001", "gamma-canonical", "blocked", "s-st")
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "stopped", \
+        "snapshot: listed, no live pid record, no roster worker reads stopped: %s" % fleet.snap.read_text()
+
+
+def test_snapshot_a_listed_seat_with_a_roster_worker_is_live(fleet):
+    fleet.live_row("st000002", "gamma-canonical", "blocked", "s-st"); fleet.roster_worker("s-st")
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "live", \
+        "snapshot: a listed seat the roster lists as a worker is live (control): %s" % fleet.snap.read_text()
+
+
+def test_snapshot_a_listed_seat_with_an_unreadable_roster_stays_live(fleet):
+    fleet.live_row("st000003", "gamma-canonical", "blocked", "s-st")
+    fleet.roster.write_text("not json {")
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "live", \
+        "snapshot: with the roster unreadable, a listed seat cannot be proved stopped (control): %s" % fleet.snap.read_text()
+
+
+def test_snapshot_an_unreadable_roster_makes_an_unseen_seat_unknown_never_dead(fleet):
+    fleet.roster.write_text("not json {")
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "unknown", \
+        "snapshot: an unreadable roster makes an unseen seat unknown, never dead: %s" % fleet.snap.read_text()
+
+
+def test_status_and_up_name_a_listed_stopped_seat(fleet):
+    fleet.live_row("st000004", "gamma-canonical", "blocked", "s-st")
+    fleet.snapshot()
+    r, line = _status_line(fleet, "gamma-canonical")
+    assert r.status != 0 and "LISTED-STOPPED" in line and "OK" not in line \
+        and "fleet-canonicals refresh gamma-canonical" in line, \
+        "status: a listed seat the snapshot shows stopped reads LISTED-STOPPED, naming refresh (rc=%s): %s" % (r.status, r.out)
+    r = fleet.fc("up", "gamma-canonical", "--dry-run")
+    assert r.status != 0 and re.search(r"REFUSED.*gamma-canonical.*not running.*refresh gamma-canonical", r.out, re.S) \
+        and "would start" not in r.out, \
+        "up: a listed seat the snapshot shows stopped is refused, naming refresh (rc=%s): %s" % (r.status, r.out)
+
+
+def test_up_refuses_a_seat_the_snapshot_reads_stopped_though_unlisted_here(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "stopped", "listed (blocked), but no live pid record (fixture)")
+    r = fleet.fc("up", "gamma-canonical", "--dry-run")
+    assert r.status != 0 and re.search(r"REFUSED.*gamma-canonical.*not running", r.out, re.S) and "would start" not in r.out, \
+        "up: a seat the snapshot reads stopped, missing from the listing here, is refused (rc=%s): %s" % (r.status, r.out)
 
 
 def test_snapshot_refuses_inside_a_sandbox(fleet):
@@ -1899,7 +1953,7 @@ def _ctx_status(fleet, tokens, session="s-cx"):
 
 
 def test_snapshot_context_is_the_last_main_thread_prompt(fleet):
-    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx")
+    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx"); fleet.roster_worker("s-cx")  # running: listed alone is not enough
     _ctx_transcript(fleet, "s-cx", 145600, sidechain=900000)
     fleet.snapshot()
     got = [_ctx(fleet, "alpha-canonical", k) for k in ("tokens", "window", "percent", "sessionId")]
@@ -1913,7 +1967,7 @@ def test_snapshot_context_is_the_last_main_thread_prompt(fleet):
 
 
 def test_status_context_bands(fleet):
-    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx")
+    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx"); fleet.roster_worker("s-cx")  # running: listed alone is not enough
     line = _ctx_status(fleet, 99800)
     assert "context 49.9%" in line and "CONTEXT-" not in line, "status: 49.9%% is not flagged: %s" % line
     rc_low = fleet.fc("status").status
@@ -1936,7 +1990,7 @@ def test_status_context_bands(fleet):
 
 
 def test_snapshot_a_1m_model_is_measured_against_a_million_tokens(fleet):
-    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx")
+    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx"); fleet.roster_worker("s-cx")  # running: listed alone is not enough
     _ctx_transcript(fleet, "s-cx", 145600)
     rec = fleet.T / "rec1m.yaml"
     rec.write_text((fleet.S / "rec.yaml").read_text().replace("canonicalLaunchModel: opus\n", 'canonicalLaunchModel: "opus[1m]"\n'))
@@ -1950,7 +2004,7 @@ def test_snapshot_a_prompt_larger_than_the_window_names_the_window_as_wrong(flee
     """A prompt larger than the assumed window proves the window value wrong, not the seat over 100%.
     Measured 2026-11-10: a seat launched as plain `opus` reached 291k tokens with no compaction, and
     status flagged it CONTEXT-HIGH at 145.7% of the 200k default."""
-    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx")
+    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx"); fleet.roster_worker("s-cx")  # running: listed alone is not enough
     line = _ctx_status(fleet, 291452)
     assert _ctx(fleet, "alpha-canonical", "percent") is None and _ctx(fleet, "alpha-canonical", "overWindow") is True, \
         "snapshot: a prompt larger than the window records no percent, and says so: %s" % _ctx(fleet, "alpha-canonical")
@@ -1959,7 +2013,7 @@ def test_snapshot_a_prompt_larger_than_the_window_names_the_window_as_wrong(flee
 
 
 def test_snapshot_a_live_seat_with_no_readable_transcript_shows_a_question_mark(fleet):
-    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx")
+    fleet.live_row("cx000001", "alpha-canonical", "idle", "s-cx"); fleet.roster_worker("s-cx")  # running: listed alone is not enough
     fleet.snapshot()
     line = _status_line(fleet, "alpha-canonical")[1]
     assert _ctx(fleet, "alpha-canonical") is None and "context ?" in line, \

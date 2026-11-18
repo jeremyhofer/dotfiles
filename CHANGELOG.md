@@ -33,6 +33,17 @@ Entries are newest first.
 ---
 
 
+## 2026-11-17 (a listed seat with no process reads LISTED-STOPPED)
+
+The session snapshot (`fleet-canonicals snapshot`, written by its timer) records a seat as `stopped`
+when the sessions list still shows it but no live pid record holds its name and the daemon roster,
+read, lists no worker for it. That is the reading a queued `down` or `refresh` already used. The
+seat used to read `live`, and `fleet-canonicals status` printed it `OK`. `status` now prints
+`LISTED-STOPPED`, naming `fleet-canonicals refresh`, and exits 1. `up` refuses such a seat, naming
+the same command, rather than skipping it as running; so a bare `up` exits 1 while one exists. An
+unreadable daemon roster now makes an unseen seat `unknown`, never `dead`. `fleet-wait` reports a
+seat going from `live` to `stopped` as `seat-missing <name> stopped`. No action.
+
 ## 2026-11-17 (`claude-usage-report --sessions`: what counts as parked)
 
 `claude-usage-report --sessions` reads a session as `parked` when, in its last 30 minutes, it ran

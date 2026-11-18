@@ -135,6 +135,7 @@ REMOTE_CONTROL=$(config_value FLEET_REMOTE_CONTROL remote-control)
 # sessions' processes are hidden and the sessions list can omit a running session, reads the state
 # from where it is visible. status, up and clean read it:
 #   - fresh (no older than snapshot-max-age): used, and `unknown` is reported as UNKNOWN, never MISSING;
+#     a listed seat with no live process and no roster worker is `stopped`, reported LISTED-STOPPED;
 #   - stale: the verb REFUSES, naming the timer, because an old snapshot reads as current;
 #   - missing: the verb REFUSES too, naming how to enable the timer. Until 2026-11-17 a missing
 #     snapshot fell back to the direct reads, which inside a sandbox read a live seat as MISSING
@@ -990,7 +991,13 @@ report_line() {
        else
          printf '%-28s MISSING\n' "$name"
        fi ;;
-    1) printf '%-28s OK        (%s, started %s)%s\n' "$name" \
+    1) local sst1="" swhy1=""
+       IFS=$'\t' read -r sst1 swhy1 <<<"$(snapshot_seat "$name")"
+       if [ "$sst1" = stopped ]; then
+         printf '%-28s LISTED-STOPPED (%s; refresh it: fleet-canonicals refresh %s)\n' "$name" "$swhy1" "$name"
+         return
+       fi
+       printf '%-28s OK        (%s, started %s)%s\n' "$name" \
          "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.id')" \
          "$(fmt_started "$(printf '%s' "$json" | jq -r --arg n "$name" '.[]|select(.name==$n)|.startedAt')")" \
          "$(snapshot_context "$name")" ;;
@@ -1121,7 +1128,7 @@ cmd_status() {
     [ -n "$name" ] || continue
     line=$(report_line "$name" "$json")
     printf '%s\n' "$line"
-    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*|*UNKNOWN*) unhealthy=1 ;; esac
+    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*|*UNKNOWN*|*LISTED-STOPPED*) unhealthy=1 ;; esac
   done < <(expected_names)
   while IFS= read -r orphan; do
     [ -n "$orphan" ] || continue
@@ -1172,7 +1179,14 @@ cmd_up() {
       case " $wanted " in *" $name "*) ;; *) continue ;; esac
     fi
     count=$(printf '%s' "$json" | jq --arg n "$name" '[.[]|select(.name==$n)]|length')
-    [ "$count" = "0" ] || continue
+    if [ "$count" != "0" ]; then
+      # Listed is not running: say so when the snapshot shows the listed seat stopped, rather than
+      # skip it as though it were up.
+      local lst="" lwhy=""
+      IFS=$'\t' read -r lst lwhy <<<"$(snapshot_seat "$name")"
+      [ "$lst" = stopped ] && printf 'REFUSED %-24s the sessions list still shows it, but it is not running (%s); a start would leave its old row beside the new one. Use: fleet-canonicals refresh %s\n' "$name" "$lwhy" "$name" >&2 && refused=1
+      continue
+    fi
     # An on-demand seat is started only when named or under --all. This is the one gate every
     # unnamed path shares: resume-at after a usage reset calls this verb bare, so it inherits it.
     # It sits after the live-session check so a seat that is already running is never reported as
@@ -1189,6 +1203,8 @@ cmd_up() {
       live)    printf 'REFUSED %-24s the session snapshot shows it running though the sessions list here omits it: %s\n' "$name" "$swhy" >&2
                refused=1; continue ;;
       unknown) printf 'REFUSED %-24s UNKNOWN in the session snapshot (%s); not starting a seat whose state cannot be read\n' "$name" "$swhy" >&2
+               refused=1; continue ;;
+      stopped) printf 'REFUSED %-24s the sessions list still shows it, but it is not running (%s); a start would leave its old row beside the new one. Use: fleet-canonicals refresh %s\n' "$name" "$swhy" "$name" >&2
                refused=1; continue ;;
     esac
     holder=$(live_holder "$name")

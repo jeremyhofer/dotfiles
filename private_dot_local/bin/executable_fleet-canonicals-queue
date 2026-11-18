@@ -1451,8 +1451,16 @@ def take_snapshot(host: str, seat_list: list[str], models: dict[str, str]) -> di
         if in_roster:
             seen.append("a daemon roster worker")
         unread = [src for src, ok in (("the sessions list", live is not None),
-                                      ("the pid records", pids_ok)) if not ok]
-        if seen:
+                                      ("the pid records", pids_ok),
+                                      ("the daemon roster", roster_state != "error")) if not ok]
+        if row and not entries and not in_roster and pids_ok and roster_state == "ok":
+            # Listed, but provably not running: no live pid record holds the name and the daemon
+            # roster, read, lists no worker for it. The reading Jeremy approved for a queued down
+            # or refresh (2026-11-08); here it only names the state, so `status` stops reporting
+            # such a seat as OK and `up` points at `refresh` instead of reading it as running.
+            state, why = "stopped", (f"listed ({row.get('state') or 'no state'}), but no live pid "
+                                     "record holds the name and the daemon roster lists no worker")
+        elif seen:
             state, why = "live", "; ".join(seen)
         elif unread:
             state, why = "unknown", "no readable source: " + " and ".join(unread) + " could not be read"
