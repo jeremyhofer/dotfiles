@@ -2479,6 +2479,18 @@ std_handoff_epoch() {
   parse_time "${stamp:0:10} ${stamp:11:2}:${stamp:13:2}"
 }
 
+# added_epoch FILE -- the commit time (epoch seconds) of the commit that ADDED FILE in its git
+# repository; return 1 when it cannot be read that way (not in a repository, not committed, git
+# fails). The date of a document whose name carries none: never the pointer's own time.
+added_epoch() {
+  local d base ct
+  d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
+  base=$(basename "$1")
+  ct=$(git -C "$d" log --diff-filter=A --format=%ct -1 -- "$base" 2>/dev/null) || return 1
+  case "$ct" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$ct"
+}
+
 # newest_standard_handoff NAME -- "<epoch> <path>" of the newest standard-named handoff for NAME in
 # the staging and handoffs directories (top level only); return 1 when there is none.
 newest_standard_handoff() {
@@ -2506,7 +2518,7 @@ handoff_gate() {
   local name="$1" json="$2" stub_set="$3" stub_text="$4" verb="$5"
   local force_set="${6:-0}" force_text="${7:-}"
   local started started_s set_at set_at_s ptr_target stub_file now sid true_s
-  local started_min tgt_e floor_e newest newest_e newest_p
+  local started_min tgt_e tgt_label floor_e newest newest_e newest_p
 
   started=$(holder_field "$json" "$name" startedAt)
   started_s=$(to_secs "$started") || started_s=""
@@ -2613,12 +2625,35 @@ handoff_gate() {
   fi
 
   ptr_target=$(read_pointer "$name") || ptr_target=""
+  started_min=$(( ${started_s:-0} - ${started_s:-0} % 60 ))
+  tgt_e=""; tgt_label='document stamped   '
   if tgt_e=$(std_handoff_epoch "$ptr_target" "$name"); then
-    started_min=$(( ${started_s:-0} - ${started_s:-0} % 60 ))
-    if [ -n "$started_s" ] && [ "$tgt_e" -lt "$started_min" ]; then
-      die "$verb: the handoff recorded for '$name' names a document written BEFORE the session started.
+    floor_e=$tgt_e
+  else
+    # A name with no standard stamp is dated by the commit that added the file. The pointer's own
+    # time is NOT a date for the document: a pointer recorded after the start can name an old file.
+    # When the comparison cannot be made (no known start) nothing is dated, as before.
+    floor_e=$(( set_at_s - set_at_s % 60 ))
+    tgt_label='document committed '
+    if [ -n "$started_s" ] && ! tgt_e=$(added_epoch "$ptr_target"); then
+      die "$verb: the handoff recorded for '$name' names a document whose date cannot be read.
       document           $ptr_target
-      document stamped   $(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
+  Its name carries no standard stamp (YYYY-MM-DD-HHMM-$name-park.md), and no commit that added it
+  could be found (not in a git repository, not committed, or git failed), so it cannot be dated
+  against the session's start. The pointer's own time is not used instead: it says when the pointer
+  was recorded, not when the document was written.
+  Park properly, then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD, keep the pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+    fi
+  fi
+  if [ -n "$started_s" ] && [ -n "$tgt_e" ] && [ "$tgt_e" -lt "$started_min" ]; then
+    die "$verb: the handoff recorded for '$name' names a document written BEFORE the session started.
+      document           $ptr_target
+      $tgt_label$(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
       session started    $(fmt_epoch "$started_min" '%Y-%m-%d %H:%M')
   The pointer was recorded after the start, but it names a superseded document, so the successor
   would read an earlier sitting's park as current.
@@ -2629,10 +2664,6 @@ handoff_gate() {
       fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
   Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
-    fi
-    floor_e=$tgt_e
-  else
-    floor_e=$(( set_at_s - set_at_s % 60 ))
   fi
   if newest=$(newest_standard_handoff "$name"); then
     newest_e=${newest%% *}; newest_p=${newest#* }

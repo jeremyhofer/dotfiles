@@ -73,8 +73,18 @@ done
 fail=0
 ok()  { print "ok:   $1" }
 bad() { print "FAIL: $1"; fail=1 }
+# hcommit <dir> <file> [epoch]: commit <file> in the repository at <dir> (made if absent) at <epoch>
+# (default now). The handoff gate dates a document whose name carries no stamp by the commit that
+# added it, so a fixture handoff with a plain name must be committed to have a date.
+hcommit() {
+  local e=${3:-$(date +%s)}
+  [[ -d $1/.git ]] || git -C "$1" init -q || return 1
+  git -C "$1" add -- "$2" && GIT_AUTHOR_DATE="@$e +0000" GIT_COMMITTER_DATE="@$e +0000" \
+    git -C "$1" commit -q -m "add $2" || return 1
+}
 
 TMPROOT=$(mktemp -d "$_TMP/test-fleet-canonicals.XXXXXX"); trap 'rm -rf "$TMPROOT" "$_srcbin"' EXIT
+HREPO="$TMPROOT/hrepo"; mkdir -p "$HREPO"   # fixture handoffs with plain names, committed (see hcommit)
 # A launch refuses a handoff outside the staging directory and the configured handoffs trees. The
 # fixtures keep their handoffs under TMPROOT, so it is every case's handoffs tree unless a case
 # sets its own.
@@ -521,8 +531,8 @@ if command -v uv >/dev/null 2>&1; then
   print '[]' > "$TMPROOT/dn-live.json"
   print '[{"id":"dn000001","name":"delta-canonical","state":"done","sessionId":"dn000001-sess","cwd":"/x","kind":"background","startedAt":1000}]' > "$TMPROOT/dn-all.json"
   mkdir -p "$TMPROOT/fcstate"
-  print "orientation" > "$TMPROOT/dn-handoff.md"
-  print "$TMPROOT/dn-handoff.md" >  "$TMPROOT/fcstate/delta-canonical.handoff"
+  print "orientation" > "$HREPO/dn-handoff.md"; hcommit "$HREPO" dn-handoff.md
+  print "$HREPO/dn-handoff.md" >  "$TMPROOT/fcstate/delta-canonical.handoff"
   print "# set-at $(date +%s)"           >> "$TMPROOT/fcstate/delta-canonical.handoff"
   dnfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$TMPROOT/fcstate" FLEET_RECORD="$TMPROOT/rec.yaml" \
            FLEET_AGENTS_JSON_CMD="cat $TMPROOT/dn-live.json" FLEET_AGENTS_JSON_ALL_CMD="cat $TMPROOT/dn-all.json" \
@@ -582,9 +592,9 @@ out=$(fc down alpha-canonical --all --dry-run); rc=$?
 [[ $rc -ne 0 ]] && ok "down refuses names and --all together" || bad "down names+--all (rc=$rc): $out"
 
 mkdir -p "$TMPROOT/fcstate"
-print "$TMPROOT/real-handoff-alpha.md" >  "$TMPROOT/fcstate/alpha-canonical.handoff"
+print "$HREPO/real-handoff-alpha.md" >  "$TMPROOT/fcstate/alpha-canonical.handoff"
 print "# set-at $(date +%s)"           >> "$TMPROOT/fcstate/alpha-canonical.handoff"
-print "orientation" > "$TMPROOT/real-handoff-alpha.md"
+print "orientation" > "$HREPO/real-handoff-alpha.md"; hcommit "$HREPO" real-handoff-alpha.md
 out=$(fc down alpha-canonical --dry-run)
 [[ "$out" == *"would stop"*"alpha-canonical"* ]] && ok "down <name> targets that session" \
     || bad "down <name>: $out"
@@ -647,10 +657,10 @@ print "[{\"pid\":90444,\"id\":\"ddd4\",\"name\":\"zeta-canonical\",\"sessionId\"
 zfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
         FLEET_AGENTS_JSON_CMD="cat $TMPROOT/zeta.json" bash "$TOOL" "$@" 2>&1 }
 
-print "orientation" > "$TMPROOT/zeta-handoff.md"
+print "orientation" > "$HREPO/zeta-handoff.md"; hcommit "$HREPO" zeta-handoff.md
 set_ptr() {  # set_ptr <epoch> -- record a pointer stamped at an arbitrary time
   mkdir -p "$GSTATE"
-  print "$TMPROOT/zeta-handoff.md" >  "$GSTATE/zeta-canonical.handoff"
+  print "$HREPO/zeta-handoff.md" >  "$GSTATE/zeta-canonical.handoff"
   print "# set-at $1"              >> "$GSTATE/zeta-canonical.handoff"
 }
 
@@ -685,7 +695,7 @@ exec claude --bg -n theta-canonical --model opus "You are theta-canonical."
 SH
 print '[]' > "$TMPROOT/empty.json"
 mkdir -p "$GSTATE"
-print "$TMPROOT/zeta-handoff.md"  >  "$GSTATE/theta-canonical.handoff"
+print "$HREPO/zeta-handoff.md"  >  "$GSTATE/theta-canonical.handoff"
 print "# set-at $NOW"             >> "$GSTATE/theta-canonical.handoff"
 out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
       FLEET_AGENTS_JSON_CMD="cat $TMPROOT/empty.json" bash "$TOOL" refresh theta-canonical --dry-run 2>&1); rc=$?
@@ -791,7 +801,7 @@ out=$(initfc init --up theta-canonical); rc=$?
 [[ $rc -eq 0 && "$out" == *"starting"*"theta-canonical"* ]] && grep -q theta-canonical "$TMPROOT_LAUNCHLOG" \
     && ok "init --up launches the seat" || bad "init --up (rc=$rc): $out"
 rm -f "$GSTATE/theta-canonical.handoff"
-print "$TMPROOT/zeta-handoff.md"  >  "$GSTATE/theta-canonical.handoff"
+print "$HREPO/zeta-handoff.md"  >  "$GSTATE/theta-canonical.handoff"
 print "# set-at $NOW"             >> "$GSTATE/theta-canonical.handoff"
 
 out=$(zfc refresh); rc=$?
@@ -874,7 +884,7 @@ gzfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" \
          FLEET_AGENTS_JSON_CMD="cat ${GJSON:-$TMPROOT/zeta.json}" bash "$TOOL" "$@" 2>&1 }
 gfresh() {  # gfresh <target-path-or-"-" for the plain file> <set-at epoch>
   rm -rf "$GS2" "$GH2"; mkdir -p "$GS2/handoff-staging" "$GH2"
-  local t=$1; [[ $t == - ]] && t="$TMPROOT/zeta-handoff.md"
+  local t=$1; [[ $t == - ]] && t="$HREPO/zeta-handoff.md"
   print "$t"           >  "$GS2/zeta-canonical.handoff"
   print "# set-at $2"   >> "$GS2/zeta-canonical.handoff"
 }
@@ -915,11 +925,49 @@ out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
 [[ $rc -ne 0 && "$out" == *"NEWER handoff"* && "$out" == *"--set $newer"* ]] \
     && ok "gate refuses a non-standard target when a standard file is stamped after the pointer was set" \
     || bad "newer staged file vs non-standard target (rc=$rc): $out"
-# controls that must pass
-gfresh - $(( NOW - 60 )); gdoc "$GS2/handoff-staging/$(gstamp $(( NOW - 1800 )))-$GS_NAME"
+# A non-standard target is dated by the commit that ADDED it, never by the pointer's own time: a
+# pointer recorded after the start can name an old document whose name carries no stamp.
+NSN="2026-09-19-fleet-park-context-architecture.md"   # the real shape: no HHMM, no seat
+NSR="$TMPROOT/nsrepo"; rm -rf "$NSR"; mkdir -p "$NSR"
+# a. committed BEFORE the start: refused, though the pointer was recorded after it
+gdoc "$NSR/$NSN"; hcommit "$NSR" "$NSN" $(( GSTART - 7200 ))
+gfresh "$NSR/$NSN" $(( NOW - 60 ))
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"BEFORE the session started"* && "$out" == *"committed"* ]] \
+    && ok "gate refuses a non-standard target committed before the session started" \
+    || bad "non-standard target committed before the start passed (rc=$rc): $out"
+out=$(gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force skips the committed-before-start refusal" || bad "--force old non-standard (rc=$rc): $out"
+# b. committed AFTER the start: passes (the control for a)
+rm -rf "$NSR"; mkdir -p "$NSR"; gdoc "$NSR/$NSN"; hcommit "$NSR" "$NSN" $(( GSTART + 600 ))
+gfresh "$NSR/$NSN" $(( NOW - 60 ))
 out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
 [[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
-    && ok "gate passes a non-standard target with no newer standard file" || bad "no-newer control refused (rc=$rc): $out"
+    && ok "gate passes a non-standard target committed after the session started" \
+    || bad "non-standard target committed after the start refused (rc=$rc): $out"
+# c. in a repository but never committed: the pointer check that runs before the gate (and which
+# --force does not lift) already refuses it, so the gate never has to date such a file
+rm -rf "$NSR"; mkdir -p "$NSR"; git -C "$NSR" init -q; gdoc "$NSR/$NSN"
+gfresh "$NSR/$NSN" $(( NOW - 60 ))
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"not committed"* ]] \
+    && ok "an uncommitted non-standard target in a repository is refused before the gate" \
+    || bad "uncommitted non-standard target in a repository passed (rc=$rc): $out"
+# d. not in a repository at all
+gfresh - $(( NOW - 60 )); rm -rf "$TMPROOT/nogit"; mkdir -p "$TMPROOT/nogit"; gdoc "$TMPROOT/nogit/$NSN"
+print "$TMPROOT/nogit/$NSN" >| "$GS2/zeta-canonical.handoff"; print "# set-at $(( NOW - 60 ))" >> "$GS2/zeta-canonical.handoff"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"cannot be dated"* && "$out" == *"--force"* ]] \
+    && ok "gate refuses a non-standard target outside any repository, saying it cannot be dated and naming --force" \
+    || bad "non-standard target outside a repository passed (rc=$rc): $out"
+out=$(gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force passes an undatable non-standard target" || bad "--force undatable (rc=$rc): $out"
+# controls that must pass: a datable target with no newer standard file
+rm -rf "$NSR"; mkdir -p "$NSR"; gdoc "$NSR/$NSN"; hcommit "$NSR" "$NSN" $(( GSTART + 600 ))
+gfresh "$NSR/$NSN" $(( NOW - 60 )); gdoc "$GS2/handoff-staging/$(gstamp $(( NOW - 1800 )))-$GS_NAME"
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "gate passes a non-standard target committed after the start with no newer standard file" || bad "no-newer control refused (rc=$rc): $out"
 f="$GS2/handoff-staging/$(gstamp $(( GSTART + 600 )))-$GS_NAME"; gfresh "$f" $(( NOW - 60 )); gdoc "$f"
 gdoc "$GH2/${f##*/}"
 out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
@@ -971,15 +1019,15 @@ stub=$(print -l "$GSTATE"/stub-handoffs/*-zeta-canonical-stub.md(N) | head -1)
 
 # --- set-at stamping and backward compatibility ---
 rm -rf "$GSTATE"
-zfc handoff zeta-canonical --set "$TMPROOT/zeta-handoff.md" >/dev/null
+zfc handoff zeta-canonical --set "$HREPO/zeta-handoff.md" >/dev/null
 [[ "$(<$GSTATE/zeta-canonical.handoff)" == *"# set-at "* ]] \
     && ok "handoff --set stamps when it was recorded" || bad "no set-at stamp written"
-[[ "$(zfc handoff zeta-canonical)" == "$TMPROOT/zeta-handoff.md" ]] \
+[[ "$(zfc handoff zeta-canonical)" == "$HREPO/zeta-handoff.md" ]] \
     && ok "the stamp does not break pointer resolution (reader strips #-comments)" \
     || bad "stamp broke resolution: $(zfc handoff zeta-canonical)"
 
 # A pointer written before stamping existed must still work -- there are live ones on this fleet.
-mkdir -p "$GSTATE"; print "$TMPROOT/zeta-handoff.md" > "$GSTATE/zeta-canonical.handoff"
+mkdir -p "$GSTATE"; print "$HREPO/zeta-handoff.md" > "$GSTATE/zeta-canonical.handoff"
 touch -d "@$(( NOW - 60 ))" "$GSTATE/zeta-canonical.handoff"
 out=$(zfc refresh zeta-canonical --dry-run); rc=$?
 [[ $rc -eq 0 ]] && ok "an unstamped legacy pointer falls back to file mtime rather than failing" \
@@ -1548,9 +1596,9 @@ iso_at() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -r "$1" 
 ESTATE="$TMPROOT/estate"
 efc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$ESTATE" FLEET_TRANSCRIPT_DIR="$TMPROOT/transcripts" \
         FLEET_AGENTS_JSON_CMD="cat $TMPROOT/eta.json" bash "$TOOL" "$@" 2>&1 }
-print "orientation" > "$TMPROOT/eta-handoff.md"
+print "orientation" > "$HREPO/eta-handoff.md"; hcommit "$HREPO" eta-handoff.md
 eset_ptr() { mkdir -p "$ESTATE"
-             print "$TMPROOT/eta-handoff.md" >  "$ESTATE/eta-canonical.handoff"
+             print "$HREPO/eta-handoff.md" >  "$ESTATE/eta-canonical.handoff"
              print "# set-at $1"             >> "$ESTATE/eta-canonical.handoff" }
 
 eset_ptr $(( NOW - 3600 ))
@@ -1852,7 +1900,7 @@ STOP_PREFIX="$STOP_E2E/tmproots"; mkdir -p "$STOP_PREFIX"
 
 # `down` gates on a recorded handoff for the name it is closing (see the handoff_gate tests
 # earlier in this file); without one it refuses before ever reaching close_one.
-print "orientation" > "$STOP_E2E/handoff.md"
+print "orientation" > "$STOP_E2E/handoff.md"; hcommit "$STOP_E2E" handoff.md
 FLEET_STATE="$STOP_STATE" bash "$TOOL" handoff stop-canonical --set "$STOP_E2E/handoff.md" >/dev/null
 
 # A REAL, harmless, test-owned background process stands in for the session being stopped -- safe
@@ -1962,7 +2010,7 @@ projects:
     canonicalLaunchModel: fable
     canonicalMachines: [$(hostname)]
 YAML
-print "orientation" > "$REFRESH_E2E/handoff.md"
+print "orientation" > "$REFRESH_E2E/handoff.md"; hcommit "$REFRESH_E2E" handoff.md
 FLEET_STATE="$REFRESH_STATE" bash "$TOOL" handoff rf-canonical --set "$REFRESH_E2E/handoff.md" >/dev/null
 
 sleep 300 & RF_OLD_PID=$!

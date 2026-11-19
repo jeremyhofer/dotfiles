@@ -69,6 +69,10 @@ from pathlib import Path
 
 import pytest
 
+# No machine-global git config reaches the scratch repositories below.
+GIT_ENV = {"GIT_CONFIG_GLOBAL": str(Path(__file__).resolve().parent / "git-isolated.gitconfig"),
+           "GIT_CONFIG_NOSYSTEM": "1"}
+
 HERE = Path(__file__).resolve().parent
 BIN = HERE.parent / "private_dot_local" / "bin"
 TOOL = BIN / "executable_fleet-canonicals"
@@ -199,6 +203,11 @@ def world():
         p = subprocess.run(["bash", str(TOOL), "handoff", n + "-canonical", "--set", str(s / (n + ".handoff.md"))],
                            env=env, capture_output=True, text=True)
         assert p.returncode == 0, p.stdout + p.stderr
+    # The handoff gate dates a document whose name carries no stamp by the commit that added it, so
+    # these plain-named handoffs are committed (now, after every transcript's start).
+    genv = dict(os.environ, **GIT_ENV)
+    for cmd in (["init", "-q"], ["add", "--", "."], ["commit", "-q", "-m", "handoffs"]):
+        subprocess.run(["git", "-C", str(s)] + cmd, check=True, env=genv, capture_output=True)
     yield s
     shutil.rmtree(s, ignore_errors=True)
 
@@ -1308,6 +1317,9 @@ def test_serve_blocked_session_parked_before_it_started_waits(fleet):
     fleet.live_row("pk000003", "alpha-canonical", "blocked", "s-un")
     fleet.pid_for(5103, "alpha-canonical", "s-un", "idle")
     fleet.future_transcript("s-un")
+    # The document is stamped after the 2099 start (standard name), so only the pointer's own
+    # recording time can refuse it: a plain-named file would be refused by its commit date instead.
+    fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, 4102444800)))
     fleet.plant("r-pk3", "refresh", "alpha-canonical", "director-canonical")
     fleet.serve()
     fleet.expect("r-pk3", "waiting", "working", "idle but not parked since it started (its handoff is older) still waits")
@@ -1356,6 +1368,63 @@ def test_serve_a_document_stamped_in_the_start_minute_is_served(fleet):
     fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, TRANSCRIPT_START)))
     _serve_one(fleet, "r-dc2")
     fleet.expect("r-dc2", "done", "", "a standard document stamped in the start's own minute passes")
+
+
+# a document whose name carries no stamp is dated by the commit that ADDED it, never by the pointer's
+# own time (a pointer recorded after the start can name an old file)
+
+NS_NAME = "2026-09-19-fleet-park-context-architecture.md"   # the real shape: no HHMM, no seat
+
+
+def _commit(d, name, epoch):
+    """Commit `name` in the repository at `d` (made if absent) with commit time `epoch`."""
+    env = dict(os.environ, GIT_AUTHOR_DATE="@%d +0000" % epoch, GIT_COMMITTER_DATE="@%d +0000" % epoch, **GIT_ENV)
+    if not (d / ".git").is_dir():
+        subprocess.run(["git", "-C", str(d), "init", "-q"], check=True, env=env)
+    subprocess.run(["git", "-C", str(d), "add", "--", name], check=True, env=env)
+    subprocess.run(["git", "-C", str(d), "commit", "-q", "-m", "add " + name], check=True, env=env)
+
+
+def _nonstandard(fleet, label, epoch=None, repo=True):
+    """A plain-named handoff the pointer names; committed at `epoch` when `epoch` is given."""
+    _parked_blocked(fleet, label)
+    d = fleet.T / "nsrepo"; d.mkdir(exist_ok=True)
+    fleet.set_config("handoffs = %s" % d)
+    (d / NS_NAME).write_text("handoff\n")
+    if repo and epoch is not None:
+        _commit(d, NS_NAME, epoch)
+    fleet.set_handoff("alpha-canonical", str(d / NS_NAME))
+
+
+def test_serve_a_non_standard_document_committed_before_the_session_waits(fleet):
+    _nonstandard(fleet, "ns000001", TRANSCRIPT_START - 7200)
+    _serve_one(fleet, "r-ns1")
+    fleet.expect("r-ns1", "waiting", "working", "a pointer recorded now naming a plain-named file committed before the start waits")
+    detail = fleet.result("r-ns1", "detail")
+    assert "before the session started" in detail and "committed" in detail, detail
+
+
+def test_serve_a_non_standard_document_committed_after_the_start_is_served(fleet):
+    _nonstandard(fleet, "ns000002", TRANSCRIPT_START + 600)
+    _serve_one(fleet, "r-ns2")
+    fleet.expect("r-ns2", "done", "", "a plain-named file committed after the start passes (control)")
+
+
+def test_serve_a_non_standard_document_outside_a_repository_waits_naming_force(fleet):
+    _nonstandard(fleet, "ns000003", None)
+    _serve_one(fleet, "r-ns3")
+    fleet.expect("r-ns3", "waiting", "working", "a plain-named file that cannot be dated waits")
+    detail = fleet.result("r-ns3", "detail")
+    assert "cannot be dated" in detail and "--force" in detail, detail
+
+
+def test_serve_a_non_standard_document_never_committed_waits_naming_force(fleet):
+    _nonstandard(fleet, "ns000004", None)
+    subprocess.run(["git", "-C", str(fleet.T / "nsrepo"), "init", "-q"], check=True, env=dict(os.environ, **GIT_ENV))
+    _serve_one(fleet, "r-ns4")
+    fleet.expect("r-ns4", "waiting", "working", "a plain-named file in a repository but never committed waits")
+    detail = fleet.result("r-ns4", "detail")
+    assert "cannot be dated" in detail and "--force" in detail, detail
 
 
 def test_serve_a_newer_standard_handoff_than_the_recorded_one_waits(fleet):

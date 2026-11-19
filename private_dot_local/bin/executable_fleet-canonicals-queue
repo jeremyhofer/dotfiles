@@ -1099,6 +1099,17 @@ def standard_handoff_stamp(path: str, name: str) -> int | None:
         return None
 
 
+def added_epoch(path: str) -> int | None:
+    """The commit time of the commit that ADDED `path` in its git repository, or None when it cannot
+    be read that way (not in a repository, not committed, git fails). The date of a document whose
+    name carries none; the gate in fleet-canonicals (added_epoch) reads the same."""
+    p = Path(path)
+    rc, out = run(["git", "-C", str(p.resolve().parent), "log", "--diff-filter=A", "--format=%ct",
+                   "-1", "--", p.name])
+    out = out.strip()
+    return int(out) if rc == 0 and out.isdigit() else None
+
+
 def handoff_dirs(placed_under: str = "") -> list[Path]:
     """Where a seat's handoff files live: the staging directory, the placed handoffs directory
     (FLEET_HANDOFFS_DIR or the config's `handoffs`) and, when given, `placed_under`."""
@@ -1138,9 +1149,19 @@ def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> s
     # one may exist. Only standard names are read, and only to refuse.
     start_min = start - start % 60
     target_stamp = standard_handoff_stamp(target, name)
-    if target_stamp is not None and target_stamp < start_min:
-        return (f"the handoff pointer names a document stamped "
-                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(target_stamp))}, written before the session "
+    # A name with no standard stamp is dated by the commit that added the file, never by the
+    # pointer's own time (which only says when the pointer was recorded).
+    dated, how = target_stamp, "stamped"
+    if target_stamp is None:
+        dated, how = added_epoch(target), "committed"
+        if dated is None:
+            return (f"the handoff pointer names a document that cannot be dated ({target}): its name "
+                    f"carries no standard stamp and no commit that added it was found (not in a git "
+                    f"repository, not committed, or git failed); `fleet-canonicals refresh {name} --force "
+                    f"'<why>'` keeps the pointer and skips the comparison")
+    if dated < start_min:
+        return (f"the handoff pointer names a document {how} "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(dated))}, written before the session "
                 f"started ({time.strftime('%Y-%m-%d %H:%M', time.localtime(start_min))}): {target}")
     floor = target_stamp if target_stamp is not None else set_at - set_at % 60
     newest: tuple[int, Path] | None = None
