@@ -33,6 +33,20 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (fleet-canonicals: `down` reads the snapshot; an undated handoff is dated by its commit)
+
+`fleet-canonicals down` now does what `refresh` does for a seat this session's sessions list omits:
+when the session snapshot reads it `live`, `unknown` or `stopped`, `down` refuses before closing
+anything, `--dry-run` included, naming `fleet-canonicals request down <seat>`; a seat the snapshot
+reads `dead` is still reported not running. It used to report a live seat hidden by a sandbox as
+"not running, nothing to stop" and exit 0. The request runner sets `FLEET_VERB_FROM_RUNNER` on the
+verb it runs, since its own list is complete, and `down` skips the check there. The handoff gate,
+in `fleet-canonicals` and the queue alike, now dates a pointer's document whose name is not the
+standard `YYYY-MM-DD-HHMM-<seat>-<kind>.md` by the commit that added it, refuses it when that commit
+predates the session's start, and refuses a document it cannot date at all (`--force` lifts that).
+It used to fall back to the pointer's own recorded time. Nothing to do; a pointer to a plain-named
+file outside any repository now needs `--force` or a standard-named handoff.
+
 ## 2026-11-19 (seam-probe: a kept transcript, a clearer verdict, a longer cleanup)
 
 A run's cleanup now copies each session's transcript (and its sidecar directory, if any) into the
