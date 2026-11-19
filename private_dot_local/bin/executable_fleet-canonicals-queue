@@ -883,20 +883,30 @@ def pid_alive(pid: int, proc_start: str) -> bool:
     return True
 
 
-def read_pid_records() -> list[tuple[Path, object]]:
-    """Each pid record under ~/.claude/sessions with what it parses to, in file-name order; a record
-    that cannot be read or parsed is left out."""
+def read_pid_records_checked() -> tuple[list[tuple[Path, object]], bool]:
+    """Each pid record under ~/.claude/sessions with what it parses to, in file-name order, and
+    whether the source was read IN FULL: False when the directory cannot be listed or any record
+    cannot be read or parsed (it could be the one that names a seat). A record that vanishes between
+    the listing and the read is not unread: Claude Code removes it when its process ends."""
     records: list[tuple[Path, object]] = []
     try:
         files = sorted(PID_RECORDS.glob("*.json"))
     except OSError:
-        return records
+        return records, False
+    complete = True
     for f in files:
         try:
             records.append((f, json.loads(f.read_text(encoding="utf-8"))))
-        except (OSError, ValueError):
+        except FileNotFoundError:
             continue
-    return records
+        except (OSError, ValueError):
+            complete = False
+    return records, complete
+
+
+def read_pid_records() -> list[tuple[Path, object]]:
+    """The pid records that could be read (see read_pid_records_checked); an unreadable one is left out."""
+    return read_pid_records_checked()[0]
 
 
 def live_pid_entries(name: str, records: list[tuple[Path, object]] | None = None) -> list[tuple[int, str, str]]:
@@ -1107,9 +1117,10 @@ def standard_handoff_stamp(path: str, name: str) -> int | None:
 def added_epoch(path: str) -> int | None:
     """The commit time of the commit that ADDED `path` in its git repository, or None when it cannot
     be read that way (not in a repository, not committed, git fails). The date of a document whose
-    name carries none; the gate in fleet-canonicals (added_epoch) reads the same."""
+    name carries none; the gate in fleet-canonicals (added_epoch) reads the same. --follow, so a
+    document moved with `git mv` is dated by the commit that first added it, not by the move."""
     p = Path(path)
-    rc, out = run(["git", "-C", str(p.resolve().parent), "log", "--diff-filter=A", "--format=%ct",
+    rc, out = run(["git", "-C", str(p.resolve().parent), "log", "--follow", "--diff-filter=A", "--format=%ct",
                    "-1", "--", p.name])
     out = out.strip()
     return int(out) if rc == 0 and out.isdigit() else None
@@ -1209,10 +1220,14 @@ def process_gone(name: str, session_id: str, need_session: bool = True) -> str |
     Two independent signals must agree: no live pid record holds the name (Claude Code removes a
     session's record when its process ends), and the daemon's roster lists no worker for the
     session. An unreadable roster, or (with need_session) a row with no session id to look up in
-    it, cannot rule a worker out, so it never reads as gone."""
+    it, cannot rule a worker out, so it never reads as gone. Nor does a pid record that cannot be
+    read: it could be the one that holds the name."""
+    complete = read_pid_records_checked()[1]
     holders = live_pid_records(name)
     if holders:
         return f"a live process still holds the name ({holders[0]})"
+    if not complete:
+        return f"a pid record under {PID_RECORDS} cannot be read, so a live process cannot be ruled out"
     ids = roster_session_ids()
     if ids is None:
         return f"the daemon roster ({ROSTER}) cannot be read, so a running worker cannot be ruled out"
@@ -1680,7 +1695,8 @@ def take_snapshot(host: str, seat_list: list[str], models: dict[str, str]) -> di
 
     Roster handling, deliberately: `roster_state` is `ok` (read), `absent` (no file) or `error`
     (exists, unreadable). The roster only ever ADDS evidence that a seat is live. A seat reads
-    `dead` only when the sessions list and the pid records were both read and show nothing, so an
+    `dead` only when the sessions list and the pid records (every one of them: a record that cannot
+    be parsed leaves the source unread) were both read and show nothing, so an
     `absent` roster does not make a seat unknown (only `error` counts as an unread source). A
     listed seat reads `stopped` only when the roster was read (`ok`); with it absent or in error
     the seat stays `live`. An absent roster is read as "no daemon has written one". The case this
@@ -1690,14 +1706,16 @@ def take_snapshot(host: str, seat_list: list[str], models: dict[str, str]) -> di
     t = now()
     cfg = config()
     live = agents()
-    pids_ok = pid_records_readable()
-    records = read_pid_records() if pids_ok else []
+    records, complete = read_pid_records_checked()
+    # A record that cannot be parsed leaves the source unread (it could name a seat), but the records
+    # that were read still count as evidence that a seat runs.
+    pids_ok = pid_records_readable() and complete
     roster = roster_session_ids()
     roster_state = "ok" if roster is not None else ("absent" if not ROSTER.exists() else "error")
     seats: dict[str, dict] = {}
     for name in seat_list:
         row = newest_row(live, name) if live is not None else None
-        entries = live_pid_entries(name, records) if pids_ok else []
+        entries = live_pid_entries(name, records)
         sids = {sid for _p, sid, _d in entries if sid}
         if row and row.get("sessionId"):
             sids.add(str(row["sessionId"]))

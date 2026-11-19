@@ -1415,6 +1415,21 @@ def test_serve_a_non_standard_document_committed_after_the_start_is_served(fleet
     fleet.expect("r-ns2", "done", "", "a plain-named file committed after the start passes (control)")
 
 
+def test_serve_a_non_standard_document_added_before_the_start_then_moved_waits(fleet):
+    _nonstandard(fleet, "ns000005", TRANSCRIPT_START - 7200)
+    d = fleet.T / "nsrepo"
+    env = dict(os.environ, GIT_AUTHOR_DATE="@%d +0000" % (TRANSCRIPT_START + 600),
+               GIT_COMMITTER_DATE="@%d +0000" % (TRANSCRIPT_START + 600), **GIT_ENV)
+    (d / "moved").mkdir()
+    subprocess.run(["git", "-C", str(d), "mv", NS_NAME, "moved/" + NS_NAME], check=True, env=env)
+    subprocess.run(["git", "-C", str(d), "commit", "-q", "-m", "move"], check=True, env=env)
+    fleet.set_handoff("alpha-canonical", str(d / "moved" / NS_NAME))
+    _serve_one(fleet, "r-ns5")
+    fleet.expect("r-ns5", "waiting", "working", "a plain-named file added before the start and moved after it waits")
+    detail = fleet.result("r-ns5", "detail")
+    assert "before the session started" in detail, detail
+
+
 def test_serve_a_non_standard_document_outside_a_repository_waits_naming_force(fleet):
     _nonstandard(fleet, "ns000003", None)
     _serve_one(fleet, "r-ns3")
@@ -2033,6 +2048,45 @@ def test_snapshot_an_unreadable_roster_makes_an_unseen_seat_unknown_never_dead(f
         "snapshot: an unreadable roster makes an unseen seat unknown, never dead: %s" % fleet.snap.read_text()
 
 
+# A pid record that cannot be parsed is an unread source, as an unreadable roster is: an unseen seat
+# reads unknown, never dead, and a listed one is never proved stopped on its account. The record could
+# be the very seat's own (Claude Code rewrites a live seat's record in place).
+
+def test_snapshot_an_unparseable_pid_record_makes_an_unseen_seat_unknown_never_dead(fleet):
+    (fleet.pids / "9001.json").write_text('{"pid": 9001, "name": "gamma-can')
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "unknown", \
+        "snapshot: an unparseable pid record makes an unseen seat unknown, never dead: %s" % fleet.snap.read_text()
+    assert json.loads(fleet.snap.read_text())["sources"]["pidRecords"] == "error", \
+        "...and the pid source is recorded as unread: %s" % fleet.snap.read_text()
+
+
+def test_snapshot_an_unparseable_pid_record_never_proves_a_listed_seat_stopped(fleet):
+    fleet.live_row("st000009", "gamma-canonical", "blocked", "s-st")
+    (fleet.pids / "9002.json").write_text("not json {")
+    fleet.snapshot()
+    assert fleet.snap_seat("gamma-canonical") == "live", \
+        "snapshot: with a pid record unparseable, a listed seat cannot be proved stopped: %s" % fleet.snap.read_text()
+
+
+def test_snapshot_valid_pid_records_leave_the_states_unchanged(fleet):
+    fleet.pid_record(4242, "alpha-canonical", "800"); fleet.proc_alive(4242, 800)
+    fleet.snapshot()
+    assert (fleet.snap_seat("alpha-canonical"), fleet.snap_seat("gamma-canonical")) == ("live", "dead") \
+        and json.loads(fleet.snap.read_text())["sources"]["pidRecords"] == "ok", \
+        "snapshot: all pid records valid, the states and the source are as before (control): %s" % fleet.snap.read_text()
+
+
+def test_serve_stopped_with_an_unparseable_pid_record_waits(fleet):
+    # process_gone: the record that cannot be read could be the one holding the name.
+    fleet.live_row("st000010", "alpha-canonical", "blocked", "s-st"); fleet.transcript("s-st", "ended")
+    (fleet.pids / "9003.json").write_text('{"pid": 9003, "na')
+    fleet.plant("r-st10", "refresh", "alpha-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-st10", "waiting", "working", "no process visible, but a pid record cannot be read: waits")
+    assert "cannot be read" in fleet.result("r-st10", "detail"), fleet.result("r-st10", "detail")
+
+
 def test_status_and_up_name_a_listed_stopped_seat(fleet):
     fleet.live_row("st000004", "gamma-canonical", "blocked", "s-st")
     fleet.snapshot()
@@ -2239,6 +2293,51 @@ def test_up_refuses_a_seat_the_snapshot_shows_running(fleet):
     out = fleet.fc("up", "gamma-canonical", "--dry-run").out
     assert re.search(r"REFUSED.*gamma-canonical.*snapshot shows it running", out, re.S), \
         "up refuses a seat the snapshot shows running though the list omits it: %s" % out
+
+
+# A seat started after the snapshot was taken reads dead in it, and a sandbox cannot see its process,
+# so `up` would launch a duplicate. The pid records are readable from a sandbox and carry `name` and
+# `startedAt` (epoch milliseconds, where the snapshot's takenAt is seconds): a record naming the seat,
+# started after the snapshot, refuses. A record started before it (the snapshot saw it) does not.
+
+def _started_record(fleet, name, started_ms, pid=7777):
+    (fleet.pids / ("%s.json" % pid)).write_text(json.dumps(
+        {"pid": pid, "sessionId": "s-new", "kind": "bg", "name": name, "procStart": "1", "status": "idle",
+         "startedAt": started_ms}))
+
+
+def test_up_refuses_a_dead_seat_whose_pid_record_started_after_the_snapshot(fleet):
+    fleet.write_snapshot(30, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 10) * 1000)
+    out = fleet.fc("up", "gamma-canonical", "--dry-run").out
+    assert re.search(r"REFUSED.*gamma-canonical.*started after the snapshot was taken", out, re.S) \
+        and "would start" not in out and "fleet-canonicals request up gamma-canonical" in out, \
+        "up refuses a dead seat whose pid record is newer than the snapshot: %s" % out
+
+
+def test_up_launches_a_dead_seat_whose_pid_record_started_before_the_snapshot(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 60) * 1000)
+    out = fleet.fc("up", "gamma-canonical", "--dry-run").out
+    assert re.search(r"would start.*gamma-canonical", out, re.S) and "REFUSED" not in out, \
+        "up still launches when the pid record predates the snapshot (control): %s" % out
+
+
+def test_up_ignores_a_newer_pid_record_for_another_seat(fleet):
+    fleet.write_snapshot(30, "gamma-canonical", "dead")
+    _started_record(fleet, "alpha-canonical", (int(time.time()) - 10) * 1000)
+    out = fleet.fc("up", "gamma-canonical", "--dry-run").out
+    assert re.search(r"would start.*gamma-canonical", out, re.S) and "REFUSED" not in out, \
+        "up is not refused by another seat's newer record (control): %s" % out
+
+
+def test_refresh_refuses_an_unlisted_dead_seat_whose_pid_record_started_after_the_snapshot(fleet):
+    fleet.write_snapshot(30, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 10) * 1000)
+    r = fleet.fc("refresh", "--dry-run", "--force", "fixture", "gamma-canonical")
+    assert r.status != 0 and re.search(r"refresh: .*gamma-canonical.*started after the snapshot was taken", r.out, re.S) \
+        and "would start" not in r.out and "fleet-canonicals request refresh gamma-canonical" in r.out, \
+        "refresh refuses the same (rc=%s): %s" % (r.status, r.out)
 
 
 # refresh's not-running branch reads the sessions list alone, which a sandbox can blind to a live

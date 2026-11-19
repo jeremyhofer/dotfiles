@@ -33,6 +33,19 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (fleet-canonicals: a moved handoff, an unreadable pid record, a seat started since the snapshot)
+
+### Three more refusals, each toward "unknown" rather than "dead"
+
+The handoff gate now dates a non-standard document by the commit that FIRST added it (`git log
+--follow`), so a document moved with `git mv` after the session began is still refused as older than
+the session. A pid record that cannot be read or parsed now leaves the pid source unread: an unseen
+seat reads `unknown` (never `dead`) in the snapshot, a listed one is not proved `stopped`, and the
+queue's `process_gone` no longer proves a process absent on its account. And `up`, `refresh` and
+`down` refuse a seat the snapshot reads `dead` when a readable pid record names it with a `startedAt`
+later than the snapshot's `takenAt` (a seat started since the snapshot, which a sandbox cannot see),
+naming `fleet-canonicals request <verb> <seat>`; the next snapshot clears it. Nothing to configure.
+
 ## 2026-11-19 (`land check` waits for another session's timing slot)
 
 ### `land check` waits, bounded, while another session holds the timing slot

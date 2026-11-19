@@ -945,6 +945,16 @@ out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
 [[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
     && ok "gate passes a non-standard target committed after the session started" \
     || bad "non-standard target committed after the start refused (rc=$rc): $out"
+# b2. committed BEFORE the start, then MOVED (git mv, committed) AFTER it: the document is still as
+# old as its first commit, so it is refused; a path-limited log without --follow reads the move as an add
+rm -rf "$NSR"; mkdir -p "$NSR"; gdoc "$NSR/$NSN"; hcommit "$NSR" "$NSN" $(( GSTART - 7200 ))
+mkdir -p "$NSR/moved"; git -C "$NSR" mv "$NSN" "moved/$NSN"
+GIT_AUTHOR_DATE="@$(( GSTART + 600 )) +0000" GIT_COMMITTER_DATE="@$(( GSTART + 600 )) +0000" git -C "$NSR" commit -q -m "move $NSN"
+gfresh "$NSR/moved/$NSN" $(( NOW - 60 ))
+out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"BEFORE the session started"* ]] \
+    && ok "gate dates a moved non-standard target by the commit that first added it, not the move" \
+    || bad "moved non-standard target committed before the start passed (rc=$rc): $out"
 # c. in a repository but never committed: the pointer check that runs before the gate (and which
 # --force does not lift) already refuses it, so the gate never has to date such a file
 rm -rf "$NSR"; mkdir -p "$NSR"; git -C "$NSR" init -q; gdoc "$NSR/$NSN"

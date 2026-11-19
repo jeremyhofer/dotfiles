@@ -164,12 +164,34 @@ snapshot_seat() {
   jq -r --arg n "$1" '.seats[$n] // empty | [.state, .why] | @tsv' "$SNAPSHOT_FILE" 2>/dev/null
 }
 
+# snapshot_newer_record NAME -- when a pid record names NAME with a `startedAt` later than the snapshot's
+# `takenAt`, print "pid N, started HH:MM:SS UTC" and return 0; else return 1. Needs snapshot_gate. A seat
+# started after the snapshot reads `dead` in it and a sandbox cannot see its process, so a launch on that
+# reading would start a duplicate; the pid records (~/.claude/sessions, Claude Code's own per-process
+# files) are readable from a sandbox. `startedAt` is epoch milliseconds, `takenAt` seconds. A record that
+# cannot be parsed is skipped here: the snapshot has already read such a seat as unknown.
+snapshot_newer_record() {
+  local taken f got
+  [ "$SNAP_USE" = 1 ] || return 1
+  taken=$(jq -r '.takenAt // empty' "$SNAPSHOT_FILE" 2>/dev/null)
+  case "$taken" in ''|*[!0-9]*) return 1 ;; esac
+  for f in "${FLEET_PID_RECORD_DIR:-$HOME/.claude/sessions}"/*.json; do
+    [ -f "$f" ] || continue
+    got=$(jq -r --arg n "$1" --argjson t "$taken" \
+      'select(type == "object" and .name == $n and (.startedAt | type) == "number" and .startedAt > ($t * 1000))
+       | "pid \(.pid // "?"), started \(.startedAt / 1000 | floor | strftime("%H:%M:%S")) UTC"' "$f" 2>/dev/null | head -n 1)
+    [ -n "$got" ] && { printf '%s\n' "$got"; return 0; }
+  done
+  return 1
+}
+
 # refuse_unlisted_by_snapshot VERB NAME -- for a seat this session's sessions list omits (the caller
 # has found no row and no live holder): die when the snapshot, taken outside every sandbox, reads it
-# live, unknown or stopped; return 0 for dead or absent. Needs snapshot_gate to have run. The way
+# live, unknown or stopped, or dead with a pid record started after the snapshot (snapshot_newer_record);
+# return 0 for dead or absent. Needs snapshot_gate to have run. The way
 # forward named is the request queue, whose runner works outside every sandbox.
 refuse_unlisted_by_snapshot() {
-  local verb=$1 name=$2 sst="" swhy=""
+  local verb=$1 name=$2 sst="" swhy="" newer
   IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
   case "$sst" in
     live)    die "$verb: '$name' is not in the sessions list here, but the session snapshot shows it running: $swhy
@@ -181,6 +203,12 @@ refuse_unlisted_by_snapshot() {
     stopped) die "$verb: '$name' is not running, but the sessions list outside this sandbox still shows it ($swhy).
   Only a $verb that can see that row can close it. Ask the runner:
       fleet-canonicals request $verb $name --reason '<why>'" ;;
+    dead)    if newer=$(snapshot_newer_record "$name"); then
+               die "$verb: '$name' reads dead in the session snapshot, but a pid record names it and started after the snapshot was taken ($newer).
+  It may be running; a sandbox cannot see its process, so this session would not know. Ask the runner,
+  or retry after the next snapshot:
+      fleet-canonicals request $verb $name --reason '<why>'"
+             fi ;;
   esac
 }
 
@@ -1233,7 +1261,7 @@ cmd_up() {
     fi
     # The snapshot sees from outside the sandbox: a seat it shows running, or cannot read, is not
     # started from here.
-    local sst="" swhy=""
+    local sst="" swhy="" newer=""
     IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
     case "$sst" in
       live)    printf 'REFUSED %-24s the session snapshot shows it running though the sessions list here omits it: %s\n' "$name" "$swhy" >&2
@@ -1242,6 +1270,10 @@ cmd_up() {
                refused=1; continue ;;
       stopped) printf 'REFUSED %-24s the sessions list still shows it, but it is not running (%s); a start would leave its old row beside the new one. Use: fleet-canonicals refresh %s\n' "$name" "$swhy" "$name" >&2
                refused=1; continue ;;
+      dead)    if newer=$(snapshot_newer_record "$name"); then
+                 printf 'REFUSED %-24s reads dead in the session snapshot, but a pid record names it and started after the snapshot was taken (%s); it may be running. Retry after the next snapshot, or ask the runner: fleet-canonicals request up %s --reason '"'"'<why>'"'"'\n' "$name" "$newer" "$name" >&2
+                 refused=1; continue
+               fi ;;
     esac
     holder=$(live_holder "$name")
     if [ -n "$holder" ]; then
@@ -2482,12 +2514,13 @@ std_handoff_epoch() {
 
 # added_epoch FILE -- the commit time (epoch seconds) of the commit that ADDED FILE in its git
 # repository; return 1 when it cannot be read that way (not in a repository, not committed, git
-# fails). The date of a document whose name carries none: never the pointer's own time.
+# fails). The date of a document whose name carries none: never the pointer's own time. --follow, so
+# a document moved with `git mv` is dated by the commit that first added it, not by the move.
 added_epoch() {
   local d base ct
   d=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
   base=$(basename "$1")
-  ct=$(git -C "$d" log --diff-filter=A --format=%ct -1 -- "$base" 2>/dev/null) || return 1
+  ct=$(git -C "$d" log --follow --diff-filter=A --format=%ct -1 -- "$base" 2>/dev/null) || return 1
   case "$ct" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$ct"
 }
