@@ -141,7 +141,7 @@ test-wt-config-gen.sh               private_dot_local/bin/executable_wt-config-g
 # Its flag-readers arm reads every template in the source, wherever it is, so any edit re-runs it
 # (about 10 s; a template-only glob would need ** mid-pattern, which the plugin refuses).
 tree test-wt-config-gen.sh          **
-test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-base private_dot_local/bin/executable_wt-config-gen dot_config/worktrunk/base.toml.tmpl .chezmoitemplates/worktrunk.worktree-dir .chezmoidata.yaml
+test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-base private_dot_local/bin/executable_wt-config-gen dot_config/worktrunk/base.toml.tmpl .chezmoitemplates/* .chezmoidata.yaml
 
 # --- setup/, run from the checkout -------------------------------------------------------------
 test-adopt-audit.sh                 setup/adopt-audit
@@ -156,7 +156,7 @@ test-scaffold-overlay.sh            setup/scaffold-overlay overlay-skeleton/**
 # --- deployed configuration with a suite ---------------------------------------------------------
 test-modify-settings.sh             dot_claude/modify_settings.json
 test-statusline-dir.sh              dot_claude/statusline-command.sh
-test-statusline-usage.sh            dot_claude/statusline-command.sh private_dot_local/bin/executable_claude-usage-override
+test-statusline-usage.sh            dot_claude/statusline-command.sh private_dot_local/bin/executable_claude-usage-override mise.toml package.json
 test-tooling-inventory.sh           dot_claude/tooling.md dot_claude/tooling-reference.md
 test-mani-config.sh                 dot_zshenv.tmpl .chezmoidata.yaml .chezmoitemplates/**
 test-mise-fleet-trust.py            private_dot_local/bin/executable_mise-fleet-trust private_dot_local/bin/executable_fleet-decl run_onchange_after_trust-mise-configs.sh.tmpl .chezmoiignore .chezmoidata.yaml .chezmoitemplates/** mise.toml
