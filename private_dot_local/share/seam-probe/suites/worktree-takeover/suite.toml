@@ -56,3 +56,50 @@ own = "git -c commit.gpgsign=false commit --allow-empty -m seam-probe-own > seam
 grant = "git -C {grant} -c commit.gpgsign=false commit --allow-empty -m seam-probe-grant > seam-probe-mark-grant 2>&1"
 refuse = "git -C {refuse} -c commit.gpgsign=false commit --allow-empty -m seam-probe-refuse > seam-probe-mark-refuse 2>&1"
 done = "echo done > seam-probe-mark-done"
+
+[[case]]
+id = "exempt-remove"
+question = "On this Claude Code version, does a session's `wt remove --no-hooks --foreground <name>`, issued as its own Bash call, remove a worktree, as the sandbox exemption for exactly that form expects?"
+relies = "The bare exempt form runs outside the sandbox and removes the worktree, read from git's worktree list and the disk, while `wt remove` with hooks, issued the same way, runs sandboxed and is refused with \"contains modified or untracked files\"."
+bears-on = "the worktree removal rule's text: leave with ExitWorktree keep, then wt remove --no-hooks --foreground"
+regimes = ["real"]
+script = "exempt-remove.sh"
+controls = ["refusal: `wt remove --foreground` with hooks, issued the same way, must be refused with \"contains modified or untracked files\" and leave its worktree"]
+# The plant can show only that the worktree stayed, which is FAIL; whether the call was denied is
+# in the reason. DENIED is the reading of an unplanted call a permission rule stops, never a plant's.
+plants = [
+  { id = "deny-flag", expect = "FAIL" },
+]
+minutes = 4
+
+# Each runs as its own Bash call from the fixture repository's root. The removals are issued bare:
+# a redirect, pipe or chain would make the exempt one run sandboxed. The refusal control's output
+# goes to a mark, since it runs sandboxed anyway.
+[case.commands]
+refuse = "wt remove --foreground sp-refuse > seam-probe-mark-refuse 2>&1"
+remove = "wt remove --no-hooks --foreground sp-remove"
+remove-denied = "wt remove --no-hooks --foreground -y sp-remove"
+done = "echo done > seam-probe-mark-done"
+
+[[case]]
+id = "bootstrap-timeout"
+question = "When a subagent launched with `isolation: worktree` fires worktrunk's WorktreeCreate hook and the repository's blocking pre-start runs wt-bootstrap, does the hook finish within its timeout, with a cold package cache and with a warm one, and what does the session see when it does not? The timeout is read from the plugin's hook declaration, not assumed."
+relies = "With the install inside the hook, the creation finishes and the subagent runs in its worktree, cold and warm, under the timeout the installed plugin declares (or Claude Code's default for a command hook when it declares none); a hook that runs past it fails the Agent call, and the call's result says so."
+bears-on = "creating a worktree through a subagent with isolation: worktree, in a repository whose creation installs dependencies"
+regimes = ["real"]
+heavy = true
+script = "bootstrap-timeout.sh"
+controls = ["a creation whose wt-bootstrap finds no lockfile must pass, in the same session, before the arms"]
+plants = [
+  { id = "install-past-timeout", expect = "FAIL", arm = "cold" },
+  { id = "control-fails", expect = "VOID" },
+]
+minutes = 16
+
+# Each subagent's one command, run as its own Bash call in the subagent's worktree, and the
+# session's last mark. The Agent calls themselves are prompted in the case script.
+[case.commands]
+sub-control = "touch sub-ran-control"
+sub-cold = "touch sub-ran-cold"
+sub-warm = "touch sub-ran-warm"
+done = "echo done > seam-probe-mark-done"

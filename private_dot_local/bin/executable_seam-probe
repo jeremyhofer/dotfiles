@@ -92,6 +92,12 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
                            a declared refusal text (default git's "Read-only file system")
     codeword SOURCE WORD   WORD in a reply: an output file, or a session or ask of this run by name
     trusted REPO           Claude Code's workspace trust for REPO's root
+    worktree REPO PATH     git lists a worktree at PATH (and whether its directory is on disk)
+    calls NAME [--tool T]... [--command C]
+                           a session's tool calls from its transcript, one line each:
+                           ok|error|denied|no-result, tool, input, result; exit 1 none matched
+    hook PLUGIN EVENT      an installed plugin's command hooks for EVENT and each one's timeout,
+                           read from the plugin's files (the default when none is declared)
   wait mark PATH | --under DIR NAME [--seconds N] [--line TEXT]
                            wait for a mark a session writes; prints its path; missing: exit 3
   session launch NAME --regime real|bare|candidate --cwd DIR [--add-dir D]... [--settings F]
@@ -620,6 +626,140 @@ def prim_trusted(repo: str) -> int:
         return EV_YES if ok else EV_NO
     print("INCONCLUSIVE: no Claude Code state file with a projects table was found")
     return EV_UNREAD
+
+
+def prim_worktree(repo: str, path: str) -> int:
+    """Whether git lists a worktree at PATH, read from `git worktree list --porcelain` in REPO, and
+    whether its directory is on disk. A removal that ran sandboxed can stop half way: git no longer
+    lists the worktree, and the directory is left behind."""
+    r = git("worktree", "list", "--porcelain", cwd=Path(repo)) if Path(repo).is_dir() else None
+    if r is None or r.returncode:
+        print(f"INCONCLUSIVE: git cannot list the worktrees of {repo}: {(r.stderr if r else 'no such directory').strip()}")
+        return EV_UNREAD
+    want = os.path.realpath(path)
+    listed = any(os.path.realpath(line[len("worktree "):]) == want
+                 for line in r.stdout.splitlines() if line.startswith("worktree "))
+    on_disk = Path(path).exists()
+    print(f"{'listed' if listed else 'not listed'} by git; directory {'present' if on_disk else 'absent'}")
+    return EV_YES if listed else EV_NO
+
+
+# What a tool call stopped by a permission rule reads like in its result. Claude Code's deny text is
+# "Permission to use <tool> with command <command> has been denied."; only the stable tail is matched.
+DENIAL_TEXTS = ("has been denied",)
+
+
+def result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return ""
+
+
+def prim_calls(name: str, tools: list[str] | None, command: str | None) -> int:
+    """The tool calls a session of this run made, read from its transcript (Claude Code's record,
+    not the model's account): one line per call, `STATUS<tab>TOOL<tab>INPUT<tab>RESULT`, in the
+    order made. STATUS is ok, error, denied (a permission rule stopped it) or no-result. --tool
+    keeps those tools; --command keeps Bash calls whose command is exactly COMMAND (whitespace
+    folded). Exit 0 a call matched, 1 none did (the call was never made), 3 no transcript."""
+    e = known_session(name)
+    uuid = e.get("uuid") or (find_row(e.get("display"), e.get("id")) or {}).get("sessionId") or ""
+    files = transcript_files(uuid)
+    if not files:
+        print(f"INCONCLUSIVE: no transcript for session {name}")
+        return EV_UNREAD
+    uses, results = [], {}
+    for line in files[0].read_text(errors="replace").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        content = (ev.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            if ev.get("type") == "assistant" and c.get("type") == "tool_use":
+                uses.append(c)
+            elif ev.get("type") == "user" and c.get("type") == "tool_result":
+                results[c.get("tool_use_id")] = c
+    want = " ".join(command.split()) if command is not None else None
+    n = 0
+    for u in uses:
+        tool, inp = u.get("name", ""), u.get("input") or {}
+        if tools and tool not in tools:
+            continue
+        cmd = " ".join(str(inp.get("command", "")).split())
+        if want is not None and (tool != "Bash" or cmd != want):
+            continue
+        res = results.get(u.get("id"))
+        text = " ".join(result_text(res.get("content")).split()) if res else ""
+        status = ("no-result" if res is None else "denied" if any(t in text for t in DENIAL_TEXTS)
+                  else "error" if res.get("is_error") else "ok")
+        summary = cmd if tool == "Bash" else f"isolation={inp.get('isolation', '-')}"
+        print(f"{status}\t{tool}\t{summary}\t{text[:300]}")
+        n += 1
+    return EV_YES if n else EV_NO
+
+
+# Claude Code's timeout for a command hook that declares none, in seconds. Its hooks reference
+# (code.claude.com/docs/en/hooks, read 2026-11-18): "Defaults: 600 for `command`, `http`, and
+# `mcp_tool`", lowered for a few named events, of which WorktreeCreate is not one. Not read from
+# Claude Code itself, which publishes no machine-readable value; a case that relies on it plants a
+# hook running past it, and a BLIND there says the real limit is longer.
+HOOK_DEFAULT_TIMEOUT = 600
+
+
+def prim_hook(plugin: str, event: str) -> int:
+    """The command hooks an installed plugin declares for EVENT, and the timeout each runs under,
+    read from the plugin's own files on disk: installed_plugins.json names the install path, whose
+    .claude-plugin/plugin.json may name a hooks file or hold the hooks inline, else hooks/hooks.json.
+    Prints `file:`, `version:` and one `timeout: N (declared|default)` per hook. Exit 0 the event
+    has a command hook, 1 the plugin declares none, 3 the plugin or its files cannot be read."""
+    plugins = claude_config_dir() / "plugins"
+    try:
+        installed = json.loads((plugins / "installed_plugins.json").read_text())
+        entries = (installed.get("plugins", installed) or {}).get(plugin) or []
+        entry = entries[0] if isinstance(entries, list) and entries else entries
+        root = Path(entry["installPath"])
+    except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError):
+        print(f"INCONCLUSIVE: {plugin} is not in {plugins / 'installed_plugins.json'}")
+        return EV_UNREAD
+    hooks_file, hooks = root / "hooks/hooks.json", None
+    try:
+        manifest = json.loads((root / ".claude-plugin/plugin.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    declared = manifest.get("hooks") if isinstance(manifest, dict) else None
+    if isinstance(declared, dict):
+        hooks_file, hooks = root / ".claude-plugin/plugin.json", declared
+    elif isinstance(declared, str):
+        hooks_file = root / declared
+    if hooks is None:
+        try:
+            hooks = json.loads(hooks_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            print(f"INCONCLUSIVE: the plugin's hooks file {hooks_file} cannot be read")
+            return EV_UNREAD
+    table = hooks.get("hooks", hooks) if isinstance(hooks, dict) else {}
+    print(f"file: {hooks_file}")
+    print(f"version: {entry.get('version', 'unknown')}")
+    found = 0
+    for group in (table.get(event) or []) if isinstance(table, dict) else []:
+        for h in (group.get("hooks") or []) if isinstance(group, dict) else []:
+            if not isinstance(h, dict) or h.get("type", "command") != "command":
+                continue
+            t = h.get("timeout")
+            if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+                print(f"timeout: {t:g} (declared)")
+            else:
+                print(f"timeout: {HOOK_DEFAULT_TIMEOUT} (none declared; Claude Code's default for a command hook)")
+            found += 1
+    if not found:
+        print(f"no command hook for {event}")
+    return EV_YES if found else EV_NO
 
 
 def prim_wait_mark(path: str | None, under: str | None, name: str | None, seconds: float,
@@ -1357,6 +1497,13 @@ def cmd_red(args) -> int:
         raise Usage(f"case {c['id']} does not run in the {regime} regime")
     refuse_in_session([regime])
     fixtures = fixture_root(args.suite)
+    if c.get("heavy"):
+        # A plant run of a heavy case is as heavy as its run, so it waits for the slot the same way.
+        state, holder = slot_state(args.slot_holder)
+        if state == "other":
+            print(f"seam-probe red {args.suite} {c['id']}: SKIPPED: heavy, and the timing slot is held by "
+                  f"{holder or 'another session'}; run it again once the slot is free")
+            return EXIT_SKIPPED
     confirm([f"seam-probe red {args.suite} {c['id']} ({regime}): {len(c['plants'])} plant run(s), ~{c['minutes']} min each",
              *[f"  plant {p['id']}: must come out {p['expect']}{' on arm ' + p['arm'] if p.get('arm') else ''}" for p in c["plants"]]],
             args.yes)
@@ -1480,6 +1627,10 @@ def main(argv: list[str]) -> int:
     q = es.add_parser("refused"); q.add_argument("mark"); q.add_argument("--text", action="append")
     q = es.add_parser("codeword"); q.add_argument("source"); q.add_argument("word")
     q = es.add_parser("trusted"); q.add_argument("repo")
+    q = es.add_parser("worktree"); q.add_argument("repo"); q.add_argument("path")
+    q = es.add_parser("calls"); q.add_argument("name"); q.add_argument("--tool", action="append")
+    q.add_argument("--command")
+    q = es.add_parser("hook"); q.add_argument("plugin"); q.add_argument("event")
     p = sub.add_parser("wait"); ws = p.add_subparsers(dest="what", required=True)
     q = ws.add_parser("mark"); q.add_argument("path", nargs="?"); q.add_argument("--under", nargs=2, metavar=("DIR", "NAME"))
     q.add_argument("--seconds", type=float, default=180); q.add_argument("--line")
@@ -1524,6 +1675,9 @@ def main(argv: list[str]) -> int:
                     case "refused": return prim_refused(a.mark, a.text)
                     case "codeword": return prim_codeword(a.source, a.word)
                     case "trusted": return prim_trusted(a.repo)
+                    case "worktree": return prim_worktree(a.repo, a.path)
+                    case "calls": return prim_calls(a.name, a.tool, a.command)
+                    case "hook": return prim_hook(a.plugin, a.event)
             case "wait":
                 if bool(a.path) == bool(a.under):
                     raise Usage("wait mark takes a PATH, or --under DIR NAME")

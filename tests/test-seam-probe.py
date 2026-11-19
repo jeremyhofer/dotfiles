@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -323,7 +324,7 @@ def test_unwritable_state_directory_is_refused(env, tmp_path):
 # files from its directory up.
 
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
-import json, os, re, secrets, shlex, shutil, subprocess, sys, uuid
+import json, os, re, secrets, shlex, shutil, signal, subprocess, sys, uuid
 from pathlib import Path
 st = Path(os.environ["FAKE_CLAUDE_STATE"]); st.mkdir(parents=True, exist_ok=True)
 rows_f = st / "rows.json"
@@ -387,39 +388,119 @@ if "--bg" in argv:
     else:
         run_in = here
     allowed = [run_in] + [Path(flags[i + 1]) for i, a in enumerate(flags) if a == "--add-dir"]
-    for line in prompt.splitlines():
-        m = re.match(r"^\d+\. (.*)$", line)
-        if not m: continue
-        cmd = m.group(1)
-        c = re.search(r"git -C (\S+)", cmd)
-        target = Path(shlex.split(c.group(1))[0]) if c else run_in
-        if not any(target == a or a in target.parents for a in allowed):
-            mark = re.search(r"> (\S+) 2>&1", cmd).group(1)
-            (run_in / mark).write_text("fatal: unable to write new index file: Read-only file system\n")
-            continue
-        subprocess.run(["sh", "-c", cmd], cwd=run_in, check=False)
+    events = []
+    def call(name, inp, text, err=False, record=True):
+        if not record: return
+        tid = "toolu_" + secrets.token_hex(6)
+        events.append({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}})
+        events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text, "is_error": err}]}})
+    # The overlay's deny rules for wt remove, and the one form its sandbox exclusion matches: a
+    # command with a redirect, pipe or chain is not that form, so it runs sandboxed.
+    deny = re.compile(os.environ.get("FAKE_CLAUDE_DENY", r"^wt remove( .*)? (-y|--yes|-f|--force|-D|--reap|-C|--config)( |$)"))
+    exempt = re.compile(r"^wt remove --no-hooks --foreground [^;&|<>`$()]+$")
+    skip = os.environ.get("FAKE_CLAUDE_SKIP")
+    def run_cmds(text, where, grants, record=True):
+        for line in text.splitlines():
+            m = re.match(r"^\d+\. (.*)$", line)
+            if not m: continue
+            cmd = m.group(1)
+            if skip and re.search(skip, cmd): continue
+            if deny.search(cmd):
+                call("Bash", {"command": cmd}, f"Permission to use Bash with command {cmd} has been denied.", True, record); continue
+            c = re.search(r"git -C (\S+)", cmd)
+            target = Path(shlex.split(c.group(1))[0]) if c else where
+            if not any(target == a or a in target.parents for a in grants):
+                mark = re.search(r"> (\S+) 2>&1", cmd).group(1)
+                (where / mark).write_text("fatal: unable to write new index file: Read-only file system\n")
+                call("Bash", {"command": cmd}, "", False, record)
+                continue
+            env = dict(os.environ, FAKE_SANDBOXED="0" if exempt.match(cmd) else "1")
+            p = subprocess.run(["sh", "-c", cmd], cwd=where, env=env, capture_output=True, text=True, check=False)
+            call("Bash", {"command": cmd}, p.stdout + p.stderr, p.returncode != 0, record)
+    def plugin_timeout():
+        # worktrunk's plugin as Claude Code finds it: None when it is not installed.
+        try:
+            root = Path(json.loads((Path(os.environ["CLAUDE_CONFIG_DIR"]) / "plugins/installed_plugins.json").read_text())
+                        ["plugins"]["worktrunk@worktrunk"][0]["installPath"])
+            h = json.loads((root / "hooks/hooks.json").read_text())["hooks"]["WorktreeCreate"][0]["hooks"][0]
+        except (OSError, KeyError, IndexError, ValueError):
+            return None
+        return h.get("timeout", 600)
+    def subagent(task):
+        n = "agent-" + secrets.token_hex(4)
+        inp = {"description": "probe", "prompt": task, "subagent_type": "general-purpose", "isolation": "worktree"}
+        tmo = plugin_timeout()
+        wtp = here / (".worktrees" if tmo is not None else ".claude/worktrees") / n
+        subprocess.run([shutil.which("git"), "-C", str(here), "worktree", "add", "-q", "-b", n, str(wtp)], check=True)
+        cfg = here / ".config/wt.toml"
+        m = re.search(r'^pre-start = "(.*)"$', cfg.read_text(), re.M) if tmo is not None and cfg.is_file() else None
+        if m:
+            pr = subprocess.Popen(["sh", "-c", m.group(1).replace("{{ worktree_path }}", shlex.quote(str(wtp)))],
+                                  cwd=wtp, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                rc = pr.wait(timeout=tmo)
+            except subprocess.TimeoutExpired:
+                os.killpg(pr.pid, signal.SIGKILL); pr.wait()
+                call("Agent", inp, f"WorktreeCreate hook timed out after {tmo}s", True); return
+            if rc:
+                call("Agent", inp, f"WorktreeCreate hook failed: pre-start exited {rc}", True); return
+        run_cmds(task, wtp, [wtp], record=False)
+        call("Agent", inp, "DONE")
+    parts = re.split(r"^=== (.+) ===$", prompt, flags=re.M)
+    if len(parts) > 1:
+        for title, body in zip(parts[1::2], parts[2::2]):
+            if "subagent's task" in title: subagent(body)
+            else: run_cmds(body, run_in, allowed)
+    else:
+        run_cmds(prompt, run_in, allowed)
     rows.append({"id": sid, "sessionId": u, "name": opt(flags, "-n"), "cwd": str(run_in), "state": "working",
                  "kind": "background", "startedAt": len(rows)}); save()
     t = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(run_in))
     t.mkdir(parents=True, exist_ok=True)
-    (t / (u + ".jsonl")).write_text(json.dumps({"type": "user", "message": {"content": prompt}}) + "\n" + json.dumps(
-        {"type": "assistant", "message": {"content": [{"type": "text", "text": os.environ.get("FAKE_CLAUDE_REPLY", "DONE")}]}}) + "\n")
+    lines = [{"type": "user", "message": {"content": prompt}}, *events,
+             {"type": "assistant", "message": {"content": [{"type": "text", "text": os.environ.get("FAKE_CLAUDE_REPLY", "DONE")}]}}]
+    (t / (u + ".jsonl")).write_text("".join(json.dumps(x) + "\n" for x in lines))
     if not os.environ.get("FAKE_CLAUDE_NOID"): print("backgrounded · " + sid)
     sys.exit(0)
 print("fake claude: unhandled", argv, file=sys.stderr); sys.exit(2)
 """
 
 FAKE_WT = """#!/bin/sh
+hooks='  post-start:\\n  touch seam-probe-setup-ran\\n  pre-start:\\n  sh {{ worktree_path }}/probe-bootstrap.sh\\n'
 case "$*" in
   *--version*) echo "wt v0.0.0" ;;
   *"config approvals list"*)
     if [ -n "${FAKE_WT_UNAPPROVED:-}" ]; then
-      printf 'APPROVED\\n  (none)\\n\\nUNAPPROVED\\n  post-start:\\n  touch seam-probe-setup-ran\\n'
+      printf "APPROVED\\n  (none)\\n\\nUNAPPROVED\\n$hooks"
     else
-      printf 'APPROVED\\n  post-start:\\n  touch seam-probe-setup-ran\\n\\nUNAPPROVED\\n  (none)\\n'
+      printf "APPROVED\\n$hooks\\nUNAPPROVED\\n  (none)\\n"
     fi ;;
+  "remove "*)
+    # Run sandboxed (the fake claude says which), worktrunk's clean check meets the sandbox's
+    # placeholder files and refuses; run exempt, it removes the branch's worktree.
+    if [ "${FAKE_SANDBOXED:-1}" = 1 ] && [ -z "${FAKE_WT_NO_REFUSAL:-}" ]; then
+      echo "Cannot remove: the worktree contains modified or untracked files" >&2; exit 1
+    fi
+    for a; do b=$a; done
+    p=$(git worktree list --porcelain | awk -v b="branch refs/heads/$b" '/^worktree /{w=substr($0, 10)} $0 == b {print w}')
+    [ -n "$p" ] || { echo "no worktree for $b" >&2; exit 1; }
+    git worktree remove "$p" && git branch -q -d "$b" ;;
   *) exit 2 ;;
 esac
+"""
+
+# wt-bootstrap as the fixture's pre-start meets it: by lockfile, at the worktree's root or -C DIR. A
+# first install fills the package cache npm_config_cache names; it never falls back to a real cache.
+FAKE_BOOTSTRAP = """#!/bin/sh
+dir=.
+[ "${1:-}" = -C ] && dir=$2
+[ -f "$dir/package-lock.json" ] || exit 0
+[ -z "${FAKE_BOOTSTRAP_RC:-}" ] || exit "$FAKE_BOOTSTRAP_RC"
+cache=${npm_config_cache:?the fake install needs npm_config_cache}
+mkdir -p "$cache" "$dir/node_modules/is-number"
+if [ -z "$(ls -A "$cache")" ] && [ -z "${FAKE_BOOTSTRAP_NOCACHE:-}" ]; then
+  echo tgz > "$cache/is-number-7.0.0.tgz"
+fi
 """
 
 
@@ -428,7 +509,7 @@ def fake(env, tmp_path):
     """env, with a fake claude and wt first on PATH and Claude Code's state in a temp directory."""
     bin_ = tmp_path / "fakebin"
     bin_.mkdir()
-    for n, body in (("claude", FAKE_CLAUDE), ("wt", FAKE_WT)):
+    for n, body in (("claude", FAKE_CLAUDE), ("wt", FAKE_WT), ("wt-bootstrap", FAKE_BOOTSTRAP)):
         (bin_ / n).write_text(body)
         (bin_ / n).chmod(0o755)
     cfg = tmp_path / "claude-config"
@@ -796,6 +877,218 @@ def test_claude_worktree_skips_without_its_grants(fake, untrusted, unapproved, n
     assert (repo / ".git").exists() and not calls(fake, "--bg")  # left in place for the grant; no session
     r = tool(fake, "trust", "worktree-takeover")
     assert f"left in place: {repo}" in r.stdout
+
+
+# ---- evidence read from git, a transcript and a plugin's files ---------------------------------
+
+def test_evidence_worktree(tmp_path, capsys):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git_("init", "-q", "-b", "main", cwd=repo)
+    git_("commit", "-q", "--allow-empty", "-m", "base", cwd=repo)
+    wt = repo / ".claude/worktrees/w1"
+    git_("worktree", "add", "-q", "-b", "w1", str(wt), cwd=repo)
+    assert sp.prim_worktree(str(repo), str(wt)) == 0 and "listed by git; directory present" in capsys.readouterr().out
+    # A removal that stopped half way: git no longer lists it, the directory is left.
+    (repo / ".git/worktrees/w1").rename(tmp_path / "gone")
+    assert sp.prim_worktree(str(repo), str(wt)) == 1 and "not listed by git; directory present" in capsys.readouterr().out
+    shutil.rmtree(wt)
+    assert sp.prim_worktree(str(repo), str(wt)) == 1 and "directory absent" in capsys.readouterr().out
+    assert sp.prim_worktree(str(tmp_path / "missing"), str(wt)) == 3
+
+
+def transcript_env(fake, tmp_path, events):
+    """A ledger naming one session, and its transcript holding EVENTS, for the evidence primitives."""
+    u = "12345678-1234-1234-1234-123456789abc"
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(json.dumps({"kind": "session", "name": "own", "id": "abc123", "uuid": u}) + "\n")
+    d = fake["cfg"] / "projects/-some-fixture"
+    d.mkdir(parents=True)
+    (d / f"{u}.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    return {"SEAM_PROBE_RUN": str(ledger)}
+
+
+def use(tid, name, inp):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}}
+
+
+def res(tid, text, err=False):
+    return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text, "is_error": err}]}}
+
+
+def test_evidence_calls(fake, tmp_path):
+    e = transcript_env(fake, tmp_path, [
+        use("t1", "Bash", {"command": "wt remove  --foreground x"}), res("t1", "Cannot remove: contains modified or untracked files", True),
+        use("t2", "Bash", {"command": "wt remove --no-hooks --foreground -y x"}),
+        res("t2", "Permission to use Bash with command wt remove --no-hooks --foreground -y x has been denied.", True),
+        use("t3", "Agent", {"prompt": "p", "isolation": "worktree"}), res("t3", [{"type": "text", "text": "DONE"}]),
+        use("t4", "Agent", {"prompt": "p", "isolation": "worktree"}),
+    ])
+    r = tool(fake, "evidence", "calls", "own", extra_env=e)
+    rows_ = [x.split("\t") for x in r.stdout.splitlines()]
+    assert r.returncode == 0 and [x[0] for x in rows_] == ["error", "denied", "ok", "no-result"], r.stdout
+    assert rows_[0][2] == "wt remove --foreground x" and rows_[2][2] == "isolation=worktree"
+    r = tool(fake, "evidence", "calls", "own", "--tool", "Agent", "--tool", "Task", extra_env=e)
+    assert [x.split("\t")[0] for x in r.stdout.splitlines()] == ["ok", "no-result"]
+    r = tool(fake, "evidence", "calls", "own", "--command", "wt remove --foreground x", extra_env=e)
+    assert r.returncode == 0 and r.stdout.startswith("error\tBash")
+    r = tool(fake, "evidence", "calls", "own", "--command", "wt remove --no-hooks --foreground x", extra_env=e)
+    assert r.returncode == 1 and r.stdout == ""
+    (tmp_path / "l.jsonl").write_text(json.dumps({"kind": "session", "name": "own", "id": "abc123",
+                                                  "uuid": "00000000-0000-0000-0000-000000000000"}) + "\n")
+    r = tool(fake, "evidence", "calls", "own", extra_env=e)
+    assert r.returncode == 3 and "INCONCLUSIVE" in r.stdout
+
+
+def install_plugin(env, hooks, manifest=None):
+    """A worktrunk plugin as Claude Code records an install: installed_plugins.json naming its
+    directory, whose hooks/hooks.json holds HOOKS (a WorktreeCreate timeout, or none)."""
+    root = env["cfg"] / "plugins/cache/worktrunk/worktrunk/abc123"
+    (root / "hooks").mkdir(parents=True, exist_ok=True)
+    (root / ".claude-plugin").mkdir(exist_ok=True)
+    (root / "hooks/hooks.json").write_text(json.dumps({"hooks": hooks}))
+    (root / ".claude-plugin/plugin.json").write_text(json.dumps(manifest or {"name": "worktrunk"}))
+    (env["cfg"] / "plugins/installed_plugins.json").write_text(json.dumps(
+        {"version": 2, "plugins": {"worktrunk@worktrunk": [{"scope": "user", "installPath": str(root), "version": "abc123"}]}}))
+    return root
+
+
+def create_hook(timeout=None):
+    h = {"type": "command", "command": "bash -c 'wt switch --create x'"}
+    if timeout is not None:
+        h["timeout"] = timeout
+    return {"WorktreeCreate": [{"hooks": [h]}]}
+
+
+def test_evidence_hook(fake):
+    r = tool(fake, "evidence", "hook", "worktrunk@worktrunk", "WorktreeCreate")
+    assert r.returncode == 3 and "INCONCLUSIVE" in r.stdout
+    root = install_plugin(fake, create_hook(45))
+    r = tool(fake, "evidence", "hook", "worktrunk@worktrunk", "WorktreeCreate")
+    assert r.returncode == 0 and "timeout: 45 (declared)" in r.stdout and f"file: {root}/hooks/hooks.json" in r.stdout
+    install_plugin(fake, create_hook())
+    r = tool(fake, "evidence", "hook", "worktrunk@worktrunk", "WorktreeCreate")
+    assert r.returncode == 0 and f"timeout: {sp.HOOK_DEFAULT_TIMEOUT} (none declared" in r.stdout
+    assert tool(fake, "evidence", "hook", "worktrunk@worktrunk", "WorktreeRemove").returncode == 1
+    # A manifest that holds the hooks inline wins over hooks/hooks.json.
+    install_plugin(fake, create_hook(45), manifest={"name": "worktrunk", "hooks": create_hook(7)})
+    r = tool(fake, "evidence", "hook", "worktrunk@worktrunk", "WorktreeCreate")
+    assert "timeout: 7 (declared)" in r.stdout and "plugin.json" in r.stdout
+
+
+# ---- exempt-remove, end to end against the fakes ------------------------------------------------
+
+EXR = "seams/worktree-takeover/exr"
+
+
+def test_exempt_remove_case(fake):
+    shipped(fake)
+    trust(fake, fake["sandbox"] / EXR)
+    r = tool(fake, "run", "worktree-takeover", "exempt-remove", "--yes")
+    assert r.returncode == 4 and "NOT-SEEN-RED" in r.stdout and "took the worktree off" in r.stdout, r.stdout + r.stderr
+    (launch,) = [c for c in calls(fake) if "--bg" in c["argv"]]
+    prompt = launch["argv"][-1]
+    # The exempt removal is issued bare, its own numbered call; the control's output goes to a mark.
+    assert "\n2. wt remove --no-hooks --foreground sp-remove\n" in prompt, prompt
+    assert "1. wt remove --foreground sp-refuse > seam-probe-mark-refuse 2>&1" in prompt
+    r = tool(fake, "red", "worktree-takeover", "exempt-remove", "--yes")
+    assert r.returncode == 0 and " RED " in r.stdout and "denied, as the deny rule" in r.stdout, r.stdout
+    r = tool(fake, "run", "worktree-takeover", "exempt-remove", "--yes")
+    assert r.returncode == 0, r.stdout
+    assert rows(fake) == [] and not (fake["sandbox"] / EXR).exists()
+
+
+@pytest.mark.parametrize("extra,code,needle", [
+    ({"FAKE_CLAUDE_SKIP": "--no-hooks"}, 3, "never issued"),
+    ({"FAKE_CLAUDE_DENY": "^wt remove --no-hooks"}, 5, "stopped the exempt removal itself"),
+    ({"FAKE_WT_NO_REFUSAL": "1"}, 3, "refusal control"),
+])
+def test_exempt_remove_readings(fake, extra, code, needle):
+    shipped(fake)
+    trust(fake, fake["sandbox"] / EXR)
+    r = tool(fake, "run", "worktree-takeover", "exempt-remove", "--yes", extra_env=extra)
+    assert r.returncode == code and needle in summary(fake), r.stdout
+
+
+def test_exempt_remove_plant_without_the_deny_rule_is_blind(fake):
+    shipped(fake)
+    trust(fake, fake["sandbox"] / EXR)
+    r = tool(fake, "red", "worktree-takeover", "exempt-remove", "--yes", extra_env={"FAKE_CLAUDE_DENY": "^never$"})
+    assert r.returncode == 4 and "BLIND" in r.stdout and "the deny rule did not stop it" in r.stdout, r.stdout
+
+
+def test_exempt_remove_skips_without_trust(fake):
+    shipped(fake)
+    r = tool(fake, "run", "worktree-takeover", "exempt-remove", "--yes")
+    assert r.returncode == 6 and "&& claude" in summary(fake) and not calls(fake, "--bg"), r.stdout
+
+
+# ---- bootstrap-timeout, end to end against the fakes -------------------------------------------
+
+BTM = "seams/worktree-takeover/btm"
+
+
+def btm(fake, timeout=2):
+    shipped(fake)
+    trust(fake, fake["sandbox"] / BTM)
+    install_plugin(fake, create_hook(timeout))
+    return fake
+
+
+def test_bootstrap_timeout_case(fake):
+    btm(fake)
+    r = tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes")
+    assert r.returncode == 4 and r.stdout.count("NOT-SEEN-RED") == 2, r.stdout + r.stderr
+    s = summary(fake)
+    # The timeout is the one the plugin declares, read from its file, and recorded in each reason.
+    assert s.count("the 2s timeout (declared, plugin abc123, cache/worktrunk/worktrunk/abc123/hooks/hooks.json)") == 2, s
+    assert str(fake["cfg"]) not in s
+    assert "cache entries at the start: 0" in s and "cache entries at the start: 1" in s
+    (launch,) = [c for c in calls(fake) if "--bg" in c["argv"]]
+    a = launch["argv"]
+    assert a[a.index("--model") + 1] == "sonnet" and a[-1].count("isolation parameter") == 1
+    r = tool(fake, "red", "worktree-takeover", "bootstrap-timeout", "--yes")
+    assert r.returncode == 0, r.stdout + r.stderr
+    # install-past-timeout is read on the cold arm alone; control-fails on both.
+    assert r.stdout.count(" RED ") == 3 and "timed out after 2s" in r.stdout, r.stdout
+    assert tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes").returncode == 0
+    assert rows(fake) == [] and not (fake["sandbox"] / BTM).exists()
+
+
+@pytest.mark.parametrize("extra,code,needle", [
+    ({"FAKE_BOOTSTRAP_NOCACHE": "1"}, 4, "the cache was not warm"),
+    ({"FAKE_BOOTSTRAP_RC": "1"}, 3, "the install itself failed (exit 1)"),
+])
+def test_bootstrap_timeout_readings(fake, extra, code, needle):
+    btm(fake)
+    r = tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes", extra_env=extra)
+    assert r.returncode == code and needle in summary(fake), r.stdout
+
+
+def test_bootstrap_timeout_skips_without_the_plugin_or_its_grants(fake):
+    shipped(fake)
+    trust(fake, fake["sandbox"] / BTM)
+    r = tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes")
+    assert r.returncode == 6 and "plugin is not installed" in summary(fake), r.stdout
+    install_plugin(fake, create_hook(2))
+    r = tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes", extra_env={"FAKE_WT_UNAPPROVED": "1"})
+    assert r.returncode == 6 and "config approvals add" in summary(fake) and not calls(fake, "--bg"), r.stdout
+
+
+def test_bootstrap_timeout_is_heavy():
+    data, errs = sp.load(SHIPPED / "worktree-takeover")
+    assert not errs and sp.get_case(data, "bootstrap-timeout").get("heavy") is True
+
+
+def test_red_of_a_heavy_case_waits_for_the_slot(env, tmp_path):
+    d = make_suite(env, {"c": ('touch "$SEAM_PROBE_SUITE_DIR/ran"\n"$sp" verdict FAIL x\n', '"none"')})
+    (d / "suite.toml").write_text((d / "suite.toml").read_text() + "heavy = true\n")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "fleet-slot").write_text("#!/bin/sh\necho 'held by someone-else'\nexit 1\n")
+    (fake / "fleet-slot").chmod(0o755)
+    r = tool(env, "red", "s", "c", "--yes", extra_env={"PATH": f"{fake}:{os.environ['PATH']}"})
+    assert r.returncode == 6 and "someone-else" in r.stdout and not (d / "ran").exists(), r.stdout
 
 
 if __name__ == "__main__":

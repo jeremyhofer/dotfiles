@@ -33,6 +33,19 @@ Entries are newest first.
 ---
 
 
+## 2026-11-18 (seam-probe: two more worktree-takeover cases)
+
+The `worktree-takeover` suite gains `exempt-remove` (does a session's bare `wt remove --no-hooks
+--foreground <name>` remove a worktree, with a sandboxed `wt remove` refused beside it) and
+`bootstrap-timeout` (does worktrunk's `WorktreeCreate` hook, fired by an `isolation: worktree`
+subagent, finish within its timeout while a blocking `pre-start` runs `wt-bootstrap`, cold cache and
+warm; heavy, so it waits for the timing slot). `seam-probe` gains the evidence primitives
+`worktree`, `calls` (a session's tool calls, read from its transcript) and `hook` (a plugin's hook
+timeout, read from its files), and `red` of a heavy case now waits for the slot as `run` does. Both
+cases start sessions, so they run from a plain terminal; each reports SKIPPED, naming the step,
+until its fixture is trusted (and, for `bootstrap-timeout`, its worktrunk hook approved) once.
+Nothing to change on a machine.
+
 ## 2026-11-18 (a per-machine flag can move worktrunk's worktrees to `.claude/worktrees/`)
 
 A new chezmoi data value, `claudeWorktrees`, never prompted and absent as `false`, chooses where
@@ -51,6 +64,7 @@ turn it on until the domain's own checks for the new location pass. Turning it o
 means listing `.claude/worktrees/` in each repository's `.gitignore` first and moving the worktrees
 already under `.worktrees/` afterwards; `docs/reference/repository-layouts.md` ("Where the worktrees
 go") has the steps.
+||||||| parent of 410dbee (seam-probe: the exempt-remove and bootstrap-timeout cases)
 
 ## 2026-11-18 (a macOS launch must run in the Aqua session)
 
