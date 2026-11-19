@@ -33,6 +33,19 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (fnm and direnv leave the Brewfile)
+
+### The Brewfile no longer declares fnm or direnv (ACTION, a machine that runs without mise)
+
+mise selects each repository's Node from its `mise.toml` pin and loads its environment, so the base
+declares mise alone. Removing the lines uninstalls nothing: `brew bundle` stops installing the two
+formulae, and each machine's owner removes them. The base's fallback is unchanged: where
+`miseActive` is unset, the bootstrap and the apply suites still select Node through fnm, and
+`~/.zshrc` still renders the fnm and direnv hooks. **ACTION, on any machine where `miseActive` is
+unset:** declare fnm and direnv in the domain's own layer before this apply, or set `miseActive`
+for the machine. Without either, a new shell reports both hooks' commands missing, and the apply
+suites refuse with `no fnm and no node on PATH` where no `node` is installed.
+
 ## 2026-11-19 (EnterWorktree and ExitWorktree are open to every session)
 
 `claude-worktree-hook` no longer refuses the EnterWorktree tool where a repository's sessions work in

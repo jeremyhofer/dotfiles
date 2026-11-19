@@ -8,8 +8,9 @@
 # overlay installs nothing, when in fact it installs exactly this core -- which is the whole
 # reason the base is the standalone standard.
 #
-# node is installed PER-PROJECT (via fnm today; mise replaces fnm at each machine's cutover), NOT as
-# a brew formula — do not add `brew "node"`.
+# node is installed PER-PROJECT by mise, from each repository's `mise.toml` pin, NOT as a brew
+# formula — do not add `brew "node"`. fnm and direnv are no longer declared here: a domain whose
+# machines still run without mise (`miseActive` unset) declares fnm in its own layer.
 #
 # REQUIRED marker: a `brew "formula"` line whose trailing comment contains the whole word
 # REQUIRED means apply itself, or a hook that runs on every commit, fails closed without it —
@@ -34,10 +35,8 @@ brew "lazygit"           # git TUI (LazyVim/snacks integration)
 brew "tuicr"             # code-review TUI (git/jj), vim keys — local + PR/MR review
 brew "mani"              # multi-repo manager: declarative sync (mani sync) + run across repos (mani exec)
 brew "worktrunk"         # git worktree manager (wt): create/switch/list/merge, parallel-agent isolation
-brew "fnm"               # node version manager (per-project node)
-brew "mise"              # runtime and per-project environment manager; replaces fnm and direnv at cutover
+brew "mise"              # runtime and per-project environment manager (per-project node, env)
 brew "uv"                # python
-brew "direnv"            # per-directory env (.envrc)
 brew "tmux"
 brew "neovim"
 brew "fzf"               # fuzzy finder (zsh fzf plugin)

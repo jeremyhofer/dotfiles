@@ -331,8 +331,9 @@ def select_node(env: dict) -> tuple:
         return prefix, f"Node {got} via fnm", env
     node = shutil.which("node", path=path)
     if node is None:
-        raise Refused(f"no fnm and no node on PATH. Install fnm (the Brewfile's, or the "
-                      f"distribution's package) and run `fnm install {want}`, then apply again")
+        raise Refused(f"no fnm and no node on PATH. Set `miseActive` for this machine (the "
+                      f"Brewfile installs mise), or install fnm from this domain's own layer and "
+                      f"run `fnm install {want}`, then apply again")
     got = capture([node, "--version"], env) or "an unreadable version"
     if version_parts(got)[:1] != wanted[:1]:
         raise Refused(f"the node on PATH ({node}) is {got}, but {source} pins {want}, major "
