@@ -13,6 +13,16 @@
        generated config. Templates read it with `get`, so a config generated before it existed
        reads as false. */ -}}
 {{- $miseActive := get . "miseActive" | default false -}}
+{{- /* claudeWorktrees is never prompted either: true moves where worktrunk nests a standard clone's
+       new worktrees from <repo>/.worktrees/<branch> to <repo>/.claude/worktrees/<branch>, through
+       the one partial .chezmoitemplates/worktrunk.worktree-dir (worktrunk's base.toml default, and
+       ~/.config/worktrunk/worktree-dir, which wt-config-gen and fleet-repo read). Turn it on per
+       machine by editing the generated config, then apply. It stays false everywhere until the
+       domain's probe cases for the new location pass; before a machine turns it on, each repository
+       there lists .claude/worktrees/ in its .gitignore, the machine's layout check is done, and the
+       worktrees already under .worktrees/ are moved (worktrunk's `wt step relocate`). Templates read
+       it with `get`, so a config generated before it existed reads as false. */ -}}
+{{- $claudeWorktrees := get . "claudeWorktrees" | default false -}}
 {{- /* dpi is an X11/.Xresources concern (Linux only); with Wayland primary + X break-glass,
        macOS should never be prompted for it. .Xresources is darwin-ignored, so no consumer. */ -}}
 {{- if eq .chezmoi.os "linux" -}}
@@ -24,6 +34,7 @@
     skipSkills = [{{ range $i, $s := $skipSkills }}{{ if $i }}, {{ end }}{{ $s | quote }}{{ end }}]
     machineSnapshot = {{ $machineSnapshot }}
     miseActive = {{ $miseActive }}
+    claudeWorktrees = {{ $claudeWorktrees }}
 {{- if eq .chezmoi.os "linux" }}
     dpi = {{ .dpi | quote }}
 {{- end }}

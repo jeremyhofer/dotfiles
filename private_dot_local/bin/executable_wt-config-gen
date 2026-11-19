@@ -16,12 +16,12 @@
 #     url: <the primary remote>          worktrunk keys projects by <host>/<owner>/<repo> from this
 #     worktrunk:
 #       layout: bare | nested            bare: worktrees beside the container's branch dirs;
-#                                        nested: under <repo>/.worktrees/
+#                                        nested: under <repo>/<worktree dir>/ (below)
 #       bootstrap: true | false          true: run wt-bootstrap as a BLOCKING pre-start hook, so a new
 #                                        worktree has its dependencies -- and any install-time git
 #                                        hooks -- before anyone uses it
 # A project without a `worktrunk:` block gets worktrunk's global defaults, which nest worktrees
-# under <repo>/.worktrees/: right for a standard (ordinary, non-bare) clone, the fleet's layout. A
+# under <repo>/<worktree dir>/: right for a standard (ordinary, non-bare) clone, the fleet's layout. A
 # project that declares a bare container is bare by implication; whether it does is asked of
 # `fleet-decl --layout`, the one reader every fleet tool uses, so this generator and the cloner
 # cannot disagree about an entry. Saying it twice invited forgetting the second, silently (new
@@ -45,8 +45,18 @@
 # twice is still refused, because one of the two would silently not run. Commands in one hook table
 # run concurrently, so a merged table changes no ordering a single source relied on.
 #
-# Environment (for tests and unusual layouts): WT_GEN_BASE, WT_GEN_FRAGMENT, WT_GEN_OUT, and
-# fleet-decl's own FLEET_RECORD / FLEET_DEVEL_ROOT.
+# THE WORKTREE DIRECTORY. Where a standard clone nests its worktrees, relative to its root, is read
+# from ~/.config/worktrunk/worktree-dir: one line, `.worktrees` or `.claude/worktrees`, which the
+# dotfiles render from the per-machine chezmoi data flag claudeWorktrees through the same partial
+# that renders base.toml's own default. A nested project's table uses it, so the two never disagree.
+# It is a file rather than a variable because this tool is also run by hand, and a hand run must give
+# what the apply's run gives. Absent, the directory is `.worktrees`, the flag-off value and the
+# behavior before the file existed. A line that is not a plain relative directory (empty, absolute,
+# a `.` or `..` segment, or a character outside letters, digits and `._-/`) is a refusal.
+#
+# Environment (for tests and unusual layouts): WT_GEN_BASE, WT_GEN_FRAGMENT, WT_GEN_OUT,
+# WT_GEN_WORKTREE_DIR_FILE (the worktree-dir file), and fleet-decl's own FLEET_RECORD /
+# FLEET_DEVEL_ROOT.
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -eu
 
@@ -54,6 +64,7 @@ conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/worktrunk"
 base="${WT_GEN_BASE:-$conf_dir/base.toml}"
 frag="${WT_GEN_FRAGMENT:-$HOME/.dotlocal/worktrunk.toml}"
 out="${WT_GEN_OUT:-$conf_dir/config.toml}"
+wtdir_file="${WT_GEN_WORKTREE_DIR_FILE:-$conf_dir/worktree-dir}"
 record="${FLEET_RECORD:-$HOME/Devel/mani.yaml}"
 
 die() { printf 'wt-config-gen: %s -- the existing config is unchanged\n' "$1" >&2; exit 1; }
@@ -67,6 +78,15 @@ case "${1:-}" in
 esac
 
 [ -f "$base" ] || die "no base config at $base"
+
+wtdir=.worktrees
+if [ -f "$wtdir_file" ]; then
+  wtdir=$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' "$wtdir_file")
+  case "$wtdir" in
+    ''|/*|*/|*//*|*[!A-Za-z0-9._/-]*|.|..|./*|../*|*/.|*/..|*/./*|*/../*)
+      die "the worktree-dir file $wtdir_file reads '$wtdir'; want a relative directory such as .worktrees" ;;
+  esac
+fi
 command -v wt >/dev/null 2>&1 || die "wt is not installed, so the result cannot be validated"
 
 work=$(mktemp -d "$_TMP/wt-config-gen.XXXXXX") || die "cannot make a temp directory"
@@ -198,7 +218,7 @@ $wt_findings"
       printf '\n[projects."%s"]   # from the manifest: %s\n' "$id" "$name"
       case "$layout" in
         bare)   printf 'worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"\n' ;;
-        nested) printf 'worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"\n' ;;
+        nested) printf 'worktree-path = "{{ repo_path }}/%s/{{ branch | sanitize }}"\n' "$wtdir" ;;
       esac
       if [ "$bootstrap" = true ]; then printf 'pre-start.bootstrap = "wt-bootstrap"\n'; fi
     } >> "$projects_toml"

@@ -1,9 +1,16 @@
+# chezmoi:template:left-delimiter="[%" right-delimiter="%]"
 # worktrunk -- generic user settings (the public layer).
 #
 # This is NOT worktrunk's config file. worktrunk reads ~/.config/worktrunk/config.toml, which
 # `wt-config-gen` GENERATES from this file, an optional private fragment, and the per-repo
 # `worktrunk:` blocks in a mani manifest. Edit this file (in the dotfiles source) and re-run
 # wt-config-gen; applying the dotfiles does that for you.
+#
+# A CHEZMOI TEMPLATE WITH ITS OWN DELIMITERS. worktrunk's templates use {{ }} and {% %}, which are
+# chezmoi's delimiters too, so the directive on the first line (removed when chezmoi renders the file)
+# gives chezmoi a square bracket and a percent sign instead, the pair the directive names; that pair
+# must therefore appear nowhere else in this file, comments included. Every {{ }} and {% %} below
+# reaches worktrunk unchanged. The deployed file is still ~/.config/worktrunk/base.toml.
 #
 # RULES FOR THIS FILE, because the generator concatenates it with other sources:
 #   * it is the ONLY source that may hold top-level keys;
@@ -19,8 +26,15 @@
 # the template tells them apart by the name it ends in:
 #
 #   STANDARD CLONE (an ordinary clone; the fleet's layout) -- repo_path is the repo root, so
-#   worktrees nest inside it:
-#       <repo>/.worktrees/<branch>
+#   worktrees nest inside it, in a directory a per-machine chezmoi data flag chooses:
+#       <repo>/.worktrees/<branch>            claudeWorktrees false or unset (the default)
+#       <repo>/.claude/worktrees/<branch>     claudeWorktrees true
+#     The flag is never prompted; a machine turns it on by editing its generated chezmoi config and
+#     applying. The one mapping from flag to directory is .chezmoitemplates/worktrunk.worktree-dir,
+#     which also renders ~/.config/worktrunk/worktree-dir, the file wt-config-gen (for a project the
+#     manifest declares nested) and fleet-repo (for a declared worktree with no path) read, so all
+#     three agree. Before turning it on, each repository's .gitignore must list .claude/worktrees/,
+#     and worktrees already under .worktrees/ stay there until they are moved; nothing here moves them.
 #
 #   BARE CONTAINER (the older layout: a bare repository named .git + sibling worktrees) -- repo_path
 #   is that bare directory, <container>/.git, so ".." is already the container and the worktree is
@@ -37,10 +51,11 @@
 # die with the repository that owns it, and keeps it inside the one directory an agent session
 # standing in the checkout may write, so a session's subagents can work in worktrees of their own.
 #
-# THE COST: a nested worktree lives inside a working tree, so `.worktrees/` must be ignored -- in
-# each repository's own .gitignore, committed, so it holds on every machine and in every tool --
-# and tools that walk the tree (prettier, eslint, rg, nx) must honor that ignore or carry their own.
-worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.worktrees/{{ branch | sanitize }}{% endif %}"
+# THE COST: a nested worktree lives inside a working tree, so its directory (`.worktrees/`, or
+# `.claude/worktrees/` with the flag on) must be ignored -- in each repository's own .gitignore,
+# committed, so it holds on every machine and in every tool -- and tools that walk the tree
+# (prettier, eslint, rg, nx) must honor that ignore or carry their own.
+worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/[% template "worktrunk.worktree-dir" . %]/{{ branch | sanitize }}{% endif %}"
 
 # ---------------------------------------------------------------------------
 # Finishing a branch: the remotes too

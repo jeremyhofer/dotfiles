@@ -6,7 +6,8 @@ with no files checked out beside it. A repository under `~/Devel` is in one of t
 
 - **Standard clone, the fleet layout:** an ordinary clone. `<repo>/` is the checkout, on the branch
   its owner works on, `<repo>/.git/` holds the git data, and further worktrees nest inside it at
-  `<repo>/.worktrees/<name>`.
+  `<repo>/.worktrees/<name>`, or at `<repo>/.claude/worktrees/<name>` on a machine that has turned
+  on the `claudeWorktrees` flag ([where the worktrees go](#where-the-worktrees-go)).
 - **Bare container, the older layout:** `<repo>/.git/` is itself a bare repository
   (`core.bare = true`, no pointer file), and every branch, the default one included, is a sibling
   worktree: `<repo>/main/`, `<repo>/<branch>/`. Nothing is checked out at `<repo>/` itself. A
@@ -38,6 +39,43 @@ present.
 
 The skill `working-in-worktrees` covers the day-to-day: where to stand to create, land and remove a
 worktree, and how sessions and people share one clone.
+
+## Where the worktrees go
+
+A standard clone's worktrees nest under one directory of the clone, chosen per machine by the chezmoi
+data flag `claudeWorktrees`:
+
+| `claudeWorktrees` | New worktrees go to |
+| --- | --- |
+| `false`, or absent (the default) | `<repo>/.worktrees/<branch>` |
+| `true` | `<repo>/.claude/worktrees/<branch>`, the directory Claude Code's own worktree creation uses |
+
+The flag is never prompted. A machine turns it on by setting `claudeWorktrees = true` under `[data]`
+in its generated chezmoi config (`chezmoi cat-config` shows it; `chezmoi edit-config` opens it) and
+applying. One chezmoi partial, `.chezmoitemplates/worktrunk.worktree-dir`, maps the flag to the
+directory, and three things render it: worktrunk's standard-clone default in
+`~/.config/worktrunk/base.toml`, the one-line file `~/.config/worktrunk/worktree-dir`, and the apply
+step that re-runs `wt-config-gen`. `wt-config-gen` writes that file's directory into the table of
+each project the manifest declares `worktrunk.layout: nested`, and `fleet-repo` uses it for a
+declared worktree with no `path:`. Without the file both use `.worktrees`. A bare container is
+unaffected: its worktrees stay siblings.
+
+**The flag is off everywhere by default, and turning it on is more than the edit.** On each machine,
+before setting it:
+
+1. List `.claude/worktrees/` in the `.gitignore` of every standard clone on that machine, committed.
+   Keep `.worktrees/` there while any worktree is left in it. The reason is the one above: a tool that
+   walks the tree must not meet a second copy of the repository.
+2. Run whatever check the domain requires before a layout change reaches that machine. A managed
+   machine's sandbox, its global ignore file and the way its sessions enter a worktree can differ
+   from another machine's, and the new location is inside `.claude/`, which Claude Code itself
+   treats specially.
+3. After the apply, move the worktrees already under `.worktrees/`. The flag moves nothing: it
+   changes where NEW worktrees go. worktrunk's `wt step relocate` moves worktrees to the paths the
+   config now gives; read its `--dry-run` first, run it from a terminal outside any agent session,
+   with no session working in a worktree being moved, and move what it leaves out (a detached
+   worktree, for one) with `git worktree move`. A worktree `fleet-repo` manages at a declared
+   `path:` keeps that path until the manifest says otherwise.
 
 ## Declaring a repository's layout
 
@@ -75,7 +113,8 @@ projects:
   not (mani 0.32.1 makes a new branch named after the directory, from the checkout's commit), so
   after a first `mani sync` of an entry with worktrees, check them, or make them with `fleet-repo`.
 - **`.worktrees/` goes in the repository's own `.gitignore`**, committed, so it holds on every
-  machine and in every tool.
+  machine and in every tool; on a machine with `claudeWorktrees` on, `.claude/worktrees/` does too
+  ([where the worktrees go](#where-the-worktrees-go)).
 
 `fleet-repo clone <name>` is idempotent: run on an existing clone it creates missing worktrees and
 sets missing upstreams. A checkout on another branch than the declared one is reported, never

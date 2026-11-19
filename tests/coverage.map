@@ -137,8 +137,11 @@ test-ui-shot.sh                     private_dot_local/bin/executable_ui-shot
 test-us-spelling-lint.sh            private_dot_local/bin/executable_us-spelling-lint
 test-bootstrap-mac.py               bootstrap-mac.sh
 test-wt-bootstrap.sh                private_dot_local/bin/executable_wt-bootstrap
-test-wt-config-gen.sh               private_dot_local/bin/executable_wt-config-gen private_dot_local/bin/executable_fleet-decl dot_config/worktrunk/base.toml
-test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-base private_dot_local/bin/executable_wt-config-gen dot_config/worktrunk/base.toml
+test-wt-config-gen.sh               private_dot_local/bin/executable_wt-config-gen private_dot_local/bin/executable_fleet-decl dot_config/worktrunk/base.toml.tmpl dot_config/worktrunk/worktree-dir.tmpl .chezmoitemplates/worktrunk.worktree-dir .chezmoi.toml.tmpl .chezmoidata.yaml run_onchange_after_generate-worktrunk-config.sh.tmpl
+# Its flag-readers arm reads every template in the source, wherever it is, so any edit re-runs it
+# (about 10 s; a template-only glob would need ** mid-pattern, which the plugin refuses).
+tree test-wt-config-gen.sh          **
+test-wt-fetch-base.sh               private_dot_local/bin/executable_wt-fetch-base private_dot_local/bin/executable_wt-config-gen dot_config/worktrunk/base.toml.tmpl .chezmoitemplates/worktrunk.worktree-dir .chezmoidata.yaml
 
 # --- setup/, run from the checkout -------------------------------------------------------------
 test-adopt-audit.sh                 setup/adopt-audit

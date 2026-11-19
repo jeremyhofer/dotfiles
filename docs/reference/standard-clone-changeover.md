@@ -278,7 +278,9 @@ hidden by adding `.worktreeinclude` to `.git/info/exclude`.
 
 **Worktrees now live inside the clone**, at `<repo>/.worktrees/<name>`. The base's worktrunk
 configuration places them there for any repository that is not a bare container; nothing per
-repository is needed.
+repository is needed. (A machine that turns on the `claudeWorktrees` chezmoi flag puts them at
+`<repo>/.claude/worktrees/<name>` instead; [repository-layouts.md](repository-layouts.md#where-the-worktrees-go)
+has what that involves. The commands below are the same either way.)
 
 ```sh
 cd ~/src/app

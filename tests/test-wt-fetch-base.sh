@@ -1,7 +1,8 @@
 #!/bin/sh
 # test-wt-fetch-base.sh -- a worktree created by worktrunk starts from a freshly fetched base.
 #
-# Drives the REAL worktrunk with the SHIPPED worktrunk config (dot_config/worktrunk/base.toml), so the
+# Drives the REAL worktrunk with the SHIPPED worktrunk config (dot_config/worktrunk/base.toml.tmpl,
+# rendered by chezmoi with the default data, as a machine that has not set claudeWorktrees has it), so the
 # hook wiring is tested along with the script: a fixture repository whose local branches and
 # remote-tracking refs are stale, a "forge" remote and a "mirror" fallback that have both moved on,
 # and `wt switch --create` run against it. Then the forge goes away, then the mirror too.
@@ -10,18 +11,26 @@
 # the real one, and the broken copy must produce the stale or silent result: the fetch removed, the
 # fallback removed, the refusal removed.
 #
-# Needs worktrunk (`wt`); SKIPs without it. Run: sh tests/test-wt-fetch-base.sh
+# Needs worktrunk (`wt`) and chezmoi; SKIPs without either. Run: sh tests/test-wt-fetch-base.sh
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/git-isolate.sh"
 SCRIPT="$here/../private_dot_local/bin/executable_wt-fetch-base"
-CONF="$here/../dot_config/worktrunk/base.toml"
+SRC=$(cd "$here/.." && pwd)
 [ -x "$SCRIPT" ] || { echo "FAIL: $SCRIPT missing or not executable"; exit 1; }
 command -v wt >/dev/null 2>&1 || { echo "SKIP: worktrunk (wt) not installed"; exit 0; }
+command -v chezmoi >/dev/null 2>&1 || { echo "SKIP: chezmoi not installed, so the shipped base.toml cannot be rendered"; exit 0; }
 
 TD=${TMPDIR:-/tmp}; TD=${TD%/}
 T=$(mktemp -d "$TD/test-fetch-base.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT
+
+# The shipped base.toml, rendered against a scratch chezmoi config and state, never the machine's.
+CONF="$T/base.toml"
+printf 'sourceDir = "%s"\n[data]\n' "$SRC" > "$T/chezmoi.toml"
+chezmoi --config "$T/chezmoi.toml" --source "$SRC" --persistent-state "$T/chezmoi.db" \
+  execute-template < "$SRC/dot_config/worktrunk/base.toml.tmpl" > "$CONF" \
+  || { echo "FAIL: the shipped base.toml.tmpl does not render"; exit 1; }
 
 pass=0; fail=0
 ok() { printf '  ok    %s\n' "$1"; pass=$((pass + 1)); }

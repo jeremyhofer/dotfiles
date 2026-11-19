@@ -1,0 +1,13 @@
+{{- /* The directory, relative to a standard clone's root, that worktrunk nests the clone's worktrees
+       under: .claude/worktrees where the claudeWorktrees data flag is true, else .worktrees.
+
+       This is the ONE mapping from the flag to the directory. Every template that needs the
+       directory renders this partial and none holds its own copy: base.toml.tmpl (worktrunk's
+       standard-clone default), worktree-dir.tmpl (the one-line file wt-config-gen and fleet-repo
+       read) and the worktrunk regeneration trigger. The flag is read with `get`, so a chezmoi config
+       generated before the flag existed reads as false. The output has no trailing newline. */ -}}
+{{- if get . "claudeWorktrees" -}}
+.claude/worktrees
+{{- else -}}
+.worktrees
+{{- end -}}

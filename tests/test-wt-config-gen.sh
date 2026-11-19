@@ -11,6 +11,7 @@
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}   # explicit mktemp templates: macOS mktemp ignores TMPDIR
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
+src=$(cd "$here/.." && pwd)
 tool="$here/../private_dot_local/bin/executable_wt-config-gen"
 decl="$here/../private_dot_local/bin/executable_fleet-decl"
 pass=0; fail=0
@@ -18,6 +19,8 @@ ok()  { pass=$((pass + 1)); echo "ok:   $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL: $1 -> $2"; }
 command -v yq >/dev/null 2>&1 || { echo "wt-config-gen tests: yq absent, cannot run"; exit 1; }
 command -v wt >/dev/null 2>&1 || { echo "wt-config-gen tests: wt absent, cannot run"; exit 1; }
+# The shipped base.toml is a chezmoi template, so the arms that use it render it first.
+command -v chezmoi >/dev/null 2>&1 || { echo "wt-config-gen tests: chezmoi absent, cannot run"; exit 1; }
 
 tmp=$(mktemp -d "$_TMP/test-wt-config-gen.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"; cp "$decl" "$tmp/bin/fleet-decl"; chmod +x "$tmp/bin/fleet-decl"
@@ -37,12 +40,25 @@ record() {  # $1 = the worktrunk block lines for project alpha (may be empty)
     printf '  gamma:\n    path: internal/gamma\n    url: https://code.example.org/org/gamma.git\n'
   } > "$tmp/mani.yaml"
 }
+# WT_GEN_WORKTREE_DIR_FILE points every run at a scratch path, absent unless an arm writes it, so the
+# machine's own ~/.config/worktrunk/worktree-dir never reaches a case.
 run() {  # prints exit status; output in $tmp/out, $tmp/err
   PATH="$tmp/bin:$PATH" WT_GEN_BASE="$tmp/base.toml" WT_GEN_FRAGMENT="$tmp/frag.toml" \
     WT_GEN_OUT="$tmp/config.toml" FLEET_RECORD="$tmp/mani.yaml" FLEET_DEVEL_ROOT="$tmp" \
+    WT_GEN_WORKTREE_DIR_FILE="$tmp/worktree-dir" \
     sh "$tool" >"$tmp/out" 2>"$tmp/err"; echo $?
 }
 seed() { printf '# previous config\n' > "$tmp/config.toml"; }
+# The body of one generated [projects."<id>"] table, from the file named.
+table() { awk -v h="[projects.\"$2\"]" 'index($0,h)==1{f=1;next} /^\[/{f=0} f' "$1"; }
+# render <data lines> <source file>: one source file rendered by chezmoi against a scratch config,
+# so neither the machine's chezmoi config nor its state is read or written.
+render() {
+  printf 'sourceDir = "%s"\n[data]\n%s\n' "$src" "$1" > "$tmp/cz.toml"
+  chezmoi --config "$tmp/cz.toml" --source "$src" --persistent-state "$tmp/cz.db" \
+    execute-template < "$src/$2"
+}
+ON='    claudeWorktrees = true'; OFF='    claudeWorktrees = false'
 
 # 1. the happy path: every layer present
 base; frag; record '      layout: bare
@@ -61,6 +77,39 @@ wt --config "$tmp/config.toml" config show >/dev/null 2>&1 && ok "worktrunk pars
 rm -f "$tmp/frag.toml"; seed; rc=$(run)
 [ "$rc" = 0 ] && ! grep -q 'hook-doctor' "$tmp/config.toml" && ok "absent fragment is optional" || bad "absent fragment" "rc=$rc"
 frag
+
+# 2a. THE WORKTREE DIRECTORY. A nested project's worktree-path takes its directory from the one-line
+# file the dotfiles render from the claudeWorktrees data flag (~/.config/worktrunk/worktree-dir),
+# so a hand run gives what the apply's run gives. Absent, it is .worktrees: the flag-off value and the
+# behavior before the file existed. A bare project's sibling path never depends on it.
+nested_off='worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"'
+nested_on='worktree-path = "{{ repo_path }}/.claude/worktrees/{{ branch | sanitize }}"'
+sibling='worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"'
+beta=code.example.org/group/sub/beta; alpha=forge.example/team/alpha
+rm -f "$tmp/worktree-dir"; seed; rc=$(run)
+[ "$rc" = 0 ] && [ "$(table "$tmp/config.toml" "$beta" | grep '^worktree-path')" = "$nested_off" ] \
+  && ok "worktree-dir absent: a nested project's worktrees go under .worktrees/" \
+  || bad "worktree-dir absent -> .worktrees" "rc=$rc $(table "$tmp/config.toml" "$beta")"
+printf '.worktrees\n' > "$tmp/worktree-dir"; seed; rc=$(run)
+[ "$rc" = 0 ] && [ "$(table "$tmp/config.toml" "$beta" | grep '^worktree-path')" = "$nested_off" ] \
+  && ok "worktree-dir .worktrees (the flag off): unchanged" \
+  || bad "worktree-dir .worktrees" "rc=$rc $(table "$tmp/config.toml" "$beta")"
+printf '.claude/worktrees\n' > "$tmp/worktree-dir"; seed; rc=$(run)
+[ "$rc" = 0 ] && [ "$(table "$tmp/config.toml" "$beta" | grep '^worktree-path')" = "$nested_on" ] \
+  && ok "worktree-dir .claude/worktrees (the flag on): a nested project's worktrees go under .claude/worktrees/" \
+  || bad "worktree-dir .claude/worktrees" "rc=$rc $(table "$tmp/config.toml" "$beta")"
+[ "$(table "$tmp/config.toml" "$alpha" | grep '^worktree-path')" = "$sibling" ] \
+  && ok "worktree-dir .claude/worktrees: a bare project keeps its sibling path" \
+  || bad "bare project unaffected by worktree-dir" "$(table "$tmp/config.toml" "$alpha")"
+# A value that is not a plain relative directory is refused, and the old config stays: it is written
+# into a TOML string, and a worktree path outside the repository would undo the layout's point.
+for v in '../elsewhere' '/abs/worktrees' 'a"b' '' 'x/../y'; do
+  printf '%s\n' "$v" > "$tmp/worktree-dir"; seed; rc=$(run)
+  if [ "$rc" != 0 ] && [ "$(cat "$tmp/config.toml")" = "# previous config" ] && grep -q 'worktree-dir' "$tmp/err"; then
+    ok "worktree-dir '$v' is refused, naming the file, and the old config stays"
+  else bad "worktree-dir '$v' refused" "rc=$rc $(cat "$tmp/err")"; fi
+done
+rm -f "$tmp/worktree-dir"
 
 # 2b. a container declaration implies the bare layout. An entry that declares a bare container (a
 # `container:` block, or a `clone:` that runs fleet-repo) says so twice otherwise, and forgetting the
@@ -98,10 +147,13 @@ base
 
 # 2d. END TO END, with the base.toml this repository SHIPS: a new worktree gets the files the default
 # worktree lists in .worktreeinclude, and only those; without a list the hook does nothing, silently.
-real="$here/../dot_config/worktrunk/base.toml"
+# Rendered with the flag off, as every machine has it until the flag is turned on there.
+real="$tmp/base-off.toml"
+render "$OFF" dot_config/worktrunk/base.toml.tmpl > "$real" 2>"$tmp/render.err" \
+  || bad "the shipped base.toml.tmpl renders" "$(cat "$tmp/render.err")"
 rm -f "$tmp/frag.toml"; seed
 rc=$(PATH="$tmp/bin:$PATH" WT_GEN_BASE="$real" WT_GEN_FRAGMENT="$tmp/frag.toml" WT_GEN_OUT="$tmp/config.toml" \
-  FLEET_RECORD="$tmp/none.yaml" sh "$tool" >"$tmp/out" 2>"$tmp/err"; echo $?)
+  FLEET_RECORD="$tmp/none.yaml" WT_GEN_WORKTREE_DIR_FILE="$tmp/worktree-dir" sh "$tool" >"$tmp/out" 2>"$tmp/err"; echo $?)
 [ "$rc" = 0 ] && ok "the shipped base.toml generates" || bad "shipped base generates" "rc=$rc $(cat "$tmp/err")"
 c2="$tmp/c2"; mkdir -p "$c2"
 (
@@ -139,6 +191,89 @@ c2="$tmp/c2"; mkdir -p "$c2"
 [ "$(cat "$c2/box/listed/local.properties" 2>/dev/null)" = "sdk.dir=/opt/sdk" ] \
   && ok "with .worktreeinclude: the listed file reaches the new worktree" || bad "listed file copied" "$(cat "$tmp/e2e-listed")"
 [ ! -e "$c2/box/listed/build" ] && ok "an ignored file it does not list stays behind" || bad "unlisted not copied" "$(ls -A "$c2/box/listed")"
+
+# 2e. THE FLAG, RENDERED. claudeWorktrees reaches worktrunk through one chezmoi partial
+# (.chezmoitemplates/worktrunk.worktree-dir); base.toml.tmpl's standard-clone default, the one-line
+# worktree-dir file that wt-config-gen and fleet-repo read, and the regeneration trigger all render
+# it. Each rendering is checked against both values of the flag, and against a config written before
+# the flag existed, which must read as off.
+top() { grep '^worktree-path = ' "$1"; }
+base_line_off='worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.worktrees/{{ branch | sanitize }}{% endif %}"'
+base_line_on='worktree-path = "{% if repo_path is endingwith(\"/.git\") %}{{ repo_path }}/../{{ branch | sanitize }}{% else %}{{ repo_path }}/.claude/worktrees/{{ branch | sanitize }}{% endif %}"'
+render "$ON" dot_config/worktrunk/base.toml.tmpl > "$tmp/base-on.toml" 2>"$tmp/render.err" \
+  || bad "base.toml.tmpl renders with the flag on" "$(cat "$tmp/render.err")"
+render '' dot_config/worktrunk/base.toml.tmpl > "$tmp/base-unset.toml" 2>"$tmp/render.err" \
+  || bad "base.toml.tmpl renders with no flag in the config" "$(cat "$tmp/render.err")"
+[ "$(top "$real")" = "$base_line_off" ] && ok "base.toml, flag off: the standard-clone default is .worktrees/, the bare sibling unchanged" \
+  || bad "base.toml flag off" "$(top "$real")"
+[ "$(top "$tmp/base-on.toml")" = "$base_line_on" ] && ok "base.toml, flag on: the standard-clone default is .claude/worktrees/, the bare sibling unchanged" \
+  || bad "base.toml flag on" "$(top "$tmp/base-on.toml")"
+cmp -s "$real" "$tmp/base-unset.toml" && ok "base.toml, a config without the flag renders exactly as flag off" \
+  || bad "base.toml unset == off" "$(diff "$real" "$tmp/base-unset.toml" | head -5)"
+[ "$(grep -cE '\[%|%\]|chezmoi:template' "$real")" = 0 ] \
+  && ok "base.toml: the chezmoi directive and delimiters are gone from the rendered file" \
+  || bad "rendered base.toml is clean" "$(grep -nE '\[%|%\]|chezmoi:template' "$real")"
+for v in "$OFF:.worktrees" "$ON:.claude/worktrees" ":.worktrees"; do
+  out=$(render "${v%%:*}" dot_config/worktrunk/worktree-dir.tmpl 2>&1); want=${v#*:}
+  [ "$out" = "$want" ] && [ "$(render "${v%%:*}" dot_config/worktrunk/worktree-dir.tmpl | wc -l | tr -d ' ')" = 1 ] \
+    && ok "worktree-dir renders one line, $want, for data '${v%%:*}'" || bad "worktree-dir for '${v%%:*}'" "$out"
+done
+trig=run_onchange_after_generate-worktrunk-config.sh.tmpl
+t_off=$(render "$OFF" "$trig" 2>&1); t_on=$(render "$ON" "$trig" 2>&1); t_unset=$(render '' "$trig" 2>&1)
+[ -n "$t_off" ] && [ "$t_off" != "$t_on" ] && ok "the regeneration trigger's text changes when the flag flips, so the apply re-runs wt-config-gen" \
+  || bad "trigger differs on a flag flip" "$(printf '%s\n' "$t_off" | head -12)"
+[ "$t_off" = "$t_unset" ] && ok "the trigger renders the same with the flag off and with no flag" || bad "trigger unset == off" "$t_unset"
+# The flag has one reader: no template other than the partial (and the config template that declares
+# it) reads claudeWorktrees, so the mapping from the flag to a directory exists once.
+readers=$(cd "$src" && git ls-files --cached --others --exclude-standard -- '*.tmpl' '.chezmoitemplates/*' | while IFS= read -r f; do
+  grep -lE '\.claudeWorktrees|"claudeWorktrees"' "$f"; done | LC_ALL=C sort | tr '\n' ' ')
+[ "$readers" = ".chezmoi.toml.tmpl .chezmoitemplates/worktrunk.worktree-dir " ] \
+  && ok "only the partial reads the flag (and the config template declares it)" || bad "the flag's readers" "$readers"
+# chezmoi init carries the flag forward: a value set by hand in the generated config survives.
+for v in true false; do
+  printf '[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n    claudeWorktrees = %s\n' "$v" > "$tmp/old.toml"
+  cfg=$(chezmoi --config "$tmp/old.toml" --source "$src" --persistent-state "$tmp/cz.db" \
+    execute-template --init --no-tty < "$src/.chezmoi.toml.tmpl" 2>&1)
+  printf '%s\n' "$cfg" | grep -qx "    claudeWorktrees = $v" && ok "chezmoi init keeps claudeWorktrees = $v" || bad "init keeps $v" "$cfg"
+done
+printf '[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n' > "$tmp/old.toml"
+cfg=$(chezmoi --config "$tmp/old.toml" --source "$src" --persistent-state "$tmp/cz.db" \
+  execute-template --init --no-tty < "$src/.chezmoi.toml.tmpl" 2>&1)
+printf '%s\n' "$cfg" | grep -qx '    claudeWorktrees = false' && ok "chezmoi init writes claudeWorktrees = false when it was never set" || bad "init default false" "$cfg"
+
+# 2f. END TO END WITH THE FLAG ON: the real worktrunk, the base rendered with the flag on and the
+# worktree-dir file saying .claude/worktrees, as an apply on such a machine leaves them. A standard
+# clone's new worktree nests under .claude/worktrees/ by the base's default; a bare container's is
+# still a sibling (the bare branch is untouched); and a project the manifest declares nested gets
+# .claude/worktrees/ from its own table, shown with the base left off so only the table can put it
+# there.
+printf '.claude/worktrees\n' > "$tmp/worktree-dir"
+printf 'projects:\n  plain2:\n    path: c/plain2\n    url: https://code.example.org/org/plain2.git\n    worktrunk:\n      layout: nested\n' > "$tmp/mani2.yaml"
+gen() {  # $1 base, $2 output, $3 manifest
+  PATH="$tmp/bin:$PATH" WT_GEN_BASE="$1" WT_GEN_FRAGMENT="$tmp/frag.toml" WT_GEN_OUT="$2" \
+    FLEET_RECORD="$3" FLEET_DEVEL_ROOT="$tmp" WT_GEN_WORKTREE_DIR_FILE="$tmp/worktree-dir" sh "$tool" >"$tmp/out" 2>"$tmp/err"; echo $?
+}
+rc=$(gen "$tmp/base-on.toml" "$tmp/config-on.toml" "$tmp/none.yaml")
+[ "$rc" = 0 ] && ok "the base rendered with the flag on generates" || bad "flag-on base generates" "rc=$rc $(cat "$tmp/err")"
+rc=$(gen "$real" "$tmp/config-table.toml" "$tmp/mani2.yaml")
+[ "$rc" = 0 ] && ok "flag-off base with a nested project and worktree-dir on generates" || bad "table config generates" "rc=$rc $(cat "$tmp/err")"
+(
+  export GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HOME="$tmp/home"; : > "$GIT_CONFIG_GLOBAL"; mkdir -p "$HOME"
+  cd "$c2/plain" && wt --config "$tmp/config-on.toml" -y switch --create claudeon --no-cd > "$tmp/e2e-on" 2>&1
+  cd "$c2/box/main" && wt --config "$tmp/config-on.toml" -y switch --create sibon --no-cd > "$tmp/e2e-sibon" 2>&1
+  git clone -q "$c2/src" "$c2/plain2" && git -C "$c2/plain2" remote set-url origin https://code.example.org/org/plain2.git \
+    && cd "$c2/plain2" && wt --config "$tmp/config-table.toml" -y switch --create bytable --no-cd > "$tmp/e2e-table" 2>&1
+) >/dev/null 2>&1
+[ -d "$c2/plain/.claude/worktrees/claudeon" ] && [ ! -e "$c2/plain/.worktrees/claudeon" ] \
+  && ok "flag on, ordinary clone: a worktree nests under .claude/worktrees/" \
+  || bad "flag on, nested under .claude/worktrees" "$(cat "$tmp/e2e-on" 2>&1; ls -A "$c2/plain" 2>&1 | tr '\n' ' ')"
+[ -d "$c2/box/sibon" ] && [ ! -e "$c2/box/.git/.claude" ] \
+  && ok "flag on, bare repository named .git: still a sibling of main" \
+  || bad "flag on, bare sibling" "$(cat "$tmp/e2e-sibon" 2>&1; ls -A "$c2/box" 2>&1 | tr '\n' ' ')"
+[ -d "$c2/plain2/.claude/worktrees/bytable" ] && [ ! -e "$c2/plain2/.worktrees/bytable" ] \
+  && ok "worktree-dir on, a project declared nested: its own table puts the worktree under .claude/worktrees/" \
+  || bad "nested table honors worktree-dir" "$(cat "$tmp/e2e-table" 2>&1; ls -A "$c2/plain2" 2>&1 | tr '\n' ' ')"
+rm -f "$tmp/worktree-dir"
 frag
 
 # 3. no manifest at all -> base + fragment, stated

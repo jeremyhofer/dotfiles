@@ -50,6 +50,13 @@
 #     .worktrees/<name>/    further worktrees (`.worktrees/` must be ignored, or tools that walk the
 #                           tree meet a second copy of the repository)
 #
+# A declared worktree with no `path` goes where worktrunk would put it: <repo>/<dir>/<name>, the
+# branch's slashes becoming dashes, where <dir> is the one line of ~/.config/worktrunk/worktree-dir
+# ($XDG_CONFIG_HOME/worktrunk/ when that is set; FLEET_REPO_WORKTREE_DIR_FILE names another file).
+# The dotfiles render that file from the per-machine chezmoi data flag claudeWorktrees: `.worktrees`,
+# or `.claude/worktrees` with the flag on. Absent, <dir> is `.worktrees`. A line that is not a plain
+# relative directory is exit 2. A declared `path` always wins.
+#
 # Its point: an agent session may write the directory it stands in and that repository's .git, so
 # with everything inside one directory a session and the subagents it starts in their own worktrees
 # can all work without any extra sandbox grant. The cost: the checkout is load-bearing, and deleting
@@ -278,7 +285,9 @@ load_entry() {
       rel=$(printf '%s\n' "$paths" | sed -n "${i}p")
       # Undeclared: where worktrunk would put it, a branch's slashes becoming dashes.
       if [ -z "$rel" ]; then
-        if [ "$P_LAYOUT" = standard ]; then rel=".worktrees/$(printf '%s' "$n" | tr '/' '-')"
+        if [ "$P_LAYOUT" = standard ]; then
+          load_worktree_dir
+          rel="$WORKTREE_DIR/$(printf '%s' "$n" | tr '/' '-')"
         else rel="../$n"; fi
       fi
       WT_NAMES="$WT_NAMES$n
@@ -290,6 +299,22 @@ $names
 EOF
   fi
   return 0
+}
+
+# Sets WORKTREE_DIR, once, to the directory a standard clone nests worktrees under, from the
+# worktree-dir file the dotfiles render (the header's "A declared worktree with no path"). Called
+# directly, never in $( ): its refusal must end the tool, not a subshell.
+WORKTREE_DIR=""
+load_worktree_dir() {
+  local f=${FLEET_REPO_WORKTREE_DIR_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/worktrunk/worktree-dir} v
+  [ -z "$WORKTREE_DIR" ] || return 0
+  if [ ! -f "$f" ]; then WORKTREE_DIR=.worktrees; return 0; fi
+  v=$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' "$f")
+  case "$v" in
+    ''|/*|*/|*//*|*[!A-Za-z0-9._/-]*|.|..|./*|../*|*/.|*/..|*/./*|*/../*)
+      die "the worktree-dir file $f reads '$v'; want a relative directory such as .worktrees" 2 ;;
+  esac
+  WORKTREE_DIR=$v
 }
 
 # The nth line of a newline list.

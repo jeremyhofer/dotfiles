@@ -33,6 +33,25 @@ Entries are newest first.
 ---
 
 
+## 2026-11-18 (a per-machine flag can move worktrunk's worktrees to `.claude/worktrees/`)
+
+A new chezmoi data value, `claudeWorktrees`, never prompted and absent as `false`, chooses where
+worktrunk nests a standard clone's new worktrees: `<repo>/.worktrees/<branch>` when off, as before,
+or `<repo>/.claude/worktrees/<branch>` when on. One partial,
+`.chezmoitemplates/worktrunk.worktree-dir`, holds the mapping. worktrunk's `base.toml` is now a
+template, `dot_config/worktrunk/base.toml.tmpl` in the source, still deployed to
+`~/.config/worktrunk/base.toml`, and with the flag off it renders the same `worktree-path` as
+before. A new deployed file, `~/.config/worktrunk/worktree-dir`, holds the directory on one line;
+`wt-config-gen` (for a project declared `worktrunk.layout: nested`) and `fleet-repo` (for a declared
+worktree with no `path:`) read it, and use `.worktrees` without it. Flipping the flag re-runs
+`wt-config-gen` at the next apply.
+
+Nothing to do: the flag is off everywhere, and an apply with it off changes no worktree path. Do not
+turn it on until the domain's own checks for the new location pass. Turning it on on a machine also
+means listing `.claude/worktrees/` in each repository's `.gitignore` first and moving the worktrees
+already under `.worktrees/` afterwards; `docs/reference/repository-layouts.md` ("Where the worktrees
+go") has the steps.
+
 ## 2026-11-18 (a macOS launch must run in the Aqua session)
 
 On macOS, `fleet-canonicals` `up`, `refresh` and `resume` now also run `launchctl managername` once

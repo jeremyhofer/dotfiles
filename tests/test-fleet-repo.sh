@@ -655,6 +655,43 @@ FR update --project scont > "$TMP/out" 2>&1; rc=$?
 check "standard: update on a bare container where a standard clone is declared: exit 1, bare-container, nothing fetched" \
   '[ "$rc" = 1 ] && grep -q "bare-container" "$TMP/out" && [ "$(git --git-dir=dom/scont/.git rev-parse refs/remotes/origin/main)" = "$before" ]'
 
+# A declared worktree with no path goes where worktrunk would put it: under the directory named by
+# the one-line file ~/.config/worktrunk/worktree-dir (rendered by the dotfiles from the
+# claudeWorktrees flag), else .worktrees, the flag-off value. FLEET_REPO_WORKTREE_DIR_FILE names
+# another file. A declared path wins over the file; a file that does not name a plain relative
+# directory is a refusal (exit 2) before anything is made.
+SN="$TMP/stdnopath"; mkdir -p "$SN/dom"; cd "$SN" || exit 1
+{ printf 'projects:\n'
+  for n in uoff uon uenv uabs ubad; do
+    printf '  %s:\n    path: dom/%s\n    url: %s\n    branch: main\n    worktrees:\n      - name: feature\n' "$n" "$n" "$(url st)"
+  done
+  printf '  udecl:\n    path: dom/udecl\n    url: %s\n    branch: main\n    worktrees:\n      - name: feature\n        path: .worktrees/feature\n' "$(url st)"
+} > mani.yaml
+wdfile="$HOME/.config/worktrunk/worktree-dir"; mkdir -p "$HOME/.config/worktrunk"; rm -f "$wdfile"
+FR clone uoff > "$TMP/out" 2>&1; rc=$?
+check "no path, no worktree-dir file: the worktree nests at <path>/.worktrees/<name>" \
+  '[ "$rc" = 0 ] && [ "$(git -C dom/uoff/.worktrees/feature branch --show-current)" = feature ] && [ ! -e dom/uoff/.claude ]'
+printf '.claude/worktrees\n' > "$wdfile"
+FR clone uon > "$TMP/out" 2>&1; rc=$?
+check "no path, worktree-dir .claude/worktrees: the worktree nests at <path>/.claude/worktrees/<name>" \
+  '[ "$rc" = 0 ] && [ "$(git -C dom/uon/.claude/worktrees/feature branch --show-current)" = feature ] && [ ! -e dom/uon/.worktrees ]'
+FR clone udecl > "$TMP/out" 2>&1; rc=$?
+check "a declared path wins over worktree-dir" \
+  '[ "$rc" = 0 ] && [ "$(git -C dom/udecl/.worktrees/feature branch --show-current)" = feature ] && [ ! -e dom/udecl/.claude ]'
+rm -f "$wdfile"; printf '.claude/worktrees\n' > "$TMP/wd-on"
+FLEET_REPO_WORKTREE_DIR_FILE="$TMP/wd-on" FR clone uenv > "$TMP/out" 2>&1; rc=$?
+check "FLEET_REPO_WORKTREE_DIR_FILE names the file read" \
+  '[ "$rc" = 0 ] && [ -d dom/uenv/.claude/worktrees/feature ] && [ ! -e dom/uenv/.worktrees ]'
+printf '.claude/worktrees\n' > "$wdfile"
+FLEET_REPO_WORKTREE_DIR_FILE="$TMP/wd-absent" FR clone uabs > "$TMP/out" 2>&1; rc=$?
+check "the named file absent: .worktrees, whatever the default file says" \
+  '[ "$rc" = 0 ] && [ -d dom/uabs/.worktrees/feature ] && [ ! -e dom/uabs/.claude ]'
+printf '../outside\n' > "$wdfile"
+FR clone ubad > "$TMP/out" 2>&1; rc=$?
+check "a worktree-dir that is not a plain relative directory: exit 2, named, nothing made" \
+  '[ "$rc" = 2 ] && grep -q "worktree-dir" "$TMP/out" && [ ! -e dom/ubad ] && [ ! -e dom/outside ]'
+rm -f "$wdfile"
+
 # --- the post-clone hook ------------------------------------------------------------------------
 # ~/.dotlocal/hooks/post-clone <absolute-repository-path> <project> runs after a manifest entry is
 # cloned or reconciled, in either layout, so a private layer can finish the clone (its remotes)

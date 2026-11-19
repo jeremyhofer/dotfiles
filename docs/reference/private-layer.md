@@ -34,6 +34,7 @@ file, then apply.
 | `skipSkills` | list of base skill names | those skills are not deployed on this machine (an already-deployed one stays until removed by hand) |
 | `dpi` | number, Linux only | X11 `.Xresources` |
 | `miseActive` | `true` or `false`, never prompted; absent is `false` | the base's mise settings drop-in (`~/.config/mise/conf.d/10-base.toml`) deploys, and each apply creates mise's state directory at mode 700 where `mise` is installed; mise's shim directory goes first on `PATH` in `~/.zshenv`, `~/.zprofile` (macOS), `~/.config/environment.d` (Linux) and each base unit and LaunchAgent that sets `PATH`, `SOPS_AGE_KEY_FILE` is set on Linux, and `~/.zshrc` drops the direnv and fnm hooks (see Shell); it switches one machine to mise before another while every apply stays a full one |
+| `claudeWorktrees` | `true` or `false`, never prompted; absent is `false` | where worktrunk nests a standard clone's new worktrees: `<repo>/.claude/worktrees/<branch>` when `true`, else `<repo>/.worktrees/<branch>`. It sets the default in `~/.config/worktrunk/base.toml` and the one-line `~/.config/worktrunk/worktree-dir` that `wt-config-gen` and `fleet-repo` read, and a change to it re-runs `wt-config-gen` at the apply. Off by default; what turning it on involves (each repository's `.gitignore`, the machine's own check, moving existing worktrees) is in [repository-layouts.md](repository-layouts.md#where-the-worktrees-go) |
 
 ```toml
 [data]
