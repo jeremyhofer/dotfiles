@@ -443,6 +443,17 @@ if argv[:1] == ["rm"]:
     if os.environ.get("FAKE_CLAUDE_RM") == "refuse-once" and "--force-remove-worktree" not in argv:
         print("Not removed: the WorktreeRemove hook failed. To delete it anyway: claude rm %s --force-remove-worktree wt-0042" % argv[1])
         sys.exit(1)
+    if os.environ.get("FAKE_CLAUDE_RM") == "escalate":
+        # The refusals as measured: the first names one flag, the retry names both.
+        if "--discard-unpushed" not in argv:
+            print("Not removed: unpushed commits. To delete it anyway: claude rm %s --discard-unpushed dp-1" % argv[1])
+            sys.exit(1)
+        if "--force-remove-worktree" not in argv:
+            print("Not removed: No WorktreeRemove hook is enabled here. claude rm %s --force-remove-worktree wt-9 --discard-unpushed dp-1" % argv[1])
+            sys.exit(1)
+    if os.environ.get("FAKE_CLAUDE_RM") == "never":
+        n = sum(1 for l in (st / "calls.jsonl").read_text().splitlines() if json.loads(l)["argv"][:1] == ["rm"])
+        print("Not removed: claude rm %s --discard-unpushed dp-%d" % (argv[1], n)); sys.exit(1)
     rows[:] = [r for r in rows if r["id"] != argv[1]]; save(); print("removed"); sys.exit(0)
 if "-p" in argv:
     if os.environ.get("FAKE_CLAUDE_REFUSE"):
@@ -822,6 +833,27 @@ def test_cleanup_stops_and_removes_every_session(fake):
     assert len(rms) == 2 and rms[1][2:] == ["--force-remove-worktree", "wt-0042"], rms
     assert rows(fake) == [] and "CLEANUP-FAILED" not in r.stdout
     assert [c["argv"][1] for c in calls(fake, "stop")] == [rms[0][1]]
+
+
+def test_cleanup_retries_while_a_refusal_names_a_new_flag(fake):
+    make_suite(fake, {"c": (CLEAN, '"real"')})
+    r = tool(fake, "run", "s", "--yes", extra_env={"FAKE_CLAUDE_RM": "escalate"})
+    rms = [c["argv"][2:] for c in calls(fake, "rm")]
+    pairs = [sorted(zip(a[::2], a[1::2])) for a in rms]
+    assert pairs == [[], [("--discard-unpushed", "dp-1")],
+                     [("--discard-unpushed", "dp-1"), ("--force-remove-worktree", "wt-9")]], rms
+    assert rows(fake) == [] and "CLEANUP-FAILED" not in r.stdout, r.stdout
+    run_dir = max((fake["state"] / "s").iterdir(), key=lambda p: p.name)
+    log = (run_dir / "cleanup-c.txt").read_text()
+    assert sum(l.startswith("  claude rm ") for l in log.splitlines()) == 3, log
+
+
+def test_cleanup_retry_is_bounded(fake):
+    make_suite(fake, {"c": (CLEAN, '"real"')})
+    r = tool(fake, "run", "s", "--yes", extra_env={"FAKE_CLAUDE_RM": "never"})
+    # Each refusal names a value not yet passed, so only the bound stops it: the first call and three retries.
+    assert len(calls(fake, "rm")) == 4, [c["argv"] for c in calls(fake, "rm")]
+    assert "CLEANUP-FAILED" in r.stdout, r.stdout
 
 
 def test_cleanup_removes_transcripts_only_under_fixture_keys(fake):

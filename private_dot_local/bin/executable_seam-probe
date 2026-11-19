@@ -1256,6 +1256,9 @@ def slot_state(holder: str) -> tuple[str, str | None]:
     return "error", None
 
 
+RM_RETRIES = 3   # `claude rm` retries after the first refusal, each with the flags named so far
+
+
 def rm_flags(out: str) -> list[str]:
     """The flag values a refused `claude rm` reported (its --help: pass the value a previous
     `claude rm <id>` reported), and only those two flags."""
@@ -1292,10 +1295,19 @@ def cleanup_sessions(ledger: Path, fixtures: Path, log: list[str]) -> list[str]:
             p = claude("rm", sid)
             out = (p.stdout or "") + (p.stderr or "")
             log.append(f"  claude rm {sid}: exit {p.returncode}: {' '.join(out.split())}")
-            flags = rm_flags(out) if p.returncode else []
             # The force values discard a worktree and its commits, so only for a session that ran in
-            # this run's fixture directory, whose worktrees are throwaway.
-            if flags and inside(Path(e.get("cwd", "/")), fixtures):
+            # this run's fixture directory, whose worktrees are throwaway. A refusal can name a
+            # further flag once the first is passed, so retry while one names a flag or value not
+            # yet passed, up to RM_RETRIES times.
+            passed: dict[str, str] = {}
+            for _ in range(RM_RETRIES):
+                if not p.returncode or not inside(Path(e.get("cwd", "/")), fixtures):
+                    break
+                named = dict(zip(*[iter(rm_flags(out))] * 2))
+                if not named or all(passed.get(f) == v for f, v in named.items()):
+                    break
+                passed.update(named)
+                flags = [x for kv in passed.items() for x in kv]
                 p = claude("rm", sid, *flags)
                 out = (p.stdout or "") + (p.stderr or "")
                 log.append(f"  claude rm {sid} {' '.join(flags)}: exit {p.returncode}: {' '.join(out.split())}")
