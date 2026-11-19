@@ -398,6 +398,14 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     cannot run. Writes one request into $FLEET_STATE/requests/; never runs
                     anything. Refuses --force and --stub, a name not declared for this machine,
                     a never-touch name, and a second request for a canonical already queued.
+
+  follow <name> [--dry-run] [--wait SECONDS] [--as REQUESTER]
+                    the hub's chain after a seat parks, as one command: read the seat's handoff
+                    (first 15 lines) for its "What follows this park: (1|2|3)" line, run `place`,
+                    queue refresh for (1) or down for (2) and (3), and wait (default 900 s; 0 =
+                    queue and return) for the runner's result. Stops at the first failure: exit 1
+                    for a refusal or a failed result, 2 for a timeout. Only a requester in
+                    request-any may follow. --dry-run places nothing and queues nothing.
                     The requester is the calling session's name when it can be read, else --as.
   serve-requests [--loop [--interval SECONDS]]
                     serve the queue once, outside every sandbox (a systemd user timer or a
@@ -3329,7 +3337,7 @@ is_self_pid() {
 }
 
 case "${1:-}" in
-  request|serve-requests) exec_queue "$@" ;;
+  request|follow|serve-requests) exec_queue "$@" ;;
   list)      shift; cmd_list "$@" ;;
   status)    shift; cmd_status "$@" ;;
   down|stop) shift; cmd_down "$@" ;;   # both spellings, deliberately: up/down and start/stop

@@ -280,7 +280,11 @@ line names one of three:
 For example: `**What follows this park: (2) stop, brought back up tomorrow morning.**`
 
 The seat that acts on the line (the hub, or the human where no hub runs) reads it rather than
-inferring from the prose. **A refresh is for a seat that will keep working now.** A park at the end
+inferring from the prose. The hub does that with `fleet-canonicals follow <name>`: it reads the
+line from the seat's recorded handoff, places the handoff, requests the refresh or the stop the line
+names, and waits for the result. It refuses a handoff without the line, so the line's exact opening,
+`**What follows this park: (N)`, within the first 15 lines, is what makes a park followable.
+**A refresh is for a seat that will keep working now.** A park at the end
 of the day, or at the human's word to stop, is (2) or (3), never (1): a refresh then launches a
 successor that pays its whole startup context and sits idle until morning. Bringing a stopped seat
 back at its named time or event is the hub's, on its first sweep after it (or the human's); the

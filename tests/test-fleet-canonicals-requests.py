@@ -565,6 +565,255 @@ def test_request_refuses_a_second_request_for_a_queued_canonical(fleet):
     assert other.status == 0, "(control) a request for another canonical is not held up by it: %s" % other.out
 
 
+# ================================================================= follow
+# `follow <name>` chains what the hub did by hand after a seat parks: read the handoff's "What follows
+# this park" line, place, queue refresh or down, and wait for the result. `fleet-canonicals` is a
+# STUB here for `place` only (a case decides what place prints, returns and leaves behind); every
+# other verb, `handoff` included, is the real tool, so the pointer the case records is the one
+# follow resolves.
+
+PLACE_STUB = """#!/bin/sh
+if [ "$1" = place ]; then
+  printf '%s\\n' "$*" >> "$PLACE_LOG"
+  printf '%s\\n' "PLACE-STUB-OUTPUT"
+  [ -z "$PLACE_ACTION" ] || sh -c "$PLACE_ACTION"
+  exit "${PLACE_RC:-0}"
+fi
+exec bash "$REAL_TOOL" "$@"
+"""
+
+LINE1 = "**What follows this park: (1) refresh now, to continue working.** Nothing waits on a time."
+LINE2 = "**What follows this park: (2) stop, brought back up tomorrow morning.** Back at 08:00."
+LINE3 = "**What follows this park: (3) stop.**"
+HUB = "director-canonical"
+
+
+def _follow_setup(fleet, monkeypatch, line=LINE1, pad=0, staged=False, place_rc=0, place_action="",
+                  name="alpha-canonical", record=True):
+    """A seat's handoff with `line` after `pad` filler lines, pointed at by the seat's pointer (inside
+    the staging directory when `staged`), and `place` stubbed. Returns the handoff's path."""
+    where = fleet.state / "handoff-staging" if staged else fleet.T / "handoffs"
+    where.mkdir(parents=True, exist_ok=True)
+    f = where / ("2026-11-19-0400-%s-park.md" % name)
+    body = ["# Park", "", "**Supersedes:** nothing"] + ["filler %d" % i for i in range(pad)]
+    if line:
+        body.append(line)
+    f.write_text("\n".join(body) + "\n")
+    if record:
+        fleet.set_handoff(name, f)
+    stub = fleet.T / "fc-stub"
+    _write_exe(stub, PLACE_STUB)
+    fleet.place_log = fleet.T / "place.log"
+    fleet.place_log.write_text("")
+    for k, v in (("FLEET_CANONICALS_BIN", stub), ("REAL_TOOL", TOOL), ("PLACE_LOG", fleet.place_log),
+                 ("PLACE_RC", place_rc), ("PLACE_ACTION", place_action)):
+        monkeypatch.setenv(k, str(v))
+    fleet.q.FOLLOW_POLL = 0.02
+    return f
+
+
+def _follow(fleet, *argv):
+    return fleet.call(fleet.q.cmd_follow, list(argv))
+
+
+def _placed_by_place(fleet, f):
+    """What a real `place` does to a staged file: copy it into the handoffs directory and repoint."""
+    dest = fleet.T / "handoffs" / f.name
+    return "mkdir -p '%s' && cp '%s' '%s' && bash '%s' handoff alpha-canonical --set '%s' >/dev/null" % (
+        dest.parent, f, dest, TOOL, dest)
+
+
+def _answer(fleet, docs, delay=0.3):
+    """A runner's part, from a thread: once a request is queued, write each result document in turn."""
+    def work():
+        for _ in range(500):
+            reqs = fleet.queued()
+            if reqs:
+                break
+            time.sleep(0.02)
+        else:
+            return
+        rid = reqs[0].name[:-len(".request.json")]
+        for d in docs:
+            tmp = fleet.Q / (".tmp-" + rid)
+            tmp.write_text(json.dumps(dict(d, id=rid)))
+            os.replace(tmp, fleet.Q / (rid + ".result.json"))
+            time.sleep(delay)
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    return t
+
+
+DONE = {"outcome": "done", "check": None, "output": "refreshed alpha-canonical\nnew session up"}
+
+
+def _queued_doc(fleet):
+    files = fleet.queued()
+    assert len(files) == 1, "one request is queued: %s" % files
+    return json.loads(files[0].read_text())
+
+
+def test_follow_refresh_places_queues_and_reports_the_served_result(fleet, monkeypatch):
+    f = _follow_setup(fleet, monkeypatch, LINE1, staged=True)
+    monkeypatch.setenv("PLACE_ACTION", _placed_by_place(fleet, f))
+    _answer(fleet, [DONE])
+    r = _follow(fleet, "alpha-canonical", "--as", HUB)
+    doc = _queued_doc(fleet)
+    assert r.status == 0, "follow of a (1) line, served done, exits 0: %s" % r
+    assert [doc[k] for k in ("verb", "name", "requester")] == ["refresh", "alpha-canonical", HUB], \
+        "follow of (1) queues a refresh from the hub: %s" % doc
+    assert doc["reason"] == "follow: %s says (1)" % f.name, "the reason names the handoff and the line: %s" % doc
+    assert fleet.place_log.read_text().strip() == "place", "place ran once, without --dry-run"
+    assert "PLACE-STUB-OUTPUT" in r.out and "new session up" in r.out, "place's output and the verb's are shown: %s" % r.out
+
+
+@pytest.mark.parametrize("line,n", [(LINE2, "2"), (LINE3, "3")])
+def test_follow_stop_lines_queue_a_down(fleet, monkeypatch, line, n):
+    _follow_setup(fleet, monkeypatch, line)
+    _answer(fleet, [DONE])
+    r = _follow(fleet, "alpha-canonical", "--as", HUB)
+    doc = _queued_doc(fleet)
+    assert r.status == 0 and doc["verb"] == "down" and doc["reason"].endswith("says (%s)" % n), \
+        "follow of a (%s) line queues a down (rc=%s): %s %s" % (n, r.status, doc, r.out)
+    assert ("request up" in r.out) == (n == "2"), "only (2) reminds the hub of the return: %s" % r.out
+
+
+def test_follow_a_handoff_with_no_line_is_refused_before_place(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, line="")
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0.2")
+    assert r.status != 0 and "What follows this park" in r.out and "ask the seat" in r.out, \
+        "a handoff with no line is refused, saying what to ask for (rc=%s): %s" % (r.status, r.out)
+    assert not fleet.queued() and fleet.place_log.read_text() == "", "nothing is queued and place did not run"
+
+
+def test_follow_a_line_after_the_first_fifteen_is_refused(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1, pad=12)   # 3 header lines + 12 filler = line 16
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0.2")
+    assert r.status != 0 and not fleet.queued() and fleet.place_log.read_text() == "", \
+        "a line on line 16 is refused with nothing queued and place not run (rc=%s): %s" % (r.status, r.out)
+
+
+def test_follow_a_line_on_the_fifteenth_line_is_read(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1, pad=11)   # 3 header lines + 11 filler = line 15
+    _answer(fleet, [DONE])
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0.2")
+    assert r.status == 0, "(control) a line on line 15 is read: %s" % r
+
+
+def test_follow_two_lines_are_refused(fleet, monkeypatch):
+    f = _follow_setup(fleet, monkeypatch, LINE1)
+    f.write_text(f.read_text() + LINE3 + "\n")
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0.2")
+    assert r.status != 0 and not fleet.queued() and fleet.place_log.read_text() == "", \
+        "a handoff naming two lines is refused (rc=%s): %s" % (r.status, r.out)
+
+
+def test_follow_by_a_non_hub_requester_is_refused_before_any_side_effect(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    r = _follow(fleet, "alpha-canonical", "--as", "beta-canonical", "--wait", "0.2")
+    assert r.status != 0 and "request-any" in r.out, \
+        "a requester outside request-any may not follow another seat's park (rc=%s): %s" % (r.status, r.out)
+    assert not fleet.queued() and fleet.place_log.read_text() == "", "nothing is queued and place did not run"
+
+
+def test_follow_refuses_a_never_touch_or_undeclared_name(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    for name in ("director-canonical", "nosuch-canonical", "elsewhere-canonical"):
+        r = _follow(fleet, name, "--as", HUB)
+        assert r.status != 0 and not fleet.queued(), "follow refuses %s (rc=%s): %s" % (name, r.status, r.out)
+    assert fleet.place_log.read_text() == "", "place did not run"
+
+
+def test_follow_refuses_a_canonical_with_a_request_already_queued(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    fleet.plant("r-held", "refresh", "alpha-canonical", HUB)
+    r = _follow(fleet, "alpha-canonical", "--as", HUB)
+    assert r.status != 0 and "already queued" in r.out and fleet.place_log.read_text() == "", \
+        "follow refuses a seat with a request already queued, before place (rc=%s): %s" % (r.status, r.out)
+    assert len(fleet.queued()) == 1, "no second request is queued"
+
+
+def test_follow_propagates_a_missing_handoff_pointer(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1, record=False)
+    (fleet.state / "alpha-canonical.handoff").unlink()
+    r = _follow(fleet, "alpha-canonical", "--as", HUB)
+    assert r.status != 0 and "no handoff recorded" in r.out and not fleet.queued() \
+        and fleet.place_log.read_text() == "", \
+        "a seat with no resolvable pointer stops follow before place (rc=%s): %s" % (r.status, r.out)
+
+
+def test_follow_stops_when_place_leaves_the_pointer_in_staging(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1, staged=True, place_rc=1)
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0.2")
+    assert r.status != 0 and "was not placed" in r.out and "PLACE-STUB-OUTPUT" in r.out, \
+        "a pointer still in staging after place stops follow (rc=%s): %s" % (r.status, r.out)
+    assert not fleet.queued(), "nothing is queued"
+
+
+def test_follow_continues_when_place_reports_judgment_for_another_seat(fleet, monkeypatch):
+    f = _follow_setup(fleet, monkeypatch, LINE1, staged=True, place_rc=1)
+    monkeypatch.setenv("PLACE_ACTION", _placed_by_place(fleet, f))
+    _answer(fleet, [DONE])
+    r = _follow(fleet, "alpha-canonical", "--as", HUB)
+    assert r.status == 0 and "needing judgment" in r.out, \
+        "place exiting 1 with this seat placed is a note, not a stop (rc=%s): %s" % (r.status, r.out)
+
+
+@pytest.mark.parametrize("outcome", ["refused", "failed"])
+def test_follow_a_refused_or_failed_result_exits_1_and_shows_the_check(fleet, monkeypatch, outcome):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    _answer(fleet, [{"outcome": outcome, "check": "working", "detail": "alpha-canonical is working"}])
+    r = _follow(fleet, "alpha-canonical", "--as", HUB)
+    assert r.status == 1 and outcome in r.out and "working" in r.out and "alpha-canonical is working" in r.out, \
+        "a %s result exits 1 and shows its check and detail (rc=%s): %s" % (outcome, r.status, r.out)
+
+
+def test_follow_keeps_waiting_through_a_waiting_result(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    _answer(fleet, [{"outcome": "waiting", "check": "working", "detail": "busy", "since": 1}, DONE], delay=0.3)
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "10")
+    assert r.status == 0, "a waiting result is polled past, then done exits 0 (rc=%s): %s" % (r.status, r.out)
+    assert r.out.count("still working") == 1, "the waiting line is printed once: %s" % r.out
+
+
+def test_follow_times_out_with_exit_2_and_names_the_result_path(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0.3")
+    rid = _queued_doc(fleet)["id"]
+    assert r.status == 2 and "still pending" in r.out and rid + ".result.json" in r.out, \
+        "no result in time exits 2 naming where it will appear (rc=%s): %s" % (r.status, r.out)
+
+
+def test_follow_dry_run_queues_nothing_and_gives_place_dry_run(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE2)
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--dry-run")
+    assert r.status == 0 and "would request down alpha-canonical (the handoff says (2))" in r.out \
+        and "What follows this park: (2)" in r.out, "--dry-run says what it would request (rc=%s): %s" % (r.status, r.out)
+    assert not fleet.queued(), "--dry-run queues nothing"
+    assert fleet.place_log.read_text().split() == ["place", "--dry-run"], "place is given --dry-run"
+
+
+def test_follow_wait_zero_queues_and_returns_without_polling(fleet, monkeypatch):
+    _follow_setup(fleet, monkeypatch, LINE1)
+    fleet.q.FOLLOW_POLL = 1000   # a poll would hang the case
+    r = _follow(fleet, "alpha-canonical", "--as", HUB, "--wait", "0")
+    rid = _queued_doc(fleet)["id"]
+    assert r.status == 0 and rid + ".result.json" in r.out, \
+        "--wait 0 queues, exits 0 and says where the result will appear (rc=%s): %s" % (r.status, r.out)
+
+
+def test_contract_follow_dry_run_through_the_real_chain(fleet, monkeypatch):
+    """bash -> uv run --script -> queue -> the real `handoff` and `place --dry-run`."""
+    _follow_setup(fleet, monkeypatch, LINE1)
+    monkeypatch.setenv("FLEET_CANONICALS_BIN", "bash %s" % TOOL)
+    (fleet.T / "handoffs").mkdir(exist_ok=True)
+    monkeypatch.setenv("FLEET_HANDOFFS_DIR", str(fleet.T / "handoffs"))
+    r = fleet.fc("follow", "alpha-canonical", "--dry-run", "--as", HUB)
+    assert r.status == 0 and "would request refresh alpha-canonical (the handoff says (1))" in r.out, \
+        "the real verb dispatches follow and its dry run reads the handoff (rc=%s): %s" % (r.status, r.out)
+    assert not fleet.queued(), "the dry run queued nothing"
+
+
 # ================================================================= serve: the verb and the shape
 
 def test_serve_a_valid_request_runs_its_verb(fleet):
@@ -2465,7 +2714,7 @@ MUTANTS = [
     ("request-never-touch", "request queues a never-touch canonical",
      '    if name in as_list(cfg["never-touch"]):\n', "    if False:\n", "test_request_never_touch_default"),
     ("request-declared", "request queues a canonical this machine does not run",
-     '    if not ok:\n        die(f"request: {why}; refusing to queue it", 1)', '    if False:\n        die(f"request: {why}; refusing to queue it", 1)',
+     '    if not ok:\n        die(f"{who}: {why}; refusing to queue it", 1)', '    if False:\n        die(f"{who}: {why}; refusing to queue it", 1)',
      "test_request_refuses_a_canonical_declared_for_another_machine"),
     ("request-verb", "request queues a verb the queue does not accept",
      "    if verb not in VERBS:\n", "    if False:\n", "test_request_refuses_verb[dedupe]"),
@@ -2478,7 +2727,26 @@ MUTANTS = [
     ("request-requester", "request queues with no requester",
      "    if not requester:\n", "    if False:\n", "test_request_without_a_requester_is_refused"),
     ("request-queued", "request queues a second request for one canonical",
-     "    if pend:\n", "    if False:\n", "test_request_refuses_a_second_request_for_a_queued_canonical"),
+     "    QUEUE.mkdir(parents=True, exist_ok=True)\n    pend = pending_for(name)\n    if pend:\n",
+     "    QUEUE.mkdir(parents=True, exist_ok=True)\n    pend = pending_for(name)\n    if False:\n",
+     "test_request_refuses_a_second_request_for_a_queued_canonical"),
+    ("follow-queued", "follow runs place and queues for a canonical already queued",
+     "    pend = pending_for(name)\n    if pend:\n        die(f\"follow:", "    pend = pending_for(name)\n    if False:\n        die(f\"follow:",
+     "test_follow_refuses_a_canonical_with_a_request_already_queued"),
+    # --- follow
+    ("follow-hub-only", "a requester outside request-any may follow another seat's park",
+     "    if requester not in hubs:\n", "    if False:\n", "test_follow_by_a_non_hub_requester_is_refused_before_any_side_effect"),
+    ("follow-no-line", "a handoff with no 'What follows this park' line is not refused",
+     "    if len(hits) != 1:\n", "    if len(hits) > 1:\n", "test_follow_a_handoff_with_no_line_is_refused_before_place"),
+    ("follow-two-lines", "a handoff with two lines is not refused",
+     "    if len(hits) != 1:\n", "    if len(hits) < 1:\n", "test_follow_two_lines_are_refused"),
+    ("follow-bound-wide", "the line may sit on line 16",
+     "FOLLOW_LINES = 15 ", "FOLLOW_LINES = 16 ", "test_follow_a_line_after_the_first_fifteen_is_refused"),
+    ("follow-bound-narrow", "the line may not sit on line 15",
+     "FOLLOW_LINES = 15 ", "FOLLOW_LINES = 14 ", "test_follow_a_line_on_the_fifteenth_line_is_read"),
+    ("follow-staging", "a pointer still in staging after place is accepted",
+     "os.path.realpath(now_at.splitlines()[-1])]) == staging:", "os.path.realpath(now_at.splitlines()[-1])]) == staging + 'x':",
+     "test_follow_stops_when_place_leaves_the_pointer_in_staging"),
     # --- snapshot
     ("snapshot-sandbox", "snapshot writes from inside a sandbox",
      "    if in_sandbox():\n", "    if False:\n", "test_snapshot_refuses_inside_a_sandbox"),

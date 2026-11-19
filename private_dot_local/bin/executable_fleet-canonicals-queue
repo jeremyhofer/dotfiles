@@ -309,6 +309,43 @@ def pending_for(name: str, exclude: Path | None = None) -> list[str]:
     return ids
 
 
+def vet_target(name: str, claimed: str, who: str) -> str:
+    """The checks a request makes before anything is written, shared with `follow` so the two cannot
+    drift: the name is not never-touch and is declared for this machine, and the requester can be
+    told. Returns the requester. WHO is the verb's name, for the message prefix."""
+    cfg = config()
+    if name in as_list(cfg["never-touch"]):
+        die(f"{who}: '{name}' is on the never-touch list ({CONFIG}): the queue never acts on it, "
+            "for any verb, whoever asks. Its lifecycle is its operator's, from a terminal.", 1)
+    ok, why = declared_here(name)
+    if not ok:
+        die(f"{who}: {why}; refusing to queue it", 1)
+    derived = calling_session_name()
+    if derived and claimed and claimed != derived:
+        die(f"{who}: this is running inside '{derived}', so the request is from '{derived}', "
+            f"not '{claimed}'. Drop --as, or ask '{claimed}' to request it.", 1)
+    requester = derived or claimed
+    if not requester:
+        die(f"{who}: cannot tell who is asking -- this is not running inside a named session, so "
+            "say who with --as <name>. A request records its requester, and the runner checks it.", 1)
+    return requester
+
+
+def enqueue(verb: str, name: str, reason: str, requester: str, who: str) -> tuple[str, Path]:
+    """Write one request, atomically, and return its id and path. The one place a request is made."""
+    QUEUE.mkdir(parents=True, exist_ok=True)
+    pend = pending_for(name)
+    if pend:
+        die(f"{who}: a request for '{name}' is already queued or running ({pend[0]}); the queue "
+            "holds one per canonical. Its result appears beside it.", 1)
+    t = now()
+    rid = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(t))}-{name}-{secrets.token_hex(3)}"
+    req = {"id": rid, "time": t, "verb": verb, "name": name, "reason": reason, "requester": requester}
+    path = QUEUE / f"{rid}.request.json"
+    write_atomic(path, req)
+    return rid, path
+
+
 def cmd_request(argv: list[str]) -> int:
     usage = "usage: fleet-canonicals request <up|down|refresh|resume|init> <name> --reason <text> [--as <requester>]"
     pos: list[str] = []
@@ -343,31 +380,8 @@ def cmd_request(argv: list[str]) -> int:
         die(f"request: '{verb}' cannot be requested; the queue accepts {', '.join(VERBS)}")
     if not reason:
         die(f"request: --reason is required; it is what the audit log will say this was for\n{usage}")
-    cfg = config()
-    if name in as_list(cfg["never-touch"]):
-        die(f"request: '{name}' is on the never-touch list ({CONFIG}): the queue never acts on it, "
-            "for any verb, whoever asks. Its lifecycle is its operator's, from a terminal.", 1)
-    ok, why = declared_here(name)
-    if not ok:
-        die(f"request: {why}; refusing to queue it", 1)
-    derived = calling_session_name()
-    if derived and claimed and claimed != derived:
-        die(f"request: this is running inside '{derived}', so the request is from '{derived}', "
-            f"not '{claimed}'. Drop --as, or ask '{claimed}' to request it.", 1)
-    requester = derived or claimed
-    if not requester:
-        die("request: cannot tell who is asking -- this is not running inside a named session, so "
-            "say who with --as <name>. A request records its requester, and the runner checks it.", 1)
-    QUEUE.mkdir(parents=True, exist_ok=True)
-    pend = pending_for(name)
-    if pend:
-        die(f"request: a request for '{name}' is already queued or running ({pend[0]}); the queue "
-            "holds one per canonical. Its result appears beside it.", 1)
-    t = now()
-    rid = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime(t))}-{name}-{secrets.token_hex(3)}"
-    req = {"id": rid, "time": t, "verb": verb, "name": name, "reason": reason, "requester": requester}
-    path = QUEUE / f"{rid}.request.json"
-    write_atomic(path, req)
+    requester = vet_target(name, claimed, "request")
+    rid, path = enqueue(verb, name, reason, requester, "request")
     print(f"queued   {verb} {name} (from {requester})")
     print(f"         {path}")
     print(f"         the runner checks and serves it within a minute or two; the outcome will be in")
@@ -375,6 +389,158 @@ def cmd_request(argv: list[str]) -> int:
     if (QUEUE / "PAUSED").exists():
         print(f"note     the queue is PAUSED ({QUEUE / 'PAUSED'}): the runner will refuse it")
     return 0
+
+
+# ---- follow ----------------------------------------------------------------------------------
+
+FOLLOW_POLL = 3            # seconds between looks at the result file; a test shrinks it
+FOLLOW_WAIT = 900          # seconds `follow` waits for the result unless --wait says otherwise
+FOLLOW_LINES = 15          # how far into a handoff the "What follows this park" line may be
+FOLLOWS = re.compile(r"^\*\*What follows this park: \(([123])\)")
+
+
+def read_follow_line(handoff: Path) -> tuple[str, str]:
+    """The (number, line) a handoff's first lines name, or die: none, or more than one, is a seat
+    that has not said what follows its park, and guessing would stop or refresh the wrong way."""
+    try:
+        with handoff.open(encoding="utf-8", errors="replace") as fh:
+            head = [fh.readline() for _ in range(FOLLOW_LINES)]
+    except OSError as e:
+        die(f"follow: cannot read the handoff {handoff}: {e}", 1)
+    hits = [(m.group(1), line.rstrip("\n")) for line in head if (m := FOLLOWS.match(line))]
+    if len(hits) != 1:
+        die(f"follow: the handoff names {'no' if not hits else 'more than one'} 'What follows this park' "
+            f"line in its first {FOLLOW_LINES} lines ({handoff}); ask the seat for it (skill "
+            "parking-and-handoff, 'What follows the park'). Nothing was placed or queued.", 1)
+    return hits[0]
+
+
+def follow_handoff(name: str) -> tuple[int, str]:
+    rc, out = run(sibling("fleet-canonicals", "FLEET_CANONICALS_BIN") + ["handoff", name])
+    return rc, out.strip()
+
+
+def cmd_follow(argv: list[str]) -> int:
+    """Run the chain the hub ran by hand after a seat parked: read the handoff's line, place,
+    queue the refresh or down it names, and wait for the runner's result. It stops at the first
+    failure; every step before the request is queued is one that leaves the queue untouched."""
+    usage = "usage: fleet-canonicals follow <name> [--dry-run] [--wait SECONDS] [--as <requester>]"
+    pos: list[str] = []
+    dry, claimed, wait = False, "", float(FOLLOW_WAIT)
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--as", "--wait"):
+            if i + 1 >= len(argv) or not argv[i + 1].strip():
+                die(f"follow: {a} needs a value\n{usage}")
+            if a == "--as":
+                claimed = argv[i + 1].strip()
+            else:
+                try:
+                    wait = float(argv[i + 1])
+                except ValueError:
+                    die(f"follow: --wait needs a number of seconds, not {argv[i + 1]!r}\n{usage}")
+                if wait < 0:
+                    die(f"follow: --wait cannot be negative\n{usage}")
+            i += 2
+            continue
+        if a == "--dry-run":
+            dry = True
+        elif a in ("-h", "--help"):
+            print(usage)
+            return 0
+        elif a.startswith("-"):
+            die(f"follow: unknown option '{a}'\n{usage}")
+        else:
+            pos.append(a)
+        i += 1
+    if len(pos) != 1:
+        die(f"follow: need one canonical name\n{usage}")
+    name = pos[0]
+
+    # 1. Who may follow, before anything is read or moved. Following another seat's park is the hub's:
+    # the runner refuses a seat's request against itself to refresh, and a peer has no standing to
+    # move another's handoff.
+    requester = vet_target(name, claimed, "follow")
+    hubs = as_list(config()["request-any"])
+    if requester not in hubs:
+        die(f"follow: '{requester}' is not in request-any ({', '.join(hubs) or 'empty'}); following "
+            "another seat's park is the hub's. Nothing was placed or queued.", 1)
+
+    # 2. Cheap and certain before the side effects: a request already held.
+    pend = pending_for(name)
+    if pend:
+        die(f"follow: a request for '{name}' is already queued or running ({pend[0]}); wait for its "
+            "result, then follow again. Nothing was placed or queued.", 1)
+
+    # 3. What the seat says follows its park, read before place so a handoff that says nothing
+    # leaves the staging directory as it was.
+    rc, out = follow_handoff(name)
+    if rc != 0:
+        die(f"follow: `fleet-canonicals handoff {name}` failed, so there is no handoff to read: {out}\n"
+            "Nothing was placed or queued. The seat records its pointer when it parks.", 1)
+    handoff = Path(out.splitlines()[-1])
+    num, line = read_follow_line(handoff)
+
+    # 4. Place. Its exit is 1 when ANY staged file needs judgment, another seat's included, so the
+    # exit is not the test: this seat's pointer is.
+    rc, out = run(sibling("fleet-canonicals", "FLEET_CANONICALS_BIN") + ["place"] + (["--dry-run"] if dry else []),
+                  timeout=300)
+    print(out.rstrip("\n"))
+    if not dry:
+        rc2, now_at = follow_handoff(name)
+        staging = os.path.realpath(STATE / "handoff-staging")
+        if rc2 != 0 or os.path.commonpath([staging, os.path.realpath(now_at.splitlines()[-1])]) == staging:
+            die(f"follow: this seat's handoff was not placed; see place's output above "
+                f"(pointer: {now_at.splitlines()[-1] if rc2 == 0 else 'unresolvable'}). Nothing was queued.", 1)
+        handoff = Path(now_at.splitlines()[-1])
+        if rc != 0:
+            print("note     place reported items needing judgment (not this seat's); continuing")
+
+    # 5. The request.
+    verb = "refresh" if num == "1" else "down"
+    if dry:
+        print(f"would request {verb} {name} (the handoff says ({num}))")
+        print(line)
+        return 0
+    rid, path = enqueue(verb, name, f"follow: {handoff.name} says ({num})", requester, "follow")
+    result = QUEUE / f"{rid}.result.json"
+    print(f"queued   {verb} {name} (from {requester}; the handoff says ({num}))")
+    if wait == 0:
+        print(f"         not waiting; the result will appear at {result}")
+        return 0
+
+    # 6. Wait for the runner. A `waiting` result is the runner holding the request for a seat that
+    # is still working; it is not an outcome.
+    deadline = time.monotonic() + wait
+    said_waiting = False
+    while True:
+        try:
+            doc = json.loads(result.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            doc = None   # not there yet, or caught mid-replace
+        outcome = doc.get("outcome") if isinstance(doc, dict) else None
+        if outcome == "waiting":
+            if not said_waiting:
+                print(f"waiting  {name} is still working, so the runner holds the request "
+                      f"({doc.get('detail') or doc.get('check') or ''})")
+                said_waiting = True
+        elif outcome in ("done", "failed", "refused"):
+            text = str(doc.get("output") if outcome == "done" else (doc.get("detail") or doc.get("output")) or "")
+            if outcome == "done":
+                tail = "\n".join(text.splitlines()[-20:])
+                print(f"done     {verb} {name}" + (f"\n{tail}" if tail else ""))
+                if num == "2":
+                    print(f"reminder the return named in the handoff line is yours to record in your own "
+                          f"handoff and to `request up {name}` at that time")
+                return 0
+            print(f"{outcome:<8} {verb} {name}" + (f" -- {doc['check']}" if doc.get("check") else ""))
+            if text:
+                print(text)
+            return 1
+        if time.monotonic() >= deadline:
+            die(f"follow: still pending after {wait:g} s; the result will appear at {result}", 2)
+        time.sleep(FOLLOW_POLL)
 
 
 # ---- the checks ------------------------------------------------------------------------------
@@ -1560,14 +1726,16 @@ def cmd_snapshot(argv: list[str]) -> int:
 
 
 def main() -> int:
-    verbs = ("request", "serve-requests", "live-holders", "snapshot")
+    verbs = ("request", "follow", "serve-requests", "live-holders", "snapshot")
     if len(sys.argv) < 2 or sys.argv[1] not in verbs:
-        die("usage: fleet-canonicals-queue request|serve-requests|live-holders|snapshot ... (run it as `fleet-canonicals`)")
+        die("usage: fleet-canonicals-queue request|follow|serve-requests|live-holders|snapshot ... (run it as `fleet-canonicals`)")
     verb, rest = sys.argv[1], sys.argv[2:]
     if verb == "live-holders":
         return cmd_live_holders(rest)
     if verb == "snapshot":
         return cmd_snapshot(rest)
+    if verb == "follow":
+        return cmd_follow(rest)
     return cmd_request(rest) if verb == "request" else cmd_serve(rest)
 
 
