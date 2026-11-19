@@ -295,26 +295,28 @@ machine where Claude Code's hooks are not available, has none of them.
   branch's directory is itself a worktree, so a sibling cannot be created from Bash
   (`could not create leading directories … Read-only file system`): use EnterWorktree there.
 - **Protected paths show as untracked files.** The sandbox mounts empty placeholders over paths it
-  protects (settings files, shell profiles and similar), and git lists them as untracked, so
-  `git worktree remove` and `wt remove` refuse a clean worktree from inside the sandbox. Do not force
-  it and do not add an ignore rule for them: removal is the person's step, or the step of a settings
-  exception that lets exactly `wt remove --no-hooks --foreground <name>` (the standard) or a plain
-  `git worktree remove <path>` (the fallback) run outside the sandbox. A session killed mid-command leaves them on disk as
-  real empty files, outside any sandbox; from a normal shell, `claude-mask-sweep --remove` deletes
-  those (keeping any a running session still uses), then `git status --short` shows what is really
-  there and the plain remove succeeds.
-- **Whole-tree linters and formatters trip on the same placeholders.** A tool that walks the whole
-  tree rather than the files git tracks (`prettier .`, `ruff format --check`, a spell checker, an
-  unused-file finder) opens them and fails, typically `Permission denied` on `.claude/launch.json` or
-  `.claude/loop.md`. Exclude them in the **tools' own ignore configuration, never in `.gitignore` or
-  `.git/info/exclude`**: git counts an ignored path as clean, so an ignore rule there lets an
-  in-sandbox removal pass its clean check and stop halfway on placeholders it cannot unlink (the
-  bullet above). Name each one root-anchored with no trailing slash (`/.claude/launch.json`,
-  `/.mcp.json`; a placeholder is a file, so `agents/` misses it) in one gitignore-format file that
-  every such tool is pointed at (prettier's `--ignore-path`, ESLint's `includeIgnoreFile`, or the
-  tool's own exclude list), so tracked files under `.claude/` stay linted. Read the list from
-  `git status --porcelain` in a session working in that repository: the empty, read-only untracked
-  entries. Where a tool can exclude only whole directories, exclude `.claude/` as the fallback.
+  protects (settings files, shell profiles and similar), and git lists them as untracked. A session
+  killed mid-command leaves them on disk as real empty files, outside any sandbox; from a normal
+  shell, `claude-mask-sweep --remove` deletes those (keeping any a running session still uses).
+- **List the placeholders in the repository's `.gitignore`**, each root-anchored with no trailing
+  slash (`/.claude/launch.json`, `/.mcp.json`; a placeholder is a file, so `agents/` misses it), so
+  tracked files under `.claude/` stay visible. Read the list from `git status --porcelain` in a
+  session working in that repository: the empty, read-only untracked entries. Unlisted, they cost
+  every session: about 20 lines of noise in each `git status`; `land check` refuses, because it
+  refuses any untracked file; `git add -A` either refuses a placeholder that is a device or commits
+  a stale empty file left on disk; and whole-tree linters and formatters (`prettier .`,
+  `ruff format --check`, a spell checker, an unused-file finder) open them and fail, typically
+  `Permission denied` on `.claude/launch.json`. Most such tools read `.gitignore`; point one that
+  does not at it (prettier's `--ignore-path`, ESLint's `includeIgnoreFile`).
+- **The listing's cost: a removal must never run inside the sandbox.** git counts an ignored path as
+  clean, so a removal run sandboxed passes its clean check and stops halfway on placeholders it
+  cannot unlink, leaving a partly deleted worktree for a person to finish. Unlisted, the same
+  command refuses cleanly instead. So remove only through the forms a settings exception runs
+  outside the sandbox, where the placeholders do not exist: exactly
+  `wt remove --no-hooks --foreground <name>` (the standard) or a plain `git worktree remove <path>`
+  (the fallback), each as a command of its own. A compound command, a `git -C <path>` spelling or
+  any other variant runs sandboxed; so does ExitWorktree's `remove`, which is never used. Never
+  force a removal. Where no exception is set up, removal is the person's step.
 - **Where Claude Code's background-isolation guard is on** (a repository can turn it off with
   `worktree.bgIsolation: "none"`, as one whose owning session works in its checkout does), it
   **refuses compound commands** in a worktree: a git command inside `&&`, a
