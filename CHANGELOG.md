@@ -33,6 +33,16 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (`land check` waits for another session's timing slot)
+
+### `land check` waits, bounded, while another session holds the timing slot
+
+`land check` used to warn and run the gate at once. It now does what the commit gate does since the
+entry below: `fleet-slot wait` for up to `LAND_SLOT_WAIT_MIN` minutes (default 45; 0 does not
+wait), then the gate, with a warning if the slot is still held. It never refuses over the slot.
+`land` serves every repository that sets `land.gate`, so in any of them a `land check` can block
+that long: run it in the background. Nothing to configure.
+
 ## 2026-11-19 (a commit gate waits for another session's timing slot)
 
 ### `install-test-gate`'s hook waits, bounded, while another session holds the timing slot (ACTION, a private layer that installs it)

@@ -25,7 +25,9 @@ EXIT_GATE_FAILED = 3
 EPILOG = """\
 commands:
   check     refuse a dirty tree, run the gate, and on success record HEAD's tree as passed;
-            warns, never refuses, when another session holds the timing slot (fleet-slot)
+            while another session holds the timing slot (fleet-slot), it first waits for the slot,
+            up to $LAND_SLOT_WAIT_MIN minutes (default 45; 0 does not wait), and past that runs
+            the gate with a warning; it never refuses over the slot, but it can block that long
   merge     move the integration branch onto HEAD (the default when no command is given)
   status    say whether HEAD's tree has a recorded pass and what `merge` would do
 
@@ -132,11 +134,16 @@ def require_clean(repo):
                       "HEAD's tree. Commit them (or ignore or remove them), then run again.")
 
 
-def warn_if_slot_taken():
-    """Say so when another session holds this machine's timing slot (fleet-slot): the gate is heavy
-    work, and running it then slows that session's run. A warning only, never a refusal, since a
-    land check is not a measurement. Silent when fleet-slot is not installed or cannot answer.
-    $LAND_SLOT_CMD replaces the command, for tests."""
+def wait_for_slot():
+    """When another session holds this machine's timing slot (fleet-slot), wait for it, bounded,
+    before the gate runs. The gate is heavy work, and heavy work defers while a timing measurement
+    holds the slot so it does not land on that sample (kb Tier-0 topic autonomy-escalation, home
+    half). The wait is `fleet-slot wait`, capped at $LAND_SLOT_WAIT_MIN minutes (default 45, longer
+    than any slot granted so far; 0 or a non-number: 0 does not wait, a non-number is 45). Past the
+    cap, or if the wait fails, it warns and the gate runs anyway: a slot left held must not stall
+    every landing behind it. Never a refusal. Silent when fleet-slot is not installed or `check`
+    cannot answer. The commit gate (install-test-gate) does the same. $LAND_SLOT_CMD replaces the
+    command, for tests."""
     cmd = os.environ.get("LAND_SLOT_CMD", "").split() or (["fleet-slot"] if shutil.which("fleet-slot") else [])
     if not cmd:
         return
@@ -144,15 +151,28 @@ def warn_if_slot_taken():
         p = subprocess.run([*cmd, "check"], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return
-    if p.returncode == 1:
-        print(f"land: warning: the timing slot is {p.stdout.strip()}; the gate runs anyway, but it "
-              "competes with that session's work (fleet-slot status)", file=sys.stderr)
+    if p.returncode != 1:
+        return
+    raw = os.environ.get("LAND_SLOT_WAIT_MIN", "45")
+    cap = int(raw) if raw.isdigit() else 45
+    waited = False
+    if cap > 0:
+        print(f"land: waiting for the timing slot, {p.stdout.strip()} (up to {cap} min; fleet-slot "
+              "status)", file=sys.stderr, flush=True)
+        try:
+            waited = subprocess.run([*cmd, "wait", "--timeout", str(cap * 60)], capture_output=True,
+                                    timeout=cap * 60 + 60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            waited = False
+    if not waited:
+        print(f"land: warning: the timing slot is still held after {cap} min; the gate runs anyway "
+              "(fleet-slot status)", file=sys.stderr)
 
 
 def cmd_check(repo):
     repo.need_gate()
     require_clean(repo)
-    warn_if_slot_taken()
+    wait_for_slot()
     tree = repo.tree()
     print(f"land: running the gate on tree {tree[:12]}: {repo.gate}", flush=True)
     code = subprocess.run(repo.gate, shell=True, cwd=repo.root).returncode

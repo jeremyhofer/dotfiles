@@ -157,30 +157,75 @@ def test_failed_gate_records_nothing_and_landing_refused(repo):
     assert "no recorded pass" in land(feat, "status").stdout
 
 
-def slot_stub(tmp_path, rc, text):
+def slot_stub(tmp_path, rc, text, wait_rc=0):
+    """A stand-in fleet-slot: `check` prints text and exits rc; `wait` exits wait_rc. Every call is
+    logged, one line of arguments each, to the returned log, which the gate below also appends to,
+    so the log shows the order of the wait and the gate."""
     p = tmp_path / "fleet-slot-stub"
-    p.write_text(f"#!/bin/sh\necho '{text}'\nexit {rc}\n")
+    log = tmp_path / "slot.log"
+    p.write_text(f"#!/bin/sh\necho \"$*\" >> '{log}'\n"
+                 f"case \"$1\" in check) echo '{text}'; exit {rc} ;; wait) exit {wait_rc} ;; esac\n")
     p.chmod(0o755)
-    return str(p)
+    return str(p), log
 
 
-def test_check_warns_but_passes_when_another_session_holds_the_slot(repo, tmp_path, monkeypatch):
+def held(repo, tmp_path, monkeypatch, wait_rc=0, name="a.txt"):
     main, feat = repo
-    monkeypatch.setenv("LAND_SLOT_CMD", slot_stub(tmp_path, 1, "held by other-session since 13:00"))
-    commit(feat, "a.txt")
+    stub, log = slot_stub(tmp_path, 1, "held by other-session since 13:00", wait_rc)
+    monkeypatch.setenv("LAND_SLOT_CMD", stub)
+    git(main, "config", "land.gate", f"echo gate >> '{log}'")
+    commit(feat, name)
+    return feat, log
+
+
+def test_check_waits_for_another_sessions_slot_then_runs_the_gate(repo, tmp_path, monkeypatch):
+    feat, log = held(repo, tmp_path, monkeypatch)
     r = land(feat, "check")
     assert r.returncode == 0, r.stderr
-    assert "warning: the timing slot is held by other-session" in r.stderr
+    assert "waiting for the timing slot, held by other-session since 13:00 (up to 45 min" in r.stderr
+    assert log.read_text().splitlines() == ["check", "wait --timeout 2700", "gate"]
+    assert "still held" not in r.stderr
     assert land(feat).returncode == 0
 
 
-def test_check_is_silent_when_the_slot_is_free_or_the_check_fails(repo, tmp_path, monkeypatch):
+def test_check_runs_the_gate_anyway_when_the_wait_times_out_or_fails(repo, tmp_path, monkeypatch):
+    for wait_rc in (3, 2):
+        log = tmp_path / "slot.log"
+        log.unlink(missing_ok=True)
+        feat, log = held(repo, tmp_path, monkeypatch, wait_rc, name=f"a{wait_rc}.txt")
+        r = land(feat, "check")
+        assert r.returncode == 0, r.stderr
+        assert "warning: the timing slot is still held after 45 min; the gate runs anyway" in r.stderr
+        assert log.read_text().splitlines()[-1] == "gate"
+
+
+def test_land_slot_wait_min_sets_the_cap_and_zero_does_not_wait(repo, tmp_path, monkeypatch):
+    feat, log = held(repo, tmp_path, monkeypatch)
+    monkeypatch.setenv("LAND_SLOT_WAIT_MIN", "5")
+    assert land(feat, "check").returncode == 0
+    assert "wait --timeout 300" in log.read_text()
+    log.unlink()
+    monkeypatch.setenv("LAND_SLOT_WAIT_MIN", "0")
+    r = land(feat, "check")
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().splitlines() == ["check", "gate"]
+    assert "warning: the timing slot is still held after 0 min; the gate runs anyway" in r.stderr
+    log.unlink()
+    monkeypatch.setenv("LAND_SLOT_WAIT_MIN", "soon")
+    assert land(feat, "check").returncode == 0
+    assert "wait --timeout 2700" in log.read_text()
+
+
+def test_check_neither_waits_nor_speaks_when_the_slot_is_free_or_the_check_fails(repo, tmp_path, monkeypatch):
     main, feat = repo
     commit(feat, "a.txt")
     for rc, text in ((0, "free"), (2, "broken")):
-        monkeypatch.setenv("LAND_SLOT_CMD", slot_stub(tmp_path, rc, text))
+        stub, log = slot_stub(tmp_path, rc, text)
+        log.unlink(missing_ok=True)
+        monkeypatch.setenv("LAND_SLOT_CMD", stub)
         r = land(feat, "check")
         assert r.returncode == 0 and "timing slot" not in r.stderr
+        assert log.read_text().splitlines() == ["check"]
 
 
 def test_passing_after_failure_then_lands(repo):
