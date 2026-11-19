@@ -2206,6 +2206,31 @@ def test_refresh_launches_an_unlisted_seat_the_snapshot_reads_dead(fleet):
         "refresh: a seat the snapshot reads dead still launches (control) (rc=%s): %s" % (r.status, r.out)
 
 
+# down's not-running path read the sessions list alone, so from a sandbox it printed "not running ...
+# nothing to stop" (exit 0) for a seat the snapshot reads live. It reads the snapshot as refresh does.
+
+@pytest.mark.parametrize("state, why, wording", [
+    ("live", "pid 9999 (fixture)", r"snapshot shows it running"),
+    ("unknown", "no readable source (fixture)", r"UNKNOWN"),
+    ("stopped", "listed (blocked), but no live pid record (fixture)", r"not running"),
+])
+def test_down_refuses_an_unlisted_seat_the_snapshot_does_not_read_dead(fleet, state, why, wording):
+    fleet.write_snapshot(5, "gamma-canonical", state, why)
+    for extra in ([], ["--dry-run"]):
+        r = fleet.fc("down", *extra, "gamma-canonical")
+        assert r.status != 0 and re.search(r"down: .*gamma-canonical.*" + wording, r.out, re.S) \
+            and "nothing to stop" not in r.out and "0 target(s)" not in r.out \
+            and "fleet-canonicals request down gamma-canonical" in r.out, \
+            "down %s: an unlisted seat the snapshot reads %s is refused (rc=%s): %s" % (extra, state, r.status, r.out)
+
+
+def test_down_of_an_unlisted_seat_the_snapshot_reads_dead_says_nothing_to_stop(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "dead")
+    r = fleet.fc("down", "--dry-run", "gamma-canonical")
+    assert r.status == 0 and "not running" in r.out and "nothing to stop" in r.out, \
+        "down: a seat the snapshot reads dead is still reported not running (control) (rc=%s): %s" % (r.status, r.out)
+
+
 def test_up_starts_a_seat_the_snapshot_reads_dead(fleet):
     fleet.write_snapshot(5, "gamma-canonical", "dead")
     out = fleet.fc("up", "gamma-canonical", "--dry-run").out

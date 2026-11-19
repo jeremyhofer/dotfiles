@@ -178,10 +178,11 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def run(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
+def run(cmd: list[str], timeout: int = 60, extra_env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, timeout=timeout, env=child_env())
+                           stderr=subprocess.STDOUT, text=True, timeout=timeout,
+                           env={**child_env(), **(extra_env or {})})
         return p.returncode, p.stdout
     except FileNotFoundError:
         return 127, f"not found: {cmd[0]}"
@@ -1369,7 +1370,7 @@ def execute(req: dict, ctx: Pass) -> tuple[str, str]:
     # records a handoff, which nobody would queue a request for.
     extra = ["--up"] if req["verb"] == "init" else []
     rc, out = run(sibling("fleet-canonicals", "FLEET_CANONICALS_BIN") + [req["verb"]] + extra + [req["name"]],
-                  timeout=VERB_TIMEOUT)
+                  timeout=VERB_TIMEOUT, extra_env={"FLEET_VERB_FROM_RUNNER": "1"})
     ctx.refresh_listing()
     return ("done" if rc == 0 else "failed"), f"fleet-canonicals {req['verb']} {req['name']} exited {rc}\n{out}"
 
