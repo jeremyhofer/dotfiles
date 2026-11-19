@@ -851,6 +851,10 @@ def test_serve_refuses_a_malformed_request_or_verb(fleet):
     (fleet.Q / "r-junk.request.json").write_text("not json")
     (fleet.Q / "r-time.request.json").write_text(json.dumps(
         {"id": "r-time", "time": "yesterday", "verb": "up", "name": "alpha-canonical", "reason": "test", "requester": "alpha-canonical"}))
+    good = {"time": int(time.time()), "verb": "up", "name": "alpha-canonical", "reason": "test", "requester": "alpha-canonical"}
+    (fleet.Q / "r-extra.request.json").write_text(json.dumps(dict(good, id="r-extra", force=True)))
+    (fleet.Q / "r-blank.request.json").write_text(json.dumps(dict(good, id="r-blank", reason="  ")))
+    (fleet.Q / "r-misnamed.request.json").write_text(json.dumps(dict(good, id="r-other-id")))
     fleet.serve()
     fleet.expect("r-verb", "refused", "verb", "the runner refuses a verb outside the four")
     fleet.expect("r-flag", "refused", "verb", "the runner refuses --force smuggled into a verb")
@@ -859,6 +863,9 @@ def test_serve_refuses_a_malformed_request_or_verb(fleet):
     fleet.expect("r-bad", "refused", "shape", "the runner refuses a request missing its fields")
     fleet.expect("r-junk", "refused", "shape", "the runner refuses a file that is not JSON")
     fleet.expect("r-time", "refused", "shape", "the runner refuses a request whose time is not an integer (new in the port)")
+    fleet.expect("r-extra", "refused", "shape", "the runner refuses a request with a field beyond the six")
+    fleet.expect("r-blank", "refused", "shape", "the runner refuses a request whose reason is blank")
+    fleet.expect("r-misnamed", "refused", "shape", "the runner refuses a request whose id is not its file name")
     assert fleet.claude_calls() == "", "no refused request reached claude: %s" % fleet.claude_calls()
 
 
@@ -911,13 +918,19 @@ def test_serve_declared_for_this_machine(fleet):
     fleet.serve()
     fleet.expect("r-else", "refused", "declared", "the runner refuses a canonical declared for another machine")
     fleet.expect("r-none", "refused", "declared", "the runner refuses a name the record does not declare")
+    # The two reasons are distinct; an undeclared name reported as "not declared for this machine"
+    # sends its reader to the wrong key of the record.
+    assert "not a canonical the fleet record declares" in fleet.result_doc("r-none").get("detail", ""), \
+        "an undeclared name is refused as undeclared, not as declared elsewhere: %s" % fleet.result_doc("r-none")
 
 
 def test_serve_requester(fleet):
     fleet.plant("r-other", "up", "beta-canonical", "alpha-canonical")
     fleet.plant("r-dirq", "up", "gamma-canonical", "director-canonical")
+    fleet.plant("r-mine", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
     fleet.expect("r-other", "refused", "requester", "a canonical may not request another canonical's action")
+    fleet.expect("r-mine", "done", "", "a canonical outside request-any may request its own action")
     fleet.expect("r-dirq", "done", "", "the director may request any canonical's action (request-any default)")
     fleet.set_config("request-any = owner")
     fleet.plant("r-own", "up", "beta-canonical", "owner")
@@ -927,8 +940,10 @@ def test_serve_requester(fleet):
 
 def test_serve_self_refresh(fleet):
     fleet.plant("r-self", "refresh", "alpha-canonical", "alpha-canonical")
+    fleet.plant("r-hubr", "refresh", "beta-canonical", "director-canonical")
     fleet.serve()
     fleet.expect("r-self", "refused", "self-refresh", "a canonical's request to refresh itself is refused by default")
+    fleet.expect("r-hubr", "done", "", "the hub's refresh of another canonical is not a self-refresh")
     fleet.set_config("allow-self-refresh = true")
     fleet.plant("r-self2", "refresh", "alpha-canonical", "alpha-canonical")
     fleet.serve()
@@ -2902,6 +2917,29 @@ MUTANTS = [
      "test_serve_resume_of_a_listed_row_with_a_live_pid_record_is_refused"),
     ("resume-confirmation", "a respawn is confirmed with no process behind it",
      "            if process_present(name, sid):", "            if True:", "test_serve_a_respawn_that_brings_no_process_up_fails"),
+    # --- the original checks' remaining conditions, each on its own: the rows above
+    # switch each check off whole, which shows one case of it refused, not every condition in it
+    ("shape-extra-field", "a request with a field beyond the six passes the shape check",
+     "if set(req) != REQUEST_KEYS:", "if not REQUEST_KEYS <= set(req):", "test_serve_refuses_a_malformed_request_or_verb"),
+    ("shape-blank-field", "a field that is an empty or blank string passes the shape check",
+     "if not isinstance(req[k], str) or not req[k].strip():", "if not isinstance(req[k], str):",
+     "test_serve_refuses_a_malformed_request_or_verb"),
+    ("shape-id-file-name", "a request whose id is not its file name passes the shape check",
+     "if path.name != f\"{req['id']}.request.json\":", "if False:", "test_serve_refuses_a_malformed_request_or_verb"),
+    ("verb-allowlist", "a verb outside the five passes the verb check",
+     'if req["verb"] not in VERBS:', 'if False:', "test_serve_refuses_a_malformed_request_or_verb"),
+    ("declared-machine", "a canonical declared for another machine passes the declared check",
+     "if rc != 0 or host not in machines.splitlines():", "if rc != 0:", "test_serve_declared_for_this_machine"),
+    ("declared-undeclared", "a name the record does not declare passes the declared check",
+     "    if rc != 0:\n        return False, f\"'{name}' is not a canonical the fleet record declares\"",
+     "    if False:\n        return False, f\"'{name}' is not a canonical the fleet record declares\"",
+     "test_serve_declared_for_this_machine"),
+    ("requester-own", "a canonical's request for its own action is refused",
+     'if req["requester"] == req["name"] or req["requester"] in as_list(ctx.cfg["request-any"]):',
+     'if req["requester"] in as_list(ctx.cfg["request-any"]):', "test_serve_requester"),
+    ("self-refresh-others", "the hub's refresh of another canonical is refused as a self-refresh",
+     'if req["verb"] != "refresh" or req["requester"] != req["name"]:', 'if req["verb"] != "refresh":',
+     "test_serve_self_refresh"),
     # --- the runner itself
     ("runner-lock", "two runners serve one queue",
      "            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)", "            pass", "test_serve_a_second_runner_leaves_the_queue_to_the_first"),

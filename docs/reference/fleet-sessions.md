@@ -348,8 +348,9 @@ session's name, read from `CLAUDE_CODE_SESSION_ID` and the status-line usage fil
 the checks bound what any request can do, and every outcome is in a result file and the audit log.
 No notification is sent. The runner refuses, in this order, a request that:
 
-- is malformed, names a verb other than the four, or carries an option such as `--force` or
-  `--stub`;
+- is malformed (a field missing, extra or blank, a `time` that is not an integer, an `id` that is not
+  its file name), names a verb other than the five (`up`, `down`, `refresh`, `resume`, `init`), or
+  carries an option such as `--force` or `--stub`;
 - arrives while `requests/PAUSED` exists, or is older than `request-max-age`;
 - names a canonical on `never-touch`, or one the fleet record does not declare for this machine;
 - names a canonical other than its requester, from a requester not on `request-any`;
