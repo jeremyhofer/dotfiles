@@ -292,6 +292,14 @@ It is loud, which is the good news. The bad news is that it tends to sit in the 
 compound command, so everything before it ran and everything after it did not. Quote any argument
 that starts with `=`.
 
+**Where it does not fire: a command typed into Claude Code's Bash tool.** Measured on Claude Code
+2.1.328 (2026-11-19): the tool's shell runs with `noequals` (`setopt` lists it), so `echo ====` and
+`[ a == a ]` work there. Every other zsh still expands `=word`: a script, `zsh -c '…'` and
+`zsh -fc '…'` typed into the same tool (both measured failing with `=== not found`), a hook, and a
+shell on a remote host. So the rule stands for anything that is not the tool's own command line,
+and quoting costs nothing there either, which keeps a command correct when it is pasted into a
+script or a Claude Code release changes the option.
+
 ## 11. SILENT — backticks inside a double-quoted `git commit -m` RUN
 
 Inside double quotes, `` `...` `` is command substitution in every POSIX shell, zsh included. A
@@ -416,7 +424,8 @@ assumption the check exists to refuse, so do not argue with it. In order of pref
 - **A check passed that you expected to fail** — suspect the pipeline exit status (§3) before
   believing it. A gate that cannot fail proves nothing.
 - **`zsh: <word> not found` where `<word>` is part of your own text** (`== not found`) — an
-  argument starts with `=` (§10).
+  argument starts with `=` (§10), in a script, `zsh -c` or a remote shell; the Bash tool's own
+  command line does not expand it.
 - **A commit message is missing a phrase you wrote in backticks** — command substitution ran
   inside a double-quoted `-m` (§11).
 - **`command not found` only over SSH** — you are calling a shell function, or a tool whose `PATH`
