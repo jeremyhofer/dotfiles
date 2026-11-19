@@ -16,6 +16,7 @@ comment_types = [
   { id = "issue",      label = "issue",   color = "red",     definition = "must fix before merge — a correctness, security, or contract defect" },
   { id = "suggestion", label = "suggest", color = "yellow",  definition = "a concrete improvement the author should consider; not blocking" },
   { id = "nit",        label = "nit",     color = "#d19a66", definition = "small optional style/polish tweak; safe to ignore" },
+  { id = "typo",       label = "typo",    color = "#e5c07b", definition = "a misspelling or wrong word, with the fix; not blocking" },
   { id = "question",   label = "q",       color = "cyan",    definition = "ask for clarification; may become a follow-up task" },
   { id = "praise",     label = "praise",  color = "green",   definition = "positive callout; a pattern worth repeating" },
   { id = "callout",    label = "callout", color = "#61afef", definition = "a heads-up worth knowing; no change asked for" },

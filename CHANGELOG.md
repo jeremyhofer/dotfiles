@@ -33,6 +33,14 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (tuicr: a `typo` comment type)
+
+tuicr's configured classifications gain `typo`, after `nit`: "a misspelling or wrong word, with the
+fix; not blocking". With `[forge] comment_type_prefix = true` it is submitted as `[TYPO] …`. No stored
+comment changes. The `tuicr-code-review` skill gains its row (batch like a nit; apply the fix when
+asked or when already editing that text), and its `--type` list now names every configured id an
+agent may write. Asked for by Jeremy in a review session, 2026-11-18.
+
 ## 2026-11-19 (seam-probe: three fixes after a run started inside a fixture)
 
 `seam-probe run` and `red` now refuse, with one line and exit 2, to start from a current directory
@@ -44,6 +52,7 @@ now starts from a directory that exists. The terminal output of a result shows r
 SKIPPED step can be copied (`summary.txt` stays sanitized), and `trust SUITE` prints a ready
 `cd ... && claude` and `wt -C ... config approvals add` pair per fixture repository, named by a new
 optional case key `fixtures = ["name", ...]` that `lint` checks. Nothing to change on a machine.
+||||||| parent of 67f9536 (tuicr: a typo comment type, after nit)
 
 ## 2026-11-18 (seam-probe: two more worktree-takeover cases)
 

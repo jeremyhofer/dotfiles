@@ -82,6 +82,7 @@ The classifications are configured with definitions precisely so an agent can ro
 | `issue` | must fix before merge — a correctness, security, or contract defect | **Do it.** Blocking. |
 | `suggestion` | a concrete improvement the author should consider; not blocking | Do it or reply saying why not. |
 | `nit` | small optional style/polish tweak; safe to ignore | Batch these; do not spend a round trip each. |
+| `typo` | a misspelling or wrong word, with the fix; not blocking | Batch these as nits. The comment carries the fix: apply it when the author asks, or when the typo is in text you are already changing. |
 | `question` | ask for clarification; may become a follow-up task | **Answer it — do not silently "fix" it.** A question answered with a code change loses the question. |
 | `praise` | positive callout; a pattern worth repeating | No action. Do not reply "thanks". |
 | `callout` | a heads-up worth knowing; no change asked for | No change. Read it; reply only if it is wrong. |
@@ -122,7 +123,9 @@ tuicr review add --session <path> \
 - **`--type` is not validated, and its DEFAULT is wrong.** The CLI advertises `[default: note]`, but
   `note` is **not** one of the configured classifications — so leaving `--type` off, or copying it
   from `--help`, stamps a comment that nothing can route by and that the TUI cannot color. Always
-  pass one of the configured ids explicitly: `issue` · `suggestion` · `nit` · `question` · `praise`.
+  pass one of the configured ids explicitly: `issue` · `suggestion` · `nit` · `typo` · `question` ·
+  `praise` · `callout` · `discussion` · `followup`. (`internal` is configured too, but it is the
+  reviewer's note to you, never one you write.)
   An unknown value is accepted silently, so a typo fails the same quiet way.
 - `--input` takes literal JSON, `@file`, or `-` for stdin, which is the sane path for adding several
   comments at once.

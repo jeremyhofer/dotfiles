@@ -49,7 +49,7 @@ def test_each_comment_type_has_an_id_and_only_known_fields(config):
 
 def test_the_routing_ids_the_review_skill_names_are_configured(config):
     ids = [entry["id"] for entry in config["comment_types"]]
-    assert ids == ["issue", "suggestion", "nit", "question", "praise", "callout",
+    assert ids == ["issue", "suggestion", "nit", "typo", "question", "praise", "callout",
                    "discussion", "followup", "internal"]
 
 
