@@ -33,6 +33,18 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (seam-probe: a kept transcript, a clearer verdict, a longer cleanup)
+
+A run's cleanup now copies each session's transcript (and its sidecar directory, if any) into the
+run's results directory as `transcript-<case>[-<plant>]-<session name>.jsonl` before deleting the
+original, and logs the kept path in `cleanup-*.txt`; `summary.txt` still names no real path. The
+`claude-worktree` case checks that each of its own, grant and refuse commands left its mark right
+after the done mark, and says INCONCLUSIVE "the <name> command never ran" with the transcript's name,
+instead of reporting a control as unreadable. When `claude rm` refuses, cleanup now retries while
+each refusal names a flag or value not yet passed (up to three retries, accumulating the flags),
+still only for a session that ran inside the fixtures; a refusal that names a second flag no longer
+leaves the session registered to block the next run. Nothing to change on a machine.
+
 ## 2026-11-19 (tuicr: a `typo` comment type)
 
 tuicr's configured classifications gain `typo`, after `nit`: "a misspelling or wrong word, with the

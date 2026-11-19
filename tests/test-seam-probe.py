@@ -1066,6 +1066,18 @@ def test_claude_worktree_case(fake):
     assert rows(fake) == [] and not (fake["sandbox"] / "seams/worktree-takeover/wtc").exists()
 
 
+@pytest.mark.parametrize("mark", ["own", "grant", "refuse"])
+def test_claude_worktree_names_a_command_that_never_ran(fake, mark):
+    shipped(fake)
+    trust(fake, fake["sandbox"] / "seams/worktree-takeover/wtc")
+    r = tool(fake, "run", "worktree-takeover", "claude-worktree", "--yes",
+             extra_env={"FAKE_CLAUDE_SKIP": f"seam-probe-mark-{mark}"})
+    text = summary(fake)
+    assert f"the {mark} command never ran" in text, text
+    assert "could not be read" not in text and "INCONCLUSIVE" in text, text
+    assert "transcript-claude-worktree-own.jsonl" in text, text
+
+
 @pytest.mark.parametrize("untrusted,unapproved,needle", [
     (True, False, "&& claude"), (False, True, "config approvals add"), (True, True, "; and worktrunk"),
 ])
