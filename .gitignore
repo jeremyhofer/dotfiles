@@ -2,6 +2,8 @@ __pycache__/
 node_modules/
 .nx/
 
-# Nested worktrees (the fleet layout puts them at .worktrees/<name>). Ignored here, not only by a
-# global excludes file, because the suites run with no global git config and copy the source tree.
+# Nested worktrees (the fleet layout puts them at .worktrees/<name>, or at .claude/worktrees/<name>
+# where the claudeWorktrees flag is on). Ignored here, not only by a global excludes file, because the
+# suites run with no global git config and copy the source tree.
 .worktrees/
+.claude/worktrees/

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# claude-worktree-hook -- Claude Code hooks that keep a session's worktree work on worktrunk, and
-# keep a session that works in place from moving itself into a worktree.
+# claude-worktree-hook -- Claude Code hooks that keep a session's worktree work on worktrunk.
 #
 # SUBCOMMANDS, one per hook event (the hook's JSON input on stdin in every case):
 #
@@ -9,31 +8,28 @@
 #                    `git worktree remove` through with a warning naming `wt remove` (below).
 #                    `git worktree list` and the other subcommands pass silently. It never rewrites
 #                    the command.
-#   enter-worktree   PreToolUse, matcher "EnterWorktree". Refuses where the repository's sessions
-#                    work in place (effective `worktree.bgIsolation` is "none"); allows otherwise.
 #   subagent-start   SubagentStart. Warns when the session's checkout has commits that are on no
 #                    remote.
 #
-# WHY REFUSE RAW `git worktree add`. Worktrunk (`wt`) owns worktree creation: it places a worktree
-# where the repository's layout says and runs the creation hooks (among them the one that fetches
-# the base first). A raw `git worktree add` skips all of that. Removal is only WARNED: the standard is
-# `wt remove --no-hooks --foreground <name>`, but a plain `git worktree remove` stays a sanctioned
-# fallback where a setup exempts it from the sandbox (git's own clean check still refuses a worktree
-# holding uncommitted work), so refusing it would remove a working route. The refusal is a guard against habit, not a
-# security boundary: it reads only the command line the session typed, so a script, an alias or a
-# heredoc fed to a shell is not seen, and tooling that manages worktrees itself keeps calling git.
-# Where worktrunk is not installed there is no `wt` command to name, so the guard stands down.
+# Any other subcommand does nothing and exits 0. That includes `enter-worktree`, which until
+# 2026-11-19 refused the EnterWorktree tool wherever sessions work in place (`worktree.bgIsolation`
+# "none"). That refusal is gone: EnterWorktree and ExitWorktree are open to every session and
+# subagent, so a session reaches a worktree by entering it rather than by a clone of its own. A
+# settings file not yet re-applied may still wire `enter-worktree`; it allows. What entering costs
+# is a behavior to know, not a block: until the session calls ExitWorktree, its sandbox write set
+# is the worktree, so it cannot write its main checkout (skill `working-in-worktrees`).
 #
-# WHY ENTERWORKTREE IS REFUSED WHERE SESSIONS WORK IN PLACE. A repository whose settings turn
-# Claude Code's background-isolation guard off (`worktree.bgIsolation: "none"`) is one whose owning
-# session works in its own checkout. Such a session reaches another branch by path instead
-# (`git -C .worktrees/<name> …`, `cd .worktrees/<name> && …`, edits by path) or hands the work to a
-# subagent. EnterWorktree would move it, and the subagents that share its sandbox write set, out of
-# the checkout. Stateless: the effective value is read from the settings files at each call, most
-# specific first -- the repository's .claude/settings.local.json, then its .claude/settings.json
-# (at the root of the session directory's repository), then the user's settings.json. A repository
-# that keeps the guard on, or a machine that never sets the key, is unaffected. `false` is read as
-# "none" too, since it states the same intent.
+# WHY REFUSE RAW `git worktree add`. Worktrunk (`wt`) owns worktree creation: it places a worktree
+# where the machine's layout says (`.worktrees/` or `.claude/worktrees/`, by the dotfiles' per-machine
+# flag) and runs the creation hooks (among them the one that fetches the base first). A raw
+# `git worktree add` skips all of that and puts the worktree wherever the command line says.
+# Removal is only WARNED: the standard is `wt remove --no-hooks --foreground <name>`, but a plain
+# `git worktree remove` stays a sanctioned fallback where a setup exempts it from the sandbox (git's
+# own clean check still refuses a worktree holding uncommitted work), so refusing it would remove a
+# working route. The refusal is a guard against habit, not a security boundary: it reads only the
+# command line the session typed, so a script, an alias or a heredoc fed to a shell is not seen, and
+# tooling that manages worktrees itself keeps calling git.
+# Where worktrunk is not installed there is no `wt` command to name, so the guard stands down.
 #
 # THE UNPUSHED WARNING. A subagent given its own worktree starts from the base as fetched from the
 # remote, so commits that exist only in the session's checkout are not in it. It warns, it never
@@ -48,7 +44,7 @@ set -u
 
 subcommand=${1:-}
 case "$subcommand" in
-  bash | enter-worktree | subagent-start) ;;
+  bash | subagent-start) ;;
   *) exit 0 ;;
 esac
 
@@ -264,41 +260,13 @@ guard_bash() {
   [ -n "$cmd" ] || exit 0
   sub=$(worktree_verdict "$cmd")
   case "$sub" in
-    add) how='Create it with worktrunk: `wt switch --create <branch> --base <base>` for a new branch, or `wt switch <branch>` for an existing one (add `--no-cd` in a script or a session).'
-         # Name EnterWorktree only where guard_enter would allow it, or the two refusals contradict.
-         case "$(bg_isolation "$(field '.cwd')")" in
-           none | false) how="$how In a session, a subagent launched with isolation \"worktree\" creates through worktrunk too; EnterWorktree is refused here, because this repository's sessions work in place." ;;
-           *) how="$how In a session, the EnterWorktree tool and a subagent launched with isolation \"worktree\" create through worktrunk too." ;;
-         esac ;;
+    add) how='Create it with worktrunk: `wt switch --create <branch> --base <base>` for a new branch, or `wt switch <branch>` for an existing one (add `--no-cd` in a script or a session). In a session, the EnterWorktree tool and a subagent launched with isolation "worktree" create through worktrunk too.' ;;
     move) how='worktrunk has no move: create the new worktree with `wt switch --create <branch>`, carry the work across by committing it, then `wt remove --no-hooks --foreground <old name>`.' ;;
     wt-remove-bg) deny 'wt remove is refused here without --foreground: a background removal moves the worktree into worktrunk'"'"'s trash and deletes it from a detached process that the end of this command can kill, so the trash is never emptied. Use `wt remove --no-hooks --foreground <name>`.' ;;
     remove) warn 'Raw `git worktree remove` is the fallback here; the standard removal is `wt remove --no-hooks --foreground <name>`, after leaving the worktree (ExitWorktree with action "keep" if this session entered it). Never force either one.' ;;
     *) exit 0 ;;
   esac
   deny "Raw \`git worktree $sub\` is refused in sessions here: worktrunk owns worktree creation, so the layout, the fetch of the base and the creation hooks are applied. $how \`git worktree list\` stays available."
-}
-
-# The effective worktree.bgIsolation for a directory, most specific settings file first; empty when
-# none sets it. A boolean is printed as its JSON text.
-bg_isolation() {
-  root=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || root=$1
-  for f in "$root/.claude/settings.local.json" "$root/.claude/settings.json" \
-           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"; do
-    [ -f "$f" ] || continue
-    v=$(jq -r 'if (.worktree | type) == "object" and (.worktree | has("bgIsolation")) then .worktree.bgIsolation | tostring else empty end' "$f" 2>/dev/null)
-    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
-  done
-}
-
-guard_enter() {
-  dir=$(field '.cwd')
-  [ -n "$dir" ] && [ -d "$dir" ] || dir=${CLAUDE_PROJECT_DIR:-}
-  [ -n "$dir" ] && [ -d "$dir" ] || exit 0
-  case "$(bg_isolation "$dir")" in
-    none | false) ;;
-    *) exit 0 ;;
-  esac
-  deny "This repository's sessions work in place: use the worktree by path (git -C .worktrees/<name>, or a subshell: (cd .worktrees/<name> && …); a bare cd moves the session itself), or hand the work to a subagent."
 }
 
 warn_unpushed() {
@@ -319,9 +287,6 @@ warn_unpushed() {
 case "$subcommand" in
   bash)
     guard_bash
-    ;;
-  enter-worktree)
-    guard_enter
     ;;
   subagent-start)
     warn_unpushed

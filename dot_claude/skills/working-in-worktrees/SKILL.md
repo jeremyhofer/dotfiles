@@ -1,6 +1,6 @@
 ---
 name: working-in-worktrees
-description: Use when deciding whether to work in a git worktree, and whenever creating, entering, landing, cleaning up or removing one — `wt switch --create`, `git worktree add`, the EnterWorktree or ExitWorktree tools, giving a subagent `isolation: worktree`, merging, cherry-picking or opening a pull request for a finished branch, deleting it on the remotes, or a worktree left behind. Also fires on the failure signatures — "is already used by worktree", "contains modified or untracked files", "Read-only file system" after leaving a worktree, a new worktree that starts weeks behind, tests that pass in one worktree and fail in another, a port already in use by another worktree, a cherry-picked branch that still reads as unmerged, a hook refusing a raw `git worktree` command, and EnterWorktree refused where sessions work in place. Covers when a worktree is warranted, one per stream of work, a named fresh base, a frozen install before any gate, landing into the branch it was cut from, by a local merge or a pull request as the repository, the domain or the host of `origin` decides, removing only what is provably elsewhere, and how this differs inside a sandboxed Claude Code session from a plain shell with no hooks.
+description: Use when deciding whether to work in a git worktree, and whenever creating, entering, landing, cleaning up or removing one — `wt switch --create`, `git worktree add`, the EnterWorktree or ExitWorktree tools, giving a subagent `isolation: worktree`, merging, cherry-picking or opening a pull request for a finished branch, deleting it on the remotes, or a worktree left behind. Also fires on the failure signatures — "is already used by worktree", "contains modified or untracked files", "Read-only file system" after leaving a worktree, a new worktree that starts weeks behind, tests that pass in one worktree and fail in another, a port already in use by another worktree, a cherry-picked branch that still reads as unmerged, a hook refusing a raw `git worktree` command, and a commit refused with `index.lock: Read-only file system` in a worktree the session did not create. Covers when a worktree is warranted, one per stream of work, a named fresh base, a frozen install before any gate, landing into the branch it was cut from, by a local merge or a pull request as the repository, the domain or the host of `origin` decides, removing only what is provably elsewhere, and how this differs inside a sandboxed Claude Code session from a plain shell with no hooks.
 ---
 
 # Working in worktrees
@@ -36,11 +36,11 @@ the default**; the bare container is an older layout that the tooling still supp
 
 | | Standard clone (default) | Bare container (older) |
 | --- | --- | --- |
-| On disk | `<repo>/` is an ordinary checkout on the repository's working branch; worktrees nest at `<repo>/.worktrees/<name>` | `<repo>/.git/` is itself a bare repository, and every branch, the default one included, is a sibling worktree: `<repo>/main/`, `<repo>/<branch>/`. (A container made before the rename keeps the git data in `<repo>/.bare` behind a `.git` file saying `gitdir: ./.bare`; `fleet-repo check` reports it as `old-layout` and prints the conversion.) |
+| On disk | `<repo>/` is an ordinary checkout on the repository's working branch; worktrees nest at `<repo>/.worktrees/<name>`, or at `<repo>/.claude/worktrees/<name>` on a machine whose dotfiles set the `claudeWorktrees` flag | `<repo>/.git/` is itself a bare repository, and every branch, the default one included, is a sibling worktree: `<repo>/main/`, `<repo>/<branch>/`. (A container made before the rename keeps the git data in `<repo>/.bare` behind a `.git` file saying `gitdir: ./.bare`; `fleet-repo check` reports it as `old-layout` and prints the conversion.) |
 | How to tell | `git rev-parse --is-bare-repository` prints `false` at `<repo>/`, and `.git` holds a checkout's index | `git rev-parse --is-bare-repository` prints `true` at `<repo>/`, which has no working tree of its own |
 | Where you stand to create, land and remove | the main checkout, `<repo>/` | the default branch's worktree, `<repo>/main/`. Never `<repo>/` itself: it has no working tree, so `git status` fails there and gates skip it |
-| Reach another branch | `git -C <repo>/.worktrees/<branch>`, or from inside one, `git -C ../..` for the main checkout | `git -C ../<branch>` from any sibling |
-| Its cost | the worktrees live inside a working tree: `.worktrees/` is listed in the repository's own `.gitignore`, and tools that walk the tree (formatters, linters, `rg`, build graphs) each need it excluded, or they scan every worktree too. The checkout is load-bearing: every nested worktree's git data lives in its `.git`, so deleting or re-cloning it takes them all, unpushed branches included | every sibling sits at the container root, outside the default branch's directory, so a sandboxed session creates one with the EnterWorktree tool rather than from Bash (below); build tools that keep data at the main worktree's root put it at the container root, which a session cannot write |
+| Reach another branch | `git -C <repo>/.worktrees/<branch>` (or `.claude/worktrees/<branch>`), or from inside one, `git -C ../..` (`../../..`) for the main checkout | `git -C ../<branch>` from any sibling |
+| Its cost | the worktrees live inside a working tree: their directory is listed in the repository's own `.gitignore`, and tools that walk the tree (formatters, linters, `rg`, build graphs) each need it excluded, or they scan every worktree too. The checkout is load-bearing: every nested worktree's git data lives in its `.git`, so deleting or re-cloning it takes them all, unpushed branches included | every sibling sits at the container root, outside the default branch's directory, so a sandboxed session creates one with the EnterWorktree tool rather than from Bash (below); build tools that keep data at the main worktree's root put it at the container root, which a session cannot write |
 | Why it is used | IDEs, build tools and worktrunk handle it natively, and a sandboxed session and its subagents can write the checkout, the nested worktrees and the shared `.git` with no extra grant | removing any one directory, `main/` included, cannot break the others, and no branch is privileged |
 
 `wt switch --create` places a worktree correctly in either shape once the repository's layout is
@@ -54,18 +54,26 @@ Where one long-running session owns a repository, and subagents or a person work
   work.
 - **Parallel work goes to subagents in their own worktrees**, each launched with
   `isolation: "worktree"`.
-- **The owning session never calls EnterWorktree.** A session and its subagents share one write set,
-  the directory the session stands in plus the repository's `.git`; entering a worktree takes the
-  checkout out of it, for the subagents too. To work on another branch it uses that branch's
-  worktree **by path**, staying where it is: `git -C .worktrees/<name> …`, `(cd .worktrees/<name> && …)` in a
-  subshell (a bare `cd`, even inside one command, moves the session's own directory), and edits to files under `.worktrees/<name>/`, all of which its write set
-  covers in a standard clone. Or it hands the work to a subagent. Such a repository sets
-  `worktree.bgIsolation: "none"` (in its settings or the user's), and where this setup's hooks are
-  installed, EnterWorktree is refused wherever that is the effective value.
+- **A session may enter a worktree with the EnterWorktree tool**, by name to create one or by path
+  to enter one that exists, and leaves it with ExitWorktree. No hook here refuses either tool. What
+  entering costs is a behavior, not a block: a session and its subagents share one write set, and
+  while the session is inside a worktree that write set is the worktree, so the checkout it left is
+  read-only to it, and to its subagents, until it calls ExitWorktree. So do not enter while a
+  subagent of the session runs, and land into the checkout only after leaving.
+- **By path, a session reads and edits another branch's worktree without moving**:
+  `git -C <worktree> …`, `(cd <worktree> && …)` in a subshell (a bare `cd`, even inside one command,
+  moves the session's own directory), and edits to files under it. A COMMIT there can fail with
+  `index.lock: Read-only file system`: the sandbox opens a worktree's git data only to a session
+  Claude Code gave that worktree (one it created with EnterWorktree, a subagent's own, or one passed
+  at launch with `--add-dir`), and only at `.claude/worktrees/`; a subagent's own worktree under
+  `.worktrees/` is refused the same way. To commit on another branch where worktrees go to
+  `.claude/worktrees/`, enter a worktree the session creates, or hand the work to a subagent
+  launched with `isolation: "worktree"`. Never clone the repository a
+  second time to get around it: a clone is a full copy with nothing tracking it.
 - **It pushes before it dispatches.** A subagent's worktree starts from the base as fetched from the
   remote, so commits only in the checkout are not in it. A hook warns at dispatch when the checkout
   has commits on no remote.
-- **A person works in `.worktrees/` through `wt switch`**, never in a checkout a session owns.
+- **A person works in a worktree through `wt switch`**, never in a checkout a session owns.
 
 ## Do you need one?
 
@@ -104,8 +112,8 @@ to run or compare an older commit holds no edits and is removed in the sitting t
    `git fetch --all`.
 3. **Create it from a named base.**
 
-   *A subagent* gets one by being launched with `isolation: "worktree"`, and *a sandboxed session in
-   a repository that isolates sessions* with the EnterWorktree tool, by name. Where worktrunk's Claude Code plugin is installed, both go
+   *A subagent* gets one by being launched with `isolation: "worktree"`, and *a sandboxed session*
+   with the EnterWorktree tool, by name. Where worktrunk's Claude Code plugin is installed, both go
    through its WorktreeCreate hook, which runs `wt switch --create` outside the sandbox, so the
    layout, the fetch and the creation hooks all apply. Without the plugin, Claude Code makes a plain
    git worktree under `.claude/worktrees/` that skips all three.
@@ -118,8 +126,8 @@ to run or compare an older commit holds no edits and is removed in the sitting t
 
    The JSON names the new path. `--no-cd` keeps your shell where it is, which is what a script or an
    agent wants; `-y` skips approval prompts. Worktrunk puts the worktree where the repository's
-   layout says (nested under `.worktrees/` in a standard clone, beside the branches in a bare
-   container) and runs the repository's creation hooks.
+   layout says (nested under `.worktrees/` or `.claude/worktrees/` in a standard clone, beside the
+   branches in a bare container) and runs the repository's creation hooks.
 4. **Check the base you got**: `git -C <path> log -1 --format='%h %s'` names the commit you expect.
 5. **Install before any gate.** Run the repository's frozen install in the new worktree (`npm ci`,
    `uv sync`, and so on, once per package root). Without it, Node resolves the parent directory's
@@ -271,17 +279,16 @@ Giving a subagent `isolation: worktree` creates a worktree on a fresh branch for
 These are properties of Claude Code's sandbox and its worktree tools, not of git. A plain shell, or a
 machine where Claude Code's hooks are not available, has none of them.
 
-- **Entering and leaving.** Only in a repository that isolates sessions; where sessions work in
-  place, use the worktree by path (Who works where). The EnterWorktree tool with a *path* enters an
-  existing worktree; with a *name* it creates a new one (Creating one, step 3). **Without worktrunk's plugin, create with
+- **Entering and leaving.** Open to every session (Who works where). The EnterWorktree tool with a
+  *path* enters an existing worktree; with a *name* it creates a new one (Creating one, step 3). **Without worktrunk's plugin, create with
   `wt switch --create`, then enter by path.** ExitWorktree with `keep` returns the session to where
   it entered from; its `remove` is never used (Removing it, step 4).
 - **A session writes the directory it stands in, plus the repository's `.git`**, except `config` and
   `hooks/` there, which stay read-only; its subagents share that write set live. In a standard
-  clone a session started in the checkout can therefore write the checkout, every nested worktree
-  and the shared git data. After EnterWorktree it writes only the worktree it entered: the checkout
-  it left becomes read-only, for its subagents too, which is why a session that works in place never
-  enters one. The consequence for landing: a session lands from the checkout of the target after
+  clone a session started in the checkout can therefore write the checkout's files and those of
+  every nested worktree, but commit only in the checkout and in the worktrees Claude Code gave it
+  (Who works where); the per-worktree git data of the others is read-only to it. After EnterWorktree it writes only the worktree it
+  entered: the checkout it left becomes read-only, for its subagents too, until ExitWorktree. The consequence for landing: a session lands from the checkout of the target after
   ExitWorktree, never into it from a worktree. A fast-forward run from the wrong place fails with
   `Read-only file system`, sometimes after writing part of the change under a writable
   subdirectory: check `git status` and restore those files. In a bare container the default
@@ -313,7 +320,7 @@ machine where Claude Code's hooks are not available, has none of them.
 | `contains modified or untracked files` on a clean worktree | sandbox placeholders | run the exact `wt remove --no-hooks --foreground <name>` form, or hand the removal to the person |
 | A hook refuses `git worktree add` or `move` | worktrunk owns worktree creation here | run the `wt` command the refusal names |
 | A hook warns on `git worktree remove` | the raw removal is the fallback, not the standard | prefer `wt remove --no-hooks --foreground <name>` next time |
-| EnterWorktree refused: "this repository's sessions work in place" | the effective `worktree.bgIsolation` is `none` | use the worktree by path (`git -C .worktrees/<name> …`), or hand the work to a subagent |
+| `index.lock: Read-only file system` committing in a worktree by path | Claude Code did not give the session that worktree at `.claude/worktrees/`, so its git data is outside the session's write set | enter a worktree the session creates (EnterWorktree by name), or hand the commit to a subagent; do not clone the repository again |
 | `wt-fetch-base: refusing to create …: no remote could be reached` | the base could not be fetched from `origin` or any fallback | bring a remote back; do not create from the stale local base |
 | `Read-only file system` after leaving a worktree | the session is not where the layout says to stand | stop; restore any half-written files; give the person the commands |
 | `could not create leading directories … Read-only file system` creating a worktree from Bash | a sandboxed command cannot write a bare container's root | create it with the EnterWorktree tool by name; a person or an unsandboxed script uses `wt switch --create` |

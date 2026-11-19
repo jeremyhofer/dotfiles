@@ -33,6 +33,21 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (EnterWorktree and ExitWorktree are open to every session)
+
+`claude-worktree-hook` no longer refuses the EnterWorktree tool where a repository's sessions work in
+place (`worktree.bgIsolation` `"none"`), and the base's `settings.json` block no longer wires it on
+that tool. The next apply removes the `EnterWorktree` entry from `hooks.PreToolUse`, since the
+declared list replaces the live one; until then the old entry calls a subcommand the hook no longer
+has, which allows. The raw `git worktree add` and `move` refusal stays: worktrunk places a worktree
+where the machine's `claudeWorktrees` flag says and fetches the base, and a raw add does neither. Its
+message now names EnterWorktree everywhere. The skill `working-in-worktrees` says what entering
+costs (the checkout is read-only to the session and its subagents until ExitWorktree) and why a
+commit by path in a worktree the session was not given fails. The base's `.gitignore` lists
+`.claude/worktrees/`.
+
+Nothing to do beyond the apply. A domain that wants the refusal back declares its own hook.
+
 ## 2026-11-19 (fleet-canonicals: the hub's requests are not held at the usage threshold)
 
 The request queue's usage check no longer refuses a request whose requester is in `request-any`

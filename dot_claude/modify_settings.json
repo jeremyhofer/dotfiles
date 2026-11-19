@@ -127,10 +127,6 @@ base=$(cat <<EOF
       {
         "matcher": "Bash",
         "hooks": [ { "command": "${HOME}/.local/bin/claude-worktree-hook bash", "type": "command" } ]
-      },
-      {
-        "matcher": "EnterWorktree",
-        "hooks": [ { "command": "${HOME}/.local/bin/claude-worktree-hook enter-worktree", "type": "command" } ]
       }
     ],
     "SubagentStart": [

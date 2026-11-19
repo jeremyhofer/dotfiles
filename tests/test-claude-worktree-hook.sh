@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-claude-worktree-hook.sh -- contract tests for the Claude Code hooks that keep a session's
-# worktree operations on worktrunk and keep a session that works in place out of EnterWorktree.
+# worktree operations on worktrunk, and that leave the EnterWorktree tool open everywhere.
 #
 # Every guard is also run as a DELIBERATELY BROKEN copy (its check removed by sed, the sed target
 # asserted to exist first) and the broken copy must let the forbidden call through. A guard that is
@@ -160,69 +160,35 @@ out=$(run "$b" bash "$(bash_payload 'git -C /r worktree remove x')")
 printf '%s' "$out" | jq -r '.systemMessage // empty' | grep -q 'wt remove' \
   && no "broken copy still warned" || ok "and the allowed-with-warning assertion would fail against it"
 
-echo "== EnterWorktree: refused where sessions work in place (effective bgIsolation none) =="
+echo "== EnterWorktree: open everywhere, including where sessions work in place =="
+# Until 2026-11-19 an `enter-worktree` subcommand refused the tool wherever the effective
+# worktree.bgIsolation was "none". It is retired; a settings file not yet re-applied may still call
+# it, and the hook must allow, silently.
 CFG="$T/cfg"; mkdir -p "$CFG"; export CLAUDE_CONFIG_DIR="$CFG"   # the user settings file, isolated
-user_bg() { if [ -n "$1" ]; then printf '{"worktree":{"bgIsolation":%s}}' "$1" > "$CFG/settings.json"; else printf '{}' > "$CFG/settings.json"; fi; }
-mkrepo() { # <dir> -> a git repository with no settings
-  git init -q -b main "$1"; mkdir -p "$1/.claude" "$1/sub"
-}
-setj() { printf '{"worktree":{"bgIsolation":%s}}' "$2" > "$1"; }
+printf '{"worktree":{"bgIsolation":"none"}}' > "$CFG/settings.json"
+git init -q -b main "$T/inplace"; mkdir -p "$T/inplace/.claude"
+printf '{"worktree":{"bgIsolation":"none"}}' > "$T/inplace/.claude/settings.json"
 expect_enter() { # <hook> <want> <cwd> <label>
   out=$(run "$1" enter-worktree "$(enter_payload s1 "$3")")
   got=$(decision "$out")
-  if [ "$got" = "$2" ]; then ok "$4"; else no "$4 (wanted $2, got $got) :: $out"; fi
+  if [ "$got" = "$2" ] && { [ "$2" = deny ] || [ -z "$out" ]; }; then ok "$4"; else no "$4 (wanted $2, got $got) :: $out"; fi
 }
-user_bg ''
-mkrepo "$T/plain"; mkrepo "$T/inplace"; mkrepo "$T/userwide"; mkrepo "$T/override"; mkrepo "$T/boolfalse"
-setj "$T/inplace/.claude/settings.json" '"none"'
-setj "$T/override/.claude/settings.json" '"none"'
-setj "$T/override/.claude/settings.local.json" '"worktree"'
-setj "$T/boolfalse/.claude/settings.json" 'false'
-expect_enter "$HOOK" allow "$T/plain" "no setting anywhere: allowed (a machine or repo that isolates is unaffected)"
-expect_enter "$HOOK" deny "$T/inplace" "project settings.json says none: refused"
-expect_enter "$HOOK" deny "$T/inplace/sub" "from a subdirectory, the repository root's settings are read"
-out=$(run "$HOOK" enter-worktree "$(enter_payload s1 "$T/inplace")")
-printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'work in place: use the worktree by path (git -C .worktrees/<name>' \
-  && ok "the refusal says to work by path or hand the work to a subagent" || no "refusal text: $out"
-expect_enter "$HOOK" allow "$T/override" "a project settings.local.json overrides the shared none: allowed"
-expect_enter "$HOOK" deny "$T/boolfalse" "bgIsolation false reads as none: refused"
-user_bg '"none"'
-expect_enter "$HOOK" deny "$T/userwide" "user-level none, nothing in the repo: refused"
-setj "$T/userwide/.claude/settings.json" '"worktree"'
-expect_enter "$HOOK" allow "$T/userwide" "the repo's own setting beats the user's: allowed"
-user_bg ''
+expect_enter "$HOOK" allow "$T/inplace" "bgIsolation none at user and project level: EnterWorktree allowed, nothing printed"
+expect_enter "$HOOK" allow "/nonexistent" "no repository at all: allowed"
+echo "== EnterWorktree RED: a copy that refuses the tool again is caught =="
+broken 's/^  bash | subagent-start) ;;$/  bash | enter-worktree | subagent-start) ;;/; s/^  subagent-start)$/  enter-worktree) deny "refused" ;;\n  subagent-start)/' '^  bash | subagent-start) ;;$'
+expect_enter "$b" deny "$T/inplace" "broken copy (refusal restored) denies EnterWorktree, so the allow assertion would fail"
 
-echo "== Bash guard: the add refusal names EnterWorktree only where guard_enter allows it =="
+echo "== Bash guard: the add refusal names EnterWorktree, where sessions work in place too =="
 bash_payload_at() { jq -cn --arg c "$1" --arg cwd "$2" '{session_id: "s1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd}'; }
 add_reason() { run "$1" bash "$(bash_payload_at 'git worktree add x' "$2")" | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
-add_reason "$HOOK" "$T/inplace" | grep -q 'EnterWorktree tool' \
-  && no "a work-in-place repo's add refusal recommends EnterWorktree, which guard_enter refuses" \
-  || ok "work in place: the add refusal does not recommend EnterWorktree"
-add_reason "$HOOK" "$T/inplace" | grep -q 'EnterWorktree is refused here' \
-  && ok "work in place: the add refusal says EnterWorktree is refused" || no "work in place: no EnterWorktree note: $(add_reason "$HOOK" "$T/inplace")"
-add_reason "$HOOK" "$T/plain" | grep -q 'EnterWorktree tool' \
-  && ok "isolating repo: the add refusal still names the EnterWorktree tool" || no "isolating repo lost the EnterWorktree route: $(add_reason "$HOOK" "$T/plain")"
-echo "== Add-message RED: the isolation check removed -> EnterWorktree recommended where it is refused =="
-broken 's/^           none | false) how=/           never-matches) how=/' '           none | false) how='
-add_reason "$b" "$T/inplace" | grep -q 'EnterWorktree tool' \
-  && ok "broken copy recommends EnterWorktree in a work-in-place repo (the first assertion would fail)" || no "broken copy did not change the message"
-
-echo "== EnterWorktree refusal: by-path advice keeps the session where it is =="
-out=$(run "$HOOK" enter-worktree "$(enter_payload s1 "$T/inplace")")
-printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'a subshell: (cd .worktrees/<name>' \
-  && ok "the refusal recommends a subshell cd, not a bare one" || no "refusal does not name the subshell form: $out"
-broken 's/or a subshell: (cd .worktrees/cd .worktrees/' 'or a subshell: (cd .worktrees'
-out=$(run "$b" enter-worktree "$(enter_payload s1 "$T/inplace")")
-printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'a subshell: (cd .worktrees/<name>' \
-  && no "broken copy (bare cd restored) still passes the subshell assertion" || ok "and the subshell assertion fails against a bare-cd copy"
-
-echo "== EnterWorktree RED: the bgIsolation check removed -> allowed in a none repo =="
-broken 's/^    none | false) ;;$/    never-matches) ;;/' 'none | false) ;;'
-expect_enter "$b" allow "$T/inplace" "broken copy (check removed) allows EnterWorktree where sessions work in place"
-
-echo "== EnterWorktree RED: wrong precedence -> the settings.local.json override is ignored =="
-broken 's|for f in "\$root/.claude/settings.local.json" "\$root/.claude/settings.json"|for f in "$root/.claude/settings.json" "$root/.claude/settings.local.json"|' 'for f in "$root/.claude/settings.local.json" "$root/.claude/settings.json"'
-expect_enter "$b" deny "$T/override" "broken copy (shared file read first) refuses despite the local override"
+add_reason "$HOOK" "$T/inplace" | grep -q 'the EnterWorktree tool and a subagent launched with isolation' \
+  && ok "work in place: the add refusal names the EnterWorktree tool" || no "the add refusal does not name EnterWorktree: $(add_reason "$HOOK" "$T/inplace")"
+add_reason "$HOOK" "$T/inplace" | grep -q 'EnterWorktree is refused' \
+  && no "the add refusal still says EnterWorktree is refused" || ok "and does not say EnterWorktree is refused"
+broken 's/ In a session, the EnterWorktree tool and a subagent launched with isolation "worktree" create through worktrunk too.//' 'In a session, the EnterWorktree tool and a subagent'
+add_reason "$b" "$T/inplace" | grep -q 'the EnterWorktree tool and a subagent launched with isolation' \
+  && no "broken copy (EnterWorktree sentence removed) still passes" || ok "RED: a copy without the EnterWorktree route fails the first assertion"
 
 echo "== SubagentStart warns about commits not on any remote =="
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not present"; exit 1; }

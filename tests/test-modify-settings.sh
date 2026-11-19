@@ -98,16 +98,23 @@ out=$(run '{"worktree":{"baseRef":"head","bgIsolation":"none"}}' "$TMP/absent")
 # (each layer's entries kept), so a fragment declaring the same event does not drop the base's.
 cmds() { printf '%s' "$1" | jq -r --arg e "$2" '[.hooks[$e][]?.hooks[]?.command] | join("\n")'; }
 out=$(run '' "$TMP/absent")
-for pair in 'PreToolUse:claude-worktree-hook bash' 'PreToolUse:claude-worktree-hook enter-worktree' \
-            'SubagentStart:claude-worktree-hook subagent-start'; do
+for pair in 'PreToolUse:claude-worktree-hook bash' 'SubagentStart:claude-worktree-hook subagent-start'; do
   ev=${pair%%:*}; want=${pair#*:}
   cmds "$out" "$ev" | grep -q "$want\$" || { echo "FAIL: base must wire '$want' on $ev"; fail=1; }
 done
 for ev in SubagentStop SessionStart; do
   cmds "$out" "$ev" | grep -q 'claude-worktree-hook' && { echo "FAIL: the base must not wire claude-worktree-hook on $ev"; fail=1; }
 done
-[ "$(printf '%s' "$out" | jq -r '[.hooks.PreToolUse[]? | select(.hooks[0].command | endswith("enter-worktree")) | .matcher][0]')" = "EnterWorktree" ] \
-  || { echo "FAIL: the EnterWorktree guard must match the EnterWorktree tool"; fail=1; }
+# EnterWorktree and ExitWorktree are open to every session (since 2026-11-19): the base wires no hook on
+# either tool, and an apply drops the `enter-worktree` refusal a live file still holds from before,
+# because the declared PreToolUse list replaces the live one.
+no_enter_hook() { # <settings json> <label>
+  n=$(printf '%s' "$1" | jq '[.hooks.PreToolUse[]? | select((.matcher // "" | test("EnterWorktree|ExitWorktree")) or any(.hooks[]?; (.command // "") | endswith("enter-worktree")))] | length')
+  [ "$n" = 0 ] || { echo "FAIL: $2: $n PreToolUse entries still guard EnterWorktree or ExitWorktree"; fail=1; }
+}
+no_enter_hook "$out" "the base's own block"
+old_live='{"hooks":{"PreToolUse":[{"matcher":"EnterWorktree","hooks":[{"command":"${HOME}/.local/bin/claude-worktree-hook enter-worktree","type":"command"}]}]}}'
+no_enter_hook "$(run "$old_live" "$TMP/absent")" "a live file wired before 2026-11-19, after the apply"
 [ "$(printf '%s' "$out" | jq -r '[.hooks.PreToolUse[]? | select(.hooks[0].command | endswith("hook bash")) | .matcher][0]')" = "Bash" ] \
   || { echo "FAIL: the git worktree guard must match the Bash tool"; fail=1; }
 union_frag="$TMP/union-frag"
