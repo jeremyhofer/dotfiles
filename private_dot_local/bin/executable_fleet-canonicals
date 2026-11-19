@@ -487,7 +487,8 @@ configuration (file, then the variable that overrides each key):
   request-limit-fleet = <n>  [auto]  lifecycle actions for the whole fleet per rolling hour; auto
                                      is max(10, 2 x the seats declared for this machine)
   request-usage-threshold = <pct> [85]  7-day usage at which up, refresh and resume are refused,
-                                        unless claude-usage-override reports an override active
+                                        unless claude-usage-override reports an override active;
+                                        a request-any requester's requests are never refused for it
   request-usage-exempt = <names>  [none]  canonicals that may still be started above it
   request-any = <names>      [director-canonical]  requesters who may act on any canonical
   never-touch = <names>      [director-canonical]  canonicals the queue never acts on, any verb

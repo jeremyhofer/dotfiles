@@ -33,6 +33,14 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (fleet-canonicals: the hub's requests are not held at the usage threshold)
+
+The request queue's usage check no longer refuses a request whose requester is in `request-any`
+(the hub, `director-canonical` by default): it may still start, refresh or resume a seat at or above
+`request-usage-threshold` of the 7-day window. A seat's request for itself is held there as before,
+and `request-usage-exempt` still exempts by target name. Asked for by Jeremy, 2026-11-19: managing
+the active sessions and their work is the hub's judgment at any usage level. Nothing to do.
+
 ## 2026-11-19 (fleet-canonicals: `down` reads the snapshot; an undated handoff is dated by its commit)
 
 `fleet-canonicals down` now does what `refresh` does for a seat this session's sessions list omits:

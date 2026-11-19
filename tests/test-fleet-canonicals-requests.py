@@ -1072,12 +1072,17 @@ def test_serve_usage(fleet):
     later = int(time.time()) + 86400
     _usage_files(fleet, 12, 85, later, later)
     fleet.plant("r-u1", "up", "alpha-canonical", "alpha-canonical")
+    # The hub (request-any) manages the active sessions and their work, so its requests are not held
+    # at the threshold (Jeremy, 2026-11-19 09:12); a seat's request for itself (r-u1) still is.
     fleet.plant("r-u2", "refresh", "beta-canonical", "director-canonical")
     fleet.plant("r-u3", "down", "gamma-canonical", "gamma-canonical")
     fleet.serve()
     fleet.expect("r-u1", "refused", "usage", "up is refused at 85% of the 7-day window (the newest file)")
-    fleet.expect("r-u2", "refused", "usage", "refresh is refused at the threshold too")
+    fleet.expect("r-u2", "done", "", "a request-any requester's refresh is not refused for usage")
     fleet.expect("r-u3", "done", "", "down is never refused for usage")
+    fleet.plant("r-u6", "up", "gamma-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-u6", "done", "", "a request-any requester's up is not refused for usage")
     fleet.set_config("request-usage-exempt = alpha-canonical")
     fleet.plant("r-u4", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
@@ -1092,15 +1097,15 @@ def test_serve_usage_reads_the_newest_file_not_the_highest(fleet):
     # refresh through the queue was refused.
     now = int(time.time())
     _usage_files(fleet, 99, 2, now + 86400, now + 86400, written=[now - 8000, now - 30])
-    fleet.plant("r-u6", "refresh", "beta-canonical", "director-canonical")
+    fleet.plant("r-u6", "up", "beta-canonical", "beta-canonical")
     fleet.serve()
     fleet.expect("r-u6", "done", "", "an older file's higher figure does not outvote the newest file")
     _usage_files(fleet, 2, 99, now + 86400, now + 86400, written=[now - 30, now - 8000])
-    fleet.plant("r-u7", "refresh", "beta-canonical", "director-canonical")
+    fleet.plant("r-u7", "up", "gamma-canonical", "gamma-canonical")
     fleet.serve()
     fleet.expect("r-u7", "done", "", "written_at, not the file's mtime, says which file is newest")
     _usage_files(fleet, 2, 90, now + 86400, now + 86400, written=[now - 8000, now - 30])
-    fleet.plant("r-u8", "refresh", "beta-canonical", "director-canonical")
+    fleet.plant("r-u8", "up", "alpha-canonical", "alpha-canonical")
     fleet.serve()
     fleet.expect("r-u8", "refused", "usage", "the newest file's figure is the one checked")
 
@@ -2686,6 +2691,9 @@ MUTANTS = [
      "test_serve_usage_reads_the_newest_file_not_the_highest"),
     ("usage-exempt", "request-usage-exempt is ignored",
      ' or req["name"] in as_list(ctx.cfg["request-usage-exempt"])', '', "test_serve_usage"),
+    ("usage-hub-held", "a request-any requester's request is refused for usage like any other",
+     '    if req.get("requester") in as_list(ctx.cfg["request-any"]):\n        return None\n', '',
+     "test_serve_usage"),
     ("usage-verbs", "stopping verbs are refused for usage too",
      'if req["verb"] not in STARTING or ', 'if ', "test_serve_usage"),
     ("usage-override-ignored", "an active usage override is ignored",

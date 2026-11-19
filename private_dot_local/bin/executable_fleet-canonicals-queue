@@ -771,7 +771,12 @@ def usage_override() -> dict:
 
 
 def check_usage(req: dict, ctx: Pass, path: Path) -> str | None:
+    # Not held at the threshold: a stopping verb, a canonical on the exempt list, and any request
+    # from a request-any requester (the hub), whose judgment on the active sessions and their work
+    # stands at any usage level (Jeremy, 2026-11-19 09:12).
     if req["verb"] not in STARTING or req["name"] in as_list(ctx.cfg["request-usage-exempt"]):
+        return None
+    if req.get("requester") in as_list(ctx.cfg["request-any"]):
         return None
     limit = float(as_int(ctx.cfg, "request-usage-threshold"))
     pct, src = seven_day_pct(ctx.t)

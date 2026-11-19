@@ -123,7 +123,7 @@ key set to nothing is an empty list, not the default):
 | `request-limit-canonical` | `3` | lifecycle actions (run, whether they succeeded or failed) per canonical in a rolling hour |
 | `request-limit-fleet` | `auto` | the same, for every canonical together; `auto` is max(10, 2 × the seats the record declares for this machine), so one refresh round plus one recovery per seat fits |
 | `request-usage-threshold` | `85` | the 7-day usage percent at which `up`, `refresh`, `resume` and `init` are refused, unless a usage override is active (`claude-usage-override`) |
-| `request-usage-exempt` | none | canonicals that may still be started above the threshold |
+| `request-usage-exempt` | none | canonicals that may still be started above the threshold (a `request-any` requester's requests are never held by it) |
 | `request-any` | `director-canonical` | requesters who may request any canonical's action; everyone else, only their own |
 | `never-touch` | `director-canonical` | canonicals the queue never acts on, for any verb, whoever asks; refused at `request` too |
 | `allow-self-refresh` | `false` | `true` lets a canonical request its own `refresh` (see "Requesting a lifecycle action") |
@@ -362,7 +362,8 @@ No notification is sent. The runner refuses, in this order, a request that:
 - would exceed `request-limit-canonical` or `request-limit-fleet` in the past hour;
 - is `up`, `refresh`, `resume` or `init` while the `seven_day_pct` of the newest file in
   `$XDG_RUNTIME_DIR/claude-usage/*.json` (by its `written_at`, else its mtime) is at or above
-  `request-usage-threshold` and the canonical is not exempt (a file whose `seven_day_resets_at` has
+  `request-usage-threshold`, the canonical is not exempt, and the requester is not in `request-any`
+  (the hub manages the active sessions at any usage level; Jeremy, 2026-11-19) (a file whose `seven_day_resets_at` has
   passed is skipped; with no files, usage is not checked). The newest, not the highest: a stopped
   session's file keeps the figure it last saw, including one from before a reset, and no usage override is active. `claude-usage-override status` is the reader: while
   it reports active, a start the threshold would have refused is served, and its result file and
