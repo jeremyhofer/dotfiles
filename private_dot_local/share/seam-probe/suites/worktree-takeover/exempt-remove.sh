@@ -52,7 +52,7 @@ trc=0; tout=$("$sp" evidence trusted "$repo") || trc=$?
 case $trc in
   0) ;;
   1) "$sp" fixture keep "$repo" >/dev/null
-     "$sp" verdict SKIPPED "the fixture needs Claude Code's trust (from a plain terminal: cd $repo && claude, accept the dialog, /exit); then run the case again"
+     "$sp" verdict SKIPPED "the fixture needs Claude Code's trust (from a plain terminal: cd $(printf %q "$repo") && claude, accept the dialog, /exit); then run the case again"
      exit 0 ;;
   *) "$sp" verdict INCONCLUSIVE "the trust state cannot be read: $tout"; exit 0 ;;
 esac

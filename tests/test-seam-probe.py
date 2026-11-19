@@ -87,6 +87,8 @@ def tool(env, *args, extra_env=None, cwd=None):
     (lambda t: t.replace('regimes = ["none"]', 'regimes = ["sandboxed"]'), "`regimes` must be"),
     (lambda t: t.replace("minutes = 1", "minutes = 0"), "`minutes` must be"),
     (lambda t: t + 'flavor = "x"\n', "unknown keys"),
+    (lambda t: t + 'fixtures = "a1"\n', "`fixtures` must be a list"),
+    (lambda t: t + 'fixtures = ["Bad Name"]\n', "`fixtures` must be a list"),
     (lambda t: t + 'commands = { remove = "wt remove x; ls" }\n', "is compound"),
     (lambda t: t + 'commands = { remove = "git -C a log | head" }\n', "is compound"),
     (lambda t: t.replace('script = "c.sh"', 'script = "missing.sh"'), "is not a file"),
@@ -290,6 +292,89 @@ def test_summary_names_no_path(env):
     assert rec["case"] == "c" and rec["arms"][0]["verdict"] == "FAIL" and "version_claude" in rec
 
 
+def test_terminal_shows_real_paths_and_summary_stays_sanitized(env):
+    body = ('repo=$("$sp" fixture repo f1) || exit 1\n'
+            '"$sp" verdict SKIPPED "needs cd $repo && claude"\n')
+    make_suite(env, {"c": (body, '"none"')})
+    r = tool(env, "run", "s", "--yes")
+    real = str(env["sandbox"] / "seams/s/f1")
+    assert f"cd {real} && claude" in r.stdout and "<fixtures>" not in r.stdout, r.stdout
+    run_dir = max((env["state"] / "s").iterdir(), key=lambda p: p.name)
+    summary = (run_dir / "summary.txt").read_text()
+    assert "cd <fixtures>/f1 && claude" in summary and str(env["sandbox"]) not in summary
+
+
+KEEP = '''\
+repo=$("$sp" fixture repo f1) || exit 1
+"$sp" fixture keep "$repo" >/dev/null
+"$sp" verdict SKIPPED x
+'''
+
+
+@pytest.mark.parametrize("verb", ["run", "red"])
+def test_start_inside_the_fixture_tree_is_refused_before_anything_is_deleted(env, verb):
+    make_suite(env, {"c": (KEEP, '"none"')})
+    assert tool(env, "run", "s", "--yes").returncode == 6
+    kept = env["sandbox"] / "seams/s/f1"
+    assert (kept / ".git").exists()
+    args = ["run", "s", "--yes"] if verb == "run" else ["red", "s", "c", "--yes"]
+    for here in (kept, env["sandbox"] / "seams/s", kept / ".git"):
+        r = tool(env, *args, cwd=here)
+        assert r.returncode == 2 and "Traceback" not in r.stderr, r.stderr
+        assert len(r.stderr.strip().splitlines()) == 1 and "cd out" in r.stderr and str(here) in r.stderr
+        assert (kept / ".git").exists()  # the rebuild never started
+    r = tool(env, *args, cwd=env["tmp"])
+    assert "Traceback" not in r.stderr and "inside the fixture tree" not in r.stderr
+
+
+def test_start_inside_the_fixture_tree_through_a_symlink_is_refused(env):
+    make_suite(env, {"c": (KEEP, '"none"')})
+    tool(env, "run", "s", "--yes")
+    link = env["tmp"] / "link"
+    link.symlink_to(env["sandbox"] / "seams/s/f1")
+    r = subprocess.run(["sh", "-c", 'cd "$1" && exec "$2" "$3" run s --yes', "sh", str(link), sys.executable, str(TOOL)],
+                       capture_output=True, text=True, env=env["env"], timeout=60)
+    assert r.returncode == 2 and "inside the fixture tree" in r.stderr, r.stderr
+
+
+def test_start_with_an_unreadable_directory_is_refused(env):
+    make_suite(env, {"c": (KEEP, '"none"')})
+    r = subprocess.run(["sh", "-c", 'mkdir gone && cd gone && rmdir ../gone && exec "$1" "$2" run s --yes', "sh", sys.executable, str(TOOL)],
+                       capture_output=True, text=True, env=env["env"], cwd=env["tmp"], timeout=60)
+    assert r.returncode == 2 and "Traceback" not in r.stderr and "cannot be read" in r.stderr, r.stderr
+
+
+def test_trust_prints_a_copyable_block_per_declared_fixture(env):
+    make_suite(env, {"c": ("", '"real"'), "d": ("", '"none"')})
+    toml = env["suites"] / "s/suite.toml"
+    t = toml.read_text().replace('script = "c.sh"\n', 'script = "c.sh"\nfixtures = ["a1", "b2"]\n')
+    toml.write_text(t.replace('script = "d.sh"\n', 'script = "d.sh"\nfixtures = ["none-only"]\n'))
+    r = tool(env, "trust", "s")
+    assert r.returncode == 0, r.stderr
+    for n in ("a1", "b2"):
+        q = str(env["sandbox"] / "seams/s" / n)
+        assert f"  cd {q} && claude\n  wt -C {q} config approvals add\n" in r.stdout, r.stdout
+    assert "none-only" not in r.stdout and "<that repository>" not in r.stdout
+
+
+def test_trust_quotes_a_path_with_a_space(env, tmp_path):
+    make_suite(env, {"c": ("", '"real"')})
+    toml = env["suites"] / "s/suite.toml"
+    toml.write_text(toml.read_text().replace('script = "c.sh"\n', 'script = "c.sh"\nfixtures = ["a1"]\n'))
+    sb = tmp_path / "with space"
+    sb.mkdir()
+    r = tool(env, "trust", "s", extra_env={"SEAM_PROBE_SANDBOX": str(sb)})
+    assert f"cd '{sb}/seams/s/a1' && claude" in r.stdout, r.stdout
+
+
+def test_shipped_cases_declare_their_fixtures():
+    import tomllib
+    data = tomllib.loads((SHIPPED / "worktree-takeover/suite.toml").read_text())
+    assert {c["id"]: c["fixtures"] for c in data["case"]} == {
+        "no-symlink": ["clean", "planted"], "local-md": ["lmd"], "claude-worktree": ["wtc"],
+        "exempt-remove": ["exr"], "bootstrap-timeout": ["btm"]}
+
+
 def test_heavy_case_waits_for_the_slot(env, tmp_path):
     d = make_suite(env, {"c": ('"$sp" verdict PASS x\n', '"none"')})
     (d / "suite.toml").write_text((d / "suite.toml").read_text() + "heavy = true\n")
@@ -330,6 +415,11 @@ st = Path(os.environ["FAKE_CLAUDE_STATE"]); st.mkdir(parents=True, exist_ok=True
 rows_f = st / "rows.json"
 rows = json.loads(rows_f.read_text()) if rows_f.exists() else []
 argv = sys.argv[1:]
+try:
+    os.getcwd()
+except OSError:
+    print("The current directory no longer exists (it was deleted or moved). Start Claude Code from an existing directory.")
+    sys.exit(1)
 stdin = sys.stdin.read() if "-p" in argv else None
 proj = Path.cwd() / ".claude/settings.json"
 with open(st / "calls.jsonl", "a") as f:
@@ -339,6 +429,8 @@ def save(): rows_f.write_text(json.dumps(rows))
 def opt(flags, name): return flags[flags.index(name) + 1] if name in flags else None
 if argv[:1] == ["--version"]:
     print("9.9.9 (Claude Code)"); sys.exit(0)
+if argv[:1] == ["agents"] and os.environ.get("FAKE_CLAUDE_AGENTS") == "fail":
+    print("boom"); sys.exit(1)
 if argv[:1] == ["agents"]:
     print(json.dumps(rows if "--all" in argv else [r for r in rows if r["state"] != "stopped"])); sys.exit(0)
 if argv[:1] == ["stop"]:
@@ -570,6 +662,67 @@ def test_launch_argument_shapes(fake, regime, tmp_path):
             assert "hooks" not in ps and "enabledPlugins" not in ps
 
 
+def test_a_session_left_under_the_fixtures_stops_a_run_before_it_starts_anything(fake):
+    make_suite(fake, {"c": (LAUNCH + '"$sp" session launch s1 --regime real --cwd "$repo" -- go\n"$sp" verdict FAIL x\n', '"real"')})
+    left = fake["sandbox"] / "seams/s/f1/.claude/worktrees/sp-own"
+    fake["rows"].parent.mkdir(parents=True, exist_ok=True)
+    fake["rows"].write_text(json.dumps([
+        {"id": "4376eeab", "sessionId": "u1", "name": "x", "cwd": str(left), "state": "stopped"},
+        {"id": "aaaa1111", "sessionId": "u2", "name": "y", "cwd": str(fake["tmp"]), "state": "working"}]))
+    for verb in (["run", "s", "--yes"], ["red", "s", "c", "--yes"]):
+        r = tool(fake, *verb)
+        assert r.returncode == 2 and "Traceback" not in r.stderr, r.stderr
+        assert "claude stop 4376eeab && claude rm 4376eeab" in r.stderr and "aaaa1111" not in r.stderr, r.stderr
+        assert not calls(fake, "--bg") and not (fake["sandbox"] / "seams/s/f1").exists()
+
+
+def test_an_unreadable_listing_stops_a_run_that_starts_sessions(fake):
+    make_suite(fake, {"c": (LAUNCH + '"$sp" verdict FAIL x\n', '"real"')})
+    r = tool(fake, "run", "s", "--yes", extra_env={"FAKE_CLAUDE_AGENTS": "fail"})
+    assert r.returncode == 2 and "agents listing cannot be read" in r.stderr, r.stderr
+    assert not (fake["sandbox"] / "seams/s/f1").exists()
+
+
+def test_a_none_regime_run_reads_no_listing(fake):
+    make_suite(fake, {"c": ('"$sp" verdict FAIL x\n', '"none"')})
+    tool(fake, "run", "s", "--yes")
+    assert not calls(fake, "agents")
+
+
+def test_claude_calls_never_inherit_the_callers_directory(fake):
+    # The case script deletes the directory the tool was started in, as a rebuild of a fixture the
+    # caller stood in once did; every claude call after that, cleanup's included, must still start
+    # from a directory that exists, or the real claude refuses and the session is left behind.
+    here = fake["tmp"] / "callers-dir"
+    here.mkdir()
+    body = (LAUNCH + '"$sp" session launch s1 --regime real --cwd "$repo" -- go\n'
+            '"$sp" session ask a1 --regime real --cwd "$repo" -- hi >/dev/null\n'
+            'rmdir "$SEAM_PROBE_CALLER_PWD"\n"$sp" verdict FAIL x\n')
+    make_suite(fake, {"c": (body, '"real"')})
+    r = tool(fake, "run", "s", "--yes", cwd=here)
+    assert "CLEANUP-FAILED" not in r.stdout and rows(fake) == [], r.stdout + r.stderr
+    assert not here.exists()
+    assert all(c["cwd"] != str(here) for c in calls(fake)), [c for c in calls(fake) if c["cwd"] == str(here)]
+    assert [c["argv"][0] for c in calls(fake) if c["argv"][0] in ("stop", "rm")] == ["stop", "rm"]
+
+
+def test_the_callers_directory_read_at_the_start_reaches_the_case(env):
+    here = env["tmp"] / "start-here"
+    here.mkdir()
+    make_suite(env, {"c": ('"$sp" verdict FAIL "from $SEAM_PROBE_CALLER_PWD"\n', '"none"')})
+    r = tool(env, "run", "s", "--yes", cwd=here)
+    assert f"from {here.resolve()}" in r.stdout, r.stdout
+
+
+def test_skipped_reason_names_a_copyable_command_for_a_path_with_a_space(fake, tmp_path):
+    sb = tmp_path / "with space"
+    sb.mkdir()
+    shipped(fake)
+    r = tool(fake, "run", "worktree-takeover", "exempt-remove", "--yes", extra_env={"SEAM_PROBE_SANDBOX": str(sb)})
+    shown = str(sb / "seams/worktree-takeover/exr").replace(" ", "\\ ")
+    assert r.returncode == 6 and f"cd {shown} && claude" in r.stdout, r.stdout
+
+
 def test_launch_names_a_model(fake):
     body = LAUNCH + '"$sp" session launch s1 --regime real --cwd "$repo" --model sonnet -- go\n"$sp" verdict FAIL x\n'
     make_suite(fake, {"c": (body, '"real"')})
@@ -582,7 +735,7 @@ def test_launch_outside_the_fixtures_is_refused(fake, tmp_path):
     body = f'"$sp" session launch s1 --regime real --cwd {tmp_path} -- go; echo "rc=$?" > "$SEAM_PROBE_SUITE_DIR/rc"\n"$sp" verdict FAIL x\n'
     d = make_suite(fake, {"c": (body, '"real"')})
     tool(fake, "run", "s", "--yes")
-    assert (d / "rc").read_text().strip() == "rc=2" and not [c for c in calls(fake) if c["argv"] != ["--version"]]
+    assert (d / "rc").read_text().strip() == "rc=2" and not [c for c in calls(fake) if c["argv"] != ["--version"] and c["argv"][0] != "agents"]
 
 
 def test_settings_file_outside_the_fixtures_is_refused(fake, tmp_path):
@@ -875,8 +1028,15 @@ def test_claude_worktree_skips_without_its_grants(fake, untrusted, unapproved, n
     r = tool(fake, "run", "worktree-takeover", "claude-worktree", "--yes", extra_env=extra)
     assert r.returncode == 6 and needle in summary(fake), r.stdout
     assert (repo / ".git").exists() and not calls(fake, "--bg")  # left in place for the grant; no session
+    shown = r.stdout  # the terminal's copy names the real path; summary.txt names <fixtures>
+    if untrusted:
+        assert f"cd {repo} && claude, accept" in shown and "<fixtures>" not in shown, shown
+        assert "<fixtures>" in summary(fake) and str(repo) not in summary(fake)
     r = tool(fake, "trust", "worktree-takeover")
     assert f"left in place: {repo}" in r.stdout
+    for n in ("wtc", "exr", "btm"):
+        q = fake["sandbox"] / "seams/worktree-takeover" / n
+        assert f"  cd {q} && claude\n  wt -C {q} config approvals add\n" in r.stdout, r.stdout
 
 
 # ---- evidence read from git, a transcript and a plugin's files ---------------------------------

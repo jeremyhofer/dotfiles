@@ -56,7 +56,7 @@ missing=""
 trc=0; tout=$("$sp" evidence trusted "$repo") || trc=$?
 case $trc in
   0) ;;
-  1) missing="Claude Code's trust (from a plain terminal: cd $repo && claude, accept the dialog, /exit)" ;;
+  1) missing="Claude Code's trust (from a plain terminal: cd $(printf %q "$repo") && claude, accept the dialog, /exit)" ;;
   *) all INCONCLUSIVE "the trust state cannot be read: $tout"; exit 0 ;;
 esac
 if ! appr=$(wt -C "$repo" config approvals list 2>&1); then
@@ -64,7 +64,7 @@ if ! appr=$(wt -C "$repo" config approvals list 2>&1); then
 fi
 case $(printf '%s\n' "$appr" | sed -n '/UNAPPROVED/,$p') in
   *seam-probe-setup-ran*)
-    missing="${missing:+$missing; and }worktrunk's approval of the fixture's post-start hook (wt -C $repo config approvals add)" ;;
+    missing="${missing:+$missing; and }worktrunk's approval of the fixture's post-start hook (wt -C $(printf %q "$repo") config approvals add)" ;;
 esac
 if [ -n "$missing" ]; then
   "$sp" fixture keep "$repo" >/dev/null

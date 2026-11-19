@@ -56,7 +56,7 @@ VERDICT_EXIT = {"PASS": 0, "FAIL": EXIT_FAIL, "VOID": EXIT_UNKNOWN, "INCONCLUSIV
                 "BLIND": EXIT_BLIND, "NOT-SEEN-RED": EXIT_BLIND}
 REGIMES = ("real", "bare", "candidate", "none")
 CASE_KEYS = {"id", "question", "relies", "bears-on", "regimes", "script", "controls", "plants",
-             "manual", "minutes", "heavy", "commands"}
+             "manual", "minutes", "heavy", "commands", "fixtures"}
 REQUIRED = ("id", "question", "relies", "bears-on", "regimes", "script", "plants", "minutes")
 PLANT_KEYS = {"id", "expect", "arm"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -287,6 +287,9 @@ def load(suite_dir: Path) -> tuple[dict, list[str]]:
             errs.append(f"{where}: `minutes` must be a positive whole number")
         if "heavy" in c and not isinstance(c["heavy"], bool):
             errs.append(f"{where}: `heavy` must be true or false")
+        fx = c.get("fixtures", [])
+        if "fixtures" in c and (not isinstance(fx, list) or not all(isinstance(x, str) and ID_RE.match(x) for x in fx)):
+            errs.append(f"{where}: `fixtures` must be a list of fixture repository names (lower-case letters, digits and dashes)")
         for k in ("controls", "manual"):
             if k in c and (not isinstance(c[k], list) or not all(isinstance(x, str) for x in c[k])):
                 errs.append(f"{where}: `{k}` must be a list of strings")
@@ -815,8 +818,24 @@ def claude_bin() -> str:
     return exe
 
 
+CALL_CWD: Path | None = None   # set by run and red: a directory that exists for every claude call
+
+
+def safe_cwd() -> Path:
+    """A directory that exists, for a claude call that names none. Claude Code refuses to start from
+    a directory that no longer exists, and the caller's can be deleted under a run, so a call never
+    inherits it: a primitive uses its run directory, the tool itself the fixtures' parent."""
+    run = os.environ.get("SEAM_PROBE_RUN")
+    if run and Path(run).parent.is_dir():
+        return Path(run).parent
+    if CALL_CWD is not None and CALL_CWD.is_dir():
+        return CALL_CWD
+    return Path(tempfile.gettempdir())
+
+
 def claude(*args: str, cwd: Path | str | None = None, stdin_text: str | None = None,
            timeout: float = 120) -> subprocess.CompletedProcess:
+    cwd = cwd if cwd is not None else safe_cwd()
     kw = {"input": stdin_text} if stdin_text is not None else {"stdin": subprocess.DEVNULL}
     try:
         return subprocess.run([claude_bin(), *args], cwd=cwd, capture_output=True, text=True,
@@ -1177,7 +1196,7 @@ def first_line(cmd: list[str]) -> str:
     if not exe:
         return "absent"
     try:
-        p = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=30)
+        p = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=30, cwd=safe_cwd())
         return (p.stdout.strip().splitlines() or ["unknown"])[0] if p.returncode == 0 else "unknown"
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
@@ -1330,14 +1349,14 @@ class Interrupted(Exception):
 
 
 def run_one(suite_dir: Path, case: dict, regime: str, plant: str | None, run_dir: Path,
-            fixtures: Path, keep: bool) -> dict:
+            fixtures: Path, keep: bool, caller_pwd: str) -> dict:
     """Run one case script once. Returns its result record (without the seen-red reading)."""
     ledger = run_dir / f"ledger-{case['id']}{'-' + plant if plant else ''}.jsonl"
     env = dict(os.environ)
     env.update({"SEAM_PROBE": str(Path(sys.argv[0]).resolve()), "SEAM_PROBE_RUN": str(ledger),
                 "SEAM_PROBE_CASE": case["id"], "SEAM_PROBE_REGIME": regime,
                 "SEAM_PROBE_PLANT": plant or "", "SEAM_PROBE_FIXTURES": str(fixtures),
-                "SEAM_PROBE_SUITE_DIR": str(suite_dir), "SEAM_PROBE_CALLER_PWD": os.getcwd()})
+                "SEAM_PROBE_SUITE_DIR": str(suite_dir), "SEAM_PROBE_CALLER_PWD": caller_pwd})
     env.pop("CLAUDECODE", None)
     timeout = max(120, case["minutes"] * 60 * 2)
     t0 = datetime.now(timezone.utc)
@@ -1417,11 +1436,14 @@ def new_run_dir(suite: str) -> Path:
 
 def write_outputs(run_dir: Path, suite: str, records: list[dict], vers: dict, fixtures: Path,
                   mode: str) -> None:
+    """summary.txt is pasted into committed records, so it is sanitized; the terminal shows the same
+    lines with the real paths, so a person can copy the step a SKIPPED reason names."""
     with open(run_dir / "results.jsonl", "w") as f:
         for r in records:
             f.write(json.dumps({**r, "suite": suite, "mode": mode, **{f"version_{k}": v for k, v in vers.items()},
                                 "os": sys.platform}) + "\n")
-    lines = [f"seam-probe {suite} ({mode}), claude {vers['claude']}, worktrunk {vers['worktrunk']}, {sys.platform}"]
+    head = f"seam-probe {suite} ({mode}), claude {vers['claude']}, worktrunk {vers['worktrunk']}, {sys.platform}"
+    lines, shown_lines = [head], [head]
     for r in records:
         for a in r["arms"]:
             name = r["case"] + (f"/{a['arm']}" if a["arm"] else "") + (f" [plant {r['plant']}]" if r["plant"] else "")
@@ -1432,14 +1454,57 @@ def write_outputs(run_dir: Path, suite: str, records: list[dict], vers: dict, fi
             else:
                 shown = a.get("shown", a["verdict"])
             lines.append(f"  {name:<40} {shown:<14} {sanitize(a['reason'], fixtures)}")
+            shown_lines.append(f"  {name:<40} {shown:<14} {a['reason']}")
         for c in r["cleanup_failed"]:
             lines.append(f"  {r['case']:<40} CLEANUP-FAILED {sanitize(c, fixtures)}")
+            shown_lines.append(f"  {r['case']:<40} CLEANUP-FAILED {c}")
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines))
+    print("\n".join(shown_lines))
     print(f"\nresults: {run_dir}")
 
 
+def read_caller_dir(suite: str) -> str:
+    """The directory the tool was started in, read once before anything is built or deleted. A
+    fixture is rebuilt at the same path on every run, so a current directory inside the fixture
+    tree would be deleted under the run, and the next getcwd() would raise."""
+    try:
+        here = Path(os.getcwd()).resolve()
+    except OSError as e:
+        raise Usage(f"the current directory cannot be read ({e.strerror or e}); cd to a directory that exists, "
+                    "outside the fixtures, first")
+    root = fixture_root(suite)
+    if here == root.resolve() or inside(here, root):
+        raise Usage(f"the current directory {here} is inside the fixture tree {root}, which a run rebuilds; "
+                    "cd out of it first")
+    return str(here)
+
+
+def refuse_leftover_sessions(suite: str) -> None:
+    """A session left claiming a path under the fixture root makes every later run's cleanup fail
+    ("another running background session claims this worktree") and leak one more session. So a run
+    that starts sessions looks first, in the same agents listing `session stop` reads, and starts
+    nothing while one is there."""
+    global CALL_CWD
+    root = fixture_root(suite)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    CALL_CWD = root.parent
+    rows = listing(True)
+    if rows is None:
+        raise Usage("the Claude Code agents listing cannot be read, so whether an earlier session still "
+                    "claims a fixture is unknown; refusing to start a session blind (run `claude agents`)")
+    found = []
+    for r in rows:
+        where = [str(r[k]) for k in ("cwd", "worktree", "worktreePath") if isinstance(r.get(k), str) and r.get(k)]
+        if any(inside(Path(w), root) for w in where):
+            found.append(f"session {r['id']} ({r.get('state', '-')}) claims {where[0]}: "
+                         f"claude stop {r['id']} && claude rm {r['id']}")
+    if found:
+        raise Usage("a session left from an earlier run still claims a fixture under " + str(root)
+                    + "; nothing was started. Remove it from a directory that exists:\n  " + "\n  ".join(found))
+
+
 def cmd_run(args) -> int:
+    caller = read_caller_dir(args.suite)
     check_state_root()
     suite_dir, data = load_valid(args.suite)
     cases = [get_case(data, c) for c in args.cases] if args.cases else data["case"]
@@ -1451,6 +1516,8 @@ def cmd_run(args) -> int:
         chosen.append((c, regime))
         plan.append(f"  {c['id']:<22} {regime:<10} ~{c['minutes']} min{'  heavy' if c.get('heavy') else ''}  {c['question']}")
     refuse_in_session([r for _, r in chosen])
+    if any(r != "none" for _, r in chosen):
+        refuse_leftover_sessions(args.suite)
     fixtures = fixture_root(args.suite)
     state, holder = slot_state(args.slot_holder)
     lines = [f"seam-probe run {args.suite}: {len(chosen)} case(s)", *plan,
@@ -1467,7 +1534,7 @@ def cmd_run(args) -> int:
                        "arms": [{"arm": None, "verdict": "SKIPPED",
                                  "reason": f"heavy, and the timing slot is held by {holder or 'another session'}"}]}
             else:
-                rec = run_one(suite_dir, c, regime, None, run_dir, fixtures, args.keep)
+                rec = run_one(suite_dir, c, regime, None, run_dir, fixtures, args.keep, caller)
             for a in rec["arms"]:
                 shown = a["verdict"]
                 if shown == "PASS":
@@ -1489,6 +1556,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_red(args) -> int:
+    caller = read_caller_dir(args.suite)
     check_state_root()
     suite_dir, data = load_valid(args.suite)
     c = get_case(data, args.case)
@@ -1496,6 +1564,8 @@ def cmd_red(args) -> int:
     if regime not in c["regimes"]:
         raise Usage(f"case {c['id']} does not run in the {regime} regime")
     refuse_in_session([regime])
+    if regime != "none":
+        refuse_leftover_sessions(args.suite)
     fixtures = fixture_root(args.suite)
     if c.get("heavy"):
         # A plant run of a heavy case is as heavy as its run, so it waits for the slot the same way.
@@ -1512,7 +1582,7 @@ def cmd_red(args) -> int:
     records, codes = [], []
     try:
         for p in c["plants"]:
-            rec = run_one(suite_dir, c, regime, p["id"], run_dir, fixtures, args.keep)
+            rec = run_one(suite_dir, c, regime, p["id"], run_dir, fixtures, args.keep, caller)
             reading = red_reading(rec, p)
             rec["reading"], rec["plant_arm"] = reading, p.get("arm")
             if reading == "RED":
@@ -1578,18 +1648,29 @@ def cmd_lint(args) -> int:
 
 
 def cmd_trust(args) -> int:
-    find_suite(args.suite)
+    suite_dir = find_suite(args.suite)
     f = fixture_root(args.suite)
+    data, _ = load(suite_dir)
+    # A case in the `none` regime starts no session, so its fixtures never need a grant.
+    names: list[str] = []
+    for c in data.get("case", []):
+        if c.get("regimes") == ["none"]:
+            continue
+        for n in c.get("fixtures", []):
+            if isinstance(n, str) and n not in names:
+                names.append(n)
     print(f"A background session refuses an untrusted workspace, and trust is granted only by accepting\n"
           f"Claude Code's dialog in an interactive session. Trust is keyed by each repository's own root;\n"
           f"a parent directory's trust does not reach a repository below it. So a case that needs it\n"
           f"reports SKIPPED naming the fixture repository, which it leaves in place under\n"
           f"  {f}\n"
-          f"and, once per machine, from a plain terminal:\n"
-          f"  cd <that repository> && claude\n"
-          f"then accept the trust dialog and /exit. A case whose fixture carries a worktrunk project hook\n"
-          f"also needs that hook approved once: wt -C <that repository> config approvals add\n"
+          f"Once per machine, for each fixture repository below, from a plain terminal and from a directory\n"
+          f"outside the fixtures: the first line, then accept the trust dialog and /exit. The second line\n"
+          f"only if the case's fixture carries a worktrunk project hook; it approves that hook once.\n"
           f"Each run rebuilds a fixture at the same path, so both grants hold across runs.")
+    for n in names:
+        q = shlex.quote(str(f / n))
+        print(f"\n{n}:\n  cd {q} && claude\n  wt -C {q} config approvals add")
     left = sorted(d for d in f.iterdir() if (d / MARKER).exists() and not d.name.endswith(".remote.git")) if f.is_dir() else []
     for d in left:
         print(f"left in place: {shlex.quote(str(d))}")

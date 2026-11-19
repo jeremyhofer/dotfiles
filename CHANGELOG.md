@@ -33,6 +33,18 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (seam-probe: three fixes after a run started inside a fixture)
+
+`seam-probe run` and `red` now refuse, with one line and exit 2, to start from a current directory
+inside the fixture tree (or one that no longer exists), since a run rebuilds fixtures and used to
+delete the directory under itself and crash. Before starting any session they also refuse while an
+earlier session still claims a path under the fixture root (naming each id and the `claude stop` and
+`claude rm` to run) or while the agents listing cannot be read; every `claude` call the tool makes
+now starts from a directory that exists. The terminal output of a result shows real paths, so a
+SKIPPED step can be copied (`summary.txt` stays sanitized), and `trust SUITE` prints a ready
+`cd ... && claude` and `wt -C ... config approvals add` pair per fixture repository, named by a new
+optional case key `fixtures = ["name", ...]` that `lint` checks. Nothing to change on a machine.
+
 ## 2026-11-18 (seam-probe: two more worktree-takeover cases)
 
 The `worktree-takeover` suite gains `exempt-remove` (does a session's bare `wt remove --no-hooks

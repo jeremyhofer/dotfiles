@@ -12,6 +12,7 @@ relies = "No component from the root down is a symlink: Claude Code refuses a Wo
 bears-on = "turning the .claude/worktrees/ location on, per machine"
 regimes = ["none"]
 script = "no-symlink.sh"
+fixtures = ["clean", "planted"]
 controls = ["a clean fixture repository must pass the same check", "zero repositories enumerated is INCONCLUSIVE"]
 plants = [
   { id = "symlink-dotclaude", expect = "FAIL" },
@@ -27,6 +28,7 @@ relies = "The root's CLAUDE.local.md reaches a session started in the nested wor
 bears-on = "turning the .claude/worktrees/ location on"
 regimes = ["real"]
 script = "local-md.sh"
+fixtures = ["lmd"]
 controls = ["positive: the root CLAUDE.md's codeword is seen", "negative: a codeword in a file nothing references is not seen"]
 plants = [
   { id = "local-moved", expect = "FAIL" },
@@ -42,6 +44,7 @@ relies = "worktrunk's plugin creates the session's worktree at <repo>/.claude/wo
 bears-on = "turning the .claude/worktrees/ location on, and the skills' text on --worktree"
 regimes = ["real"]
 script = "claude-worktree.sh"
+fixtures = ["wtc"]
 controls = ["grant: a commit in a worktree given by --add-dir must land", "refusal: a commit in a worktree made outside the session and never granted must fail with git's \"Read-only file system\""]
 plants = [
   { id = "plugin-off", expect = "FAIL", arm = "setup" },
@@ -64,6 +67,7 @@ relies = "The bare exempt form runs outside the sandbox and removes the worktree
 bears-on = "the worktree removal rule's text: leave with ExitWorktree keep, then wt remove --no-hooks --foreground"
 regimes = ["real"]
 script = "exempt-remove.sh"
+fixtures = ["exr"]
 controls = ["refusal: `wt remove --foreground` with hooks, issued the same way, must be refused with \"contains modified or untracked files\" and leave its worktree"]
 # The plant can show only that the worktree stayed, which is FAIL; whether the call was denied is
 # in the reason. DENIED is the reading of an unplanted call a permission rule stops, never a plant's.
@@ -89,6 +93,7 @@ bears-on = "creating a worktree through a subagent with isolation: worktree, in 
 regimes = ["real"]
 heavy = true
 script = "bootstrap-timeout.sh"
+fixtures = ["btm"]
 controls = ["a creation whose wt-bootstrap finds no lockfile must pass, in the same session, before the arms"]
 plants = [
   { id = "install-past-timeout", expect = "FAIL", arm = "cold" },
