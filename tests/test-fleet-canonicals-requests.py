@@ -1918,6 +1918,45 @@ def test_up_refuses_a_seat_the_snapshot_shows_running(fleet):
         "up refuses a seat the snapshot shows running though the list omits it: %s" % out
 
 
+# refresh's not-running branch reads the sessions list alone, which a sandbox can blind to a live
+# seat; it then printed "not running ... would start" in a dry run while the real run's `up` refused.
+# The snapshot is read before the note and the gate, so a rehearsal refuses what the real run would.
+# --force keeps the handoff gate out of the comparison.
+
+def test_refresh_refuses_an_unlisted_seat_the_snapshot_reads_live(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "live", "pid 9999 (fixture)")
+    for extra in ([], ["--dry-run"]):
+        r = fleet.fc("refresh", *extra, "--force", "fixture", "gamma-canonical")
+        assert r.status != 0 and re.search(r"refresh: .*gamma-canonical.*snapshot shows it running", r.out, re.S) \
+            and "not running" not in r.out and "would start" not in r.out and "starting" not in r.out \
+            and "fleet-canonicals request refresh gamma-canonical" in r.out, \
+            "refresh %s: an unlisted seat the snapshot reads live is refused (rc=%s): %s" % (extra, r.status, r.out)
+
+
+def test_refresh_refuses_an_unlisted_seat_the_snapshot_reads_unknown(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "unknown", "no readable source (fixture)")
+    r = fleet.fc("refresh", "--dry-run", "--force", "fixture", "gamma-canonical")
+    assert r.status != 0 and re.search(r"refresh: .*gamma-canonical.*UNKNOWN", r.out, re.S) \
+        and "would start" not in r.out, \
+        "refresh: an unlisted seat the snapshot reads UNKNOWN is refused (rc=%s): %s" % (r.status, r.out)
+
+
+def test_refresh_refuses_an_unlisted_seat_the_snapshot_reads_stopped(fleet):
+    # Listed elsewhere with no process: only a refresh that can see the row can close it.
+    fleet.write_snapshot(5, "gamma-canonical", "stopped", "listed (blocked), but no live pid record (fixture)")
+    r = fleet.fc("refresh", "--dry-run", "--force", "fixture", "gamma-canonical")
+    assert r.status != 0 and re.search(r"refresh: .*gamma-canonical.*not running", r.out, re.S) \
+        and "would start" not in r.out and "fleet-canonicals request refresh gamma-canonical" in r.out, \
+        "refresh: an unlisted seat the snapshot reads stopped is refused (rc=%s): %s" % (r.status, r.out)
+
+
+def test_refresh_launches_an_unlisted_seat_the_snapshot_reads_dead(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "dead")
+    r = fleet.fc("refresh", "--dry-run", "--force", "fixture", "gamma-canonical")
+    assert r.status == 0 and "not running" in r.out and re.search(r"would start.*gamma-canonical", r.out, re.S), \
+        "refresh: a seat the snapshot reads dead still launches (control) (rc=%s): %s" % (r.status, r.out)
+
+
 def test_up_starts_a_seat_the_snapshot_reads_dead(fleet):
     fleet.write_snapshot(5, "gamma-canonical", "dead")
     out = fleet.fc("up", "gamma-canonical", "--dry-run").out

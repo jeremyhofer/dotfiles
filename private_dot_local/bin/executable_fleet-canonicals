@@ -2781,6 +2781,25 @@ cmd_refresh() {
   # live row. A canonical that died unparked, leaving a handoff older than its last session, is
   # still refused here exactly as it would be if it were running.
   if [ -z "$rows" ]; then
+    # "Not in the sessions list here" is not "not running": a sandbox hides other sessions from the
+    # list and their processes from live_holder_ids. The snapshot sees from outside it, so read it
+    # BEFORE the note and the gate. Without this a dry run printed "not running ... would start" for
+    # a live seat while the real run's `up` refused it: the rehearsal must refuse
+    # what the real run would. A seat the snapshot lists in any state but dead is one only a refresh
+    # outside the sandbox can stop or close, which is what the request queue's runner is.
+    local sst="" swhy=""
+    IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
+    case "$sst" in
+      live)    die "refresh: '$name' is not in the sessions list here, but the session snapshot shows it running: $swhy
+  A sandbox hides it from this session, which therefore cannot stop it. Ask the runner, which works
+  outside every sandbox (if it stopped since the snapshot was taken, retry after the next one):
+      fleet-canonicals request refresh $name --reason '<why>'" ;;
+      unknown) die "refresh: '$name' is UNKNOWN in the session snapshot ($swhy); not stopping or starting a seat whose state cannot be read.
+  Retry after the next snapshot, or ask the runner: fleet-canonicals request refresh $name --reason '<why>'" ;;
+      stopped) die "refresh: '$name' is not running, but the sessions list outside this sandbox still shows it ($swhy).
+  Only a refresh that can see that row can close it before the relaunch. Ask the runner:
+      fleet-canonicals request refresh $name --reason '<why>'" ;;
+    esac
     printf 'note     %-24s not running -- nothing to stop; launching it as declared\n' "$name"
     handoff_gate "$name" "$(agents_json_all)" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
     if [ "$dry" = "1" ]; then
