@@ -856,6 +856,24 @@ def test_cleanup_retry_is_bounded(fake):
     assert "CLEANUP-FAILED" in r.stdout, r.stdout
 
 
+def test_cleanup_keeps_each_transcript_in_the_results_directory(fake):
+    body = CLEAN.replace('"$sp" verdict FAIL x\n',
+                         'u=$(sed -n "s/.*\\"uuid\\": \\"\\([0-9a-f-]*\\)\\".*/\\1/p" "$SEAM_PROBE_RUN" | tail -1)\n'
+                         'f=$(ls "$CLAUDE_CONFIG_DIR"/projects/*/"$u".jsonl | head -1)\n'
+                         'mkdir "${f%.jsonl}"; echo side > "${f%.jsonl}/side.txt"\n"$sp" verdict FAIL x\n')
+    make_suite(fake, {"c": (body, '"real"')})
+    projects = fake["cfg"] / "projects"
+    r = tool(fake, "run", "s", "--yes")
+    run_dir = max((fake["state"] / "s").iterdir(), key=lambda p: p.name)
+    kept = run_dir / "transcript-c-s1.jsonl"
+    assert kept.is_file() and "tool_use" in kept.read_text() or kept.stat().st_size > 0, list(run_dir.iterdir())
+    assert (run_dir / "transcript-c-s1" / "side.txt").read_text() == "side\n"
+    assert not list(projects.glob("*/*.jsonl")) and not [p for p in projects.glob("*/*") if p.is_dir()]
+    assert "transcript kept: " in (run_dir / "cleanup-c.txt").read_text()
+    text = (run_dir / "summary.txt").read_text()
+    assert str(run_dir) not in text and str(fake["sandbox"]) not in text 
+
+
 def test_cleanup_removes_transcripts_only_under_fixture_keys(fake):
     d = make_suite(fake, {"c": (CLEAN, '"real"')})
     # The same session id under a project that is not a fixture is never touched.

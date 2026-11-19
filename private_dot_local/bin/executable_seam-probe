@@ -1272,7 +1272,8 @@ def rm_flags(out: str) -> list[str]:
 
 def cleanup_sessions(ledger: Path, fixtures: Path, log: list[str]) -> list[str]:
     """Stop and remove every session the ledger says this run started, then their transcripts, but
-    only those under a project key derived from a fixture path."""
+    only those under a project key derived from a fixture path. Each transcript is first copied into
+    the results directory (the ledger's) as transcript-<case>[-<plant>]-<session name>.jsonl."""
     failed = []
     sessions = ledger_sessions(ledger)
     if not sessions:
@@ -1316,13 +1317,23 @@ def cleanup_sessions(ledger: Path, fixtures: Path, log: list[str]) -> list[str]:
         except (Usage, OSError) as ex:
             failed.append(f"session {name}: {ex}")
     prefixes = {project_key(fixtures), project_key(fixtures.resolve())}
+    results = ledger.parent
+    label = ledger.name.removeprefix("ledger-").removesuffix(".jsonl")   # <case>[-<plant>]
+    names = {e.get("uuid", ""): n for n, e in sessions.items()}
     for e in sessions.values():
         for f in transcript_files(e.get("uuid", "")):
             if not any(f.parent.name == k or f.parent.name.startswith(k + "-") for k in prefixes):
                 continue
             try:
-                f.unlink()
                 side = f.with_suffix("")
+                # Kept first, in the run's results directory (local state, never committed): a
+                # case's reading often needs what the session did, and the original is deleted.
+                keep = results / f"transcript-{label}-{names[e.get('uuid', '')]}"
+                shutil.copyfile(f, keep.with_suffix(".jsonl"))
+                if side.is_dir():
+                    shutil.copytree(side, keep, dirs_exist_ok=True)
+                log.append(f"transcript kept: {keep.with_suffix('.jsonl')}")
+                f.unlink()
                 if side.is_dir():
                     shutil.rmtree(side)
                 log.append(f"transcript removed: {f.parent.name}/{f.name}")
