@@ -101,7 +101,10 @@ So a test fixture or gate that gives Nx its own directories puts them **inside t
 serve**, for example `$ws/.nx/cache`, ignored by the fixture's git. That passes in and out of a
 sandbox on both releases. Do not set `NX_ALLOW_INSECURE_DIRECTORIES=true` in a session's
 environment: outside a sandbox the check is real, since `/tmp` is shared with every user.
-Moving the directory to `~` instead of `/tmp` does not help, as the table shows.
+Moving the directory to `~` instead of `/tmp` does not help, as the table shows. Where a tool cannot
+put its directories inside the workspace, it makes them itself with `mkdtemp` (mode 0700, so only you
+can change them) and sets the waiver on its own Nx processes only. The base's `verify-task-io` does
+this, because its inotify watch of the checkout would record its own event file there.
 
 **`nx migrate` (and anything else that installs packages to a temporary directory) fails in a
 sandbox from 24.0.6** with `PrivateInstallRootError`. It installs under `~/.nx/tmp`, else under

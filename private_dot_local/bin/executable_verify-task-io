@@ -40,6 +40,13 @@ exist only in the scratch directory, and every other checkout computing the same
 hit that restores nothing. Measured on 2026-10-12 with Nx 23.1.0. The workspace's own cache and
 daemon are left as they were.
 
+The scratch directory is outside the workspace, because inotifywait writes its event file there and
+would record its own writes inside the watched tree. Nx 24.0.6 refuses a configured directory
+outside the workspace unless every directory above it is owned by you or root, and inside an agent
+sandbox /tmp reads as owned by uid 65534. So these Nx processes alone also get
+NX_ALLOW_INSECURE_DIRECTORIES=true. Nothing else is configured for them, and the scratch directory
+is created by mkdtemp, mode 0700, so only you can change what is in it.
+
 HOW TO READ THE REPORT. One line per target, `ok` or `GAP`, with counts of what each attributed
 read and write was. A read is accounted for as: a declared input; a dependency output the target
 hashes (`dependentTasksOutputFiles`); its own declared output (an incremental tool reading its last
@@ -246,7 +253,9 @@ class Nx:
         self.bin = root / "node_modules" / ".bin" / "nx"
         self.env = {**caller_env(), "NX_DAEMON": "false", "NX_TUI": "false",
                     "NX_WORKSPACE_DATA_DIRECTORY": str(scratch / "nx-workspace-data"),
-                    "NX_CACHE_DIRECTORY": str(scratch / "nx-cache")}
+                    "NX_CACHE_DIRECTORY": str(scratch / "nx-cache"),
+                    # Only the scratch directories above are configured; see ISOLATION.
+                    "NX_ALLOW_INSECURE_DIRECTORIES": "true"}
         self._inputs: dict[str, Inputs] = {}
 
     def _to_file(self, file: Path, *args: str) -> int:

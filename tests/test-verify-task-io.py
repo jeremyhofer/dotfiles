@@ -325,6 +325,16 @@ def test_static_reports_an_eagerly_hashed_dependency_output(tmp_path):
     assert r.code == 1
 
 
+def test_real_nx_runs_on_the_scratch_directories_with_the_ownership_check_waived(tmp_path):
+    # Nx 24.0.6 refuses a configured directory outside the workspace when an ancestor is owned by
+    # another uid, as /tmp is inside an agent sandbox (65534). The waiver reaches the tool's own Nx
+    # only, and only the scratch directories are configured. Built, not run: no Nx is needed.
+    nx = vti.Nx(tmp_path / "ws", tmp_path / "s")
+    assert nx.env["NX_ALLOW_INSECURE_DIRECTORIES"] == "true"
+    assert nx.env["NX_CACHE_DIRECTORY"] == str(tmp_path / "s" / "nx-cache")
+    assert nx.env["NX_WORKSPACE_DATA_DIRECTORY"] == str(tmp_path / "s" / "nx-workspace-data")
+
+
 def test_task_graph_dependencies_accept_nx24_edge_objects_and_nx23_ids():
     # Nx 24 writes each task-graph edge as an object ({"id": ..., "waitFor"?, "inputs"?}); Nx 23 wrote
     # the id string. Read either; an object read as an id crashed the first live run (2026-11-08), and
