@@ -33,6 +33,19 @@ Entries are newest first.
 ---
 
 
+## 2026-11-19 (a commit gate waits for another session's timing slot)
+
+### `install-test-gate`'s hook waits, bounded, while another session holds the timing slot (ACTION, a private layer that installs it)
+
+The generated pre-commit used to warn and run its suites at once. The suites are heavy, and heavy
+work defers while a timing measurement holds the slot, so the hook now runs `fleet-slot wait` for
+up to `FLEET_SLOT_COMMIT_WAIT_MIN` minutes (default 45; 0 does not wait), then runs, warning if
+the slot is still held. It never refuses a commit over the slot. A commit can therefore block for
+that long: an agent committing while a slot is held runs the commit in the background. The base's
+own gate is regenerated on the next apply, because its installer hashes the generator. **ACTION,
+for a private layer that installs this gate:** its installer re-runs only when it changes, so edit
+it (a dated comment naming the generator's behavior is enough) before the apply.
+
 ## 2026-11-19 (fnm and direnv leave the Brewfile)
 
 ### The Brewfile no longer declares fnm or direnv (ACTION, a machine that runs without mise)

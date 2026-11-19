@@ -32,7 +32,14 @@
 # for the run and puts them back, so a commit passes or fails on the code it contains. Without that
 # helper (it ships with this base) the gate refuses rather than judge the working tree.
 #
-# IT WARNS WHEN ANOTHER SESSION HOLDS THE TIMING SLOT (fleet-slot check exits 1), and runs anyway.
+# IT WAITS WHEN ANOTHER SESSION HOLDS THE TIMING SLOT (fleet-slot check exits 1), bounded. The
+# suites are heavy work, and heavy work defers while a timing measurement holds the slot, so it does
+# not land on that sample: `fleet-slot wait` blocks until the slot is free, for at most
+# $FLEET_SLOT_COMMIT_WAIT_MIN minutes (default 45, longer than any slot granted so far; 0 does not
+# wait). Past the cap, or if the wait itself fails, it warns and runs anyway: a slot left held must
+# not block every commit behind it. It never refuses a commit over the slot. An agent committing
+# while a slot is held runs the commit in the background, since a foreground tool call times out
+# first.
 #
 # The base's own source repository gets its gate from this tool too (run_onchange_install-git-hooks),
 # so the one hook it generates, and the rule above, serve both.
@@ -101,14 +108,23 @@ if [ -z "$staged_run" ]; then
 ' "$GATE_SKIP_VAR" >&2
   exit 1
 fi
-# Heavy work on a shared machine takes turns through the timing slot (fleet-slot). The suites run
-# whoever holds it, so this only warns: a commit is not a measurement, and refusing one would block
-# every session behind a slot left held.
+# Heavy work defers while another session's timing measurement holds the slot (this tool's header):
+# wait for it, bounded, then run. Never a refusal.
 if command -v fleet-slot >/dev/null 2>&1; then
   slot_rc=0
   slot_msg=$(fleet-slot check 2>/dev/null) || slot_rc=$?
   if [ "$slot_rc" -eq 1 ]; then
-    printf '%s pre-commit: warning: the timing slot is %s; the suites run anyway (fleet-slot status)\n' "$GATE_LABEL" "$slot_msg" >&2
+    cap=${FLEET_SLOT_COMMIT_WAIT_MIN:-45}
+    case "$cap" in ''|*[!0-9]*) cap=45 ;; esac
+    wait_rc=1
+    if [ "$cap" -gt 0 ]; then
+      printf '%s pre-commit: waiting for the timing slot, %s (up to %s min; fleet-slot status)\n' "$GATE_LABEL" "$slot_msg" "$cap" >&2
+      wait_rc=0
+      fleet-slot wait --timeout $((cap * 60)) >/dev/null 2>&1 || wait_rc=$?
+    fi
+    if [ "$wait_rc" -ne 0 ]; then
+      printf '%s pre-commit: warning: the timing slot is still held after %s min; the suites run anyway (fleet-slot status)\n' "$GATE_LABEL" "$cap" >&2
+    fi
   fi
 fi
 # A repository with an nx.json runs its suites through Nx (this tool's header). The script prints

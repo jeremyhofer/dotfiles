@@ -127,19 +127,45 @@ git -C "$tmp/nx" rm -q tests/apply-suites.py; echo 0 > "$NX_RC"
 commit_one "$tmp/nx" bin/tool; rc=$?
 check "an nx.json without tests/apply-suites.py is refused, not skipped" '[ "$rc" != 0 ] && grep -q "tests/apply-suites.py, which runs the suites" "$tmp/out"'
 
-# The timing slot (fleet-slot, stubbed on PATH): another holder draws a warning, never a refusal.
+# The timing slot (fleet-slot, stubbed on PATH). Held by another session, the hook waits for it
+# through `fleet-slot wait`, bounded, then runs; it never refuses the commit. The stub answers
+# `check` with $SLOT_CHECK_RC and `wait` with $SLOT_WAIT_RC, and logs each wait's arguments.
 mkrepo "$tmp/slot" 0
 sh "$tool" "$tmp/slot" --label s --skip-var SKIP_S > /dev/null 2>&1
-printf '#!/bin/sh\necho "held by other-session since 13:00 for 20 min: timed run"\nexit 1\n' > "$tmp/bin/fleet-slot"
+cat > "$tmp/bin/fleet-slot" <<'STUB'
+#!/bin/sh
+case $1 in
+  check) [ "${SLOT_CHECK_RC:-0}" = 0 ] && { echo free; exit 0; }
+         [ "$SLOT_CHECK_RC" = 1 ] && { echo "held by other-session since 13:00 for 20 min: timed run"; exit 1; }
+         echo broken >&2; exit "$SLOT_CHECK_RC" ;;
+  wait)  shift; echo "$*" >> "$SLOT_LOG"; exit "${SLOT_WAIT_RC:-0}" ;;
+esac
+exit 2
+STUB
 chmod +x "$tmp/bin/fleet-slot"
+export SLOT_LOG="$tmp/slot-wait.log"
+: > "$SLOT_LOG"; SLOT_CHECK_RC=1 SLOT_WAIT_RC=0; export SLOT_CHECK_RC SLOT_WAIT_RC
 commit_one "$tmp/slot" bin/tool; rc=$?
-check "slot held by another session: the commit goes through, warned with the holder's name" '[ "$rc" = 0 ] && grep -q "warning: the timing slot is held by other-session" "$tmp/out"'
-printf '#!/bin/sh\necho free\nexit 0\n' > "$tmp/bin/fleet-slot"
+check "slot held by another session: the hook waits for it, naming the holder, then the suites run" '[ "$rc" = 0 ] && grep -q "waiting for the timing slot, held by other-session" "$tmp/out" && grep -q -- "--timeout 2700" "$SLOT_LOG" && grep -q "running the test suite" "$tmp/out" && ! grep -q "run anyway" "$tmp/out"'
+: > "$SLOT_LOG"; SLOT_WAIT_RC=3
 commit_one "$tmp/slot" bin/tool; rc=$?
-check "slot free: no warning" '[ "$rc" = 0 ] && ! grep -q "timing slot" "$tmp/out"'
-printf '#!/bin/sh\necho broken >&2\nexit 2\n' > "$tmp/bin/fleet-slot"
+check "slot still held at the cap: warned, the suites run anyway, the commit is not refused" '[ "$rc" = 0 ] && grep -q "still held after 45 min; the suites run anyway" "$tmp/out" && grep -q "running the test suite" "$tmp/out"'
+: > "$SLOT_LOG"; SLOT_WAIT_RC=2
 commit_one "$tmp/slot" bin/tool; rc=$?
-check "fleet-slot failing: no warning, and the commit is not refused" '[ "$rc" = 0 ] && ! grep -q "timing slot" "$tmp/out"'
+check "fleet-slot wait failing: warned, the commit is not refused" '[ "$rc" = 0 ] && grep -q "the suites run anyway" "$tmp/out"'
+: > "$SLOT_LOG"; SLOT_WAIT_RC=0
+( FLEET_SLOT_COMMIT_WAIT_MIN=5 commit_one "$tmp/slot" bin/tool ); rc=$?
+check "FLEET_SLOT_COMMIT_WAIT_MIN sets the cap in minutes" '[ "$rc" = 0 ] && grep -q -- "--timeout 300" "$SLOT_LOG"'
+: > "$SLOT_LOG"
+( FLEET_SLOT_COMMIT_WAIT_MIN=0 commit_one "$tmp/slot" bin/tool ); rc=$?
+check "a cap of 0 does not wait: warned, the suites run" '[ "$rc" = 0 ] && [ ! -s "$SLOT_LOG" ] && grep -q "the suites run anyway" "$tmp/out"'
+: > "$SLOT_LOG"; SLOT_CHECK_RC=0
+commit_one "$tmp/slot" bin/tool; rc=$?
+check "slot free: no wait, no message" '[ "$rc" = 0 ] && [ ! -s "$SLOT_LOG" ] && ! grep -q "timing slot" "$tmp/out"'
+SLOT_CHECK_RC=2
+commit_one "$tmp/slot" bin/tool; rc=$?
+check "fleet-slot check failing: no wait, no message, and the commit is not refused" '[ "$rc" = 0 ] && [ ! -s "$SLOT_LOG" ] && ! grep -q "timing slot" "$tmp/out"'
+unset SLOT_CHECK_RC SLOT_WAIT_RC SLOT_LOG
 rm -f "$tmp/bin/fleet-slot"
 
 echo "passed: $pass   failed: $fail"
