@@ -44,7 +44,10 @@ where the machine's `claudeWorktrees` flag says and fetches the base, and a raw 
 message now names EnterWorktree everywhere. The skill `working-in-worktrees` says what entering
 costs (the checkout is read-only to the session and its subagents until ExitWorktree) and why a
 commit by path in a worktree the session was not given fails. The base's `.gitignore` lists
-`.claude/worktrees/`.
+`.claude/worktrees/`. `claude-usage-report`, `verify-task-io` and the status line now treat
+`<repo>/.claude/worktrees/<name>` as they treat `<repo>/.worktrees/<name>`, so a machine with the
+`claudeWorktrees` flag on attributes, excludes and renders its worktrees the same way;
+`lint-tasknames` and `claude-trust-check` already did.
 
 Nothing to do beyond the apply. A domain that wants the refusal back declares its own hook.
 
