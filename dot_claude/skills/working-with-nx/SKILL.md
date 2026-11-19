@@ -1,6 +1,6 @@
 ---
 name: working-with-nx
-description: Use when running, configuring, profiling or timing tasks in an Nx workspace — gates with `--nxBail`, `affected`, `inputs`/`outputs`, the cache, `NX_PROFILE`, `--graph`, `parallelism`, plugins and atomized targets (`createNodes`, `@nx/playwright`, the Vitest atomizer), or Nx run inside another Nx task. Also fires on the failure signatures — "Attempted to open socket that exceeds the maximum socket length", a cache that is per checkout instead of shared, a warm run with fewer cache hits than expected, an `affected` run that skips a project whose file changed, a task graph tool that crashes or finds no dependencies, `{workspaceRoot}` refused in a command, a Playwright config Nx ignores, a one-spec run failing on coverage thresholds, a nested Nx fixture whose cache checks fail, a task replayed green from the cache after an edit to a library it imports (a stale project graph after a tsconfig path-alias change), and E403 from a registry round trip in a sandbox. Verified against Nx 24.0.2 (some points also 23.1.1); each point says where it was read, so re-check after an upgrade.
+description: Use when running, configuring, profiling or timing tasks in an Nx workspace — gates with `--nxBail`, `affected`, `inputs`/`outputs`, the cache, `NX_PROFILE`, `--graph`, `parallelism`, plugins and atomized targets (`createNodes`, `@nx/playwright`, the Vitest atomizer), or Nx run inside another Nx task. Also fires on the failure signatures — "Attempted to open socket that exceeds the maximum socket length", a cache that is per checkout instead of shared, a warm run with fewer cache hits than expected, an `affected` run that skips a project whose file changed, a task graph tool that crashes or finds no dependencies, `{workspaceRoot}` refused in a command, a Playwright config Nx ignores, a one-spec run failing on coverage thresholds, a nested Nx fixture whose cache checks fail, a task replayed green from the cache after an edit to a library it imports (a stale project graph after a tsconfig path-alias change), E403 from a registry round trip in a sandbox, and `UntrustedDataDirectoryError` ("is not safe to use: /tmp is owned by uid 65534") or `PrivateInstallRootError` from Nx 24.0.6 in a sandbox. Verified against Nx 24.0.2 (some points also 23.1.1); each point says where it was read, so re-check after an upgrade.
 ---
 
 # Working with Nx
@@ -76,6 +76,39 @@ because 24.0.0 to 24.0.2 pin undici 7.29.x, with an npm audit high (GHSA-3wwx-pv
 repository that stays on 24.0.2 can instead override `undici` to `7.30.1`, which runs cleanly
 (measured the same day). Do not delete `/tmp/.nx/<uid>`: a terminal's running daemon keeps its
 sockets there. `--verbose` names a directory Nx rejected and why.
+
+**From Nx 24.0.6, a CONFIGURED cache or data directory outside the workspace fails in a sandbox
+too.** A `cacheDirectory` in `nx.json`, or `NX_CACHE_DIRECTORY`, `NX_WORKSPACE_DATA_DIRECTORY` or
+`NX_PROJECT_GRAPH_CACHE_DIRECTORY`, is walked from itself up to `/`, and Nx refuses it if any level
+is owned by a uid other than yours, root's or the workspace owner's, or is writable by others
+without the sticky bit (`ensureTrustedConfiguredDir`, `nx/dist/src/utils/cache-directory.js`). A
+path inside the workspace is trusted like the workspace and is not walked. Nx's defaults
+(`~/.nx/<workspace id>/`, `<workspace>/.nx/workspace-data/`) are not configured directories and are
+not checked. Inside a bubblewrap sandbox `/tmp` and `/home` read as uid 65534, so a configured
+directory under `$TMPDIR` or `~` fails: "UntrustedDataDirectoryError: The configured Nx cache
+directory … is not safe to use: /tmp is owned by uid 65534". Measured 2026-11-19 in a sandboxed
+session, a one-project workspace under `$TMPDIR`, each arm run twice:
+
+| The cache directory | 24.0.5 | 24.0.6 |
+| --- | --- | --- |
+| Nx's default (none configured) | pass | pass |
+| `NX_CACHE_DIRECTORY` beside the workspace, under `$TMPDIR` | pass | refused |
+| `NX_CACHE_DIRECTORY` under `~/.cache` | not run | refused ("/home is owned by uid 65534") |
+| `NX_CACHE_DIRECTORY` inside the workspace | pass | pass |
+| beside the workspace, with `NX_ALLOW_INSECURE_DIRECTORIES=true` | pass | pass, with a warning |
+
+So a test fixture or gate that gives Nx its own directories puts them **inside the workspace they
+serve**, for example `$ws/.nx/cache`, ignored by the fixture's git. That passes in and out of a
+sandbox on both releases. Do not set `NX_ALLOW_INSECURE_DIRECTORIES=true` in a session's
+environment: outside a sandbox the check is real, since `/tmp` is shared with every user.
+Moving the directory to `~` instead of `/tmp` does not help, as the table shows.
+
+**`nx migrate` (and anything else that installs packages to a temporary directory) fails in a
+sandbox from 24.0.6** with `PrivateInstallRootError`. It installs under `~/.nx/tmp`, else under
+`$TMPDIR/nx-installs`, and refuses each whose ancestors fail the same walk
+(`createInPrivateInstallRoot`, `nx/dist/src/utils/package-manager.js`; read, not measured here).
+Run it from a terminal, or set `NX_ALLOW_INSECURE_DIRECTORIES=true` on that one command: Nx then
+installs under `$TMPDIR`, which in a Claude Code session is a private directory only you can write.
 
 **The project graph is cached too, and it can go stale after a path-alias change.** Besides the task
 cache, Nx keeps the project graph it builds, the per-file import edges included, in the checkout's

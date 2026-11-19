@@ -164,12 +164,19 @@ while IFS= read -r f; do
   mkdir -p "$ws/$(dirname "$f")" || scratch_ok=0
   if copied "$f"; then cp "$root/$f" "$ws/$f" || scratch_ok=0; else : > "$ws/$f"; fi
 done < "$tmp/tracked"
-if ! { [ "$scratch_ok" = 1 ] && ln -s "$root/node_modules" "$ws/node_modules" && git -C "$ws" init -q && git -C "$ws" add -A; }; then
+# Its Nx directories go under its own .nx/, which its git ignores. No `git add -A` here runs after
+# Nx has written there today (removing the ignore still passes); it keeps a later one from tracking
+# Nx's files, which would change what the plugin sees.
+if ! { [ "$scratch_ok" = 1 ] && ln -s "$root/node_modules" "$ws/node_modules" && git -C "$ws" init -q &&
+       printf '/.nx/\n' >> "$ws/.git/info/exclude" && git -C "$ws" add -A; }; then
   bad "building the scratch copy" "tar, ln or git failed"
   echo "FAILED: $fail of $((pass + fail))"; exit 1
 fi
 # The scratch copy is its own workspace, with its own cache: nothing it records reaches this one's.
-NX_CACHE_DIRECTORY="$tmp/nx-cache"; NX_WORKSPACE_DATA_DIRECTORY="$tmp/nx-data"; export NX_CACHE_DIRECTORY NX_WORKSPACE_DATA_DIRECTORY
+# Both directories are INSIDE that workspace. From Nx 24.0.6, a configured cache or data directory
+# outside the workspace is refused unless every directory above it is owned by you or root, and
+# inside an agent sandbox /tmp reads as owned by uid 65534, so a directory beside $ws fails there.
+NX_CACHE_DIRECTORY="$ws/.nx/cache"; NX_WORKSPACE_DATA_DIRECTORY="$ws/.nx/data"; export NX_CACHE_DIRECTORY NX_WORKSPACE_DATA_DIRECTORY
 
 echo "== a task runs the way the graph says"
 cat > "$ws/tests/test-zz-probe.sh" <<'EOF'
@@ -244,11 +251,11 @@ echo "== the mise input: steady across runs, changed by another mise"
 printf '#!/bin/sh\nexit 0\n' > "$ws/tests/test-zz-hash-probe.sh"
 printf 'test-zz-hash-probe.sh tests/git-isolate.sh\n' >> "$ws/tests/coverage.map"
 git -C "$ws" add -A
-mkdir -p "$tmp/hashcache" "$tmp/stub" "$tmp/mise/config" "$tmp/mise/data" "$tmp/mise/state" "$tmp/mise/cache"
+mkdir -p "$ws/.nx/hashcache" "$tmp/stub" "$tmp/mise/config" "$tmp/mise/data" "$tmp/mise/state" "$tmp/mise/cache"
 printf '#!/bin/sh\necho "1999.1.1 stand-in"\n' > "$tmp/stub/mise"; chmod +x "$tmp/stub/mise"
-hashes() { ls "$tmp/hashcache" | grep -E '^[0-9]+$' | sort | tr '\n' ' '; }
+hashes() { ls "$ws/.nx/hashcache" | grep -E '^[0-9]+$' | sort | tr '\n' ' '; }
 hprobe() { # $1: a directory put first on PATH, or ""
-  (NX_CACHE_DIRECTORY="$tmp/hashcache" NX_CACHE_PROJECT_GRAPH=false \
+  (NX_CACHE_DIRECTORY="$ws/.nx/hashcache" NX_CACHE_PROJECT_GRAPH=false \
    MISE_CONFIG_DIR="$tmp/mise/config" MISE_DATA_DIR="$tmp/mise/data" \
    MISE_STATE_DIR="$tmp/mise/state" MISE_CACHE_DIR="$tmp/mise/cache" \
    PATH="${1:+$1:}$PATH"
