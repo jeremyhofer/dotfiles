@@ -52,7 +52,6 @@ now starts from a directory that exists. The terminal output of a result shows r
 SKIPPED step can be copied (`summary.txt` stays sanitized), and `trust SUITE` prints a ready
 `cd ... && claude` and `wt -C ... config approvals add` pair per fixture repository, named by a new
 optional case key `fixtures = ["name", ...]` that `lint` checks. Nothing to change on a machine.
-||||||| parent of 67f9536 (tuicr: a typo comment type, after nit)
 
 ## 2026-11-18 (seam-probe: two more worktree-takeover cases)
 
@@ -85,7 +84,6 @@ turn it on until the domain's own checks for the new location pass. Turning it o
 means listing `.claude/worktrees/` in each repository's `.gitignore` first and moving the worktrees
 already under `.worktrees/` afterwards; `docs/reference/repository-layouts.md` ("Where the worktrees
 go") has the steps.
-||||||| parent of 410dbee (seam-probe: the exempt-remove and bootstrap-timeout cases)
 
 ## 2026-11-18 (a macOS launch must run in the Aqua session)
 
@@ -101,8 +99,8 @@ empty) turns the check off for one run. Linux is unchanged.
 
 `seam-probe` gains the session primitives (`session launch|ask|stop|resume|rm`), `wait mark`, the
 evidence primitives (`committed`, `refused`, `codeword`, `path`, `trusted`) and `prompt`, and its
-`worktree-takeover` suite two cases that start real sessions: `local-md` and `claude-worktree`. A
-run cleans up every session it started and those sessions' transcripts. `run` and `red` now refuse
+`worktree-takeover` suite two cases that start real sessions: `local-md` and `claude-worktree`. The
+suite's first case, `no-symlink` (2026-11-17), starts no session and runs anywhere. A run cleans up every session it started and those sessions' transcripts. `run` and `red` now refuse
 an unwritable state directory with one line instead of a traceback. Nothing to change on a machine;
 the session cases run from a plain terminal, never inside a Claude Code session, and
 `claude-worktree` reports SKIPPED, naming the step, until its fixture is trusted and its worktrunk
