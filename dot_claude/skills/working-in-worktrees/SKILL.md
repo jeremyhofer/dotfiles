@@ -303,6 +303,18 @@ machine where Claude Code's hooks are not available, has none of them.
   real empty files, outside any sandbox; from a normal shell, `claude-mask-sweep --remove` deletes
   those (keeping any a running session still uses), then `git status --short` shows what is really
   there and the plain remove succeeds.
+- **Whole-tree linters and formatters trip on the same placeholders.** A tool that walks the whole
+  tree rather than the files git tracks (`prettier .`, `ruff format --check`, a spell checker, an
+  unused-file finder) opens them and fails, typically `Permission denied` on `.claude/launch.json` or
+  `.claude/loop.md`. Exclude them in the **tools' own ignore configuration, never in `.gitignore` or
+  `.git/info/exclude`**: git counts an ignored path as clean, so an ignore rule there lets an
+  in-sandbox removal pass its clean check and stop halfway on placeholders it cannot unlink (the
+  bullet above). Name each one root-anchored with no trailing slash (`/.claude/launch.json`,
+  `/.mcp.json`; a placeholder is a file, so `agents/` misses it) in one gitignore-format file that
+  every such tool is pointed at (prettier's `--ignore-path`, ESLint's `includeIgnoreFile`, or the
+  tool's own exclude list), so tracked files under `.claude/` stay linted. Read the list from
+  `git status --porcelain` in a session working in that repository: the empty, read-only untracked
+  entries. Where a tool can exclude only whole directories, exclude `.claude/` as the fallback.
 - **Where Claude Code's background-isolation guard is on** (a repository can turn it off with
   `worktree.bgIsolation: "none"`, as one whose owning session works in its checkout does), it
   **refuses compound commands** in a worktree: a git command inside `&&`, a
