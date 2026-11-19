@@ -23,9 +23,11 @@ stubs: `dot_dotlocal/skill-externals.yaml` with `run_onchange_after_sync-skill-e
 (skills installed from this domain's own repositories); delete both if the domain has none.
 
 The `run_onchange_` scripts here re-run a base mechanism when an input this layer ships changes;
-keep each one whose input you keep. `opt-in/` holds three more, a plugin installer, a trigger for per-project
-Claude settings and a commit gate for this repository, which `scaffold-overlay` does not copy: adopt them by hand where the machine
-allows it. Which trigger each input needs: the base's `docs/reference/private-layer.md`, "Triggers".
+keep each one whose input you keep. `opt-in/` holds more, which `scaffold-overlay` does not copy:
+a plugin installer, a trigger for per-project Claude settings, the mise trust trigger, a test-suite
+gate for this repository, and `dot-githooks-pre-commit.example`, a tracked `.githooks/pre-commit`
+that refuses a commit leaving an input without its trigger (`overlay-doctor --triggers`). Adopt
+them by hand where the machine allows it. Which trigger each input needs: the base's `docs/reference/private-layer.md`, "Triggers".
 
 ## Setting up
 

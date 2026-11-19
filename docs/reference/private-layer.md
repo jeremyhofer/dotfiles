@@ -589,11 +589,20 @@ not `opt-in/`, because a plugin installer and a commit gate (which writes a cust
 layer's own repository) are what some machines may not run. The logic of both lives in the base, so
 a layer's trigger is a few lines that say where its inputs are.
 
+**A missing trigger is caught at commit only where the layer opts in.** `overlay-doctor --triggers`
+runs Tier T alone. It reads the layer's source and nothing deployed, so its answer does not depend
+on the machine's last apply, and it exits 1 on a missing or non-hashing trigger. The opt-in
+`overlay-skeleton/opt-in/dot-githooks-pre-commit.example`, copied to `.githooks/pre-commit` in the
+layer's repository, runs it on every commit through `run-repo-gates`. Without it nothing runs Tier T
+unasked: until 2026-11-18 the doctor would have reported a missing mise trigger, and nobody ran
+it while a generated mise config went stale on two machines.
+
 ## Checking it
 
 | Check | Run | Tells you |
 | --- | --- | --- |
 | `setup/overlay-doctor` | from the base checkout, after changing either layer | required private pieces present and filled, the trigger for every input the layer ships (Tier T), every private file has a recorded reason, no file owned by both layers, the manifest's schema |
+| `setup/overlay-doctor --triggers` | on every commit to the layer, where it opts in (above) | Tier T alone, from the source: each input the layer ships has a trigger that hashes it (exit 1 if not) |
 | `setup/overlay-doctor --machine` | on a machine | git, tools and Claude Code on that machine |
 | `fleet-decl --check` | after editing the manifest | the manifest's declarations |
 | `claude-project-settings validate`, then `check` | before committing a project settings file, then after an apply | `validate`: the files obey the closed rules above; `check`: the live `.claude/settings.local.json` of each declaring project, and `<directory>/.claude/settings.json` of each declared directory, matches its file, and, in a project with directories, the root file holds no permission rule and no directory holds a leftover `settings.local.json` (exit 1 on drift) |

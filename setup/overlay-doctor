@@ -122,7 +122,13 @@ assess() {
   note "next: claude-context-probe (what Claude Code loads here); claude-context-probe --fleet (background-session features)"
 }
 
-if [ "${1:-}" = "--machine" ]; then assess; exit 0; fi
+mode=full
+case "${1:-}" in
+  --machine) assess; exit 0 ;;
+  --triggers) mode=triggers ;;
+  "") ;;
+  *) echo "overlay-doctor: unknown argument '$1' (usage: overlay-doctor [--machine | --triggers])" >&2; exit 2 ;;
+esac
 
 [ -d "$OSRC" ] || {
   echo "overlay-doctor: no overlay source at $OSRC" >&2
@@ -153,6 +159,75 @@ if [ -f "$OSRC/.chezmoiroot" ]; then
   OSRC="$OSRC/$_oroot"
 fi
 echo "overlay-doctor: auditing $OSRC"
+
+# --- Tier T, as a function so --triggers can run it alone: triggers. The base re-runs its generators only when ITS inputs change. An input this
+tier_t() {
+  # layer ships (the manifest, a settings fragment, a skill list) reaches its deployed file on apply and
+  # never the generated one, unless the layer carries a run_onchange_ script whose rendered text
+  # changes with that input -- which is what an `include "<input>" | sha256sum` line does. A missing
+  # trigger is silent: the worktrunk config at work kept the nested layout after the manifest declared
+  # bare containers. Each skeleton example is overlay-skeleton/<trigger>.example.
+  _has() { [ -f "$OSRC/$1" ] || [ -f "$OSRC/$1.tmpl" ]; }
+  _trigger() { # _trigger <trigger-file> <why> [<input-it-must-hash>...]
+    _t="$OSRC/$1"; [ -f "$_t" ] || _t="${_t%.tmpl}"
+    if [ ! -f "$_t" ]; then miss "$1 ($2; example: overlay-skeleton/$1.example or overlay-skeleton/opt-in/$1.example)"; return; fi
+    _ok=1; _tn=$1; _why=$2; shift 2
+    for _in in "$@"; do
+      grep -Eq "include \"$_in(\\.tmpl)?\"" "$_t" || { miss "$_tn does not hash $_in, so a change to it never re-runs the trigger"; _ok=0; }
+    done
+    [ "$_ok" = 0 ] || note "OK          Tier T: $_tn"
+  }
+  if _has Devel/mani.yaml; then
+    if _has dot_dotlocal/worktrunk.toml; then
+      _trigger run_onchange_after_generate-worktrunk-config.sh.tmpl "the manifest feeds worktrunk's config" Devel/mani.yaml dot_dotlocal/worktrunk.toml
+    else
+      _trigger run_onchange_after_generate-worktrunk-config.sh.tmpl "the manifest feeds worktrunk's config" Devel/mani.yaml
+    fi
+    # Opt-in: only a manifest that declares per-project Claude settings needs them written.
+    if grep -Eqs 'claude(Local|Dir)Settings:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
+      _trigger run_onchange_after_apply-project-claude-settings.sh.tmpl "declaring claudeLocalSettings or claudeDirSettings does not write it" Devel/mani.yaml
+    fi
+  fi
+  _sd=dot_dotlocal/claude/executable_settings-declared
+  if _has "$_sd"; then
+    _trigger run_onchange_after_merge-claude-settings.sh.tmpl "the settings fragment is merged into ~/.claude/settings.json" "$_sd"
+    # Opt-in: only a fragment that declares plugins needs the installer (a machine that may not install
+    # plugins declares none, and carries no installer).
+    if grep -Eq 'enabledPlugins|extraKnownMarketplaces' "$OSRC/$_sd" 2>/dev/null; then
+      _trigger run_onchange_after_install-claude-plugins.sh.tmpl "declaring a plugin does not install it" "$_sd"
+    fi
+  fi
+  # Opt-in: the mise trust step re-runs with the manifest only where a project opts in to mise trust,
+  # and with the domain's miserc fragment wherever the layer ships one.
+  _mt=""
+  if _has Devel/mani.yaml && grep -Eqs 'miseTrust:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
+    _mt="Devel/mani.yaml"
+  fi
+  _has dot_dotlocal/mise/miserc.extra.toml && _mt="$_mt dot_dotlocal/mise/miserc.extra.toml"
+  if [ -n "$_mt" ]; then
+    # shellcheck disable=SC2086 # the inputs are fixed words
+    _trigger run_onchange_after_trust-mise-configs.sh.tmpl "the mise trust step writes mise's miserc from these" $_mt
+  fi
+  if _has dot_dotlocal/skill-externals.yaml; then
+    _trigger run_onchange_after_sync-skill-externals.sh.tmpl "the skill list is installed by skill-externals-sync" dot_dotlocal/skill-externals.yaml
+  fi
+  # Opt-in and advisory: the gate installs a .git/hooks/pre-commit in this source repo, which some
+  # machines may not run custom hooks for.
+  if [ -f "$OSRC/tests/run-all.sh" ] && ! ls "$OSRC"/run_onchange_install-test-gate.sh* >/dev/null 2>&1; then
+    note "NOTE        Tier T: tests/run-all.sh has no commit gate; opt in with run_onchange_install-test-gate.sh.tmpl (example: overlay-skeleton/opt-in/run_onchange_install-test-gate.sh.tmpl.example)"
+  fi
+}
+
+# --triggers runs Tier T and nothing else. Every check in it reads the overlay SOURCE alone -- no
+# deployed file, no PATH, no machine state -- so its answer is the same on any machine and at any
+# moment, which is what lets the layer's own commit gate run it. The full audit cannot go there: its
+# manifest and Tier A lines read the deployed machine, so a commit would be judged by an apply.
+if [ "$mode" = triggers ]; then
+  tier_t
+  [ "$fail" -eq 0 ] || { echo "overlay-doctor --triggers: a trigger is missing or does not hash its input (above)" >&2; exit 1; }
+  echo "overlay-doctor --triggers: every input the layer ships has its trigger."
+  exit 0
+fi
 
 # --- Tier A: generic mechanism (base-provided; auto-propagated, non-gating) ---
 if command -v spell-capture >/dev/null 2>&1; then
@@ -202,61 +277,7 @@ else
   esac
 fi
 
-# --- Tier T: triggers. The base re-runs its generators only when ITS inputs change. An input this
-# layer ships (the manifest, a settings fragment, a skill list) reaches its deployed file on apply and
-# never the generated one, unless the layer carries a run_onchange_ script whose rendered text
-# changes with that input -- which is what an `include "<input>" | sha256sum` line does. A missing
-# trigger is silent: the worktrunk config at work kept the nested layout after the manifest declared
-# bare containers. Each skeleton example is overlay-skeleton/<trigger>.example.
-_has() { [ -f "$OSRC/$1" ] || [ -f "$OSRC/$1.tmpl" ]; }
-_trigger() { # _trigger <trigger-file> <why> [<input-it-must-hash>...]
-  _t="$OSRC/$1"; [ -f "$_t" ] || _t="${_t%.tmpl}"
-  if [ ! -f "$_t" ]; then miss "$1 ($2; example: overlay-skeleton/$1.example or overlay-skeleton/opt-in/$1.example)"; return; fi
-  _ok=1; _tn=$1; _why=$2; shift 2
-  for _in in "$@"; do
-    grep -Eq "include \"$_in(\\.tmpl)?\"" "$_t" || { miss "$_tn does not hash $_in, so a change to it never re-runs the trigger"; _ok=0; }
-  done
-  [ "$_ok" = 0 ] || note "OK          Tier T: $_tn"
-}
-if _has Devel/mani.yaml; then
-  if _has dot_dotlocal/worktrunk.toml; then
-    _trigger run_onchange_after_generate-worktrunk-config.sh.tmpl "the manifest feeds worktrunk's config" Devel/mani.yaml dot_dotlocal/worktrunk.toml
-  else
-    _trigger run_onchange_after_generate-worktrunk-config.sh.tmpl "the manifest feeds worktrunk's config" Devel/mani.yaml
-  fi
-  # Opt-in: only a manifest that declares per-project Claude settings needs them written.
-  if grep -Eqs 'claude(Local|Dir)Settings:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
-    _trigger run_onchange_after_apply-project-claude-settings.sh.tmpl "declaring claudeLocalSettings or claudeDirSettings does not write it" Devel/mani.yaml
-  fi
-fi
-_sd=dot_dotlocal/claude/executable_settings-declared
-if _has "$_sd"; then
-  _trigger run_onchange_after_merge-claude-settings.sh.tmpl "the settings fragment is merged into ~/.claude/settings.json" "$_sd"
-  # Opt-in: only a fragment that declares plugins needs the installer (a machine that may not install
-  # plugins declares none, and carries no installer).
-  if grep -Eq 'enabledPlugins|extraKnownMarketplaces' "$OSRC/$_sd" 2>/dev/null; then
-    _trigger run_onchange_after_install-claude-plugins.sh.tmpl "declaring a plugin does not install it" "$_sd"
-  fi
-fi
-# Opt-in: the mise trust step re-runs with the manifest only where a project opts in to mise trust,
-# and with the domain's miserc fragment wherever the layer ships one.
-_mt=""
-if _has Devel/mani.yaml && grep -Eqs 'miseTrust:' "$OSRC/Devel/mani.yaml" "$OSRC/Devel/mani.yaml.tmpl"; then
-  _mt="Devel/mani.yaml"
-fi
-_has dot_dotlocal/mise/miserc.extra.toml && _mt="$_mt dot_dotlocal/mise/miserc.extra.toml"
-if [ -n "$_mt" ]; then
-  # shellcheck disable=SC2086 # the inputs are fixed words
-  _trigger run_onchange_after_trust-mise-configs.sh.tmpl "the mise trust step writes mise's miserc from these" $_mt
-fi
-if _has dot_dotlocal/skill-externals.yaml; then
-  _trigger run_onchange_after_sync-skill-externals.sh.tmpl "the skill list is installed by skill-externals-sync" dot_dotlocal/skill-externals.yaml
-fi
-# Opt-in and advisory: the gate installs a .git/hooks/pre-commit in this source repo, which some
-# machines may not run custom hooks for.
-if [ -f "$OSRC/tests/run-all.sh" ] && ! ls "$OSRC"/run_onchange_install-test-gate.sh* >/dev/null 2>&1; then
-  note "NOTE        Tier T: tests/run-all.sh has no commit gate; opt in with run_onchange_install-test-gate.sh.tmpl (example: overlay-skeleton/opt-in/run_onchange_install-test-gate.sh.tmpl.example)"
-fi
+tier_t
 
 # The global gitignore must carry the base's defaults. git reads ONE global ignore file, so the
 # overlay owns it and the defaults have to be copied in; this keeps the copy from drifting. The list

@@ -115,6 +115,33 @@ tcase "T13 a miserc fragment the trigger does not hash is missing" 1 'MISSING .*
 printf '#!/bin/sh\n# {{ include "Devel/mani.yaml.tmpl" | sha256sum }}\n# {{ include "dot_dotlocal/mise/miserc.extra.toml" | sha256sum }}\n' > "$tmp/ov/run_onchange_after_trust-mise-configs.sh.tmpl"
 tcase "T14 ...and hashing both passes" 0 ''
 
+# --- --triggers: Tier T alone, for the layer's commit gate. It must fail on exactly what Tier T fails
+# on, and on nothing else: a commit is judged by the source, never by a missing Tier B piece or the
+# machine's deployed state, which the full audit also reads.
+ttcase() { # ttcase <label> <expect-rc> <grep-pattern-or-empty>
+  out=$(OVERLAY_SRC="$tmp/ov" sh "$script" --triggers 2>&1) && rc=0 || rc=$?
+  [ "${rc:-0}" -eq "$2" ] || { echo "FAIL($1): expected exit $2, got ${rc:-0}"; echo "$out"; exit 1; }
+  [ -z "$3" ] || echo "$out" | grep -q "$3" || { echo "FAIL($1): '$3' not reported"; echo "$out"; exit 1; }
+  echo "ok:   $1"
+}
+mk "$tmp/ov"
+ttcase "TT1 --triggers passes a complete overlay" 0 'every input the layer ships has its trigger'
+rm "$tmp/ov/dot_dotlocal/Brewfile.role"
+ttcase "TT2 --triggers does not judge a missing Tier B piece" 0 ''
+echo "$out" | grep -q 'Brewfile' && { echo "FAIL(TT2): --triggers reported a Tier B piece"; echo "$out"; exit 1; }
+mk "$tmp/ov"; printf 'projects:\n  x:\n    path: x\n    miseTrust: true\n' > "$tmp/ov/Devel/mani.yaml.tmpl"
+printf '#!/bin/sh\n# {{ include "Devel/mani.yaml.tmpl" | sha256sum }}\n' > "$tmp/ov/run_onchange_after_trust-mise-configs.sh.tmpl"
+mkdir -p "$tmp/ov/dot_dotlocal/mise"; echo 'x = 1' > "$tmp/ov/dot_dotlocal/mise/miserc.extra.toml"
+ttcase "TT3 --triggers fails one input its trigger does not hash" 1 'MISSING .*trust-mise-configs.* does not hash dot_dotlocal/mise/miserc.extra.toml'
+mk "$tmp/ov"; rm "$tmp/ov/run_onchange_after_generate-worktrunk-config.sh.tmpl"
+ttcase "TT4 --triggers fails a missing trigger" 1 'MISSING .*generate-worktrunk-config'
+out=$(OVERLAY_SRC="$tmp/nope" sh "$script" --triggers 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 2 ] || { echo "FAIL(TT5): --triggers with no overlay should exit 2, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "ok:   TT5 --triggers with no overlay exits 2"
+out=$(OVERLAY_SRC="$tmp/ov" sh "$script" --no-such-flag 2>&1) && rc=0 || rc=$?
+[ "${rc:-0}" -eq 2 ] || { echo "FAIL(TT6): an unknown argument should exit 2, got ${rc:-0}"; echo "$out"; exit 1; }
+echo "ok:   TT6 an unknown argument exits 2"
+
 # --- Tier P: every overlay file carries a reason to be private, or is reported as a candidate to move
 # to the base. ADVISORY: it never changes the exit code, so an overlay written before the list existed
 # keeps passing while its report doubles as the list of what to move.

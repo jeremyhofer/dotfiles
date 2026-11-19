@@ -196,7 +196,7 @@ stays on `PATH`.
 | `tests/post-apply.sh` | every `chezmoi apply` of the base, after it, detached | every suite through Nx, uncached; a failure calls the machine's alert hook (`~/.config/dotfiles/alert`) and is written to `~/.local/state/dotfiles/post-apply.last`; writes `deployed` (before it detaches), then `post-pass` or `post-FAIL`, to the apply ledger (`apply-status` reads it) |
 | `tests/apply-suites.py land` | `land check`, before a change lands on `main` (`git config land.gate`) | every suite uncached with the mutant tests (`RUN_MUTANTS=1`), then `verify-task-io` over every cached suite (all but `test-mise-installed.py`): each run alone under an inotify watch, refusing a read its declared inputs do not cover; Linux only |
 | `secret-scan`, `leak-guard` | every commit and push, in every repository | plaintext secrets; a domain's private terms |
-| `setup/overlay-doctor` | after pulling or changing either layer | the private layer's required pieces, its reasons to be private, both layers owning one file, the manifest's schema; `--machine` assesses git, tools and Claude Code |
+| `setup/overlay-doctor` | after pulling or changing either layer | the private layer's required pieces, its reasons to be private, both layers owning one file, the manifest's schema; `--machine` assesses git, tools and Claude Code; `--triggers` runs only the trigger check, from the source, for the layer's opt-in commit gate |
 | `hook-doctor` | on entering a worktree, once a day | whether each configured hook is live there |
 | `context-lint` | when editing a context file or `docs/` | `AGENTS.md`, `CLAUDE.md` and the `docs/` layout |
 

@@ -1,0 +1,44 @@
+#!/bin/sh
+# Private layer pre-commit. Copy it to .githooks/pre-commit in the layer's own repository, where
+# the base's run-repo-gates hook runs it (tracked, so every clone gets it). It runs the base's
+# `overlay-doctor --triggers`: every input this layer ships to a base mechanism (the manifest, the
+# settings fragment, the miserc fragment, the skill list) must have a run_onchange_ trigger that
+# hashes it, or an apply deploys the input and nothing downstream moves.
+#
+# WHY HERE. The doctor always reported a missing trigger, but nothing ran it at apply or at commit,
+# so the finding sat unseen while a generated mise config went stale on two machines (2026-11-18).
+# A gate on the commit path fails loudly the day a trigger goes missing; a check someone has to
+# remember does not. Only Tier T runs here, because it reads the source alone. The full audit also
+# reads deployed files and PATH, which would judge a commit by the machine's last apply.
+#
+# It is separate from the suite gate in .git/hooks/pre-commit (install-test-gate), which runs only
+# when scripts or tests are staged; this runs on every commit and takes well under a second.
+#
+# The doctor judges the working tree, so git-staged-run sets unstaged edits aside first. An
+# UNTRACKED trigger file is still seen, and would pass a commit that does not contain it.
+#
+# Deliberate skip, for one commit: SKIP_OVERLAY_TRIGGERS=1 git commit ...
+set -u
+[ "${SKIP_OVERLAY_TRIGGERS:-0}" = 1 ] && exit 0
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR 2>/dev/null || true
+root=$(git rev-parse --show-toplevel) || exit 1
+base=${BASE_SRC:-$HOME/.local/share/chezmoi}
+doctor="$base/setup/overlay-doctor"
+refuse() {
+  printf 'overlay pre-commit: %s\n' "$1" >&2
+  printf '  Pull the base (chezmoi git pull), or commit with SKIP_OVERLAY_TRIGGERS=1.\n' >&2
+  exit 1
+}
+[ -f "$doctor" ] || refuse "the base's overlay-doctor is not at $doctor, so the triggers cannot be checked."
+# An older doctor ignores --triggers and runs the full audit, which reads this machine's deployed
+# state. Refuse rather than let that judge the commit.
+grep -q -- '--triggers) mode=triggers' "$doctor" || refuse "the base's overlay-doctor has no --triggers mode yet."
+staged_run=$(command -v git-staged-run 2>/dev/null) \
+  || refuse "git-staged-run is not installed, so the doctor would judge the working tree, not what is staged."
+cd "$root" || exit 1
+out=$(OVERLAY_SRC="$root" BASE_SRC="$base" "$staged_run" sh "$doctor" --triggers 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && exit 0
+printf '%s\n' "$out" >&2
+printf 'overlay pre-commit: refused (overlay-doctor --triggers exit %s). Add or fix the trigger\n' "$rc" >&2
+printf '  it names (examples: overlay-skeleton/ in the base), or commit with SKIP_OVERLAY_TRIGGERS=1.\n' >&2
+exit 1
