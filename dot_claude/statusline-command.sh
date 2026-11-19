@@ -23,7 +23,8 @@ model=$(echo "$input" | jq -r '.model.display_name // empty')
 # A session in a worktree sits in a directory named after its branch, so a basename
 # renders "main" or "feature-x" for every repository and stops identifying anything. Two
 # segments name the repo as well: "repo-a/feature-x". A worktree nested in a standard
-# clone (<repo>/.worktrees/<name>) renders the same way, with ".worktrees" skipped. It also
+# clone (<repo>/.worktrees/<name> or <repo>/.claude/worktrees/<name>) renders the same way, with
+# the worktrees directory skipped. It also
 # reads better for ordinary checkouts, where "org/repo-a" beats a bare "repo-a".
 #
 # $HOME collapses to ~ first, so a path directly under home shows "~/Devel" rather
@@ -47,9 +48,11 @@ path_tail() {
     ''|'/') printf '%s' "${1:-}"; return ;;    # "" and "/" render as themselves
   esac
   local base="${p##*/}" parent="${p%/*}"
-  # A worktree nested in a standard clone sits at <repo>/.worktrees/<name>, so its second segment
-  # is ".worktrees" for every worktree of every repo: show the repository in its place.
+  # A worktree nested in a standard clone sits at <repo>/.worktrees/<name> or
+  # <repo>/.claude/worktrees/<name>, so its second segment is ".worktrees" (or "worktrees") for every
+  # worktree of every repo: show the repository in its place.
   case "$parent" in
+    */.claude/worktrees) parent="${parent%/.claude/worktrees}" ;;
     */.worktrees) parent="${parent%/.worktrees}" ;;
   esac
   if [ -z "$parent" ]; then

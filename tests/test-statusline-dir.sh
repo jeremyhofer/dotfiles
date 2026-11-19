@@ -42,6 +42,11 @@ check /home/tester/Devel/org/repo-b/main   repo-b/main     "a second repo is dis
 # ".worktrees" for every one of them, which names nothing, so the repository is shown instead.
 check /home/tester/Devel/org/repo-a/.worktrees/feat  repo-a/feat  "nested worktree names its repo"
 check /home/tester/Devel/org/repo-b/.worktrees/feat/ repo-b/feat  "nested worktree, trailing slash"
+check /home/tester/Devel/org/repo-a/.claude/worktrees/feat  repo-a/feat  "claude-nested worktree names its repo"
+check /home/tester/Devel/org/repo-b/.claude/worktrees/feat/ repo-b/feat  "claude-nested worktree, trailing slash"
+[[ "$(render /home/tester/Devel/org/repo-a/.claude/worktrees/feat)" != *worktrees* ]] \
+    && ok "the .claude/worktrees segments are never rendered" \
+    || bad "rendered worktrees: $(render /home/tester/Devel/org/repo-a/.claude/worktrees/feat)"
 [[ "$(render /home/tester/Devel/org/repo-a/.worktrees/feat)" != *.worktrees* ]] \
     && ok "the .worktrees segment is never rendered" \
     || bad "rendered .worktrees: $(render /home/tester/Devel/org/repo-a/.worktrees/feat)"

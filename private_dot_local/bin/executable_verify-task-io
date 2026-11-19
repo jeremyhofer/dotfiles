@@ -95,7 +95,7 @@ Both derive from declared inputs (the lockfile, the sources), so the repair is a
 entry saying so, not a new input (financial-management, 2026-11-08).
 
 WHAT IT CANNOT SEE.
-  * node_modules, .git and .worktrees (nested checkouts) are not watched (external dependencies
+  * node_modules, .git, .worktrees and .claude/worktrees (nested checkouts) are not watched (external dependencies
     reach the hash through the lockfile, and a tool cache under node_modules is invisible here), nor
     is anything outside the workspace: $TMPDIR, the home directory, a sibling checkout.
   * A file that does not exist yet but would be read if it did (a new spec a glob would pick up):
@@ -446,11 +446,11 @@ def load_register(root: Path) -> Register:
 # ---- the trace -----------------------------------------------------------------------------------
 
 WATCH_ARGS = ["-m", "-r", "-e", "close_nowrite,close_write,create,moved_to,moved_from,delete",
-              "--exclude", r"(^|/)(node_modules|\.git|\.worktrees)(/|$)", "--format", "%e\t%w%f"]
-# inotifywait's --exclude stops it descending into node_modules, .git and .worktrees (other
-# checkouts, whose sessions may be working during a run) but still reports their direct entries;
-# .nx is Nx's own state. All four are dropped from what is judged.
-UNJUDGED = re.compile(r"^(\.nx|node_modules|\.git|\.worktrees)(/|$)")
+              "--exclude", r"(^|/)(node_modules|\.git|\.worktrees|\.claude/worktrees)(/|$)", "--format", "%e\t%w%f"]
+# inotifywait's --exclude stops it descending into node_modules, .git, .worktrees and
+# .claude/worktrees (other checkouts, whose sessions may be working during a run) but still reports
+# their direct entries; .nx is Nx's own state. All five are dropped from what is judged.
+UNJUDGED = re.compile(r"^(\.nx|node_modules|\.git|\.worktrees|\.claude/worktrees)(/|$)")
 WRITE_KINDS = {"CLOSE_WRITE", "CREATE", "MOVED_TO", "MOVED_FROM", "DELETE"}
 
 # Files Nx itself opens while it walks the workspace, which it does again before a run whenever
@@ -523,10 +523,17 @@ def traced(root: Path, scratch: Path, name: str, run, drain: float) -> Trace:
     return Trace(opens, writes, status)
 
 
+def _walk_skips(dirpath: str, d: str) -> bool:
+    """Whether os.walk should not descend into directory d of dirpath: dependencies, VCS state and
+    other checkouts (.worktrees/*, and .claude/worktrees/* but not the rest of .claude)."""
+    return (d in ("node_modules", ".git", ".worktrees")
+            or (d == "worktrees" and os.path.basename(dirpath) == ".claude"))
+
+
 def count_dirs(root: Path) -> int:
     n = 0
-    for _, dirs, _ in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".worktrees")]
+    for dirpath, dirs, _ in os.walk(root):
+        dirs[:] = [d for d in dirs if not _walk_skips(dirpath, d)]
         n += 1
     return n
 
@@ -571,7 +578,7 @@ def output_paths(root: Path, output: str) -> list[str]:
     base = root.joinpath(*lit) if lit else root
     found = []
     for dirpath, dirs, files in os.walk(base):
-        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".worktrees")]
+        dirs[:] = [d for d in dirs if not _walk_skips(dirpath, d)]
         rel = Path(dirpath).relative_to(root).as_posix()
         prefix = "" if rel == "." else f"{rel}/"
         found += [f"{prefix}{n}" for n in [*dirs, *files] if glob_match(f"{prefix}{n}", output)]

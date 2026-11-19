@@ -64,6 +64,10 @@ rec "$A/sess1/subagents/agent-x2.jsonl" m4 claude-haiku 2026-10-16T10:40:00Z 3 1
 C="$CLAUDE_PROJECTS_DIR/-home-c"; mkdir -p "$C" "$HOME/Devel/c/.git" "$HOME/Devel/c/pkg/deep"
 rec "$C/s3.jsonl" c1 claude-opus 2026-10-16T09:00:00Z 5 5 0 0 "$HOME/Devel/c/pkg/deep"
 rec "$C/s3.jsonl" c2 claude-opus 2026-10-16T09:01:00Z 5 5 0 0 "$HOME/Devel/c/.worktrees/x/pkg"
+# A real linked worktree holds a `.git` file, so the ancestor walk alone would stop AT it.
+mkdir -p "$HOME/Devel/c/.claude/worktrees/y/pkg"; printf 'gitdir: x\n' > "$HOME/Devel/c/.claude/worktrees/y/.git"
+rec "$C/s3.jsonl" c3 claude-opus 2026-10-16T09:02:00Z 5 5 0 0 "$HOME/Devel/c/.claude/worktrees/y/pkg"
+rec "$C/s3.jsonl" c4 claude-opus 2026-10-16T09:03:00Z 5 5 0 0 "$HOME/Devel/c/.claude/worktrees"
 # Project B has no cwd (falls back to the key name): one record in window, one ten days ago.
 rec "$B/s2.jsonl" b1 claude-opus 2026-10-14T20:00:00Z 1000 4000 0 0
 rec "$B/s2.jsonl" b2 claude-opus 2026-10-05T10:00:00Z 9999 9999 9 9
@@ -98,7 +102,7 @@ eq "split: subagent cache-read (max of cumulative)" "$(js "d['projects']['~/Deve
 eq "split: subagent messages" "$(js "d['projects']['~/Devel/a']['subagent']['messages']")" 2
 eq "split: distinct subagents" "$(js "d['projects']['~/Devel/a']['subagents_spawned']")" 2
 eq "fold: worktree cwd merged into repo (one project row for A)" "$(js "sorted(d['projects'])")" "['-home-b', '~/Devel/a', '~/Devel/c']"
-eq "fold: subdirectory and worktree both reach the .git root" "$(js "d['projects']['~/Devel/c']['main']['messages']")" 2
+eq "fold: subdirectory and worktree both reach the .git root" "$(js "d['projects']['~/Devel/c']['main']['messages']")" 4
 eq "fold: model mix" "$(js "d['projects']['~/Devel/a']['models']")" "{'claude-haiku': 1, 'claude-opus': 1, 'claude-sonnet': 2}"
 eq "fallback: no cwd uses key name" "$(js "d['projects']['-home-b']['main']['output']")" 1000
 
@@ -110,7 +114,7 @@ eq "window: --since 2026-10-14 keeps B" "$(js "sorted(d['projects'])" --since 20
 
 # 4) Days, local time.
 eq "days: UTC buckets" "$(js "sorted(d['days'])")" "['2026-10-14', '2026-10-16']"
-eq "days: UTC totals for 10-16 (main out)" "$(js "d['days']['2026-10-16']['main']['output']")" 130
+eq "days: UTC totals for 10-16 (main out)" "$(js "d['days']['2026-10-16']['main']['output']")" 140
 eq "days: local time (Tokyo moves B to 10-15)" "$(TZ=Asia/Tokyo js "sorted(d['days'])")" "['2026-10-15', '2026-10-16']"
 
 # 5) Subagent groups.

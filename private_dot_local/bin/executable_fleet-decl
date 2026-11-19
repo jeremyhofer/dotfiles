@@ -459,7 +459,8 @@ case "${1:-}" in
     exit 0 ;;
   --layout)
     # Which of the two shapes a project's repository takes on disk. A STANDARD clone is an ordinary,
-    # non-bare clone at `path`, its worktrees nested under <path>/.worktrees/. A BARE CONTAINER is a
+    # non-bare clone at `path`, its worktrees nested under <path>/.worktrees/ (or
+    # <path>/.claude/worktrees/ where a machine sets claudeWorktrees). A BARE CONTAINER is a
     # directory holding a bare repository named .git with every branch checked out beside it.
     #
     # Bare only when the entry DECLARES a container, by any one of three clauses: a `container:`

@@ -326,6 +326,8 @@ EXCLUDE_DIRS = {
     # reader error has to mean "a repo you own could not be enumerated" or it stops meaning anything.
     "gopath", "target", ".cargo", ".gradle", ".m2",
     # A linked worktree is a separate checkout of the same repository, never part of the main one.
+    # `.worktrees` nests them; `.claude/worktrees` (the claudeWorktrees layout) is already skipped by
+    # `.claude` above, so no path-aware rule is needed.
     ".worktrees",
 }
 

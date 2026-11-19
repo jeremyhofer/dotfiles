@@ -115,6 +115,12 @@ check "old .bare container is NOT satisfied by an entry at <c>" '[ "$(verdict o)
 mani w=cnew/feat; state "$LIVE" "$WS/cnew"; run
 check "a worktree resolves to its container's root" '[ "$(verdict w)" = trusted ]'
 
+mkdir -p "$WS/plain2/.claude"
+git -C "$WS/plain2" worktree add -q "$WS/plain2/.claude/worktrees/cw" -b cwt main 2>/dev/null \
+  || git -C "$WS/plain2" worktree add -q -b cwt "$WS/plain2/.claude/worktrees/cw"
+mani x="plain2/.claude/worktrees/cw"; state "$LIVE" "$WS/plain2"; run
+check "a worktree at <repo>/.claude/worktrees/<name> resolves to its repository's root" '[ "$(verdict x)" = trusted ]'
+
 # --- ancestor ------------------------------------------------------------------------------------
 echo "ancestor trust"
 mani n=outer/inner; state "$LIVE" "$WS/outer" "$WS"; run

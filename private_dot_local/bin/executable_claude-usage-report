@@ -78,8 +78,8 @@ the usage in them is cumulative within the stream. Summing them overcounts badly
 469 usage records for 221 messages). Records are therefore merged by message.id, keeping each usage
 field's MAXIMUM, and a message is dated by its earliest record.
 
-PROJECT. A record's `cwd` reduced to its repository root: a trailing `/.worktrees/<name>` and
-anything below it is stripped, then, if the directory still exists, the nearest ancestor holding a
+PROJECT. A record's `cwd` reduced to its repository root: a trailing `/.worktrees/<name>` or
+`/.claude/worktrees/<name>` and anything below it is stripped, then, if the directory still exists, the nearest ancestor holding a
 `.git` entry is used (sessions often run in a subdirectory). $HOME is shown as `~`. Without a cwd,
 the project-key directory name is used.
 
@@ -158,11 +158,14 @@ def repo_root(path):
 def project_of(cwd, key, home):
     if not isinstance(cwd, str) or not cwd:
         return key
-    i = cwd.find("/.worktrees/")
-    if i >= 0:
-        cwd = cwd[:i]
-    elif cwd.endswith("/.worktrees"):
-        cwd = cwd[: -len("/.worktrees")]
+    for d in ("/.worktrees", "/.claude/worktrees"):
+        i = cwd.find(d + "/")
+        if i >= 0:
+            cwd = cwd[:i]
+            break
+        if cwd.endswith(d):
+            cwd = cwd[: -len(d)]
+            break
     cwd = repo_root(cwd)
     if home and (cwd == home or cwd.startswith(home + "/")):
         cwd = "~" + cwd[len(home):]

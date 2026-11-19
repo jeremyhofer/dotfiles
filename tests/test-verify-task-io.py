@@ -288,6 +288,30 @@ def test_nested_worktrees_are_not_watched(tmp_path):
 
 
 @needs_inotify
+def test_claude_nested_worktrees_are_not_watched(tmp_path):
+    # The same, for worktrees under .claude/worktrees/ (but not the rest of .claude).
+    root = tmp_path / "ws"
+    root.mkdir()
+    make_workspace(root)
+    (root / ".claude" / "worktrees" / "other").mkdir(parents=True)  # .claude itself is judged
+    import io
+    out = io.StringIO()
+    r = vti.audit(root, single_nx(root, "cat libs/a/src/main.txt > /dev/null; mkdir -p dist/a; "
+                                        "echo a > dist/a/o; echo x > .claude/worktrees/other/f"),
+                  tmp_path / "s", requested=[], static_only=False, drain=DRAIN, out=out, err=out)
+    assert r.code == 0 and not r.findings, out.getvalue()
+
+
+def test_the_walk_skips_claude_worktrees_but_not_the_rest_of_claude(tmp_path):
+    (tmp_path / ".claude" / "worktrees" / "w").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    (tmp_path / ".worktrees" / "w").mkdir(parents=True)
+    (tmp_path / "libs" / "worktrees").mkdir(parents=True)
+    # directories: root, .claude, .claude/skills, libs, libs/worktrees
+    assert vti.count_dirs(tmp_path) == 5
+
+
+@needs_inotify
 def test_register_accepts_a_read_and_reports_a_stale_entry(tmp_path):
     root = tmp_path / "ws"
     root.mkdir()

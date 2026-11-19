@@ -405,6 +405,13 @@ def test_a_linked_worktree_is_not_linted_as_part_of_the_main_checkout(box):
     assert "zzz" not in r.stdout and "npm(1)" in r.stdout
 
 
+def test_a_claude_nested_linked_worktree_is_not_linted_as_part_of_the_main_checkout(box):
+    scripts(box / "alpha", foo=1)
+    scripts(box / "alpha" / ".claude" / "worktrees" / "side", zzz=1)
+    r = lint(box, allow=allowance())
+    assert "zzz" not in r.stdout and "npm(1)" in r.stdout
+
+
 def test_a_symlinked_manifest_path_still_identifies_the_repository(box):
     scripts(box / "alpha", foo=1)
     (box / "link").symlink_to(box / "alpha")
