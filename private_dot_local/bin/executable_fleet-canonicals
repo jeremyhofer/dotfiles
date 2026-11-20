@@ -373,6 +373,9 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                       that was RESUMED after it was parked (opening it from the agents view
                       does this), which rewrites its start time. That specific case is now
                       detected automatically from the transcript, so --force should be rare.
+                      Also the hatch when the gate refuses a session that kept working after
+                      its park (more than 40 main-thread tool calls since the handoff
+                      document's date): a new park is the real answer, --force the override.
   handoff <name> [--set <path>]
                     resolve (or record) the handoff a canonical should read next.
                     Prints the path; FAILS LOUDLY when the pointer or the file it names
@@ -2439,6 +2442,19 @@ iso_to_epoch() {
   return 1
 }
 
+# session_transcript_file SESSION_ID -- print the path of the session's main transcript
+# (<FLEET_TRANSCRIPT_DIR>/<project-key>/<sessionId>.jsonl) and return 0; return 1 when none can be
+# found or read. maxdepth 2 keeps the search out of <sessionId>/subagents/, whose transcripts are
+# another thread's work and must never stand in for the session's own.
+session_transcript_file() {
+  local sid="${1:-}" f
+  [ -n "$sid" ] || return 1
+  [ -d "$FLEET_TRANSCRIPT_DIR" ] || return 1
+  f=$(find "$FLEET_TRANSCRIPT_DIR" -maxdepth 2 -type f -name "$sid.jsonl" 2>/dev/null | head -n1)
+  [ -n "$f" ] && [ -r "$f" ] || return 1
+  printf '%s\n' "$f"
+}
+
 # The session's TRUE start, read from its transcript rather than from the agents listing.
 #
 # WHY NOT startedAt. A RESUMED session keeps its id, its transcript and its whole prior context,
@@ -2458,10 +2474,7 @@ iso_to_epoch() {
 # never break the gate. A gate that cannot run is worse than one calibrated slightly wrong.
 session_true_start() {
   local sid="${1:-}" f first
-  [ -n "$sid" ] || return 1
-  [ -d "$FLEET_TRANSCRIPT_DIR" ] || return 1
-  f=$(find "$FLEET_TRANSCRIPT_DIR" -maxdepth 2 -type f -name "$sid.jsonl" 2>/dev/null | head -n1)
-  [ -n "$f" ] && [ -r "$f" ] || return 1
+  f=$(session_transcript_file "$sid") || return 1
   first=$(jq -r 'select(.timestamp)|.timestamp' "$f" 2>/dev/null | head -n1)
   [ -n "$first" ] || return 1
   iso_to_epoch "$first"
@@ -2539,6 +2552,31 @@ newest_standard_handoff() {
   done
   [ -n "$best" ] || return 1
   printf '%s %s\n' "$best_e" "$best"
+}
+
+# WORK_SINCE_PARK_MAX -- the most main-thread tool calls a session may have made after its handoff
+# document's date before the gate refuses: a seat that kept working after its park owes a new one.
+# 40 is twice the largest tail measured after a real park (19 calls, the closing steps of a park
+# itself: placing the file, recording the pointer, a last commit).
+WORK_SINCE_PARK_MAX=40
+
+# tool_calls_after FILE EPOCH -- print the number of DISTINCT main-thread tool calls in transcript
+# FILE whose entry is timestamped after EPOCH; return 1 when it cannot be counted. One jq pass.
+# Distinct tool_use ids, not lines: one assistant message can be split across several lines, each
+# repeating the message's content blocks. Sidechain entries (isSidechain true) are another thread's
+# work. Timestamps are UTC ISO 8601 with fractional seconds, stripped for fromdateiso8601; an entry
+# whose timestamp cannot be parsed counts as epoch 0, so it is never counted as after.
+tool_calls_after() {
+  local n
+  n=$(jq -n --argjson e "$2" '
+    [ inputs
+      | select(type == "object" and .type == "assistant" and .isSidechain != true)
+      | (try (.timestamp | sub("\\.[0-9]+"; "") | fromdateiso8601) catch 0) as $t
+      | select($t > $e)
+      | .message.content? | arrays | .[] | select(type == "object" and .type == "tool_use") | .id ]
+    | unique | length' "$1" 2>/dev/null) || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$n"
 }
 
 # handoff_gate NAME JSON STUB_SET STUB_TEXT VERB FORCE_SET FORCE_TEXT
@@ -2713,6 +2751,36 @@ handoff_gate() {
       fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
   Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+    fi
+  fi
+
+
+  # WORK SINCE THE PARK. A seat can park, then keep working for hours in the same session; its
+  # pointer still names that park, every comparison above passes, and the successor reads a stale
+  # park as current. Needs a document date and the transcript (the listing has no tool calls); with
+  # no transcript the count cannot be made, so it is skipped, said so, and not refused.
+  if [ -n "$tgt_e" ]; then
+    local tfile calls
+    if tfile=$(session_transcript_file "$sid") && calls=$(tool_calls_after "$tfile" "$tgt_e"); then
+      if [ "$calls" -gt "$WORK_SINCE_PARK_MAX" ]; then
+        die "$verb: '$name' kept working after the handoff it recorded.
+      document           $ptr_target
+      $tgt_label$(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
+      tool calls since   $calls  (the limit is $WORK_SINCE_PARK_MAX)
+  The pointer names a park or checkpoint the session has worked well past, so the successor would
+  read an old orientation as current. A seat that kept working after a park or checkpoint owes a
+  new park.
+  Park properly, then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD and the work since is not worth a new park, keep the
+  pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
+      fi
+    else
+      printf 'note     %-24s work-since-park check skipped: no readable transcript for session %s\n' \
+        "$name" "${sid:-(none)}"
     fi
   fi
 

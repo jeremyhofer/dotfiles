@@ -1008,6 +1008,78 @@ out=$(GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --dry-run);
 out=$(GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
 [[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force passes a session with no known start" || bad "--force no-start (rc=$rc): $out"
 
+# 4. WORK SINCE THE PARK: a seat that parked and then kept working in the same session. The
+# threshold is 40 main-thread tool calls after the document's date (twice the largest tail measured
+# after a real park); a refusal needs MORE than 40, so 40 itself is the boundary control.
+WSP_DIR="$TMPROOT/wsp-transcripts"; WSP_T="$WSP_DIR/proj"
+print "[{\"pid\":90555,\"id\":\"eee5\",\"name\":\"zeta-canonical\",\"sessionId\":\"swp\",\"startedAt\":$(( (NOW - 3600) * 1000 ))}]" \
+  > "$TMPROOT/zeta-wsp.json"
+giso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.250Z 2>/dev/null || date -r "$1" -u +%Y-%m-%dT%H:%M:%S.250Z }
+wsp_doc=$(( NOW - 3000 ))     # the park's stamp (minute precision, so the minute below it)
+wsp_doc=$(( wsp_doc - wsp_doc % 60 ))
+# wsp_build <after> <before> <sidechain> [<dup-lines>]: a transcript for session swp. It opens two
+# hours ago (before the document), has <before> tool calls dated before the document, <after> after
+# it of which <sidechain> are isSidechain:true, and <dup-lines> EXTRA lines repeating the last
+# after-call's id (one assistant message split across lines).
+wsp_build() {
+  local i n_after=$1 n_before=$2 n_side=$3 dups=${4:-0}
+  rm -rf "$WSP_DIR"; mkdir -p "$WSP_T"
+  { print -r -- "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"$(giso $(( NOW - 7200 )))\"}"
+    for (( i=1; i<=n_before; i++ )); do
+      print -r -- "{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"$(giso $(( wsp_doc - 600 - i )))\",\"message\":{\"id\":\"mb$i\",\"content\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"tool_use\",\"id\":\"tb$i\"}]}}"
+    done
+    for (( i=1; i<=n_after; i++ )); do
+      local sc=false; (( i <= n_side )) && sc=true
+      print -r -- "{\"type\":\"assistant\",\"isSidechain\":$sc,\"timestamp\":\"$(giso $(( wsp_doc + 60 + i )))\",\"message\":{\"id\":\"ma$i\",\"content\":[{\"type\":\"tool_use\",\"id\":\"ta$i\"}]}}"
+    done
+    for (( i=1; i<=dups; i++ )); do
+      print -r -- "{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"$(giso $(( wsp_doc + 200 + i )))\",\"message\":{\"id\":\"ma1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"ta1\"}]}}"
+    done
+  } > "$WSP_T/swp.jsonl"
+}
+wsp_fresh() {
+  local f="$GS2/handoff-staging/$(gstamp $wsp_doc)-$GS_NAME"
+  gfresh "$f" $(( NOW - 60 )); gdoc "$f"
+}
+gwfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" FLEET_TRANSCRIPT_DIR="$WSP_DIR" \
+         FLEET_AGENTS_JSON_CMD="cat $TMPROOT/zeta-wsp.json" bash "$TOOL" "$@" 2>&1 }
+
+wsp_build 41 0 0; wsp_fresh
+out=$(gwfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"kept working"* && "$out" == *"41"* && "$out" == *"limit is 40"* \
+   && "$out" == *"owes a"*"park"* && "$out" == *"--force"* && "$out" == *"--stub"* && "$out" == *"handoff zeta-canonical --set"* ]] \
+    && ok "gate refuses a session with 41 main-thread tool calls after the document date" \
+    || bad "41 tool calls after the park passed or lacked the text (rc=$rc): $out"
+out=$(gwfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force skips the work-since-park refusal" || bad "--force work-since-park (rc=$rc): $out"
+wsp_build 40 0 0; wsp_fresh
+out=$(gwfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* && "$out" != *"kept working"* ]] \
+    && ok "gate passes exactly 40 tool calls after the document date (the boundary)" \
+    || bad "40 tool calls refused (rc=$rc): $out"
+wsp_build 40 5 0; wsp_fresh   # 45 calls in all, 5 of them before the document
+out=$(gwfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "gate counts only tool calls AFTER the document date (41+ in all, 40 after)" \
+    || bad "calls before the document date were counted (rc=$rc): $out"
+wsp_build 41 0 1; wsp_fresh   # 41 after, 1 of them a sidechain
+out=$(gwfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "gate does not count isSidechain tool calls" \
+    || bad "sidechain tool calls were counted (rc=$rc): $out"
+wsp_build 40 0 0 5; wsp_fresh   # 45 lines, 40 distinct tool_use ids
+out=$(gwfc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
+    && ok "gate counts distinct tool_use ids, not lines (one message split across lines)" \
+    || bad "split message lines were counted more than once (rc=$rc): $out"
+# no transcript for the session: skipped with a note, not refused
+wsp_fresh
+out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" FLEET_TRANSCRIPT_DIR="$TMPROOT/nope" \
+      FLEET_AGENTS_JSON_CMD="cat $TMPROOT/zeta-wsp.json" bash "$TOOL" refresh zeta-canonical --dry-run 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == *"would refresh"* && "$out" == *"note"*"work-since-park check skipped"* ]] \
+    && ok "with no transcript the work-since-park check is skipped with a note, not refused" \
+    || bad "missing transcript refused or said nothing (rc=$rc): $out"
+
 # --- --stub ---
 rm -rf "$GSTATE"
 out=$(zfc refresh zeta-canonical --stub 'nothing in flight' --dry-run); rc=$?

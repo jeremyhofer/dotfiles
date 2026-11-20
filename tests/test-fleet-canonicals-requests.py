@@ -1390,6 +1390,77 @@ def test_serve_a_document_stamped_in_the_start_minute_is_served(fleet):
     fleet.expect("r-dc2", "done", "", "a standard document stamped in the start's own minute passes")
 
 
+# WORK SINCE THE PARK: a seat that parked and then kept working in the same session. The gate refuses
+# when MORE than 40 distinct main-thread tool calls are timestamped after the document's date (the
+# shell gate in fleet-canonicals makes the same check).
+
+def _iso(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%S.250Z", time.gmtime(epoch))
+
+
+def _work_after_park(fleet, after, before=0, sidechain=0, dup_lines=0):
+    """The session's transcript for a seat parked at TRANSCRIPT_START + 600: it opens at
+    TRANSCRIPT_START, has `before` tool calls dated before the document, `after` after it (the first
+    `sidechain` of them isSidechain: true), and `dup_lines` extra lines repeating one after-call's id
+    (one assistant message split across lines). Returns the document, pointed at."""
+    doc = _doc(fleet, "staged", None, TRANSCRIPT_START + 600)
+    doc_e = int(time.mktime(time.strptime(_stamp(TRANSCRIPT_START + 600), "%Y-%m-%d-%H%M")))
+
+    def call(i, ts, side, mid, tid):
+        return {"type": "assistant", "isSidechain": side, "timestamp": _iso(ts),
+                "message": {"id": mid, "content": [{"type": "text", "text": "x"},
+                                                   {"type": "tool_use", "id": tid}]}}
+    lines = [{"type": "user", "isSidechain": False, "timestamp": "2026-11-08T01:00:00Z",
+              "message": {"role": "user", "content": "go"}}]
+    lines += [call(i, doc_e - 300 - i, False, "mb%d" % i, "tb%d" % i) for i in range(before)]
+    lines += [call(i, doc_e + 60 + i, i < sidechain, "ma%d" % i, "ta%d" % i) for i in range(after)]
+    lines += [call(0, doc_e + 400 + i, False, "ma%d" % sidechain, "ta%d" % sidechain) for i in range(dup_lines)]
+    lines += [{"type": "assistant", "isSidechain": False, "timestamp": _iso(doc_e + 900),
+               "message": {"role": "assistant", "stop_reason": "end_turn", "content": []}},
+              {"type": "system", "subtype": "turn_duration", "timestamp": _iso(doc_e + 901)},
+              {"type": "last-prompt"}]   # the turn ended, as `transcript(..., "ended")` writes it
+    (fleet.transcripts / "s-pk.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+    fleet.set_handoff("alpha-canonical", str(doc))
+    return doc
+
+
+def test_serve_a_session_with_41_tool_calls_after_its_park_waits(fleet):
+    _parked_blocked(fleet, "wk100001")
+    _work_after_park(fleet, 41)
+    _serve_one(fleet, "r-wp1")
+    fleet.expect("r-wp1", "waiting", "working", "41 main-thread tool calls after the document's date wait")
+    detail = fleet.result("r-wp1", "detail")
+    assert "41" in detail and "40" in detail and "--force" in detail, detail
+
+
+def test_serve_a_session_with_exactly_40_tool_calls_after_its_park_is_served(fleet):
+    _parked_blocked(fleet, "wk100002")
+    _work_after_park(fleet, 40)
+    _serve_one(fleet, "r-wp2")
+    fleet.expect("r-wp2", "done", "", "exactly 40 tool calls after the document's date pass (the boundary)")
+
+
+def test_serve_only_tool_calls_after_the_document_date_count(fleet):
+    _parked_blocked(fleet, "wk100003")
+    _work_after_park(fleet, 40, before=5)
+    _serve_one(fleet, "r-wp3")
+    fleet.expect("r-wp3", "done", "", "41+ tool calls in all, 40 after the document's date, pass")
+
+
+def test_serve_sidechain_tool_calls_do_not_count(fleet):
+    _parked_blocked(fleet, "wk100004")
+    _work_after_park(fleet, 41, sidechain=1)
+    _serve_one(fleet, "r-wp4")
+    fleet.expect("r-wp4", "done", "", "41 after the date, one of them a sidechain, pass")
+
+
+def test_serve_a_message_split_across_lines_counts_its_tool_call_once(fleet):
+    _parked_blocked(fleet, "wk100005")
+    _work_after_park(fleet, 40, dup_lines=5)
+    _serve_one(fleet, "r-wp5")
+    fleet.expect("r-wp5", "done", "", "45 lines carrying 40 distinct tool_use ids pass")
+
+
 # a document whose name carries no stamp is dated by the commit that ADDED it, never by the pointer's
 # own time (a pointer recorded after the start can name an old file)
 
@@ -2999,6 +3070,21 @@ MUTANTS = [
      "test_snapshot_a_1m_model_is_measured_against_a_million_tokens"),
     ("context-over-window", "a prompt larger than the window is reported as over 100%",
      "    if tokens > window:\n", "    if False:\n", "test_snapshot_a_prompt_larger_than_the_window_names_the_window_as_wrong"),
+    ("work-since-boundary", "a session with exactly 40 tool calls since its park is refused",
+     "    if calls > WORK_SINCE_PARK_MAX:", "    if calls >= WORK_SINCE_PARK_MAX:",
+     "test_serve_a_session_with_exactly_40_tool_calls_after_its_park_is_served"),
+    ("work-since-sidechain", "sidechain tool calls are counted",
+     'or d.get("isSidechain") is True:', "or False:",
+     "test_serve_sidechain_tool_calls_do_not_count"),
+    ("work-since-before-date", "tool calls before the document's date are counted",
+     "if when <= epoch or not isinstance(content, list):", "if not isinstance(content, list):",
+     "test_serve_only_tool_calls_after_the_document_date_count"),
+    ("work-since-lines", "tool calls are counted by line, not by distinct id",
+     'seen.update(str(b.get("id")) for b in content', 'seen.update(str(b.get("id")) + str(len(seen)) for b in content',
+     "test_serve_a_message_split_across_lines_counts_its_tool_call_once"),
+    ("work-since-off", "the work-since-park refusal is removed",
+     "    if calls > WORK_SINCE_PARK_MAX:", "    if False:",
+     "test_serve_a_session_with_41_tool_calls_after_its_park_waits"),
 ]
 
 

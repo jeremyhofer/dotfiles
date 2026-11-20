@@ -135,6 +135,10 @@ are opposites; give at most one:
   Keeps the pointer and skips the check. The usual cause, a session resumed after it parked, is now
   detected from the transcript, so this should be rare.
 
+The gate also refuses a session that **kept working after its park**: more than 40 main-thread tool
+calls in its transcript after the pointer's document date (subagent and sidechain calls do not count).
+A seat that kept working after a park or checkpoint owes a new park; `--force` keeps the recorded one.
+
 ## Other lifecycle verbs
 
 **These are the human's, run from a terminal; a session names the command and does not run it,

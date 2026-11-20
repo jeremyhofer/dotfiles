@@ -1025,6 +1025,53 @@ def pid_record_statuses(name: str, session_id: str) -> list[str]:
     return out
 
 
+# The most main-thread tool calls a session may have made after its handoff document's date before
+# the gate refuses it: a seat that kept working after a park owes a new one. 40 is twice the largest
+# tail measured after a real park (19 calls, the closing steps of a park itself: placing the file,
+# recording the pointer, a last commit). The gate in fleet-canonicals has the same constant.
+WORK_SINCE_PARK_MAX = 40
+
+
+def tool_calls_after(session_id: str, epoch: int) -> int | None:
+    """The number of DISTINCT main-thread tool calls in the session's transcript timestamped after
+    `epoch`, or None when the transcript cannot be found or read. One pass over the file. Distinct
+    tool_use ids, not lines: one assistant message can be split across lines that repeat its content
+    blocks. Sidechain entries (isSidechain true) are another thread's work, and subagent
+    transcripts live apart, under <sessionId>/subagents/, where the glob below does not look. The
+    gate in fleet-canonicals (tool_calls_after) counts the same."""
+    if not session_id:
+        return None
+    hits = list(TRANSCRIPTS.glob(f"*/{session_id}.jsonl")) + list(TRANSCRIPTS.glob(f"{session_id}.jsonl"))
+    if not hits:
+        return None
+    seen: set[str] = set()
+    try:
+        with open(hits[0], encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(d, dict) or d.get("type") != "assistant" or d.get("isSidechain") is True:
+                    continue
+                ts = d.get("timestamp")
+                if not isinstance(ts, str):
+                    continue
+                try:   # UTC, ISO 8601 with a trailing Z
+                    when = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+                except ValueError:
+                    continue
+                msg = d.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if when <= epoch or not isinstance(content, list):
+                    continue
+                seen.update(str(b.get("id")) for b in content
+                            if isinstance(b, dict) and b.get("type") == "tool_use")
+    except OSError:
+        return None
+    return len(seen)
+
+
 def transcript_start(session_id: str) -> int | None:
     """The epoch of the first timestamped entry of the session's transcript: when its work began,
     which a resume does not rewrite (the handoff gate in fleet-canonicals reads the same)."""
@@ -1145,7 +1192,8 @@ def handoff_dirs(placed_under: str = "") -> list[Path]:
 
 def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> str | None:
     """None when the handoff pointer names an existing file, under `placed_under` when one is given
-    (a placed copy, not a staged draft), recorded after the session's work began; else what fails."""
+    (a placed copy, not a staged draft), recorded after the session's work began and not worked past
+    since (at most WORK_SINCE_PARK_MAX main-thread tool calls after the document's date); else what fails."""
     pointer = handoff_set_at(name)
     if pointer is None:
         return "no handoff pointer with a set-at stamp is recorded"
@@ -1191,6 +1239,21 @@ def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> s
         return (f"a newer handoff than the recorded one exists ({newest[1]}, stamped "
                 f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(newest[0]))}); record it with "
                 f"`fleet-canonicals handoff {name} --set {newest[1]}`")
+    # WORK SINCE THE PARK: every comparison above passes for a seat that parked and then kept working
+    # in the same session, and its successor would read that park as current. An unreadable
+    # transcript refuses (fail closed); the start was read from the same file above, so it is rare.
+    calls = tool_calls_after(session_id, dated)
+    if calls is None:
+        return (f"the session's transcript could not be read to count its tool calls since the "
+                f"handoff document's date; `fleet-canonicals refresh {name} --force '<why>'` keeps the "
+                f"pointer and skips the comparison")
+    if calls > WORK_SINCE_PARK_MAX:
+        return (f"the session kept working after the handoff document ({target}, "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(dated))}): {calls} main-thread tool "
+                f"calls since, more than {WORK_SINCE_PARK_MAX}, so the successor would read an old park "
+                f"as current and the seat owes a new one; park again and `fleet-canonicals handoff "
+                f"{name} --set <path>`, or `fleet-canonicals refresh {name} --force '<why>'` if the "
+                f"recorded handoff is good")
     return None
 
 

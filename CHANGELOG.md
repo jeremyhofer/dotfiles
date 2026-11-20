@@ -32,6 +32,17 @@ Entries are newest first.
 
 ---
 
+## 2026-11-19 (fleet-canonicals: the handoff gate refuses a seat that kept working after its park)
+
+`refresh` and `down` (in `fleet-canonicals` and in the request queue's checks) now count the main-thread
+tool calls in the session's transcript made after its handoff document's date, and refuse above 40
+(twice the largest tail measured after a real park). A seat that parks and then works on in the same
+session owes a new park; `--force` still keeps the recorded one. Subagent and sidechain calls are not
+counted. With no transcript to read, the shell gate skips the check with a `note` line; the queue,
+which already needs the transcript, refuses. Nothing to do.
+
+---
+
 
 ## 2026-11-19 (fleet-canonicals: a moved handoff, an unreadable pid record, a seat started since the snapshot)
 
