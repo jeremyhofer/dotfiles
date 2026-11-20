@@ -79,10 +79,15 @@ demand" rows.
 | A deeper-context document | Write `docs/reference/<topic>.md`; add a `## Deeper context` line naming the situation: "read before cutting a release" | The session judges that the situation has arisen |
 | A nested context file | In the subdirectory it concerns, an `AGENTS.md` with the content and a `CLAUDE.md` whose first line is `@AGENTS.md` | A file in that subdirectory is read |
 | A path-scoped rules file | `.claude/rules/<topic>.md` with frontmatter `paths:` listing globs, e.g. `- "src/api/**"` | A file matching a glob is read |
-| A project skill | `.claude/skills/<name>/SKILL.md`, its description naming the situations | Its description always; its body when invoked |
+| A project skill | `skills/<name>/SKILL.md`, its description naming the situations, reached through a committed symlink `.claude/skills/<name>` → `../../skills/<name>` | Its description always; its body when invoked |
 
 A deeper-context pointer depends on the session choosing to follow it, so word the situation
 precisely. The other three are triggered by the harness.
+
+A project skill's files live outside `.claude/skills/` because Claude Code's sandbox write-protects
+that directory: a skill stored there cannot be edited by the project's own sandboxed sessions. The
+user creates the symlink once, outside the sandbox. After that, sessions edit the skill at
+`skills/<name>/` like any other file in the repository.
 
 A nested context file adds to the root file and never overrides it: Claude Code loads both, and
 other tools resolve nesting differently. It carries only its own content, not the root's six

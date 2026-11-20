@@ -26,7 +26,7 @@ Ask who needs it next, and when. Stop at the first match.
 | It applies… | Home |
 | --- | --- |
 | in every session in this repository | the repo's context file (`AGENTS.md`, or `CLAUDE.md` if the repo has no `AGENTS.md`) |
-| in one situation that announces itself (a release, a data import, a failing gate) | the repo's docs, or a project skill in `.claude/skills/` |
+| in one situation that announces itself (a release, a data import, a failing gate) | the repo's docs, or a project skill (`skills/<name>/`, linked from `.claude/skills/<name>`) |
 | to a tool, a machine or an incident, as a fact looked up when needed | the docs of the repository that owns that tool or machine |
 | as work still to do | the project's tracker, and only if the user asked for it to be tracked |
 | as a rule that must be obeyed | a check: a hook, a lint or a test. A written rule is a request; a check is enforcement |
