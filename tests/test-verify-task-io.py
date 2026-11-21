@@ -508,6 +508,7 @@ def test_main_runs_nx_on_the_environment_mise_resolved(tmp_path, monkeypatch):
         return vti.Result(0)
 
     monkeypatch.setattr(vti, "audit", fake_audit)
+    monkeypatch.setattr(vti.sys, "platform", "linux")   # past the platform guard: the audit is stubbed
     assert vti.main(["--workspace", str(root), "--static"]) == 0
     assert seen["env"].get("FROM_MISE") == "1"
     assert str(shims) not in seen["env"]["PATH"].split(os.pathsep)

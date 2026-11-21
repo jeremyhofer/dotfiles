@@ -1626,7 +1626,8 @@ def test_session_term_a_process_that_survives_kill_is_inconclusive(fake, tmp_pat
     for k, v in {**fake["env"], **e, "SEAM_PROBE_TERM_WAIT": "0.2"}.items():
         monkeypatch.setenv(k, v)
     sent = []
-    monkeypatch.setattr(sp.os, "kill", lambda pid, sig: sent.append(sig))   # signals reach nothing
+    # signals reach nothing; signal 0 is the existence probe (macOS), which finds the pid alive
+    monkeypatch.setattr(sp.os, "kill", lambda pid, sig: sig and sent.append(sig))
     assert sp.main(["session", "term", "own"]) == 3
     assert "still present after SIGTERM and SIGKILL" in capsys.readouterr().out
     assert sent == [signal.SIGTERM, signal.SIGKILL] and not calls(fake, "rm")

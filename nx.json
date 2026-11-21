@@ -2,5 +2,6 @@
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "plugins": [
     "./tools/nx/suites.js"
-  ]
+  ],
+  "analytics": false
 }

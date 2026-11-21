@@ -1088,7 +1088,8 @@ def record_pid_alive(pid: int, proc_start: str) -> bool:
     time in clock ticks since boot), so a reused pid or a record left from an earlier boot reads as
     dead; a record with no procStart is judged by existence alone. Without /proc (macOS) only
     existence is checked, so a reused pid reads as alive: a process wrongly present, never one
-    wrongly absent."""
+    wrongly absent. A zombie has exited and awaits only its parent's wait, so it reads as gone on
+    both: on macOS `kill(pid, 0)` succeeds on one, so `ps` is asked for its state."""
     proc = Path("/proc")
     if proc.is_dir():
         try:
@@ -1106,7 +1107,18 @@ def record_pid_alive(pid: int, proc_start: str) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    return not ps_zombie(pid)
+
+
+def ps_zombie(pid: int) -> bool:
+    """Does `ps` report this pid as a zombie (state Z)? False when ps cannot say, so a process is
+    never wrongly read as gone."""
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return out.startswith("Z")
 
 
 def live_pid_records(uuid: str) -> tuple[list[dict], int, list[str]]:
