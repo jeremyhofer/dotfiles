@@ -32,6 +32,20 @@ Entries are newest first.
 
 ---
 
+## 2026-11-21 (`fleet-slot`: a session's own request no longer holds up its own gates)
+
+### A free slot whose whole queue is the caller's own request is a go for the caller
+
+Nothing to do. With an arbiter, `fleet-slot check` and `wait` counted every queued request as a
+grant pending, the caller's own included. The commit gate and `land check` both run `wait`, so a
+session that queued for the slot and then committed or landed waited on its own request, up to the
+45-minute cap or until its own grant. Now, when the caller's request is the only one queued, the
+only grant the arbiter can make is to the caller, so `check` exits 0 (`free, and the only grant
+pending is your own`) and `wait` goes. With anyone else in the queue, ahead or behind, the caller
+still waits: the order is the arbiter's. `check` with no name now also asks the agents listing for
+the caller's name when the slot is free but queued. `wait --free` and the no-arbiter rule are
+unchanged.
+
 ## 2026-11-20 (fleet-canonicals: `up` runs the handoff gate; the gate fails closed; no MISSING in the snapshot window)
 
 `up` (and with it `resume-at` and the request queue's served `up`) now runs the handoff freshness

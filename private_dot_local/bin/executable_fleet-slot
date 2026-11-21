@@ -28,8 +28,9 @@ session learns it holds the slot from `check` or `status`, since there is no arb
 
 A FREE SLOT IS A GO ONLY WHEN NO GRANT IS PENDING. With an arbiter, a free slot and a non-empty
 queue means the arbiter is about to grant it: `check` exits 1 and `wait` keeps waiting for
-everyone, until the grant is made (a go for the grantee) or the queue empties (a go for all). With
-no arbiter, only the head of the queue may go.
+everyone, until the grant is made (a go for the grantee) or the queue empties (a go for all). The
+one exception is a caller whose own request is the whole queue: that grant can only be its own, so
+its commit or landing gate does not wait on it. With no arbiter, only the head of the queue may go.
 
 ONE SLOT PER MACHINE. The state is local. A session on another machine has its own slot.
 
@@ -89,20 +90,21 @@ usage: fleet-slot <command> [arguments]
               says GRANTED-UNDER-LOAD (the load is recorded at every grant, never a refusal)
   wait [--free] [--load N] [--steady SECONDS] [--timeout SECONDS] [--interval SECONDS]
        [--as NAME] [-- COMMAND...]
-              block until the slot is free with no grant pending (or the caller's own; --free:
-              only free; with an arbiter a free slot with a queue is a grant about to be made,
-              with none it is the queue head's) and, with
+              block until the slot is the caller's or free with no grant pending for another
+              (--free: free with no grant pending at all; with an arbiter, a free slot with a
+              queue is a grant about to be made, the caller's own only when its request is the
+              whole queue; with none, the queue head's) and, with
               --load, the 1-minute load average is under N, both holding for --steady seconds;
               then run COMMAND in this process, or print one line and exit 0. --timeout gives
               up with exit 3. For untimed heavy work that must not land on another session's
               timed sample: it waits, it never takes the slot
   check [<holder>]
               exit 0 when <holder> has the slot, or the slot is free with no grant pending; 1 when
-              someone else holds it, or it is free but a grant is pending (with an arbiter, any
-              queued request means one; with none, only the queue's head may go).
-              Without <holder>, the calling session's name (the status line's usage
-              file, else $FLEET_SLOT_AS, else the agents listing, asked only when the slot is
-              held); when that cannot be read, any held slot is someone else's
+              someone else holds it, or it is free but a grant is pending for another (with an
+              arbiter, any queued request but <holder>'s own as the whole queue; with none, all
+              but the queue's head). Without <holder>, the calling session's name (the status
+              line's usage file, else $FLEET_SLOT_AS, else the agents listing, asked only when
+              the slot is held or queued); when that cannot be read, it is nobody's
 
 configuration: the keys `slot-grant-cpu-some-pct` and `slot-grant-mem-full-pct` (numbers; defaults 50
 and 10) set when a grant counts as under load; the key `slot-arbiter` (a list) in the fleet-canonicals config file
@@ -329,13 +331,16 @@ def go_ahead(st: dict, me: str | None) -> tuple[bool, str]:
     """May `me` start work now? (go, why not). The one rule `check` and `wait` both use, so they
     cannot disagree. A free slot is a go only when no grant is pending: with an arbiter, a queued
     request means the arbiter is about to grant it, so a free slot with a non-empty queue is a go
-    for nobody; with no arbiter, it is a go for the head of the queue alone. A held slot is a go for
-    its holder alone. `me` None (unnamed, or `wait --free`) is never the holder or the head."""
+    for nobody except a caller whose own request is the whole queue: the only grant the arbiter can
+    then make is to that caller, so its work lands under nobody else's measurement. With anyone else
+    queued, ahead or behind, the order is the arbiter's and another grant may come first. With no
+    arbiter, a free slot is a go for the head of the queue alone. A held slot is a go for its holder
+    alone. `me` None (unnamed, or `wait --free`) is never the holder, the head or the queue."""
     h = st["holder"]
     if h:
         return (me is not None and h["name"] == me), f"the slot is held by {h['name']}"
     q = [e["name"] for e in st["queue"]]
-    if not q or (not arbiters() and me is not None and me == q[0]):
+    if not q or (me is not None and (q == [me] if arbiters() else me == q[0])):
         return True, ""
     return False, f"the slot is free but a grant is pending (queue: {', '.join(q)})"
 
@@ -708,13 +713,14 @@ def cmd_check(argv: list[str]) -> int:
     if not h and not st["queue"]:
         print("free")
         return 0
-    if not holder and (h or not arbiters()):
+    if not holder:
         holder = session_name(listing=True)
     ok, why = go_ahead(st, holder)
     if not h:
-        # free, with a grant pending: a go only for the head of the queue when no arbiter grants
+        # free, with a grant pending: a go only for the caller the grant must go to (see go_ahead)
         if ok:
-            print(f"free, and {holder} is next in line")
+            print(f"free, and the only grant pending is your own ({holder})" if arbiters()
+                  else f"free, and {holder} is next in line")
             return 0
         print(f"free, but a grant is pending (queue: {', '.join(e['name'] for e in st['queue'])})")
         return EXIT_REFUSED

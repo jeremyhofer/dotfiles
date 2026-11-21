@@ -642,12 +642,12 @@ def queue_up(who):
     assert r.returncode == 0, r.stderr
 
 
-def test_with_an_arbiter_a_free_slot_and_a_queue_is_a_go_for_nobody(isolated):
+def test_with_an_arbiter_a_free_slot_and_a_queue_is_a_go_for_nobody_but_the_requester(isolated):
     queue_up("bravo")
     assert state(isolated)["holder"] is None
     r = slot("check", "alpha")
     assert r.returncode == 1 and "grant is pending" in r.stdout
-    assert slot("check", "bravo").returncode == 1
+    assert slot("check", "bravo").returncode == 0   # its own request is the whole queue
     r = slot("wait", "--as", "alpha", "--timeout", "1", "--interval", "0.1", "--", "sh", "-c", "echo ran")
     assert r.returncode == 3 and "ran" not in r.stdout and "grant is pending" in r.stderr
     assert slot("wait", "--free", "--timeout", "1", "--interval", "0.1").returncode == 3
@@ -694,3 +694,39 @@ def test_with_no_arbiter_only_the_head_of_a_free_slots_queue_may_go(isolated, mo
     r = slot("wait", "--as", "bravo", "--timeout", "1", "--interval", "0.1")
     assert r.returncode == 0, r.stderr
     assert slot("wait", "--free", "--timeout", "1", "--interval", "0.1").returncode == 3
+
+
+# The caller's own queued request is not a grant pending FOR the caller: the arbiter would grant it
+# to the caller, so nobody else's measurement can start under the caller's work. Before this, a seat
+# that queued for the slot and then committed or ran `land check` waited on its own request (both
+# gates run `wait`), up to the 45-minute cap or until its own grant. With anyone else in the queue,
+# ahead or behind, the caller still waits: the order is the arbiter's, so another grant may come first.
+
+def test_with_an_arbiter_the_callers_own_request_alone_is_a_go_for_the_caller(isolated):
+    queue_up("alpha")
+    r = slot("check", "alpha")
+    assert r.returncode == 0 and "your own" in r.stdout, r.stdout
+    assert slot("check", "bravo").returncode == 1
+    r = slot("wait", "--as", "alpha", "--timeout", "2", "--interval", "0.1", "--", "sh", "-c", "echo ran")
+    assert r.returncode == 0 and r.stdout.strip() == "ran", r.stderr
+    assert slot("wait", "--as", "bravo", "--timeout", "1", "--interval", "0.1").returncode == 3
+    assert slot("wait", "--free", "--timeout", "1", "--interval", "0.1").returncode == 3
+    assert state(isolated)["queue"][0]["name"] == "alpha"   # going does not consume the request
+
+
+def test_with_an_arbiter_the_callers_request_is_no_go_when_anyone_else_is_queued(isolated):
+    queue_up("alpha")
+    queue_up("bravo")
+    assert slot("check", "alpha").returncode == 1
+    assert slot("check", "bravo").returncode == 1
+    assert slot("wait", "--as", "alpha", "--timeout", "1", "--interval", "0.1").returncode == 3
+
+
+def test_check_names_a_queued_caller_from_the_agents_listing(isolated):
+    queue_up("alpha")
+    listing = json.dumps([{"sessionId": "sid-9", "name": "alpha"}])
+    env = {"CLAUDE_CODE_SESSION_ID": "sid-9", "FLEET_AGENTS_JSON_CMD": f"echo {listing}"}
+    r = slot("check", env=env)
+    assert r.returncode == 0 and "your own" in r.stdout, r.stdout
+    assert slot("check", env=inside(isolated, "alpha")).returncode == 0
+    assert slot("check").returncode == 1
