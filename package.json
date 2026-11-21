@@ -3,6 +3,6 @@
   "private": true,
   "description": "Nx runs the base's suites as cached tasks: before and after every apply (tests/apply-suites.py), and by hand. So applying the base needs Node at the version mise.toml pins.",
   "devDependencies": {
-    "nx": "24.0.5"
+    "nx": "24.0.6"
   }
 }
