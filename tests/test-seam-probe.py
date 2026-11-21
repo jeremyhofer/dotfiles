@@ -409,7 +409,7 @@ def test_unwritable_state_directory_is_refused(env, tmp_path):
 # files from its directory up.
 
 FAKE_CLAUDE = r"""#!/usr/bin/env python3
-import json, os, re, secrets, shlex, shutil, signal, subprocess, sys, uuid
+import json, os, re, secrets, shlex, shutil, signal, subprocess, sys, time, uuid
 from pathlib import Path
 st = Path(os.environ["FAKE_CLAUDE_STATE"]); st.mkdir(parents=True, exist_ok=True)
 rows_f = st / "rows.json"
@@ -427,6 +427,51 @@ with open(st / "calls.jsonl", "a") as f:
                         "project_settings": json.loads(proj.read_text()) if proj.is_file() else None}) + "\n")
 def save(): rows_f.write_text(json.dumps(rows))
 def opt(flags, name): return flags[flags.index(name) + 1] if name in flags else None
+# FAKE_CLAUDE_SPAWN: each session gets a real process of its own, which the pid record names and
+# which a test can signal. On SIGTERM it ends and removes its record (FAKE_CLAUDE_TERM=ignore: it
+# does not, so only SIGKILL stops it). FAKE_CLAUDE_RESPAWN ({"terminal": seconds}, matched on the
+# display name) has a new process write the record again that many seconds after the stop, as a
+# crash-respawn would; FAKE_CLAUDE_GROW has the session's transcript gain a line then.
+SESSION_PROC = r'''
+import json, os, signal, subprocess, sys, time
+cfg = json.loads(sys.argv[1])
+time.sleep(cfg.get("after", 0))
+if cfg.get("grow_only"):
+    open(cfg["transcript"], "a").write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "back"}]}}) + "\n")
+    sys.exit(0)
+rec = cfg["record"]
+open(rec, "w").write(json.dumps(dict(cfg["data"], pid=os.getpid())))
+def after(extra):
+    subprocess.Popen([sys.executable, "-c", open(cfg["self"]).read(), json.dumps(extra)], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def term(*_):
+    if cfg.get("ignore"): return
+    try: os.unlink(rec)
+    except OSError: pass
+    if cfg.get("respawn") is not None:
+        after(dict(cfg, after=cfg["respawn"], respawn=None, grow=None))
+    if cfg.get("grow") is not None:
+        after({"after": cfg["grow"], "grow_only": True, "transcript": cfg["transcript"]})
+    sys.exit(0)
+signal.signal(signal.SIGTERM, term)
+while True: time.sleep(0.05)
+'''
+def spawn_session(sid, u, disp, transcript, plain=False):
+    rec_dir = Path(os.environ["SEAM_PROBE_PID_RECORDS"]); rec_dir.mkdir(parents=True, exist_ok=True)
+    rf = rec_dir / (sid + ".json")
+    src = st / "session_proc.py"; src.write_text(SESSION_PROC)
+    def pick(var):
+        for key, d in json.loads(os.environ.get(var, "{}")).items():
+            if "seam-probe-%s-" % key in (disp or ""): return d
+        return None
+    cfg = {"record": str(rf), "data": {"sessionId": u, "status": "idle", "name": disp}, "self": str(src),
+           "ignore": os.environ.get("FAKE_CLAUDE_TERM") == "ignore", "transcript": str(transcript),
+           "respawn": None if plain else pick("FAKE_CLAUDE_RESPAWN"), "grow": None if plain else pick("FAKE_CLAUDE_GROW")}
+    subprocess.Popen([sys.executable, "-c", SESSION_PROC, json.dumps(cfg)], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(100):
+        if rf.exists(): break
+        time.sleep(0.02)
 if argv[:1] == ["--version"]:
     print("9.9.9 (Claude Code)"); sys.exit(0)
 if argv[:1] == ["agents"] and os.environ.get("FAKE_CLAUDE_AGENTS") == "fail":
@@ -454,6 +499,12 @@ if argv[:1] == ["rm"]:
     if os.environ.get("FAKE_CLAUDE_RM") == "never":
         n = sum(1 for l in (st / "calls.jsonl").read_text().splitlines() if json.loads(l)["argv"][:1] == ["rm"])
         print("Not removed: claude rm %s --discard-unpushed dp-%d" % (argv[1], n)); sys.exit(1)
+    # FAKE_CLAUDE_RM_KEEP (["terminal"], matched on the display name): rm succeeds and leaves the row.
+    if any("seam-probe-%s-" % k in (r.get("name") or "") for r in rows if r["id"] == argv[1] for k in json.loads(os.environ.get("FAKE_CLAUDE_RM_KEEP", "[]"))):
+        print("removed"); sys.exit(0)
+    gone_f = st / "removed.json"
+    gone = json.loads(gone_f.read_text()) if gone_f.exists() else []
+    gone += [r for r in rows if r["id"] == argv[1]]; gone_f.write_text(json.dumps(gone))   # the transcript outlives the row
     rows[:] = [r for r in rows if r["id"] != argv[1]]; save(); print("removed"); sys.exit(0)
 if "-p" in argv:
     if os.environ.get("FAKE_CLAUDE_REFUSE"):
@@ -471,6 +522,18 @@ if "--bg" in argv:
     flags, prompt = argv[:sep], (argv[sep + 1] if sep + 1 < len(argv) else "")
     if "--resume" in flags:
         r = next((r for r in rows if r["sessionId"] == opt(flags, "--resume")), None)
+        gone_f = st / "removed.json"
+        if r is None and gone_f.exists():
+            # A removed row's transcript is still there: resuming starts a session under a new id.
+            old = next((g for g in json.loads(gone_f.read_text()) if g["sessionId"] == opt(flags, "--resume")), None)
+            if old is not None:
+                nid = secrets.token_hex(4)
+                rows.append(dict(old, id=nid, state="working")); save()
+                tf = next(Path(os.environ["CLAUDE_CONFIG_DIR"]).glob("projects/*/" + old["sessionId"] + ".jsonl"))
+                with tf.open("a") as fh: fh.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "back"}]}}) + "\n")
+                if os.environ.get("FAKE_CLAUDE_SPAWN") and os.environ.get("SEAM_PROBE_PID_RECORDS"):
+                    spawn_session(nid, old["sessionId"], old["name"], tf, plain=True)
+                print("backgrounded · " + nid); sys.exit(0)
         if r is None: print("no such session"); sys.exit(1)
         if os.environ.get("FAKE_CLAUDE_RESUME") == "copy-same-id":
             print("that session is running, so this started a copy\nbackgrounded · " + r["id"]); sys.exit(0)
@@ -591,7 +654,10 @@ if "--bg" in argv:
     # (FAKE_CLAUDE_LIVE_PID, the test's own) until a helper removes it after the delay
     # FAKE_CLAUDE_STOP_AFTER ({"control": seconds, ...}, matched on the session's display name) gives
     # for it; a session with no delay is never stopped.
-    if os.environ.get("SEAM_PROBE_PID_RECORDS") and not os.environ.get("FAKE_CLAUDE_NORECORD"):
+    if os.environ.get("FAKE_CLAUDE_SPAWN") and os.environ.get("SEAM_PROBE_PID_RECORDS") and not os.environ.get("FAKE_CLAUDE_NORECORD") \
+            and not any("seam-probe-%s-" % k in (opt(flags, "-n") or "") for k in json.loads(os.environ.get("FAKE_CLAUDE_NOSPAWN", "[]"))):
+        spawn_session(sid, u, opt(flags, "-n"), t / (u + ".jsonl"))
+    elif os.environ.get("SEAM_PROBE_PID_RECORDS") and not os.environ.get("FAKE_CLAUDE_NORECORD") and not os.environ.get("FAKE_CLAUDE_SPAWN"):
         rec = Path(os.environ["SEAM_PROBE_PID_RECORDS"]); rec.mkdir(parents=True, exist_ok=True)
         rf = rec / (sid + ".json")
         rf.write_text(json.dumps({"pid": int(os.environ["FAKE_CLAUDE_LIVE_PID"]), "sessionId": u, "status": "idle", "name": opt(flags, "-n")}))
@@ -1489,6 +1555,109 @@ def test_red_of_a_heavy_case_waits_for_the_slot(env, tmp_path):
     assert r.returncode == 6 and "someone-else" in r.stdout and not (d / "ran").exists(), r.stdout
 
 
+# ---- session term ------------------------------------------------------------------------------
+
+SLEEPER = "import time\nwhile True: time.sleep(0.05)"
+DEAF = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nprint('ready', flush=True)\nwhile True: time.sleep(0.05)"
+
+
+PROCS = []
+
+
+@pytest.fixture(autouse=True)
+def _reap_processes():
+    yield
+    while PROCS:
+        pr = PROCS.pop()
+        pr.kill()
+        pr.wait()
+
+
+def term_env(fake, tmp_path, code, session=True):
+    """A real process running CODE, a pid record naming it for session `own`, and a ledger for it.
+    Returns the process; a test waits for it."""
+    pr = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    PROCS.append(pr)
+    if "ready" in code:
+        assert pr.stdout.readline().strip() == "ready"
+    e = process_env(fake, tmp_path, {"1.json": {"pid": pr.pid, "sessionId": UUID_A, "status": "idle"}} if session else {}, EMPTY_ROSTER)
+    fake["env"].update(e)
+    fake["env"]["SEAM_PROBE_TERM_WAIT"] = "0.6"
+    return pr
+
+
+def term(fake):
+    return tool(fake, "session", "term", "own")
+
+
+def ledger_kinds(fake, kind):
+    return [json.loads(x) for x in Path(fake["env"]["SEAM_PROBE_RUN"]).read_text().splitlines() if json.loads(x).get("kind") == kind]
+
+
+def test_session_term_sigterm_is_enough_then_rm_runs(fake, tmp_path):
+    pr = term_env(fake, tmp_path, SLEEPER)
+    r = term(fake)
+    assert pr.wait(timeout=5) == -signal.SIGTERM
+    assert r.returncode == 0 and "SIGTERM was enough" in r.stdout and "claude rm abc123 exit 0" in r.stdout, r.stdout + r.stderr
+    assert [c["argv"] for c in calls(fake, "rm")] == [["rm", "abc123"]]
+    t = ledger_kinds(fake, "session-term")
+    assert len(t) == 1 and t[0]["pid"] == pr.pid and t[0]["killed"] is False and t[0]["rm_rc"] == 0
+
+
+def test_session_term_a_process_that_ignores_term_gets_kill(fake, tmp_path):
+    pr = term_env(fake, tmp_path, DEAF)
+    r = term(fake)
+    pr.wait(timeout=5)
+    assert r.returncode == 0 and "SIGKILL was needed" in r.stdout, r.stdout + r.stderr
+    assert pr.returncode == -signal.SIGKILL and ledger_kinds(fake, "session-term")[0]["killed"] is True
+    assert len(calls(fake, "rm")) == 1
+
+
+def test_session_term_without_a_live_pid_record_is_inconclusive_and_removes_nothing(fake, tmp_path):
+    pr = term_env(fake, tmp_path, SLEEPER, session=False)
+    r = term(fake)
+    assert r.returncode == 3 and "no live pid record" in r.stdout, r.stdout + r.stderr
+    assert not calls(fake, "rm") and pr.poll() is None   # nothing signaled, nothing removed
+    assert not ledger_kinds(fake, "session-term")
+
+
+def test_session_term_a_process_that_survives_kill_is_inconclusive(fake, tmp_path, monkeypatch, capsys):
+    e = process_env(fake, tmp_path, {"1.json": {"pid": LIVE, "sessionId": UUID_A, "status": "idle"}}, EMPTY_ROSTER)
+    for k, v in {**fake["env"], **e, "SEAM_PROBE_TERM_WAIT": "0.2"}.items():
+        monkeypatch.setenv(k, v)
+    sent = []
+    monkeypatch.setattr(sp.os, "kill", lambda pid, sig: sent.append(sig))   # signals reach nothing
+    assert sp.main(["session", "term", "own"]) == 3
+    assert "still present after SIGTERM and SIGKILL" in capsys.readouterr().out
+    assert sent == [signal.SIGTERM, signal.SIGKILL] and not calls(fake, "rm")
+
+
+def test_session_term_keeps_the_whole_rm_output_and_a_failed_rm_exits_1(fake, tmp_path):
+    pr = term_env(fake, tmp_path, SLEEPER)
+    fake["env"]["FAKE_CLAUDE_RM"] = "refuse-once"
+    r = term(fake)
+    pr.wait(timeout=5)
+    assert r.returncode == 1 and "exit 1" in r.stdout, r.stdout + r.stderr
+    kept = (Path(fake["env"]["SEAM_PROBE_RUN"]).parent / "session-case-own-rm.txt").read_text()
+    assert "exit 1" in kept and "--force-remove-worktree wt-0042" in kept
+    assert "WorktreeRemove hook failed" in ledger_kinds(fake, "session-rm")[0]["output"]
+
+
+def test_session_term_is_listed_in_the_help():
+    assert "session term NAME" in sp.EPILOG
+
+
+def test_manual_without_a_terminal_is_refused_and_auto_records_it(fake, tmp_path):
+    ledger = tmp_path / "m.jsonl"
+    e = dict(fake["env"], SEAM_PROBE_RUN=str(ledger))
+    r = subprocess.run([str(TOOL), "manual", "open it"], capture_output=True, text=True, env=e,
+                       stdin=subprocess.DEVNULL, start_new_session=True, timeout=30)   # no controlling terminal
+    assert r.returncode == 2 and "needs a terminal" in r.stderr and not ledger.exists(), r.stdout + r.stderr
+    r = tool(fake, "manual", "open it", extra_env={"SEAM_PROBE_RUN": str(ledger), "SEAM_PROBE_MANUAL_AUTO": "1"})
+    assert r.returncode == 0 and "MANUAL STEP: open it" in r.stdout, r.stdout + r.stderr
+    assert json.loads(ledger.read_text())["text"] == "open it"
+
+
 # ---- idle-holders, end to end against the fakes ------------------------------------------------
 # The fake models the supervisor: with FAKE_CLAUDE_IDLE a session's pid record goes that many
 # seconds after its last holder ended, and never while a background `sleep 9000` or a pending cron
@@ -1682,6 +1851,159 @@ def test_idle_holders_skips_without_trust(fake, tmp_path):
     r = idle_run(fake)
     assert r.returncode == 6 and "Claude Code's trust" in r.stdout and not calls(fake, "--bg"), r.stdout
     assert (fake["sandbox"] / IDL / ".git").exists()
+
+
+# ---- attached-stop, end to end against the fakes -----------------------------------------------
+# Each session is a real process the fake's pid record names (FAKE_CLAUDE_SPAWN), so `session term`
+# really signals it. The watch is a second or so, and `manual` records its instruction and goes on
+# (SEAM_PROBE_MANUAL_AUTO), where a person would attach a client and press Enter.
+
+ATS = "seams/session-lifecycle/ats"
+
+
+def ats(fake, tmp_path, watch="0.6", roster=True, **env):
+    suites = tmp_path / "ats-suites"
+    shutil.copytree(SHIPPED / "session-lifecycle", suites / "session-lifecycle")
+    recs = tmp_path / "pidrecs"
+    recs.mkdir()
+    roster_f = tmp_path / "roster.json"
+    if roster:
+        roster_f.write_text(json.dumps({"workers": {}}))
+    fake["env"].update({"SEAM_PROBE_SUITES": str(suites), "SEAM_PROBE_PID_RECORDS": str(recs), "SEAM_PROBE_DAEMON_ROSTER": str(roster_f),
+                        "FAKE_CLAUDE_SPAWN": "1", "SEAM_PROBE_MANUAL_AUTO": "1", "SEAM_PROBE_RESPAWN_WATCH": watch,
+                        "SEAM_PROBE_TERM_WAIT": "0.5", **env})
+    trust(fake, fake["sandbox"] / ATS)
+
+
+def ats_run(fake, verb="run", extra_env=None):
+    return tool(fake, verb, "session-lifecycle", "attached-stop", "--yes", extra_env=extra_env)
+
+
+def ats_ledger(run_dir, plant=None):
+    f = run_dir / ("ledger-attached-stop%s.jsonl" % ("-" + plant if plant else ""))
+    return [json.loads(x) for x in f.read_text().splitlines()]
+
+
+def test_attached_stop_pass_path(fake, tmp_path):
+    ats(fake, tmp_path)
+    r = ats_run(fake)
+    arms, run_dir = idle_arms(fake)
+    assert verdicts_of(arms) == {"control": "PASS", "terminal": "PASS", "agentview": "PASS"}, r.stdout + str(arms)
+    assert r.returncode == 4   # every PASS, none seen red yet
+    for a in ("terminal", "agentview"):
+        assert "confirmed by the person at the terminal, not observed by the instrument" in arms[a][1]
+    # Each arm was stopped as the fleet stops one: a term, then a rm of its id, control first.
+    assert len(calls(fake, "rm")) == 3
+    led = ats_ledger(run_dir)
+    assert [e["name"] for e in led if e["kind"] == "session-term"] == ["control", "terminal", "agentview"]
+    # The person is told the real id to attach, the display name to select, and asked to look after each watch.
+    manual = [e["text"] for e in led if e["kind"] == "manual"]
+    sess = {}
+    for e in led:
+        if e["kind"] == "session":
+            sess.setdefault(e["name"], {}).update(e)
+    assert len(manual) == 4
+    assert "claude attach " + sess["terminal"]["id"] in manual[0] and "claude agents" in manual[1] and sess["agentview"]["display"] in manual[1]
+    assert "look at the attached terminal" in manual[2] and "agent view" in manual[3] and all("Enter" in m for m in manual)
+    series = (run_dir / "session-attached-stop-watch.txt").read_text()
+    assert "control +" in series and "process=absent" in series and "listed=no" in series and "transcript=" in series
+
+
+def test_attached_stop_red_of_every_plant(fake, tmp_path):
+    ats(fake, tmp_path)
+    r = ats_run(fake, "red")
+    assert r.returncode == 0 and r.stdout.count(" RED ") >= 2, r.stdout
+    arms, run_dir = idle_arms(fake, "respawn")
+    assert verdicts_of(arms) == {"control": "PASS", "terminal": "FAIL", "agentview": "PASS"}, arms
+    assert "a process for its session uuid" in arms["terminal"][1]
+    voided, rd2 = idle_arms(fake, "control-respawn")
+    assert set(verdicts_of(voided).values()) == {"VOID"} and "an unattached session came back after the stop too" in voided["control"][1]
+    # The plant resumed the stopped session under a new id, which the ledger holds so cleanup removes it.
+    led = ats_ledger(run_dir, "respawn")
+    assert any(e["kind"] == "session-resume" and e["name"] == "terminal" for e in led)
+    assert any(e["kind"] == "session" and e["name"] == "terminal-resume1" for e in led)
+    assert not rows(fake)   # every session is gone, the resumed copy too
+    # The manual steps ran under the plant as well.
+    assert sum(e["kind"] == "manual" for e in led) == 4
+    assert ats_run(fake).returncode == 0   # with the reds recorded, the run reads PASS
+
+
+@pytest.mark.parametrize("knob,sign", [
+    ({"FAKE_CLAUDE_RESPAWN": '{"terminal": 0.3}'}, "a process for its session uuid"),
+    ({"FAKE_CLAUDE_GROW": '{"terminal": 0.3}'}, "new lines in its transcript"),
+    ({"FAKE_CLAUDE_RM_KEEP": '["terminal"]'}, "a listed row for its id or uuid"),
+], ids=["process", "transcript", "listing"])
+def test_attached_stop_a_sign_of_return_in_one_arm_fails_that_arm_only(fake, tmp_path, knob, sign):
+    ats(fake, tmp_path, **knob)
+    r = ats_run(fake)
+    arms, _ = idle_arms(fake)
+    assert verdicts_of(arms) == {"control": "PASS", "terminal": "FAIL", "agentview": "PASS"}, arms
+    assert sign in arms["terminal"][1] and " s after the stop" in arms["terminal"][1] and r.returncode == 1
+    assert "while the control stayed stopped" in arms["terminal"][1]
+
+
+def test_attached_stop_a_control_that_comes_back_voids_every_arm(fake, tmp_path):
+    ats(fake, tmp_path, FAKE_CLAUDE_RESPAWN='{"control": 0.3}')
+    r = ats_run(fake)
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"VOID"} and "cannot be laid to attachment" in arms["agentview"][1], arms
+    assert r.returncode == 3
+
+
+def test_attached_stop_a_session_that_needs_kill_is_still_stopped_and_read(fake, tmp_path):
+    ats(fake, tmp_path, FAKE_CLAUDE_TERM="ignore")
+    r = ats_run(fake)
+    arms, run_dir = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"PASS"}, arms
+    assert "SIGKILL was needed" in (run_dir / "session-attached-stop-watch.txt").read_text()
+
+
+def test_attached_stop_a_term_that_cannot_run_leaves_that_arm_inconclusive(fake, tmp_path):
+    ats(fake, tmp_path, FAKE_CLAUDE_NOSPAWN='["terminal"]')
+    r = ats_run(fake)
+    arms, run_dir = idle_arms(fake)
+    assert verdicts_of(arms) == {"control": "PASS", "terminal": "INCONCLUSIVE", "agentview": "PASS"}, arms
+    assert "no live pid record" in arms["terminal"][1] and "could not be stopped as the fleet stops one" in arms["terminal"][1]
+    # The look the person is asked for follows a watch, so an arm that was not watched asks for none.
+    assert sum(e["kind"] == "manual" for e in ats_ledger(run_dir)) == 3
+
+
+def test_attached_stop_an_unmeasured_control_leaves_every_arm_inconclusive(fake, tmp_path):
+    ats(fake, tmp_path, FAKE_CLAUDE_NOSPAWN='["control"]', FAKE_CLAUDE_RESPAWN='{"terminal": 0.3}')
+    r = ats_run(fake)
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "control could not be measured" in arms["terminal"][1], arms
+
+
+def test_attached_stop_a_sign_never_read_leaves_the_arm_inconclusive_not_passed(fake, tmp_path):
+    ats(fake, tmp_path, roster=False)   # with no daemon roster, "no process" can never be told from "unreadable"
+    r = ats_run(fake)
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"}, arms
+    assert "process could not be read at any poll" in arms["control"][1], arms
+
+
+def test_attached_stop_without_a_terminal_the_attached_arms_are_inconclusive(fake, tmp_path):
+    ats(fake, tmp_path, SEAM_PROBE_MANUAL_AUTO="0")   # the case runs with no controlling terminal
+    r = ats_run(fake)
+    arms, _ = idle_arms(fake)
+    assert verdicts_of(arms) == {"control": "PASS", "terminal": "INCONCLUSIVE", "agentview": "INCONCLUSIVE"}, arms
+    assert "needs a terminal" in arms["terminal"][1] or "could not be asked" in arms["terminal"][1]
+
+
+def test_attached_stop_a_first_turn_that_never_finishes_is_inconclusive(fake, tmp_path):
+    ats(fake, tmp_path, FAKE_CLAUDE_REPLY="hmm", SEAM_PROBE_SESSION_WAIT="1")
+    r = ats_run(fake)
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "no DONE" in arms["control"][1], arms
+
+
+def test_attached_stop_skips_without_trust(fake, tmp_path):
+    ats(fake, tmp_path)
+    trust(fake)
+    r = ats_run(fake)
+    assert r.returncode == 6 and "Claude Code's trust" in r.stdout and not calls(fake, "--bg"), r.stdout
+    assert (fake["sandbox"] / ATS / ".git").exists()
 
 
 if __name__ == "__main__":

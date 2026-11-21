@@ -116,10 +116,14 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
   session process NAME     whether the session's process is still running, from Claude Code's pid
                            records and the daemon roster (the agents listing has no pid); exit 0
                            one shows it, 1 both were read and neither does, 3 not readable
+  session term NAME        stop the session's process as the fleet's refresh does (SIGTERM, up to 5 s,
+                           then SIGKILL) and `claude rm` it, the output kept; exit 0 gone and removed,
+                           1 gone and `claude rm` failed, 3 no live pid record or the process survived
   prompt [--background] [KEY...] [NAME=VALUE...]
                            a session prompt from the case's declared commands, one Bash call each;
                            --background has each run with run_in_background and the turn end
-  manual TEXT              print an instruction for the person at the terminal; wait for Enter
+  manual TEXT              show an instruction on the person's terminal; wait for Enter (refused with
+                           no terminal; SEAM_PROBE_MANUAL_AUTO=1, for tests, records it and goes on)
   verdict [--arm A] V REASON
                            the case's (or one arm's) result, once: PASS FAIL VOID INCONCLUSIVE
                            REFUSED DENIED SKIPPED
@@ -1091,7 +1095,10 @@ def record_pid_alive(pid: int, proc_start: str) -> bool:
             fields = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()
         except (OSError, IndexError):
             return False
-        # fields[0] is field 3 (state); field 22 is therefore fields[19].
+        # fields[0] is field 3 (state); field 22 is therefore fields[19]. A zombie (Z) has exited and
+        # only awaits its parent's wait: it is not running.
+        if fields and fields[0] == "Z":
+            return False
         return not proc_start or (len(fields) > 19 and fields[19] == str(proc_start))
     try:
         os.kill(pid, 0)
@@ -1100,6 +1107,31 @@ def record_pid_alive(pid: int, proc_start: str) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def live_pid_records(uuid: str) -> tuple[list[dict], int, list[str]]:
+    """The pid records (${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json, or SEAM_PROBE_PID_RECORDS)
+    that name the session's full uuid with a live pid, how many records were read, and why any could
+    not be (a directory that cannot be listed, a record that cannot be read or parsed)."""
+    rec_dir = Path(os.environ.get("SEAM_PROBE_PID_RECORDS") or claude_config_dir() / "sessions")
+    records, unreadable = [], []
+    try:
+        files = sorted(rec_dir.glob("*.json")) if rec_dir.is_dir() else None
+    except OSError:
+        files = None
+    if files is None:
+        unreadable.append(f"the pid record directory {rec_dir} cannot be listed")
+    for f in files or []:
+        try:
+            records.append(json.loads(f.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            continue   # Claude Code removes a record when its process ends
+        except (OSError, ValueError):
+            unreadable.append(f"a pid record ({f.name}) cannot be read or parsed")
+    held = [d for d in records if isinstance(d, dict) and d.get("sessionId") == uuid
+            and isinstance(d.get("pid"), int) and not isinstance(d.get("pid"), bool)
+            and record_pid_alive(d["pid"], str(d.get("procStart") or ""))]
+    return held, len(records), unreadable
 
 
 def prim_session_process(name: str) -> int:
@@ -1121,28 +1153,11 @@ def prim_session_process(name: str) -> int:
     if not UUID_RE.match(str(uuid)):
         print(f"INCONCLUSIVE: session {name} has no known full session id to look for")
         return EV_UNREAD
-    rec_dir = Path(os.environ.get("SEAM_PROBE_PID_RECORDS") or claude_config_dir() / "sessions")
-    roster = Path(os.environ.get("SEAM_PROBE_DAEMON_ROSTER") or claude_config_dir() / "daemon" / "roster.json")
-    records, unreadable = [], []
-    try:
-        files = sorted(rec_dir.glob("*.json")) if rec_dir.is_dir() else None
-    except OSError:
-        files = None
-    if files is None:
-        unreadable.append(f"the pid record directory {rec_dir} cannot be listed")
-    for f in files or []:
-        try:
-            records.append(json.loads(f.read_text(encoding="utf-8")))
-        except FileNotFoundError:
-            continue   # Claude Code removes a record when its process ends
-        except (OSError, ValueError):
-            unreadable.append(f"a pid record ({f.name}) cannot be read or parsed")
-    held = [d for d in records if isinstance(d, dict) and d.get("sessionId") == uuid
-            and isinstance(d.get("pid"), int) and not isinstance(d.get("pid"), bool)
-            and record_pid_alive(d["pid"], str(d.get("procStart") or ""))]
+    held, n_records, unreadable = live_pid_records(uuid)
     if held:
         print(f"process present: pid record of pid {held[0]['pid']}, status {held[0].get('status', 'unknown')}")
         return EV_YES
+    roster = Path(os.environ.get("SEAM_PROBE_DAEMON_ROSTER") or claude_config_dir() / "daemon" / "roster.json")
     ids, roster_problem = None, ""
     try:
         d = json.loads(roster.read_text(encoding="utf-8"))
@@ -1162,7 +1177,7 @@ def prim_session_process(name: str) -> int:
         reasons = unreadable + ([roster_problem] if roster_problem else [])
         print("INCONCLUSIVE: " + "; ".join(reasons) + ", so a running process cannot be ruled out")
         return EV_UNREAD
-    print(f"no process: none of {len(records)} pid record(s) names the session with a live pid, "
+    print(f"no process: none of {n_records} pid record(s) names the session with a live pid, "
           "and the daemon roster lists no worker for it")
     return EV_NO
 
@@ -1199,18 +1214,80 @@ def prim_session_resume(name: str, prompt: str | None) -> int:
     return 1
 
 
+def remove_row(name: str, sid: str) -> tuple[int, str]:
+    """`claude rm SID`, its whole output kept as evidence and in the ledger."""
+    p = claude("rm", sid)
+    out = (p.stdout or "") + (p.stderr or "")
+    evidence_file(f"{name}-rm").write_text(f"$ claude rm {sid}\nexit {p.returncode}\n{out}")
+    ledger_append({"kind": "session-rm", "name": name, "id": sid, "rc": p.returncode, "output": out})
+    return p.returncode, out
+
+
 def prim_session_rm(name: str) -> int:
     e = known_session(name)
     sid = e.get("id")
     if not sid:
         print(f"INCONCLUSIVE: session {name} has no known id")
         return 3
-    p = claude("rm", sid)
-    out = (p.stdout or "") + (p.stderr or "")
-    evidence_file(f"{name}-rm").write_text(f"$ claude rm {sid}\nexit {p.returncode}\n{out}")
-    ledger_append({"kind": "session-rm", "name": name, "id": sid, "rc": p.returncode, "output": out})
-    print(out.rstrip() or f"(claude rm printed nothing, exit {p.returncode})")
-    return 0 if p.returncode == 0 else 1
+    rc, out = remove_row(name, sid)
+    print(out.rstrip() or f"(claude rm printed nothing, exit {rc})")
+    return 0 if rc == 0 else 1
+
+
+def prim_session_term(name: str) -> int:
+    """Stop a session the way the fleet's refresh does: SIGTERM to its process, up to
+    SEAM_PROBE_TERM_WAIT seconds (default 5) polling for it to end, SIGKILL and as long again if it
+    has not, then
+    `claude rm`. The pid is read from the session's pid record, so a session with no live record
+    cannot be stopped this way. Exit 0 the process is gone and `claude rm` succeeded; 1 it is gone
+    and `claude rm` failed; 3 no live pid record, or the process outlived SIGKILL."""
+    e = known_session(name)
+    uuid = e.get("uuid") or (find_row(e.get("display"), e.get("id")) or {}).get("sessionId") or ""
+    if not UUID_RE.match(str(uuid)):
+        print(f"INCONCLUSIVE: session {name} has no known full session id to look for")
+        return EV_UNREAD
+    sid = e.get("id")
+    if not sid:
+        print(f"INCONCLUSIVE: session {name} has no known id")
+        return EV_UNREAD
+    held, _, unreadable = live_pid_records(uuid)
+    if not held:
+        why = "; ".join(unreadable) or "none names it with a live pid"
+        print(f"INCONCLUSIVE: no live pid record for session {name}, so there is no process to stop ({why})")
+        return EV_UNREAD
+    pid, start = held[0]["pid"], str(held[0].get("procStart") or "")
+
+    def gone() -> bool:
+        return not record_pid_alive(pid, start)
+
+    def wait_gone(seconds: float) -> bool:
+        poll, t0 = min(1.0, env_seconds("SEAM_PROBE_POLL", 1.0)), time.monotonic()
+        while not gone():
+            if time.monotonic() - t0 >= seconds:
+                return False
+            time.sleep(poll)
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    killed = False
+    wait = env_seconds("SEAM_PROBE_TERM_WAIT", 5)
+    if not wait_gone(wait):
+        killed = True
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        if not wait_gone(wait):
+            ledger_append({"kind": "session-term", "name": name, "id": sid, "pid": pid, "killed": True, "gone": False})
+            print(f"INCONCLUSIVE: pid {pid} was still present after SIGTERM and SIGKILL")
+            return EV_UNREAD
+    rc, out = remove_row(name, sid)
+    ledger_append({"kind": "session-term", "name": name, "id": sid, "pid": pid, "killed": killed, "gone": True, "rm_rc": rc})
+    print(f"pid {pid} gone, {'SIGKILL was needed' if killed else 'SIGTERM was enough'}; claude rm {sid} exit {rc}: "
+          f"{' '.join(out.split())[:200] or '(no output)'}")
+    return 0 if rc == 0 else 1
 
 
 def prim_session_ask(a) -> int:
@@ -1277,13 +1354,21 @@ def prim_prompt(keys: list[str], background: bool = False) -> int:
 
 
 def prim_manual(text: str) -> int:
+    """Show an instruction to the person and wait for Enter. A case script's output is captured, so
+    the instruction is written to the terminal itself (/dev/tty), where the answer is read too.
+    SEAM_PROBE_MANUAL_AUTO=1, for the tool's own tests, records the instruction and returns at once."""
     t0 = time.monotonic()
-    print(f"\n>>> MANUAL STEP: {text}\n>>> press Enter when done", flush=True)
-    try:
-        with open("/dev/tty") as tty:
-            tty.readline()
-    except OSError:
-        raise Usage("a manual step needs a terminal")
+    banner = f"\n>>> MANUAL STEP: {text}\n>>> press Enter when done\n"
+    if os.environ.get("SEAM_PROBE_MANUAL_AUTO") == "1":
+        print(banner, flush=True)
+    else:
+        try:
+            with open("/dev/tty", "r+") as tty:
+                tty.write(banner)
+                tty.flush()
+                tty.readline()
+        except OSError:
+            raise Usage("a manual step needs a terminal")
     ledger_append({"kind": "manual", "text": text, "waited_s": round(time.monotonic() - t0, 1)})
     return 0
 
@@ -1860,7 +1945,7 @@ def main(argv: list[str]) -> int:
         else:
             q.add_argument("--tools", default="")
         q.add_argument("prompt")
-    for verb in ("stop", "rm", "process"):
+    for verb in ("stop", "rm", "process", "term"):
         q = ss.add_parser(verb); q.add_argument("name")
     q = ss.add_parser("resume"); q.add_argument("name"); q.add_argument("--prompt")
     p = sub.add_parser("prompt"); p.add_argument("--background", action="store_true"); p.add_argument("keys", nargs="*")
@@ -1904,6 +1989,7 @@ def main(argv: list[str]) -> int:
                     case "resume": return prim_session_resume(a.name, a.prompt)
                     case "rm": return prim_session_rm(a.name)
                     case "process": return prim_session_process(a.name)
+                    case "term": return prim_session_term(a.name)
             case "prompt": return prim_prompt(a.keys, a.background)
             case "manual": return prim_manual(a.text)
             case "verdict": return prim_verdict(a.verdict, " ".join(a.reason), a.arm)

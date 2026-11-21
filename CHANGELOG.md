@@ -159,6 +159,18 @@ predates the session's start, and refuses a document it cannot date at all (`--f
 It used to fall back to the pointer's own recorded time. Nothing to do; a pointer to a plain-named
 file outside any repository now needs `--force` or a standard-named handoff.
 
+## 2026-11-21 (seam-probe: attached-stop, and a primitive to stop a session as the fleet does)
+
+The `session-lifecycle` suite gains `attached-stop`: is a background session brought back as a
+crash-respawn when it is stopped the way the fleet's refresh stops one (SIGTERM, SIGKILL after 5 s,
+`claude rm`) while attached, open in a terminal through `claude attach` or selected in the agent
+view with its peek panel open, against an unattached control. A person makes and confirms each
+attachment (`manual` steps), since Claude Code documents no attached field; about 12 minutes, from a
+plain terminal (`SEAM_PROBE_RESPAWN_WATCH`, default 120 s, is each arm's watch). `seam-probe` gains
+`session term NAME`. `manual` now writes its instruction to the terminal itself (a case script's
+output is captured, so the instruction was never shown), and `session process` no longer counts a
+zombie as a running process. Nothing to change on a machine.
+
 ## 2026-11-21 (seam-probe: a session-lifecycle suite, and what it needs)
 
 A new suite, `session-lifecycle`, with its first case `idle-holders` (what keeps an idle, unattached

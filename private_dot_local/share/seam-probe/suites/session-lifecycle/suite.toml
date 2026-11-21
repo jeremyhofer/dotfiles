@@ -32,3 +32,28 @@ minutes = 125
 hold = "sleep 9000"
 release = "sleep 900"
 dropped = "true"
+
+[[case]]
+id = "attached-stop"
+question = "When a background session's process is stopped the way the fleet's refresh stops one (SIGTERM, then SIGKILL after 5 s, then `claude rm`), does Claude Code bring it back as a crash-respawn when the session is attached: (a) open in a terminal through `claude attach`, or (b) selected in the agent view (`claude agents`) with its peek panel open, against (c) a control that nothing is attached to? Claude Code documents no attached field (the `claude agents --json` rows carry only cwd, id, kind, name, sessionId, startedAt and state), so the instrument cannot see an attachment: a person makes each one and confirms it."
+relies = "A stopped session stays stopped whether or not a client is attached to it: within the watch after the stop, no process for its session uuid is running again, its transcript has gained no line, and no row for it is listed under `claude agents --json --all` after the `claude rm`, as the unattached control is seen to stay stopped. An attachment is made and confirmed by the person at the terminal, never observed by the instrument, and each attached arm's verdict says so."
+bears-on = "a session's request for its own refresh"
+regimes = ["real"]
+script = "attached-stop.sh"
+fixtures = ["ats"]
+controls = ["control: the same stop applied to a session nothing is attached to must leave it stopped (the fleet already relies on that), or a respawn cannot be laid to attachment and every arm is VOID", "each arm's stop is read from its pid record: `session term` refuses (INCONCLUSIVE) a session with no live pid record, and a process that survived SIGKILL", "each arm's watch reads three signs independently (process, transcript, listing); an arm whose sign could not be read at any poll is INCONCLUSIVE, never PASS"]
+# A person is at the terminal for these two and for the two looks that follow the watches; under a
+# plant they run all the same, since `red` is run from a terminal too.
+manual = [
+  "terminal arm: in another terminal run `claude attach <id>` (the case prints the id), leave it open and in view, and press Enter once it shows the session",
+  "agentview arm: in another terminal run `claude agents`, select the session named <display name> (the case prints it) and open its peek panel, leave it open, and press Enter",
+  "after each attached arm's watch: look at the attached terminal or agent view and press Enter (the instrument cannot read the client's own display)",
+]
+# A plant reaches one arm, and the arm's verdict is the only thing it can turn: respawn has the case
+# itself resume the stopped terminal session with a flagless `claude --bg --resume`, which brings it
+# back, so that arm must FAIL. control-respawn does the same to the control, so every arm is VOID.
+plants = [
+  { id = "respawn", expect = "FAIL", arm = "terminal" },
+  { id = "control-respawn", expect = "VOID" },
+]
+minutes = 12
