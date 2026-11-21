@@ -1,0 +1,34 @@
+# The session-lifecycle suite: what keeps a background session's process running, and what lets it
+# stop. Cases are added one at a time, each before the build step it bears on;
+# `seam-probe list session-lifecycle` shows them.
+suite = "session-lifecycle"
+description = "what keeps a background session's process running, and what lets it stop"
+
+[[case]]
+id = "idle-holders"
+question = "Claude Code's supervisor stops a background session that is finished or waiting for the next message and unattached for about an hour (its documentation's agent view, \"The supervisor process\", read 2026-11-11), and counts a running subagent, workflow or monitor, or a pending session-scoped scheduled task, as working. Which keeps an idle, unattached background session's process running past that stop: (a) a running background Bash command, (b) a pending one-shot session-scoped scheduled task (the CronCreate tool), against (c) a control with neither; and (d) is a session whose background command has ended stopped about an hour after that?"
+relies = "A running background Bash command, or a pending one-shot CronCreate job, keeps an idle session's process running past the idle stop, which the control (no holder) is seen to reach; a session whose only holder has ended is stopped about an hour after that, as the control is. Read from the session's pid record and the daemon roster, never from the agents listing, whose rows carry no pid and can stay done or blocked after the process is gone."
+bears-on = "how a keep-alive for a background session is built"
+regimes = ["real"]
+script = "idle-holders.sh"
+fixtures = ["idl"]
+controls = ["control: a session with no holder must be seen to stop within the cap, or the idle stop was never observed and every arm is VOID", "each arm's holder is read from the session's transcript: a background Bash call with the exact command, or a CronCreate call, status ok; the control made none"]
+# A plant reaches one arm, and the arm's verdict is the only thing it can turn: holder-dropped and
+# schedule-dropped each remove one holder (the shell arm's and the schedule arm's, which share the
+# verdict code that reads when a still-held session stopped). A plant cannot expect FAIL on two arms
+# at once, so each holder has its own. control-held breaks the control, so every arm reads VOID.
+plants = [
+  { id = "holder-dropped", expect = "FAIL", arm = "shell" },
+  { id = "schedule-dropped", expect = "FAIL", arm = "schedule" },
+  { id = "control-held", expect = "VOID" },
+]
+minutes = 125
+
+# Each runs as its own Bash call, started in the background (`seam-probe prompt --background`).
+# hold keeps a session's command running past the idle stop; release ends after the seconds it
+# names, which the case reads from this text; dropped is hold's stand-in under the holder-dropped
+# plant, a command that ends at once.
+[case.commands]
+hold = "sleep 9000"
+release = "sleep 900"
+dropped = "true"

@@ -95,7 +95,9 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
     worktree REPO PATH     git lists a worktree at PATH (and whether its directory is on disk)
     calls NAME [--tool T]... [--command C]
                            a session's tool calls from its transcript, one line each:
-                           ok|error|denied|no-result, tool, input, result; exit 1 none matched
+                           ok|error|denied|no-result, tool, input, result; exit 1 none matched.
+                           A Bash input ends " [background]" when run_in_background was set; a
+                           tool other than Bash, Agent or Task shows its input as compact JSON
     hook PLUGIN EVENT      an installed plugin's command hooks for EVENT and each one's timeout,
                            read from the plugin's files (the default when none is declared)
   wait mark PATH | --under DIR NAME [--seconds N] [--line TEXT]
@@ -111,8 +113,12 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
                            flagless `claude --bg --resume <uuid>` from the session's directory;
                            exit 0 same id, 1 a new id or a copy, 3 unknown
   session rm NAME          `claude rm`, its whole output kept as evidence
-  prompt [KEY...] [NAME=VALUE...]
-                           a session prompt from the case's declared commands, one Bash call each
+  session process NAME     whether the session's process is still running, from Claude Code's pid
+                           records and the daemon roster (the agents listing has no pid); exit 0
+                           one shows it, 1 both were read and neither does, 3 not readable
+  prompt [--background] [KEY...] [NAME=VALUE...]
+                           a session prompt from the case's declared commands, one Bash call each;
+                           --background has each run with run_in_background and the turn end
   manual TEXT              print an instruction for the person at the terminal; wait for Enter
   verdict [--arm A] V REASON
                            the case's (or one arm's) result, once: PASS FAIL VOID INCONCLUSIVE
@@ -663,7 +669,10 @@ def result_text(content) -> str:
 def prim_calls(name: str, tools: list[str] | None, command: str | None) -> int:
     """The tool calls a session of this run made, read from its transcript (Claude Code's record,
     not the model's account): one line per call, `STATUS<tab>TOOL<tab>INPUT<tab>RESULT`, in the
-    order made. STATUS is ok, error, denied (a permission rule stopped it) or no-result. --tool
+    order made. STATUS is ok, error, denied (a permission rule stopped it) or no-result. INPUT is a
+    Bash call's command (with " [background]" after it when it ran with run_in_background), an
+    Agent or Task call's isolation, and any other tool's input as compact JSON, sorted, cut at 200
+    characters. --tool
     keeps those tools; --command keeps Bash calls whose command is exactly COMMAND (whitespace
     folded). Exit 0 a call matched, 1 none did (the call was never made), 3 no transcript."""
     e = known_session(name)
@@ -701,7 +710,12 @@ def prim_calls(name: str, tools: list[str] | None, command: str | None) -> int:
         text = " ".join(result_text(res.get("content")).split()) if res else ""
         status = ("no-result" if res is None else "denied" if any(t in text for t in DENIAL_TEXTS)
                   else "error" if res.get("is_error") else "ok")
-        summary = cmd if tool == "Bash" else f"isolation={inp.get('isolation', '-')}"
+        if tool == "Bash":
+            summary = cmd + (" [background]" if inp.get("run_in_background") is True else "")
+        elif tool in ("Agent", "Task"):
+            summary = f"isolation={inp.get('isolation', '-')}"
+        else:
+            summary = json.dumps(inp, sort_keys=True, separators=(",", ":"))[:200]
         print(f"{status}\t{tool}\t{summary}\t{text[:300]}")
         n += 1
     return EV_YES if n else EV_NO
@@ -1064,6 +1078,95 @@ def prim_session_stop(name: str) -> int:
     return 3
 
 
+def record_pid_alive(pid: int, proc_start: str) -> bool:
+    """Is this pid a running process, and the same one a pid record was written for? Where /proc
+    exists (Linux) the record's procStart is compared with field 22 of /proc/<pid>/stat (the start
+    time in clock ticks since boot), so a reused pid or a record left from an earlier boot reads as
+    dead; a record with no procStart is judged by existence alone. Without /proc (macOS) only
+    existence is checked, so a reused pid reads as alive: a process wrongly present, never one
+    wrongly absent."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        try:
+            fields = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace").rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            return False
+        # fields[0] is field 3 (state); field 22 is therefore fields[19].
+        return not proc_start or (len(fields) > 19 and fields[19] == str(proc_start))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def prim_session_process(name: str) -> int:
+    """Whether a session's PROCESS is still running. The agents listing cannot say: its rows carry
+    no pid, a row can stay `done` or `blocked` after the supervisor stops an idle session, and a live
+    idle session can show `done` and be missing from the default listing. Two undocumented files
+    answer instead, read as the transcripts are (a field renamed finds nothing):
+      pid records   ${CLAUDE_CONFIG_DIR:-~/.claude}/sessions/*.json (SEAM_PROBE_PID_RECORDS names
+                    another directory): one per process, with `pid`, `sessionId`, `procStart` and
+                    `status` (busy, idle or waiting); Claude Code removes it when the process ends.
+                    A record counts when its sessionId is the session's full uuid and its pid is alive.
+      daemon roster ${CLAUDE_CONFIG_DIR:-~/.claude}/daemon/roster.json (SEAM_PROBE_DAEMON_ROSTER):
+                    `workers` maps a short id to a record carrying `sessionId`.
+    Exit 0 either shows a process; 1 every record was read, the roster was read, and neither does;
+    3 the session's uuid is unknown, a pid record (or the directory) cannot be read or parsed, or the
+    roster is absent, unreadable or malformed: an unreadable source cannot rule a process out."""
+    e = known_session(name)
+    uuid = e.get("uuid") or (find_row(e.get("display"), e.get("id")) or {}).get("sessionId") or ""
+    if not UUID_RE.match(str(uuid)):
+        print(f"INCONCLUSIVE: session {name} has no known full session id to look for")
+        return EV_UNREAD
+    rec_dir = Path(os.environ.get("SEAM_PROBE_PID_RECORDS") or claude_config_dir() / "sessions")
+    roster = Path(os.environ.get("SEAM_PROBE_DAEMON_ROSTER") or claude_config_dir() / "daemon" / "roster.json")
+    records, unreadable = [], []
+    try:
+        files = sorted(rec_dir.glob("*.json")) if rec_dir.is_dir() else None
+    except OSError:
+        files = None
+    if files is None:
+        unreadable.append(f"the pid record directory {rec_dir} cannot be listed")
+    for f in files or []:
+        try:
+            records.append(json.loads(f.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            continue   # Claude Code removes a record when its process ends
+        except (OSError, ValueError):
+            unreadable.append(f"a pid record ({f.name}) cannot be read or parsed")
+    held = [d for d in records if isinstance(d, dict) and d.get("sessionId") == uuid
+            and isinstance(d.get("pid"), int) and not isinstance(d.get("pid"), bool)
+            and record_pid_alive(d["pid"], str(d.get("procStart") or ""))]
+    if held:
+        print(f"process present: pid record of pid {held[0]['pid']}, status {held[0].get('status', 'unknown')}")
+        return EV_YES
+    ids, roster_problem = None, ""
+    try:
+        d = json.loads(roster.read_text(encoding="utf-8"))
+        workers = d.get("workers") if isinstance(d, dict) else None
+        if isinstance(workers, dict):
+            ids = {str(w["sessionId"]) for w in workers.values() if isinstance(w, dict) and w.get("sessionId")}
+        else:
+            roster_problem = f"the daemon roster {roster} is malformed (no `workers` table)"
+    except FileNotFoundError:
+        roster_problem = f"the daemon roster {roster} is absent"
+    except (OSError, ValueError):
+        roster_problem = f"the daemon roster {roster} cannot be read or parsed"
+    if ids is not None and uuid in ids:
+        print("process present: the daemon roster lists a worker for the session")
+        return EV_YES
+    if unreadable or ids is None:
+        reasons = unreadable + ([roster_problem] if roster_problem else [])
+        print("INCONCLUSIVE: " + "; ".join(reasons) + ", so a running process cannot be ruled out")
+        return EV_UNREAD
+    print(f"no process: none of {len(records)} pid record(s) names the session with a live pid, "
+          "and the daemon roster lists no worker for it")
+    return EV_NO
+
+
 def prim_session_resume(name: str, prompt: str | None) -> int:
     """A flagless `claude --bg --resume <full uuid>` from the session's recorded directory: the wake
     a seat gets. Reports whether the same id came back."""
@@ -1141,12 +1244,19 @@ PROMPT_HEAD = ("Run the following shell commands with the Bash tool, exactly as 
                "own separate Bash call, in this order. Do not change directory, do not combine "
                "commands, and do not run anything else. If a command fails, go on to the next one. "
                "When all have run, reply with the single word DONE.\n")
+BACKGROUND_HEAD = ("Run each of the following shell commands with the Bash tool, exactly as written, with "
+                   "the tool's run_in_background parameter set to true, each as its own separate Bash call, "
+                   "in this order. Do not change directory, do not combine commands, and do not run "
+                   "anything else. Do not wait for any of them and do not poll or check on them. When all "
+                   "have been started, reply with the single word DONE and end your turn. If you are later "
+                   "notified that a command finished, reply with the single word DONE and nothing else.\n")
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9-]*)\}")
 
 
-def prim_prompt(keys: list[str]) -> int:
+def prim_prompt(keys: list[str], background: bool = False) -> int:
     """A session prompt built from the case's declared `commands` (the ones `lint` checked), in
-    the order named, each {placeholder} filled from a key=value argument."""
+    the order named, each {placeholder} filled from a key=value argument. With `background`, the head
+    asks for each command to run in the background (run_in_background) and the turn to end."""
     suite_dir = Path(os.environ.get("SEAM_PROBE_SUITE_DIR", ""))
     data, _ = load(suite_dir)
     cmds = get_case(data, os.environ.get("SEAM_PROBE_CASE", "")).get("commands", {})
@@ -1162,7 +1272,7 @@ def prim_prompt(keys: list[str]) -> int:
                 raise Usage(f"command {n!r} needs a value for {{{m.group(1)}}}")
             return shlex.quote(vals[m.group(1)])
         lines.append(f"{i}. {PLACEHOLDER.sub(fill, cmds[n])}")
-    print(PROMPT_HEAD + "\n".join(lines))
+    print((BACKGROUND_HEAD if background else PROMPT_HEAD) + "\n".join(lines))
     return 0
 
 
@@ -1750,10 +1860,10 @@ def main(argv: list[str]) -> int:
         else:
             q.add_argument("--tools", default="")
         q.add_argument("prompt")
-    for verb in ("stop", "rm"):
+    for verb in ("stop", "rm", "process"):
         q = ss.add_parser(verb); q.add_argument("name")
     q = ss.add_parser("resume"); q.add_argument("name"); q.add_argument("--prompt")
-    p = sub.add_parser("prompt"); p.add_argument("keys", nargs="*")
+    p = sub.add_parser("prompt"); p.add_argument("--background", action="store_true"); p.add_argument("keys", nargs="*")
     p = sub.add_parser("manual"); p.add_argument("text")
     p = sub.add_parser("verdict"); p.add_argument("--arm"); p.add_argument("verdict"); p.add_argument("reason", nargs="+")
     a = ap.parse_args(argv)
@@ -1793,7 +1903,8 @@ def main(argv: list[str]) -> int:
                     case "stop": return prim_session_stop(a.name)
                     case "resume": return prim_session_resume(a.name, a.prompt)
                     case "rm": return prim_session_rm(a.name)
-            case "prompt": return prim_prompt(a.keys)
+                    case "process": return prim_session_process(a.name)
+            case "prompt": return prim_prompt(a.keys, a.background)
             case "manual": return prim_manual(a.text)
             case "verdict": return prim_verdict(a.verdict, " ".join(a.reason), a.arm)
     except Usage as e:

@@ -491,7 +491,7 @@ if "--bg" in argv:
     else:
         run_in = here
     allowed = [run_in] + [Path(flags[i + 1]) for i, a in enumerate(flags) if a == "--add-dir"]
-    events = []
+    events, holds = [], []
     def call(name, inp, text, err=False, record=True):
         if not record: return
         tid = "toolu_" + secrets.token_hex(6)
@@ -508,6 +508,15 @@ if "--bg" in argv:
             if not m: continue
             cmd = m.group(1)
             if skip and re.search(skip, cmd): continue
+            if "run_in_background" in text and os.environ.get("FAKE_CLAUDE_FOREGROUND"):
+                call("Bash", {"command": cmd}, "", False, record); continue   # asked for background, ran in front
+            if "run_in_background" in text:
+                # A background command is started, not run: the fake never waits for it. Its
+                # lifetime, for the idle model below: a `sleep N` N seconds (1000 or more: for good), anything
+                # else none.
+                sm = re.match(r"^sleep (\d+)$", cmd)
+                holds.append((float(sm.group(1)) if float(sm.group(1)) < 1000 else float("inf")) if sm else 0.0)
+                call("Bash", {"command": cmd, "run_in_background": True}, "Command running in background with ID: bg1", False, record); continue
             if deny.search(cmd):
                 call("Bash", {"command": cmd}, f"Permission to use Bash with command {cmd} has been denied.", True, record); continue
             c = re.search(r"git -C (\S+)", cmd)
@@ -520,6 +529,15 @@ if "--bg" in argv:
             env = dict(os.environ, FAKE_SANDBOXED="0" if exempt.match(cmd) else "1")
             p = subprocess.run(["sh", "-c", cmd], cwd=where, env=env, capture_output=True, text=True, check=False)
             call("Bash", {"command": cmd}, p.stdout + p.stderr, p.returncode != 0, record)
+    def schedule(text):
+        # The idle-holders schedule prompt: ToolSearch loads CronCreate (and CronDelete), then the
+        # job is created and, when the prompt says so, deleted. FAKE_CLAUDE_NOCRON: no such tool.
+        m = re.search(r'cron expression "([^"]*)"', text)
+        call("ToolSearch", {"max_results": 5, "query": "select:CronCreate"}, "No matching deferred tools found" if os.environ.get("FAKE_CLAUDE_NOCRON") else "Loaded CronCreate")
+        if os.environ.get("FAKE_CLAUDE_NOCRON"): return
+        call("CronCreate", {"cron": m.group(1), "prompt": "Reply DONE.", "recurring": False}, "Scheduled job cron-1")
+        if "CronDelete" in text: call("CronDelete", {"id": "cron-1"}, "Deleted cron-1")
+        else: holds.append(float("inf"))   # a pending job holds the session for good
     def plugin_timeout():
         # worktrunk's plugin as Claude Code finds it: None when it is not installed.
         try:
@@ -554,6 +572,10 @@ if "--bg" in argv:
         for title, body in zip(parts[1::2], parts[2::2]):
             if "subagent's task" in title: subagent(body)
             else: run_cmds(body, run_in, allowed)
+    elif "Do not use any tool" in prompt and os.environ.get("FAKE_CLAUDE_CONTROL_CALL"):
+        call("Bash", {"command": "true"}, "")   # a control that used a tool anyway
+    elif "CronCreate" in prompt:
+        schedule(prompt)
     else:
         run_cmds(prompt, run_in, allowed)
     rows.append({"id": sid, "sessionId": u, "name": opt(flags, "-n"), "cwd": str(run_in), "state": "working",
@@ -563,6 +585,24 @@ if "--bg" in argv:
     lines = [{"type": "user", "message": {"content": prompt}}, *events,
              {"type": "assistant", "message": {"content": [{"type": "text", "text": os.environ.get("FAKE_CLAUDE_REPLY", "DONE")}]}}]
     (t / (u + ".jsonl")).write_text("".join(json.dumps(x) + "\n" for x in lines))
+    # The session's process, as Claude Code's pid record shows it: a record naming a pid that is alive
+    # (FAKE_CLAUDE_LIVE_PID, the test's own) until a helper removes it after the delay
+    # FAKE_CLAUDE_STOP_AFTER ({"control": seconds, ...}, matched on the session's display name) gives
+    # for it; a session with no delay is never stopped.
+    if os.environ.get("SEAM_PROBE_PID_RECORDS") and not os.environ.get("FAKE_CLAUDE_NORECORD"):
+        rec = Path(os.environ["SEAM_PROBE_PID_RECORDS"]); rec.mkdir(parents=True, exist_ok=True)
+        rf = rec / (sid + ".json")
+        rf.write_text(json.dumps({"pid": int(os.environ["FAKE_CLAUDE_LIVE_PID"]), "sessionId": u, "status": "idle", "name": opt(flags, "-n")}))
+        # The supervisor, modeled: with FAKE_CLAUDE_IDLE seconds set, a session stops that long after
+        # its last holder ended (none: at once), and never while one holds it for good.
+        delay, disp = None, opt(flags, "-n") or ""
+        if os.environ.get("FAKE_CLAUDE_IDLE"):
+            delay = float(os.environ["FAKE_CLAUDE_IDLE"]) + max(holds, default=0.0)
+        for key, d in json.loads(os.environ.get("FAKE_CLAUDE_STOP_AFTER", "{}")).items():
+            if "seam-probe-%s-" % key in disp: delay = d
+        if delay is not None and delay != float("inf"):
+            subprocess.Popen([sys.executable, "-c", "import os, sys, time; time.sleep(float(sys.argv[1])); os.path.exists(sys.argv[2]) and os.unlink(sys.argv[2])", str(delay), str(rf)],
+                             start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not os.environ.get("FAKE_CLAUDE_NOID"): print("backgrounded · " + sid)
     sys.exit(0)
 print("fake claude: unhandled", argv, file=sys.stderr); sys.exit(2)
@@ -1162,6 +1202,140 @@ def test_evidence_calls(fake, tmp_path):
     assert r.returncode == 3 and "INCONCLUSIVE" in r.stdout
 
 
+def test_evidence_calls_summaries(fake, tmp_path):
+    """A background Bash call is marked; any tool but Bash, Agent and Task shows its input as compact,
+    sorted JSON cut at 200 characters; Agent and Task keep isolation=."""
+    long_inp = {"z": "x" * 300, "a": 1}
+    e = transcript_env(fake, tmp_path, [
+        use("t1", "Bash", {"command": "sleep  9000", "run_in_background": True}), res("t1", "started"),
+        use("t2", "Bash", {"command": "sleep 5", "run_in_background": False}), res("t2", "ok"),
+        use("t3", "CronCreate", {"prompt": "Reply DONE.", "cron": "5 4 1 1 *", "recurring": False}), res("t3", "scheduled"),
+        use("t4", "Task", {"prompt": "p", "isolation": "worktree"}), res("t4", "DONE"),
+        use("t5", "ToolSearch", long_inp), res("t5", "x"),
+    ])
+    r = tool(fake, "evidence", "calls", "own", extra_env=e)
+    got = [x.split("\t") for x in r.stdout.splitlines()]
+    assert r.returncode == 0 and len(got) == 5, r.stdout
+    assert got[0][2] == "sleep 9000 [background]" and got[1][2] == "sleep 5"
+    assert got[2][2] == '{"cron":"5 4 1 1 *","prompt":"Reply DONE.","recurring":false}'
+    assert got[3][2] == "isolation=worktree"
+    assert got[4][2].startswith('{"a":1,"z":"xxx') and len(got[4][2]) == 200
+    # --command still matches the command without the marker.
+    r = tool(fake, "evidence", "calls", "own", "--command", "sleep 9000", extra_env=e)
+    assert r.returncode == 0 and r.stdout.count("\n") == 1
+
+
+def test_prompt_background_asks_for_run_in_background(fake):
+    d = make_suite(fake, {"c": ('"$sp" prompt --background one two > "$SEAM_PROBE_SUITE_DIR/p"\n'
+                                '"$sp" prompt one > "$SEAM_PROBE_SUITE_DIR/q"\n'
+                                '"$sp" verdict FAIL x\n', '"none"')})
+    (d / "suite.toml").write_text((d / "suite.toml").read_text()
+                                  + 'commands = { one = "sleep 9000", two = "echo done" }\n')
+    tool(fake, "run", "s", "--yes")
+    text, plain = (d / "p").read_text(), (d / "q").read_text()
+    assert "run_in_background" in text and "set to true" in text and "each as its own separate Bash call" in text
+    assert "not wait" in text.replace("Do not wait", "not wait") and "poll" in text and "DONE" in text
+    assert "notified" in text and text.rstrip().endswith("1. sleep 9000\n2. echo done")
+    assert "run_in_background" not in plain and plain.rstrip().endswith("1. sleep 9000")
+
+
+# ---- session process ---------------------------------------------------------------------------
+
+UUID_A = "aaaaaaaa-1111-2222-3333-444444444444"
+UUID_B = "bbbbbbbb-1111-2222-3333-444444444444"
+
+
+def process_env(fake, tmp_path, records=None, roster="absent", uuid=UUID_A):
+    """A ledger naming session `own`, a pid record directory holding RECORDS (name -> dict, or a raw
+    string for a file that is not JSON) and a daemon roster ('absent', raw text, or a dict)."""
+    ledger = tmp_path / "l.jsonl"
+    ledger.write_text(json.dumps({"kind": "session", "name": "own", "id": "abc123", "uuid": uuid}) + "\n")
+    rec = tmp_path / "pidrecs"
+    rec.mkdir()
+    for n, d in (records or {}).items():
+        (rec / n).write_text(d if isinstance(d, str) else json.dumps(d))
+    ros = tmp_path / "roster.json"
+    if roster != "absent":
+        ros.write_text(roster if isinstance(roster, str) else json.dumps(roster))
+    return {"SEAM_PROBE_RUN": str(ledger), "SEAM_PROBE_PID_RECORDS": str(rec), "SEAM_PROBE_DAEMON_ROSTER": str(ros)}
+
+
+def proc(fake, e):
+    return tool(fake, "session", "process", "own", extra_env=e)
+
+
+EMPTY_ROSTER = {"workers": {}}
+LIVE = os.getpid()   # a pid that is alive on Linux and macOS; no procStart, so existence decides
+
+
+def dead_pid():
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def test_session_process_a_live_pid_record_shows_a_process(fake, tmp_path):
+    e = process_env(fake, tmp_path, {"1.json": {"pid": LIVE, "sessionId": UUID_A, "status": "idle"}}, EMPTY_ROSTER)
+    r = proc(fake, e)
+    assert r.returncode == 0 and "pid record" in r.stdout and "status idle" in r.stdout, r.stdout + r.stderr
+
+
+def test_session_process_a_record_for_another_session_does_not_count(fake, tmp_path):
+    e = process_env(fake, tmp_path, {"1.json": {"pid": LIVE, "sessionId": UUID_B, "status": "busy"}}, EMPTY_ROSTER)
+    r = proc(fake, e)
+    assert r.returncode == 1 and "no process" in r.stdout, r.stdout + r.stderr
+
+
+def test_session_process_a_dead_pid_does_not_count(fake, tmp_path):
+    e = process_env(fake, tmp_path, {"1.json": {"pid": dead_pid(), "sessionId": UUID_A, "status": "idle"}}, EMPTY_ROSTER)
+    r = proc(fake, e)
+    assert r.returncode == 1 and "no process" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="procStart is compared only where /proc exists")
+def test_session_process_a_reused_pid_does_not_count(fake, tmp_path):
+    e = process_env(fake, tmp_path, {"1.json": {"pid": LIVE, "sessionId": UUID_A, "procStart": "1", "status": "idle"}},
+                    EMPTY_ROSTER)
+    assert proc(fake, e).returncode == 1
+
+
+def test_session_process_the_roster_alone_shows_a_process(fake, tmp_path):
+    e = process_env(fake, tmp_path, {}, {"workers": {"ab12": {"sessionId": UUID_A}}})
+    r = proc(fake, e)
+    assert r.returncode == 0 and "roster" in r.stdout, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("records,roster,needle", [
+    ({"1.json": "{not json"}, EMPTY_ROSTER, "pid record (1.json) cannot be read"),
+    ({}, "absent", "is absent"),
+    ({}, "{not json", "cannot be read or parsed"),
+    ({}, {"workers": ["x"]}, "malformed"),
+    ({}, [], "malformed"),
+])
+def test_session_process_an_unreadable_source_is_inconclusive(fake, tmp_path, records, roster, needle):
+    e = process_env(fake, tmp_path, records, roster)
+    r = proc(fake, e)
+    assert r.returncode == 3 and "INCONCLUSIVE" in r.stdout and needle in r.stdout, r.stdout + r.stderr
+
+
+def test_session_process_a_missing_record_directory_is_inconclusive(fake, tmp_path):
+    e = process_env(fake, tmp_path, {}, EMPTY_ROSTER)
+    e["SEAM_PROBE_PID_RECORDS"] = str(tmp_path / "nowhere")
+    r = proc(fake, e)
+    assert r.returncode == 3 and "cannot be listed" in r.stdout, r.stdout + r.stderr
+
+
+def test_session_process_a_process_is_shown_despite_an_unreadable_record(fake, tmp_path):
+    e = process_env(fake, tmp_path, {"1.json": "{not json", "2.json": {"pid": LIVE, "sessionId": UUID_A}}, "absent")
+    assert proc(fake, e).returncode == 0
+
+
+def test_session_process_an_unknown_uuid_is_inconclusive(fake, tmp_path):
+    e = process_env(fake, tmp_path, {}, EMPTY_ROSTER, uuid=None)
+    r = proc(fake, e)
+    assert r.returncode == 3 and "no known full session id" in r.stdout, r.stdout + r.stderr
+
+
 def install_plugin(env, hooks, manifest=None):
     """A worktrunk plugin as Claude Code records an install: installed_plugins.json naming its
     directory, whose hooks/hooks.json holds HOOKS (a WorktreeCreate timeout, or none)."""
@@ -1311,6 +1485,190 @@ def test_red_of_a_heavy_case_waits_for_the_slot(env, tmp_path):
     (fake / "fleet-slot").chmod(0o755)
     r = tool(env, "red", "s", "c", "--yes", extra_env={"PATH": f"{fake}:{os.environ['PATH']}"})
     assert r.returncode == 6 and "someone-else" in r.stdout and not (d / "ran").exists(), r.stdout
+
+
+# ---- idle-holders, end to end against the fakes ------------------------------------------------
+# The fake models the supervisor: with FAKE_CLAUDE_IDLE a session's pid record goes that many
+# seconds after its last holder ended, and never while a background `sleep 9000` or a pending cron
+# job holds it. The release command is shortened to `sleep 2` in a copy of the shipped suite, and
+# the case's times are a tenth of a second to a few seconds.
+
+IDL = "seams/session-lifecycle/idl"
+
+
+def idle(fake, tmp_path, stop_after=None, idle_s=6, release_s=2, cap=40, records=None):
+    suites = tmp_path / "idle-suites"
+    shutil.copytree(SHIPPED / "session-lifecycle", suites / "session-lifecycle")
+    toml = suites / "session-lifecycle/suite.toml"
+    assert 'release = "sleep 900"' in toml.read_text()
+    toml.write_text(toml.read_text().replace('release = "sleep 900"', f'release = "sleep {release_s}"'))
+    recs = tmp_path / "pidrecs"
+    recs.mkdir()
+    for n, text in (records or {}).items():
+        (recs / n).write_text(text)
+    roster = tmp_path / "roster.json"
+    roster.write_text(json.dumps({"workers": {}}))
+    fake["env"].update({
+        "SEAM_PROBE_SUITES": str(suites), "SEAM_PROBE_PID_RECORDS": str(recs), "SEAM_PROBE_DAEMON_ROSTER": str(roster),
+        "FAKE_CLAUDE_LIVE_PID": str(os.getpid()), "FAKE_CLAUDE_IDLE": str(idle_s),
+        "FAKE_CLAUDE_STOP_AFTER": json.dumps(stop_after or {}),
+        "SEAM_PROBE_IDLE_POLL": "0.1", "SEAM_PROBE_IDLE_MARGIN": "1", "SEAM_PROBE_IDLE_CAP": str(cap)})
+    trust(fake, fake["sandbox"] / IDL)
+    return suites
+
+
+def idle_run(fake, verb="run", extra_env=None):
+    args = ["run", "session-lifecycle", "idle-holders"] if verb == "run" else ["red", "session-lifecycle", "idle-holders"]
+    return tool(fake, *args, "--yes", extra_env=extra_env)
+
+
+def idle_arms(fake, plant=None):
+    run_dir = max((fake["state"] / "session-lifecycle").glob("2*"), key=lambda p: p.name)
+    for line in (run_dir / "results.jsonl").read_text().splitlines():
+        rec = json.loads(line)
+        if rec["plant"] == plant:
+            return {a["arm"]: (a["verdict"], a["reason"]) for a in rec["arms"]}, run_dir
+    raise AssertionError("no record for plant " + str(plant))
+
+
+def verdicts_of(arms):
+    return {k: v[0] for k, v in arms.items()}
+
+
+def test_idle_holders_pass_path(fake, tmp_path):
+    idle(fake, tmp_path)
+    r = idle_run(fake)
+    arms, run_dir = idle_arms(fake)
+    assert verdicts_of(arms) == {"control": "PASS", "shell": "PASS", "schedule": "PASS", "release": "PASS"}, r.stdout + str(arms)
+    assert r.returncode == 4   # every PASS, none seen red yet
+    assert "the idle stop was observed" in arms["control"][1] and "min after its first turn ended" in arms["shell"][1]
+    assert "after its background command ended" in arms["release"][1]
+    series = (run_dir / "session-idle-holders-poll-series.txt").read_text()
+    assert "control=stopped" in series and "shell=running(idle)" in series
+    # One launch per arm, each with its own prompt: the three holders are the shell, release and schedule sessions.
+    launches = [c["argv"] for c in calls(fake) if "--bg" in c["argv"]]
+    prompts = {a[a.index("-n") + 1].split("-")[2]: a[-1] for a in launches}
+    assert set(prompts) == {"control", "shell", "schedule", "release"}
+    assert "run_in_background" in prompts["shell"] and "1. sleep 9000" in prompts["shell"] and "1. sleep 2" in prompts["release"]
+    assert "select:CronCreate" in prompts["schedule"] and '"recurring' not in prompts["schedule"] and "recurring set to false" in prompts["schedule"]
+    assert "Do not use any tool" in prompts["control"]
+
+
+def test_idle_holders_red_of_every_plant(fake, tmp_path):
+    idle(fake, tmp_path, cap=25)
+    r = idle_run(fake, "red")
+    assert r.returncode == 0 and r.stdout.count(" RED ") == 6, r.stdout   # control-held reads on every arm
+    holder, run_dir = idle_arms(fake, "holder-dropped")
+    assert holder["shell"][0] == "FAIL" and "before the end of the run" in holder["shell"][1]
+    assert idle_arms(fake, "schedule-dropped")[0]["schedule"][0] == "FAIL"
+    held, _ = idle_arms(fake, "control-held")
+    assert set(verdicts_of(held).values()) == {"VOID"} and "never stopped" in held["control"][1]
+    # With the reds recorded, the run reads PASS and exits 0.
+    assert idle_run(fake).returncode == 0
+
+
+def test_idle_holders_control_that_never_stops_voids_every_arm(fake, tmp_path):
+    idle(fake, tmp_path, stop_after={"control": None}, cap=6)
+    r = idle_run(fake)
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"VOID"} and "the control was never stopped" in arms["shell"][1], arms
+    assert r.returncode == 3
+
+
+@pytest.mark.parametrize("who", ["shell", "schedule"])
+def test_idle_holders_a_holder_stopped_early_fails_its_arm_only(fake, tmp_path, who):
+    idle(fake, tmp_path, stop_after={who: 0.2})
+    r = idle_run(fake)
+    arms, _ = idle_arms(fake)
+    want = {"control": "PASS", "shell": "PASS", "schedule": "PASS", "release": "PASS", who: "FAIL"}
+    assert verdicts_of(arms) == want, arms
+    assert "min after its first turn ended, before the end of the run" in arms[who][1] and r.returncode == 1
+
+
+def test_idle_holders_release_stopped_while_its_command_ran_fails(fake, tmp_path):
+    idle(fake, tmp_path, stop_after={"release": 0.2}, release_s=12)
+    idle_run(fake)
+    arms, _ = idle_arms(fake)
+    assert arms["release"][0] == "FAIL" and "while its background command" in arms["release"][1], arms
+    assert arms["shell"][0] == "PASS"
+
+
+def test_idle_holders_release_never_stopping_fails(fake, tmp_path):
+    idle(fake, tmp_path, stop_after={"release": None}, cap=20)
+    idle_run(fake)
+    arms, _ = idle_arms(fake)
+    assert arms["release"][0] == "FAIL" and "still running at the end of the run" in arms["release"][1], arms
+    assert arms["shell"][0] == "PASS"
+
+
+def test_idle_holders_schedule_tool_unavailable_is_skipped(fake, tmp_path):
+    idle(fake, tmp_path)
+    r = idle_run(fake, extra_env={"FAKE_CLAUDE_NOCRON": "1"})
+    arms, _ = idle_arms(fake)
+    assert verdicts_of(arms) == {"control": "PASS", "shell": "PASS", "schedule": "SKIPPED", "release": "PASS"}, arms
+    assert "no CronCreate tool was available" in arms["schedule"][1] and r.returncode == 6
+
+
+def test_idle_holders_a_holder_never_made_is_inconclusive_not_failed(fake, tmp_path):
+    idle(fake, tmp_path)
+    r = idle_run(fake, extra_env={"FAKE_CLAUDE_SKIP": "sleep 9000"})
+    arms, _ = idle_arms(fake)
+    assert arms["shell"][0] == "INCONCLUSIVE" and 'never ran "sleep 9000"' in arms["shell"][1], arms
+    assert arms["control"][0] == "PASS" and arms["release"][0] == "PASS"
+
+
+def test_idle_holders_a_state_never_readable_leaves_every_arm_inconclusive(fake, tmp_path):
+    idle(fake, tmp_path, records={"garbage.json": "{not json"}, cap=4)
+    idle_run(fake, extra_env={"FAKE_CLAUDE_NORECORD": "1"})
+    arms, run_dir = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "could not be read at any poll" in arms["control"][1], arms
+    assert "control=unreadable" in (run_dir / "session-idle-holders-poll-series.txt").read_text()
+
+
+def test_idle_holders_a_control_that_becomes_unreadable_is_inconclusive_not_void(fake, tmp_path):
+    idle(fake, tmp_path, records={"garbage.json": "{not json"}, cap=14)
+    idle_run(fake)
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "unreadable at the end" in arms["control"][1], arms
+
+
+def test_idle_holders_a_command_not_run_in_the_background_is_inconclusive(fake, tmp_path):
+    idle(fake, tmp_path)
+    idle_run(fake, extra_env={"FAKE_CLAUDE_FOREGROUND": "1"})
+    arms, _ = idle_arms(fake)
+    assert arms["shell"][0] == "INCONCLUSIVE" and "not an ok background call" in arms["shell"][1], arms
+    assert arms["release"][0] == "INCONCLUSIVE" and arms["control"][0] == "PASS"
+
+
+def test_idle_holders_a_control_that_used_a_tool_voids_every_arm(fake, tmp_path):
+    idle(fake, tmp_path)
+    idle_run(fake, extra_env={"FAKE_CLAUDE_CONTROL_CALL": "1"})
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"VOID"} and "the control made tool calls" in arms["shell"][1], arms
+
+
+def test_idle_holders_a_first_turn_that_never_finishes_is_inconclusive(fake, tmp_path):
+    idle(fake, tmp_path)
+    idle_run(fake, extra_env={"FAKE_CLAUDE_REPLY": "still thinking", "SEAM_PROBE_SESSION_WAIT": "2"})
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "first turn did not finish" in arms["control"][1], arms
+
+
+def test_idle_holders_a_run_cut_short_of_the_margin_cannot_pass_a_holder(fake, tmp_path):
+    idle(fake, tmp_path, cap=14)
+    idle_run(fake, extra_env={"SEAM_PROBE_IDLE_MARGIN": "600"})
+    arms, _ = idle_arms(fake)
+    assert arms["control"][0] == "PASS"
+    assert arms["shell"][0] == "INCONCLUSIVE" and "ended too soon" in arms["shell"][1], arms
+    assert arms["schedule"][0] == "INCONCLUSIVE"
+
+
+def test_idle_holders_skips_without_trust(fake, tmp_path):
+    idle(fake, tmp_path)
+    trust(fake)
+    r = idle_run(fake)
+    assert r.returncode == 6 and "Claude Code's trust" in r.stdout and not calls(fake, "--bg"), r.stdout
+    assert (fake["sandbox"] / IDL / ".git").exists()
 
 
 if __name__ == "__main__":

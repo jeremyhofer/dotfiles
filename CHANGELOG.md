@@ -159,6 +159,18 @@ predates the session's start, and refuses a document it cannot date at all (`--f
 It used to fall back to the pointer's own recorded time. Nothing to do; a pointer to a plain-named
 file outside any repository now needs `--force` or a standard-named handoff.
 
+## 2026-11-21 (seam-probe: a session-lifecycle suite, and what it needs)
+
+A new suite, `session-lifecycle`, with its first case `idle-holders` (what keeps an idle, unattached
+background session's process running past Claude Code's idle stop: a running background Bash
+command, a pending one-shot CronCreate job, against a control with neither, and whether a session
+whose command ended is stopped about an hour later; about 125 minutes, from a plain terminal,
+SKIPPED with the step until its fixture is trusted once). `seam-probe` gains `session process NAME`
+(whether a session's process is running, from Claude Code's pid records and the daemon roster, since
+the agents listing has no pid; `SEAM_PROBE_PID_RECORDS` and `SEAM_PROBE_DAEMON_ROSTER` name other
+locations), `prompt --background`, and `evidence calls` now marks a background Bash call
+`[background]` and shows any other tool's input as compact JSON. Nothing to change on a machine.
+
 ## 2026-11-19 (seam-probe: a kept transcript, a clearer verdict, a longer cleanup)
 
 A run's cleanup now copies each session's transcript (and its sidecar directory, if any) into the
