@@ -51,6 +51,9 @@ their own call to `up`. Four smaller changes to the same gate and to `status`:
   `STARTING` (unhealthy, never `MISSING`), and from inside a sandbox a declared seat the fresh
   snapshot lacks as `UNKNOWN`; `resume` refuses the same dead-but-newer-record seat as `up` does.
 
+- `--stub` under `--dry-run` (`up`, `refresh`, `down`) now writes nothing and leaves the pointer alone,
+  printing what it would do; it used to write the stub and repoint the pointer for real.
+
 Nothing to do, except that a scripted `up` of a stale seat now exits nonzero.
 
 ---

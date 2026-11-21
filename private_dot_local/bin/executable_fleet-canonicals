@@ -380,6 +380,7 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
     --stub [reason]   the HANDOFF is wrong -- nothing was written for this sitting. REPLACES
                       the recorded pointer with a generated note telling the successor there
                       is no orientation to inherit. Destructive if a good handoff exists.
+                      Under --dry-run it writes and records nothing.
     --force [reason]  the COMPARISON is wrong -- the recorded handoff does describe this
                       sitting. KEEPS the pointer untouched and skips the freshness check,
                       printing both timestamps and your reason. The usual cause is a session
@@ -1358,7 +1359,7 @@ cmd_up() {
     # and a `refresh --force` is not undone here.
     if [ "${UP_GATE_DONE:-0}" != 1 ]; then
       [ -n "$ua_all" ] || ua_all=$(agents_json_all) || { refused=1; continue; }
-      gate_out=$(handoff_gate "$name" "$ua_all" "$stub_set" "$stub_text" up "$force_set" "$force_text" 2>&1); grc=$?
+      gate_out=$(handoff_gate "$name" "$ua_all" "$stub_set" "$stub_text" up "$force_set" "$force_text" "$dry" 2>&1); grc=$?
       if [ "$grc" -ne 0 ]; then
         printf 'REFUSED %-24s the handoff freshness gate\n%s\n' "$name" "$gate_out" >&2
         refused=1
@@ -2638,8 +2639,12 @@ tool_calls_after() {
   printf '%s\n' "$n"
 }
 
-# handoff_gate NAME JSON STUB_SET STUB_TEXT VERB FORCE_SET FORCE_TEXT
+# handoff_gate NAME JSON STUB_SET STUB_TEXT VERB FORCE_SET FORCE_TEXT DRY
 #   -- returns 0 to proceed, dies when it refuses.
+#
+# DRY is 0 or 1, passed explicitly by every caller (never read from the caller's `dry` by dynamic
+# scope). Under DRY=1 the gate still judges and refuses exactly as it would, but `--stub` writes no
+# file and records no pointer: it prints what it would do. A rehearsal must change nothing.
 #
 # Scope is deliberate and narrow (the operator's call, 2026-08-28): it fires when ending a session
 # that HOLDS its canonical name, and not for `dedupe`, not for `down --all`, and not for a
@@ -2647,7 +2652,7 @@ tool_calls_after() {
 # or no successor is coming, so a refusal there would wedge the very procedures the gate serves.
 handoff_gate() {
   local name="$1" json="$2" stub_set="$3" stub_text="$4" verb="$5"
-  local force_set="${6:-0}" force_text="${7:-}"
+  local force_set="${6:-0}" force_text="${7:-}" dry="${8:-0}"
   local started started_s set_at set_at_s ptr_target stub_file now sid true_s
   local started_min tgt_e tgt_label floor_e newest newest_e newest_p
 
@@ -2718,6 +2723,10 @@ handoff_gate() {
     return 0
   fi
 
+  if [ "$stub_set" = "1" ] && [ "$dry" = "1" ]; then
+    printf 'handoff  %-24s would write a stub handoff and record it (dry run)\n' "$name"
+    return 0
+  fi
   if [ "$stub_set" = "1" ]; then
     stub_file=$(write_stub_handoff "$name" "$stub_text") \
       || die "$verb: could not write the stub handoff"
@@ -3030,7 +3039,7 @@ cmd_refresh() {
     # outside the sandbox can stop or close, which is what the request queue's runner is.
     refuse_unlisted_by_snapshot refresh "$name"
     printf 'note     %-24s not running -- nothing to stop; launching it as declared\n' "$name"
-    handoff_gate "$name" "$(agents_json_all)" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
+    handoff_gate "$name" "$(agents_json_all)" "$stub_set" "$stub_text" refresh "$force_set" "$force_text" "$dry"
     if [ "$dry" = "1" ]; then
       printf 'would start %-20s %s\n' "$name" "$script"
       printf 'refresh: dry run -- nothing to stop, nothing started\n'
@@ -3055,7 +3064,7 @@ cmd_refresh() {
     done <<< "$rows"
   fi
 
-  handoff_gate "$name" "$gate_json" "$stub_set" "$stub_text" refresh "$force_set" "$force_text"
+  handoff_gate "$name" "$gate_json" "$stub_set" "$stub_text" refresh "$force_set" "$force_text" "$dry"
   warn_if_worktree "$name" "$gate_json"
 
   while IFS=' ' read -r pid id; do
@@ -3210,7 +3219,7 @@ cmd_down() {
         gate_json=$(agents_json_all)
       fi
       if [ -n "$self_pid" ] && [ "$holder_pid" = "$self_pid" ]; then continue; fi
-      handoff_gate "$name" "$gate_json" "$stub_set" "$stub_text" down "$force_set" "$force_text"
+      handoff_gate "$name" "$gate_json" "$stub_set" "$stub_text" down "$force_set" "$force_text" "$dry"
       warn_if_worktree "$name" "$gate_json"
     done
   fi

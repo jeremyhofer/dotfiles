@@ -921,7 +921,10 @@ out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
 out=$(gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
 [[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force skips the document-stamp refusal" || bad "--force (rc=$rc): $out"
 out=$(gzfc refresh zeta-canonical --stub 'test' --dry-run); rc=$?
-[[ $rc -eq 0 && "$out" == *"stub written"* ]] && ok "--stub replaces over the document-stamp refusal" || bad "--stub (rc=$rc): $out"
+# (dry run: --stub no longer writes under it, so this asserts the gate PASSED; the written stub over
+# the same refusal is asserted for real in the up-gate section, "refresh --stub of a stale stopped seat")
+[[ $rc -eq 0 && "$out" == *"would write a stub handoff"* && "$out" != *"BEFORE the session started"* ]] \
+    && ok "--stub passes over the document-stamp refusal (dry run)" || bad "--stub (rc=$rc): $out"
 # control: stamped in the same minute as the session's start
 f="$GS2/handoff-staging/$(gstamp $GSTART)-$GS_NAME"; gfresh "$f" $(( NOW - 60 )); gdoc "$f"
 out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
@@ -1100,11 +1103,17 @@ out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" FLEET_T
     || bad "missing transcript passed or lacked the text (rc=$rc): $out"
 
 # --- --stub ---
-rm -rf "$GSTATE"
-out=$(zfc refresh zeta-canonical --stub 'nothing in flight' --dry-run); rc=$?
-[[ $rc -eq 0 && "$out" == *"stub written and recorded"* ]] \
+# These run the REAL verb (a dry run writes nothing): a stopped seat with no pointer, so `refresh`
+# goes gate -> `up`, and the launcher is `false`, so nothing starts and no real state is touched.
+SSTATE="$TMPROOT/sstate"; rm -rf "$SSTATE"; mkdir -p "$SSTATE"; print '[]' > "$TMPROOT/s-empty.json"
+sfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$SSTATE" FLEET_CLAUDE_CMD=false \
+        FLEET_AGENTS_JSON_CMD="cat $TMPROOT/s-empty.json" FLEET_AGENTS_JSON_ALL_CMD="cat $TMPROOT/s-empty.json" \
+        bash "$TOOL" "$@" 2>&1 }
+out=$(sfc refresh zeta-canonical --stub 'nothing in flight'); rc=$?
+# (rc is the launcher's: `false` exits 1, so only the gate's output is asserted)
+[[ "$out" == *"stub written and recorded"* && "$out" != *"REFUSED"* ]] \
     && ok "--stub satisfies the gate with no prior handoff" || bad "--stub (rc=$rc): $out"
-stub=$(print -l "$GSTATE"/stub-handoffs/*-zeta-canonical-stub.md(N) | head -1)
+stub=$(print -l "$SSTATE"/stub-handoffs/*-zeta-canonical-stub.md(N) | head -1)
 [[ -n "$stub" && -s "$stub" ]] && ok "--stub writes a real, non-empty handoff file" \
     || bad "--stub wrote no file"
 [[ "$(<$stub)" == *"nothing in flight"* ]] && ok "--stub records the reason it was given" \
@@ -1114,7 +1123,7 @@ stub=$(print -l "$GSTATE"/stub-handoffs/*-zeta-canonical-stub.md(N) | head -1)
     || bad "--stub body does not say there is nothing to inherit"
 # The point of stub-over-bypass: the pointer now names the stub, so the NEXT run is satisfied by a
 # real artifact rather than by a flag having been passed once.
-[[ "$(zfc handoff zeta-canonical)" == "$stub" ]] \
+[[ "$(sfc handoff zeta-canonical)" == "$stub" ]] \
     && ok "--stub repoints the handoff pointer at the stub it wrote" \
     || bad "--stub did not record the pointer"
 
@@ -2476,8 +2485,8 @@ out=$(uafc up zeta-canonical --force 'x' --dry-run); rc=$?
     && ok "up --force proceeds on the stale case, saying FORCED" \
     || bad "up --force (rc=$rc): $out"
 out=$(uafc up zeta-canonical --stub 'x' --dry-run); rc=$?
-[[ $rc -eq 0 && "$out" == *"stub written"* && "$out" == *"would start"*"zeta-canonical"* ]] \
-    && ok "up --stub replaces the stale pointer and proceeds" \
+[[ $rc -eq 0 && "$out" == *"would write a stub handoff"* && "$out" == *"would start"*"zeta-canonical"* ]] \
+    && ok "up --stub --dry-run passes the stale pointer and would proceed (writes nothing)" \
     || bad "up --stub (rc=$rc): $out"
 out=$(uafc up zeta-canonical --force 'x' --stub 'y' --dry-run); rc=$?
 [[ $rc -ne 0 && "$out" == *"opposites"* ]] && ok "up refuses --force with --stub" || bad "up --force --stub (rc=$rc): $out"
@@ -2509,6 +2518,19 @@ out=$(FLEET_CLAUDE_CMD=false uafc refresh zeta-canonical --stub 'x'); rc=$?
     && ok "refresh --stub of a stale stopped seat is not refused by up's gate" \
     || bad "refresh --stub refused through up (rc=$rc): $out"
 
+# A rehearsal changes nothing: --stub under --dry-run writes no file and leaves the pointer where it
+# was, for refresh and for up alike, and says it would write one.
+gfresh "$ua_good" $(( NOW - 60 )); gdoc "$ua_good"; ua_transcript $(( UA_START + 600 )) 3
+for dv in refresh up; do
+  ptr_before=$(uafc handoff zeta-canonical)
+  out=$(uafc $dv zeta-canonical --dry-run --stub 'x'); rc=$?
+  ptr_after=$(uafc handoff zeta-canonical)
+  [[ $rc -eq 0 && "$ptr_before" == "$ptr_after" && -n "$ptr_before" && ! -e "$GS2/stub-handoffs" \
+     && "$out" == *"would write a stub handoff"* && "$out" != *"stub written"* ]] \
+      && ok "$dv --dry-run --stub writes no stub and leaves the pointer alone" \
+      || bad "$dv --dry-run --stub changed state or did not say so (rc=$rc, ptr $ptr_before -> $ptr_after): $out"
+done
+
 # ---- the work-since-park check fails closed ----
 # A listed seat whose transcript cannot be read cannot be shown not to have worked past its park, so
 # the gate refuses (it used to print "skipped" and pass), naming the hatches.
@@ -2534,7 +2556,8 @@ out=$(uafc refresh zeta-canonical --dry-run --force x); rc=$?
     && ok "refresh --force with no pointer is refused" \
     || bad "--force passed with no pointer (rc=$rc): $out"
 out=$(uafc refresh zeta-canonical --dry-run --stub x); rc=$?
-[[ $rc -eq 0 && "$out" == *"stub written"* ]] && ok "--stub stays the hatch for no pointer" || bad "--stub with no pointer (rc=$rc): $out"
+[[ $rc -eq 0 && "$out" == *"would write a stub handoff"* && ! -e "$GS2/stub-handoffs" ]] \
+    && ok "--stub stays the hatch for no pointer (dry run: writes nothing)" || bad "--stub with no pointer (rc=$rc): $out"
 # a pointer recorded in the very second the session started predates its work: refused, as in the queue
 print "[{\"pid\":90444,\"id\":\"ddd4\",\"name\":\"zeta-canonical\",\"sessionId\":\"sz\",\"startedAt\":$(( UA_START * 1000 ))}]" > "$UAD/live.json"
 rm -f "$UAD/transcripts/proj/sz.jsonl"
