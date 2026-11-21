@@ -52,7 +52,8 @@ entry must equal the lockfile's, and every lockfile entry that is not installed 
 Residual: an optional package newly added for THIS platform alone, with no other entry changing, is
 not noticed; Nx fails loudly if its native binary is missing. On a stale install (or a record that is
 missing or unreadable):
-  * `pre` and `post` run `npm ci --no-audit --no-fund`; its failure refuses the apply;
+  * `pre` and `post` run `npm ci --engine-strict --no-audit --no-fund`; its failure refuses the
+    apply, and so does a Node outside package.json's `engines` or any installed package's;
   * `check` and `land` refuse, naming the `npm ci` to run. A commit or a landing that reaches the
     network and rewrites node_modules would be a side effect of the gate, which a sandboxed session
     may not even be allowed; refusing cannot skip a suite, and the fix is one command.
@@ -342,6 +343,13 @@ def select_node(env: dict) -> tuple:
     return [], f"Node {got} from PATH (no fnm)", env
 
 
+# `--engine-strict` turns npm's warning about a Node or npm outside a package's `engines` range into
+# a refusal, for package.json's own range and for every installed dependency's. It is a flag here
+# rather than a line in a tracked `.npmrc`, which tests/test-npm-registry.py refuses: npm settings
+# belong to the machine, and this is the one install the apply runs.
+NPM_CI = ["npm", "ci", "--engine-strict"]
+
+
 def install_is_current(src: Path) -> tuple:
     """(True, "") when node_modules holds what package-lock.json names; else (False, why)."""
     try:
@@ -367,7 +375,7 @@ def ensure_install(prefix: list, env: dict, log) -> str:
         return "node_modules current, npm ci skipped"
     log.write(f"apply-suites: npm ci, because {why}\n")
     log.flush()
-    rc = subprocess.run(prefix + ["npm", "ci", "--no-audit", "--no-fund"], env=env, cwd=str(SRC),
+    rc = subprocess.run(prefix + NPM_CI + ["--no-audit", "--no-fund"], env=env, cwd=str(SRC),
                         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT).returncode
     if rc != 0:
         raise Refused(f"npm ci failed (exit {rc}), so Nx cannot run; its output is in the log below")
@@ -524,7 +532,7 @@ def require_install(prefix: list) -> None:
     """Refuse a gate whose node_modules does not hold what package-lock.json names."""
     current, why = install_is_current(SRC)
     if not current:
-        cmd = " ".join(prefix + ["npm", "ci"]) if prefix else "npm ci"
+        cmd = " ".join(prefix + NPM_CI)
         raise Refused(f"node_modules does not hold what package-lock.json names ({why}). Install "
                       f"it with `{cmd}` in {SRC}, then run this again")
 

@@ -650,7 +650,7 @@ def test_npm_ci_runs_when_the_install_is_stale(rig, change):
         rig.write_lock(lock)
     out = rig.run("pre")
     assert out.returncode == 0, out.stderr
-    assert rig.npm_calls() == ["ci --no-audit --no-fund"]
+    assert rig.npm_calls() == ["ci --engine-strict --no-audit --no-fund"]
     assert "npm ci ran" in out.stderr
     assert len(rig.nx_calls()) == 1
 
@@ -1020,7 +1020,7 @@ def test_check_refuses_a_stale_install_naming_npm_ci_and_installs_nothing(rig):
     rig.write_lock(lock)
     out = rig.run("check")
     assert out.returncode == 1
-    assert f"fnm exec --using={PIN} -- npm ci" in out.stderr
+    assert f"fnm exec --using={PIN} -- npm ci --engine-strict" in out.stderr
     assert "node_modules/nx differs" in out.stderr
     assert rig.npm_calls() == [] and rig.nx_calls() == []
 

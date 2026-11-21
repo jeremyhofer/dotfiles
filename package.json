@@ -2,6 +2,9 @@
   "name": "dotfiles-base",
   "private": true,
   "description": "Nx runs the base's suites as cached tasks: before and after every apply (tests/apply-suites.py), and by hand. So applying the base needs Node at the version mise.toml pins.",
+  "engines": {
+    "node": ">=26.0.0 <27.0.0"
+  },
   "devDependencies": {
     "nx": "24.0.6"
   }
