@@ -146,6 +146,9 @@ SNAPSHOT_FILE=${FLEET_SNAPSHOT_FILE:-"$FLEET_STATE/sessions.json"}
 SNAPSHOT_MAX_AGE=$(config_value FLEET_SNAPSHOT_MAX_AGE snapshot-max-age)
 SNAPSHOT_MAX_AGE=${SNAPSHOT_MAX_AGE:-45}
 SNAP_USE=0
+# Set to 1 only by `refresh` (which has run the handoff gate for that seat) and `init` (which has just
+# written the first-launch handoff of a seat with no earlier session) around their own call of cmd_up. Assigned here so an inherited environment variable cannot skip the gate.
+UP_GATE_DONE=0
 
 # snapshot_gate VERB -- set SNAP_USE=1 for a fresh snapshot; die on a missing, unreadable or stale one.
 snapshot_gate() {
@@ -184,6 +187,11 @@ snapshot_newer_record() {
   done
   return 1
 }
+
+# in_sandbox -- success when this process runs inside the Linux sandbox, where PID 1 is bwrap and other
+# sessions' processes are hidden (the queue's in_sandbox() reads the same file; macOS is not detected,
+# a known gap). FLEET_PROC_ROOT redirects /proc for tests.
+in_sandbox() { [ "$(cat "${FLEET_PROC_ROOT:-/proc}/1/comm" 2>/dev/null)" = bwrap ]; }
 
 # refuse_unlisted_by_snapshot VERB NAME -- for a seat this session's sessions list omits (the caller
 # has found no row and no live holder): die when the snapshot, taken outside every sandbox, reads it
@@ -334,13 +342,18 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
 
   list              every canonical the fleet record declares, with what it owns and where it
                     runs; fleet-wide, so it answers "which peer handles X" from any machine
-  status            one line per expected session: OK, MISSING, DUPLICATE, LIVE-UNLISTED (a
+  status            one line per expected session: OK, MISSING, DUPLICATE, STARTING (the snapshot
+                    reads it dead but a pid record started after it), UNKNOWN (including, from
+                    a sandbox, a seat the fresh snapshot lacks), LIVE-UNLISTED (a
                     live process holds the name though `claude agents --json` omits it, so down
                     and refresh cannot see it either), or `off (on demand)` (down, and its
                     autostart is false: the intended state, not a gap); exit 0 only if every
                     one is OK or off
-  up | start [--dry-run] [--all | name...]
-                    launch MISSING sessions as the fleet record declares them. With no names,
+  up | start [--dry-run] [--stub [reason] | --force [reason]] [--all | name...]
+                    launch MISSING sessions as the fleet record declares them, each behind the
+                    handoff freshness gate below (compared against the seat's most recent
+                    session, listed stopped or not); a seat the gate refuses is reported and
+                    not launched, the others proceed, and the exit status is nonzero. With no names,
                     every missing canonical that autostarts; with names, only those, whatever
                     their autostart; --all, every missing canonical. A canonical autostarts
                     unless its `canonicalAutostart` in the fleet record, or else the config's
@@ -360,8 +373,8 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                     the declared launch before stopping anything, so a name it cannot start
                     is a name it will not stop. Refuses when the target is the session you
                     are running it from. A name that is NOT running is launched rather than
-                    refused -- the handoff gate still applies, so this is `up` plus the gate,
-                    never a way around it.
+                    refused -- the handoff gate still applies (run once, here; `up` skips its
+                    own for this call), never a way around it.
 
   THE TWO ESCAPE HATCHES ARE OPPOSITES. Give at most one, and pick by asking which is wrong:
     --stub [reason]   the HANDOFF is wrong -- nothing was written for this sitting. REPLACES
@@ -376,6 +389,10 @@ instead, and `serve-requests`, run outside every sandbox, checks and runs it.
                       Also the hatch when the gate refuses a session that kept working after
                       its park (more than 40 main-thread tool calls since the handoff
                       document's date): a new park is the real answer, --force the override.
+                      Also when that session's transcript cannot be read, so the calls
+                      cannot be counted (the gate refuses; it does not skip the count).
+                      NOT a hatch when no handoff is recorded at all: --force keeps the
+                      pointer, and there is none, so only --stub (or recording one) applies.
   handoff <name> [--set <path>]
                     resolve (or record) the handoff a canonical should read next.
                     Prints the path; FAILS LOUDLY when the pointer or the file it names
@@ -1046,6 +1063,19 @@ report_line() {
          unknown) printf '%-28s UNKNOWN (%s)\n' "$name" "$swhy"; return ;;
          # Not MISSING: `up` reads that word as absent, and a stopped seat's old row would remain.
          stopped) printf '%-28s LISTED-STOPPED (%s; refresh it: fleet-canonicals refresh %s)\n' "$name" "$swhy" "$name"; return ;;
+         # A seat started after the snapshot reads dead in it, and a sandbox cannot see its process
+         # (snapshot_newer_record). Not MISSING either: the pid record names it, so `up` would
+         # start a duplicate. Counted unhealthy by the *STARTING* arm of cmd_status.
+         dead)    local newer
+                  if newer=$(snapshot_newer_record "$name"); then
+                    printf '%-28s STARTING (a pid record started after the snapshot: %s)\n' "$name" "$newer"; return
+                  fi ;;
+         # The snapshot is fresh and does not list this declared seat: from a sandbox the direct reads
+         # below cannot see another session's process, so "no holder" there proves nothing and MISSING
+         # would invite a second launch. Outside a sandbox the direct reads are trusted, as before.
+         '') if [ "$SNAP_USE" = 1 ] && in_sandbox; then
+               printf '%-28s UNKNOWN (the session snapshot lacks this seat, and this session is sandboxed, so a direct read cannot see its process)\n' "$name"; return
+             fi ;;
        esac
        holder=$(live_holder "$name")
        # Not "MISSING": the word is what `up` and the health check read as absent.
@@ -1195,7 +1225,7 @@ cmd_status() {
     [ -n "$name" ] || continue
     line=$(report_line "$name" "$json")
     printf '%s\n' "$line"
-    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*|*UNKNOWN*|*LISTED-STOPPED*) unhealthy=1 ;; esac
+    case "$line" in *MISSING*|*DUPLICATE*|*LIVE-UNLISTED*|*UNKNOWN*|*LISTED-STOPPED*|*STARTING*) unhealthy=1 ;; esac
   done < <(expected_names)
   while IFS= read -r orphan; do
     [ -n "$orphan" ] || continue
@@ -1219,12 +1249,18 @@ cmd_up() {
   # stray argument silently disabled the dry run and launched for real -- `up foo --dry-run` started
   # a live canonical. For a verb whose entire job is starting long-lived sessions, a typo must not be
   # the difference between a rehearsal and a launch.
-  local wanted="" all=0
+  local wanted="" all=0 stub_set=0 stub_text="" force_set=0 force_text="" ua_all="" gate_out grc
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1; shift ;;
       --all) all=1; shift ;;
-      -*) die "up: unknown option '$1' (usage: up [--dry-run] [--all | name...])" ;;
+      --stub)    stub_set=1
+                 case "${2:-}" in ''|-*) stub_text="" ;; *) stub_text=$2; shift ;; esac
+                 shift ;;
+      --force)   force_set=1
+                 case "${2:-}" in ''|-*) force_text="" ;; *) force_text=$2; shift ;; esac
+                 shift ;;
+      -*) die "up: unknown option '$1' (usage: up [--dry-run] [--stub [reason] | --force [reason]] [--all | name...])" ;;
       *)
         # A NAME, not a filter that silently matches nothing. Resolve it now and refuse a typo:
         # treating an unrecognized word as "no filter" is how `up foo --dry-run` once launched the
@@ -1236,6 +1272,11 @@ cmd_up() {
     esac
   done
   [ -z "$wanted" ] || [ "$all" = "0" ] || die "up: give names or --all, not both"
+  [ "$stub_set" = "1" ] && [ "$force_set" = "1" ] \
+    && die "up: --stub and --force are opposites, not a pair.
+  --stub REPLACES the recorded handoff with a generated 'nothing to inherit' note.
+  --force KEEPS the recorded handoff and skips the freshness comparison.
+  Pick the one that matches which of the two is actually wrong."
   snapshot_gate up
   json=$(agents_json)
   autostart_default_note
@@ -1306,6 +1347,24 @@ cmd_up() {
       read_pointer "$name" >/dev/null 2>&1 || handoff_next_step "$name" >&2
       refused=1
       continue
+    fi
+    # THE HANDOFF FRESHNESS GATE, as `refresh` and `down` run it, and fed the FULL listing: a stopped
+    # row still names the session that last ran, so the comparison is made against it rather than
+    # skipped for want of a live row. A seat with no row at all has no session to compare against and
+    # skips that comparison, as in `refresh`. Before the dry-run branch, so a rehearsal refuses what
+    # the real launch would. Each seat is gated in a subshell: a refusal (the gate dies) is reported
+    # for that seat and the others proceed, with a nonzero status at the end. `refresh` and `init`
+    # have set UP_GATE_DONE (refresh already ran the gate for its seat; init has no earlier session), so it is not run twice
+    # and a `refresh --force` is not undone here.
+    if [ "${UP_GATE_DONE:-0}" != 1 ]; then
+      [ -n "$ua_all" ] || ua_all=$(agents_json_all) || { refused=1; continue; }
+      gate_out=$(handoff_gate "$name" "$ua_all" "$stub_set" "$stub_text" up "$force_set" "$force_text" 2>&1); grc=$?
+      if [ "$grc" -ne 0 ]; then
+        printf 'REFUSED %-24s the handoff freshness gate\n%s\n' "$name" "$gate_out" >&2
+        refused=1
+        continue
+      fi
+      printf '%s\n' "$gate_out"
     fi
     if ! why=$(prepare_context "$name" 2>&1); then
       printf 'REFUSED %-24s %s\n' "$name" "$why" >&2
@@ -2010,7 +2069,7 @@ $mine"
   file=$(write_first_launch_handoff "$name") || die "init: could not write the first-launch handoff"
   cmd_handoff "$name" --set "$file" >/dev/null || die "init: could not record the pointer to $file"
   printf 'init     %-23s %s\n' "$name" "$file"
-  [ "$up" = 0 ] || cmd_up "$name"
+  [ "$up" = 0 ] || UP_GATE_DONE=1 cmd_up "$name"
 }
 
 cmd_handoff() {
@@ -2620,6 +2679,23 @@ handoff_gate() {
       fleet-canonicals handoff $name --set <path-to-handoff>"
   fi
 
+  # NO RECORDED HANDOFF IS REFUSED BEFORE --force IS CONSIDERED. --force vouches for the comparison,
+  # and with no pointer there is nothing to compare, so it cannot be the hatch here: it would launch
+  # the successor blind. --stub is the hatch (it writes the handoff), so it is exempt.
+  set_at=$(handoff_set_at "$name") || set_at=""
+  set_at_s=$(to_secs "${set_at:-}") || set_at_s=""
+
+  if [ "$stub_set" != "1" ] && [ -z "$set_at_s" ]; then
+    die "$verb: no handoff is recorded for '$name', so its successor would start with no orientation.
+  Park properly, then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or state outright that there is nothing to hand over:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'
+  --force is NOT the hatch for this one. It keeps the recorded handoff and skips the freshness
+  comparison -- but there is no recorded handoff here, so it would launch the successor blind.
+  --force is for when a GOOD handoff exists and only the comparison is wrong."
+  fi
+
   # --force is the OPERATOR'S JUDGMENT, and it is deliberately not the same escape hatch as
   # --stub. --stub REPLACES the recorded handoff with a generated one that says there is nothing to
   # inherit; that is right when no handoff was written, and destructive when a good one exists,
@@ -2652,19 +2728,6 @@ handoff_gate() {
     return 0
   fi
 
-  set_at=$(handoff_set_at "$name") || set_at=""
-  set_at_s=$(to_secs "${set_at:-}") || set_at_s=""
-
-  if [ -z "$set_at_s" ]; then
-    die "$verb: no handoff is recorded for '$name', so its successor would start with no orientation.
-  Park properly, then retry:
-      fleet-canonicals handoff $name --set <path-to-handoff>
-  Or state outright that there is nothing to hand over:
-      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'
-  --force is NOT the hatch for this one. It keeps the recorded handoff and skips the freshness
-  comparison -- but there is no recorded handoff here, so it would launch the successor blind.
-  --force is for when a GOOD handoff exists and only the comparison is wrong."
-  fi
 
   # Only when a row for the name exists: a name with no session anywhere in the listing (a refresh
   # that launches a seat that never ran) has no session whose start could be compared.
@@ -2680,7 +2743,7 @@ handoff_gate() {
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
   fi
 
-  if [ -n "$started_s" ] && [ "$set_at_s" -lt "$started_s" ]; then
+  if [ -n "$started_s" ] && [ "$set_at_s" -le "$started_s" ]; then
     die "$verb: the handoff recorded for '$name' PREDATES the session it would replace.
       handoff recorded   $(fmt_epoch "$set_at_s" '%Y-%m-%d %H:%M')
       session started    $(fmt_epoch "$started_s" '%Y-%m-%d %H:%M')
@@ -2757,8 +2820,9 @@ handoff_gate() {
 
   # WORK SINCE THE PARK. A seat can park, then keep working for hours in the same session; its
   # pointer still names that park, every comparison above passes, and the successor reads a stale
-  # park as current. Needs a document date and the transcript (the listing has no tool calls); with
-  # no transcript the count cannot be made, so it is skipped, said so, and not refused.
+  # park as current. Needs a document date and the transcript (the listing has no tool calls); a
+  # listed session whose transcript cannot be read is REFUSED (a count that cannot be made is not a
+  # pass), and a name with no listed session has nothing to count.
   if [ -n "$tgt_e" ]; then
     local tfile calls
     if tfile=$(session_transcript_file "$sid") && calls=$(tool_calls_after "$tfile" "$tgt_e"); then
@@ -2778,9 +2842,23 @@ handoff_gate() {
   Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
       fi
+    elif [ -n "$(holder_field "$json" "$name" name)" ]; then
+      # FAILS CLOSED. A listed session whose transcript cannot be read cannot be shown not to have
+      # worked past its park, and "skipped" read as a pass: the successor then inherits an orientation
+      # nobody measured. A name with no row at all has no session to count, so it falls to the note.
+      die "$verb: the work '$name' did after its recorded handoff cannot be counted: no readable transcript for session ${sid:-(none)}.
+      document           $ptr_target
+      $tgt_label$(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
+  Without the transcript the check that the session did not keep working past this park cannot be made.
+  Park properly, then retry once the transcript can be read:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD and the transcript is the thing that is missing, keep the
+  pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
     else
-      printf 'note     %-24s work-since-park check skipped: no readable transcript for session %s\n' \
-        "$name" "${sid:-(none)}"
+      printf 'note     %-24s work-since-park check skipped: no session for this name to count\n' "$name"
     fi
   fi
 
@@ -2932,9 +3010,11 @@ cmd_refresh() {
   # WHAT MUST NOT FALL THROUGH WITH IT IS THE GATE, and that is the whole reason this branch is
   # written out rather than delegating to `up`. `refresh`'s contract is that the successor reads a
   # handoff; that is exactly as binding when the predecessor already exited as when this verb stops
-  # it -- arguably more, because nobody watched it go. `up` has NO gate at all, so the path an
-  # operator actually took when bounced ran WEAKER than this one. The old refusal did not protect
-  # the gate; it routed around it.
+  # it -- arguably more, because nobody watched it go. `up` had NO gate at all until it gained its
+  # own (it now runs the gate for each seat it launches), so the path an operator actually took when
+  # bounced ran WEAKER than this one. The old refusal did not protect the gate; it routed around it.
+  # Since `up` gates too, this branch runs the gate itself (it holds the --stub/--force the operator
+  # gave) and calls `up` with UP_GATE_DONE set, so the gate runs once and a --force is not undone.
   #
   # The gate is fed `agents_json_all` here, NOT `json`. Stopped rows survive in the full listing and
   # `holder_field` already takes the most recent by startedAt, so the freshness COMPARISON still
@@ -2956,7 +3036,7 @@ cmd_refresh() {
       printf 'refresh: dry run -- nothing to stop, nothing started\n'
       return 0
     fi
-    cmd_up "$name"
+    UP_GATE_DONE=1 cmd_up "$name"
     return
   fi
 
@@ -3052,7 +3132,7 @@ cmd_refresh() {
   # cleanup_tmproot_if_gone) reuses that already-confirmed zero-rows result instead of re-querying.
   rm_tmproot "$name"
 
-  cmd_up "$name"
+  UP_GATE_DONE=1 cmd_up "$name"
 }
 
 # ---- down --------------------------------------------------------------------
@@ -3248,6 +3328,11 @@ cmd_resume() {
              return 1 ;;
     unknown) printf 'REFUSED %-24s UNKNOWN in the session snapshot (%s); not waking or forking a seat whose state cannot be read\n' "$name" "$rwhy" >&2
              return 1 ;;
+    dead)    local rnewer
+             if rnewer=$(snapshot_newer_record "$name"); then
+               printf 'REFUSED %-24s reads dead in the session snapshot, but a pid record names it and started after the snapshot was taken (%s); it may be running, and waking or forking it would start a second session. Retry after the next snapshot, or ask the runner: fleet-canonicals request resume %s --reason '"'"'<why>'"'"'\n' "$name" "$rnewer" "$name" >&2
+               return 1
+             fi ;;
   esac
 
   # --- Prefer waking the existing session over forking a copy of it. ------------------------

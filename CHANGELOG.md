@@ -32,6 +32,29 @@ Entries are newest first.
 
 ---
 
+## 2026-11-20 (fleet-canonicals: `up` runs the handoff gate; the gate fails closed; no MISSING in the snapshot window)
+
+`up` (and with it `resume-at` and the request queue's served `up`) now runs the handoff freshness
+gate for each seat it would launch, against the seat's most recent session in the full listing, so a
+seat that died unparked or whose park predates its last session no longer starts on a stale document
+while `refresh` of the same seat refuses. `up` takes `--force [reason]` and `--stub [reason]` with the
+meaning they have on `refresh`; with several seats a refused one is reported and not launched, the
+others start, and the status is nonzero. `refresh` and `init` run the gate once and skip it inside
+their own call to `up`. Four smaller changes to the same gate and to `status`:
+
+- A listed session whose transcript cannot be read now refuses (naming `--force` and `--stub`); the
+  work-since-park check used to print `skipped` and pass. A name with no listed session still has
+  nothing to count.
+- `--force` no longer lifts the "no handoff is recorded" refusal (`--stub` still does).
+- A pointer recorded in the same second the session started is refused, as the queue always did.
+- `status` reads a seat the snapshot calls dead while a pid record started after the snapshot as
+  `STARTING` (unhealthy, never `MISSING`), and from inside a sandbox a declared seat the fresh
+  snapshot lacks as `UNKNOWN`; `resume` refuses the same dead-but-newer-record seat as `up` does.
+
+Nothing to do, except that a scripted `up` of a stale seat now exits nonzero.
+
+---
+
 ## 2026-11-19 (fleet-canonicals: the handoff gate refuses a seat that kept working after its park)
 
 `refresh` and `down` (in `fleet-canonicals` and in the request queue's checks) now count the main-thread

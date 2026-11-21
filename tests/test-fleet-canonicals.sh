@@ -91,12 +91,29 @@ HREPO="$TMPROOT/hrepo"; mkdir -p "$HREPO"   # fixture handoffs with plain names,
 export FLEET_HANDOFFS_SEARCH="$TMPROOT"
 
 
+# TRANSCRIPTS. The handoff gate refuses a listed session whose transcript it cannot read (the
+# work-since-park count cannot be made), so every fixture session that a gate case lists has one, and
+# the default transcript directory is a fixture rather than the machine's own. ftd_from writes, for
+# each row of a listing fixture that has a sessionId and a startedAt, a transcript whose first entry is
+# at that start (so the true start equals the listed one and no case's comparison moves). A case that
+# is about a missing or different transcript sets its own FLEET_TRANSCRIPT_DIR.
+export FLEET_TRANSCRIPT_DIR="$TMPROOT/ftd"; mkdir -p "$FLEET_TRANSCRIPT_DIR/proj"
+ftd_from() {  # ftd_from <listing.json>
+  local sid st
+  jq -r '.[] | select(.sessionId != null and .startedAt != null) | "\(.sessionId) \(.startedAt)"' "$1" | while read -r sid st; do
+    (( st > 100000000000 )) && st=$(( st / 1000 ))
+    print -r -- "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"$(date -u -d "@$st" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -r "$st" -u +%Y-%m-%dT%H:%M:%S.000Z)\"}" \
+      > "$FLEET_TRANSCRIPT_DIR/proj/$sid.jsonl"
+  done
+}
+
 # A fixture fleet: one healthy, one duplicated (older + newer), one missing entirely.
 cat > "$TMPROOT/agents.json" <<'JSON'
 [{"pid":90111,"id":"aaa1","cwd":"/x","kind":"background","startedAt":1000,"sessionId":"s1","name":"alpha-canonical","status":"idle","state":"done"},
  {"pid":90222,"id":"bbb2","cwd":"/y","kind":"background","startedAt":1000,"sessionId":"s2","name":"beta-canonical","status":"idle","state":"done"},
  {"pid":90333,"id":"ccc3","cwd":"/y","kind":"background","startedAt":9000,"sessionId":"s3","name":"beta-canonical","status":"busy","state":"running"}]
 JSON
+ftd_from "$TMPROOT/agents.json"
 print -l 'alpha-canonical' 'beta-canonical' '# a comment' 'gamma-canonical' > "$TMPROOT/roster"
 
 # THE FLEET RECORD is the manifest now: a canonical exists because the record declares it, and
@@ -530,6 +547,7 @@ if command -v uv >/dev/null 2>&1; then
   DPID=4999991   # above any pid_max: the cases below are dry runs, and nothing could reach a real process
   print '[]' > "$TMPROOT/dn-live.json"
   print '[{"id":"dn000001","name":"delta-canonical","state":"done","sessionId":"dn000001-sess","cwd":"/x","kind":"background","startedAt":1000}]' > "$TMPROOT/dn-all.json"
+  ftd_from "$TMPROOT/dn-all.json"
   mkdir -p "$TMPROOT/fcstate"
   print "orientation" > "$HREPO/dn-handoff.md"; hcommit "$HREPO" dn-handoff.md
   print "$HREPO/dn-handoff.md" >  "$TMPROOT/fcstate/delta-canonical.handoff"
@@ -653,6 +671,7 @@ SH
 # startedAt in MILLISECONDS, an hour ago -- the units matter, see the to_secs test below.
 print "[{\"pid\":90444,\"id\":\"ddd4\",\"name\":\"zeta-canonical\",\"sessionId\":\"sz\",\"startedAt\":$(( (NOW - 3600) * 1000 ))}]" \
   > "$TMPROOT/zeta.json"
+ftd_from "$TMPROOT/zeta.json"
 
 zfc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GSTATE" \
         FLEET_AGENTS_JSON_CMD="cat $TMPROOT/zeta.json" bash "$TOOL" "$@" 2>&1 }
@@ -1001,11 +1020,11 @@ out=$(gzfc refresh zeta-canonical --dry-run); rc=$?
 # 3. No known session start: neither a listing startedAt nor a transcript.
 print '[{"pid":90444,"id":"ddd4","name":"zeta-canonical","sessionId":"sz"}]' > "$TMPROOT/zeta-nostart.json"
 gfresh - $(( NOW - 60 ))
-out=$(GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --dry-run); rc=$?
+out=$(FLEET_TRANSCRIPT_DIR="$TMPROOT/nope" GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --dry-run); rc=$?
 [[ $rc -ne 0 && "$out" == *"start of 'zeta-canonical''s session is not known"* ]] \
     && ok "gate refuses rather than skips when no session start is known" \
     || bad "no-start gate passed (rc=$rc): $out"
-out=$(GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
+out=$(FLEET_TRANSCRIPT_DIR="$TMPROOT/nope" GJSON="$TMPROOT/zeta-nostart.json" gzfc refresh zeta-canonical --force 'test' --dry-run); rc=$?
 [[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force passes a session with no known start" || bad "--force no-start (rc=$rc): $out"
 
 # 4. WORK SINCE THE PARK: a seat that parked and then kept working in the same session. The
@@ -1072,13 +1091,13 @@ out=$(gwfc refresh zeta-canonical --dry-run); rc=$?
 [[ $rc -eq 0 && "$out" == *"would refresh"* ]] \
     && ok "gate counts distinct tool_use ids, not lines (one message split across lines)" \
     || bad "split message lines were counted more than once (rc=$rc): $out"
-# no transcript for the session: skipped with a note, not refused
+# no transcript for the listed session: REFUSED (it used to be skipped with a note and pass)
 wsp_fresh
 out=$(FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" FLEET_TRANSCRIPT_DIR="$TMPROOT/nope" \
       FLEET_AGENTS_JSON_CMD="cat $TMPROOT/zeta-wsp.json" bash "$TOOL" refresh zeta-canonical --dry-run 2>&1); rc=$?
-[[ $rc -eq 0 && "$out" == *"would refresh"* && "$out" == *"note"*"work-since-park check skipped"* ]] \
-    && ok "with no transcript the work-since-park check is skipped with a note, not refused" \
-    || bad "missing transcript refused or said nothing (rc=$rc): $out"
+[[ $rc -ne 0 && "$out" == *"no readable transcript"* && "$out" == *"--force"* && "$out" != *"would refresh"* ]] \
+    && ok "with no transcript the work-since-park check refuses (fails closed), naming --force" \
+    || bad "missing transcript passed or lacked the text (rc=$rc): $out"
 
 # --- --stub ---
 rm -rf "$GSTATE"
@@ -2007,6 +2026,8 @@ else
 fi
 SH
 chmod +x "$STOP_E2E/agents.sh"
+# the gate counts work since the park, which needs this session'"'"'s transcript (its first entry at the listed start)
+print '[{"sessionId":"stop-sess","startedAt":1}]' > "$STOP_E2E/stop-row.json"; ftd_from "$STOP_E2E/stop-row.json"
 
 out=$(FLEET_STATE="$STOP_STATE" FLEET_TMPROOT_PREFIX="$STOP_PREFIX" FLEET_CLAUDE_CMD=/usr/bin/true \
       FLEET_AGENTS_JSON_CMD="$STOP_E2E/agents.sh" \
@@ -2112,6 +2133,8 @@ else
 fi
 SH
 chmod +x "$REFRESH_E2E/agents.sh"
+# the gate counts work since the park, which needs this session's transcript (first entry at the listed start)
+print '[{"sessionId":"rf-old-sess","startedAt":1}]' > "$REFRESH_E2E/rf-row.json"; ftd_from "$REFRESH_E2E/rf-row.json"
 
 cat > "$REFRESH_E2E/argstub" <<'STUB'
 #!/bin/sh
@@ -2415,6 +2438,116 @@ yq '.projects.opt.canonicalAutostart = "maybe"' "$AU/rec.yaml" > "$AU/rec-bad.ya
 out=$(aurun rec-bad.yaml none.json -- up --dry-run)
 starts "$out" auto-opt-canonical && [[ "$out" == *canonicalAutostart*maybe*"not true or false"* ]] \
   && ok "g: a bad canonicalAutostart is reported and treated as true" || bad "g: bad seat key: $out"
+
+# ---- up runs the handoff freshness gate (tasks: up gate, fail-closed work check, no-pointer --force) ----
+# `up` used to check only that the pointer's file exists, so a seat that died unparked, or whose last
+# park predates its last session, launched on a stale document while `refresh` of the same seat
+# refused. The gate is fed the FULL listing, so a stopped row still supplies the session to compare.
+UAD="$TMPROOT/ua"; rm -rf "$UAD"; mkdir -p "$UAD/transcripts/proj"
+print '[]' > "$UAD/live.json"
+UA_START=$(( NOW - 3600 ))
+print "[{\"pid\":null,\"id\":\"ddd4\",\"name\":\"zeta-canonical\",\"sessionId\":\"sz\",\"state\":\"done\",\"startedAt\":$(( UA_START * 1000 ))}]" > "$UAD/all.json"
+# A transcript for session sz: it begins at its start and has three tool calls after the park below.
+ua_transcript() {  # ua_transcript <doc epoch> <calls after it>
+  local i; { print -r -- "{\"type\":\"user\",\"isSidechain\":false,\"timestamp\":\"$(giso $UA_START)\"}"
+    for (( i=1; i<=$2; i++ )); do
+      print -r -- "{\"type\":\"assistant\",\"isSidechain\":false,\"timestamp\":\"$(giso $(( $1 + 60 + i )))\",\"message\":{\"id\":\"ua$i\",\"content\":[{\"type\":\"tool_use\",\"id\":\"uat$i\"}]}}"
+    done; } > "$UAD/transcripts/proj/sz.jsonl"
+}
+uafc() { FLEET_ROOT="$TMPROOT" FLEET_STATE="$GS2" FLEET_HANDOFFS_DIR="$GH2" FLEET_TRANSCRIPT_DIR="$UAD/transcripts" \
+         FLEET_AGENTS_JSON_CMD="cat $UAD/live.json" FLEET_AGENTS_JSON_ALL_CMD="cat $UAD/all.json" bash "$TOOL" "$@" 2>&1 }
+# stale: the park is stamped two hours before the session it would hand over from
+ua_stale="$GS2/handoff-staging/$(gstamp $(( UA_START - 7200 )))-$GS_NAME"
+gfresh "$ua_stale" $(( NOW - 60 )); gdoc "$ua_stale"; ua_transcript $(( UA_START - 7200 )) 3
+out=$(uafc up zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"REFUSED"*"zeta-canonical"*"BEFORE the session started"* && "$out" != *"would start"* ]] \
+    && ok "up refuses a dead seat whose last session started after its park's stamp" \
+    || bad "up passed a stale park (rc=$rc): $out"
+# controls: a correctly parked seat starts; --force on the stale case proceeds, loudly
+ua_good="$GS2/handoff-staging/$(gstamp $(( UA_START + 600 )))-$GS_NAME"
+gfresh "$ua_good" $(( NOW - 60 )); gdoc "$ua_good"; ua_transcript $(( UA_START + 600 )) 3
+out=$(uafc up zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"would start"*"zeta-canonical"* && "$out" != *"REFUSED"* ]] \
+    && ok "up starts a dead seat whose park follows its last session (control)" \
+    || bad "up refused a correctly parked seat (rc=$rc): $out"
+gfresh "$ua_stale" $(( NOW - 60 )); gdoc "$ua_stale"
+out=$(uafc up zeta-canonical --force 'x' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* && "$out" == *"would start"*"zeta-canonical"* ]] \
+    && ok "up --force proceeds on the stale case, saying FORCED" \
+    || bad "up --force (rc=$rc): $out"
+out=$(uafc up zeta-canonical --stub 'x' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"stub written"* && "$out" == *"would start"*"zeta-canonical"* ]] \
+    && ok "up --stub replaces the stale pointer and proceeds" \
+    || bad "up --stub (rc=$rc): $out"
+out=$(uafc up zeta-canonical --force 'x' --stub 'y' --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"opposites"* ]] && ok "up refuses --force with --stub" || bad "up --force --stub (rc=$rc): $out"
+out=$(uafc up zeta-canonical --bogus --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"unknown option '--bogus'"* ]] && ok "up still refuses an unknown option" || bad "up --bogus (rc=$rc): $out"
+# several seats: the stale one is reported and not launched, the other proceeds, the status is nonzero
+gfresh "$ua_stale" $(( NOW - 60 )); gdoc "$ua_stale"
+print "[]" > "$UAD/theta.json"
+ua_theta="$GS2/handoff-staging/$(gstamp $(( NOW - 1800 )))-theta-canonical-park.md"; gdoc "$ua_theta"
+print "$ua_theta" > "$GS2/theta-canonical.handoff"; print "# set-at $(( NOW - 60 ))" >> "$GS2/theta-canonical.handoff"
+out=$(uafc up zeta-canonical theta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"REFUSED"*"zeta-canonical"*"BEFORE the session started"* \
+   && "$out" == *"would start"*"theta-canonical"* && -z "$(print -r -- "$out" | grep '^would start zeta')" ]] \
+    && ok "up with two seats: the stale one is refused, the other would start, the status is nonzero" \
+    || bad "up with two seats (rc=$rc): $out"
+rm -f "$GS2/theta-canonical.handoff"
+# refresh must not be gated twice, nor undone by up: a refresh --force of a stopped, stale seat runs up once
+UA_LOG="$UAD/launch.log"; rm -f "$UA_LOG"
+out=$(FLEET_CLAUDE_CMD=false uafc refresh zeta-canonical --force 'x'); rc=$?
+[[ "$out" == *"FORCED"* && "$out" != *"REFUSED"* && "$out" != *"BEFORE the session started"* ]] \
+    && ok "refresh --force of a stale stopped seat is not undone by up's gate" \
+    || bad "refresh --force was refused or gated twice (rc=$rc): $out"
+n_forced=$(print -r -- "$out" | grep -c 'FORCED'); [[ $n_forced -eq 1 ]] \
+    && ok "refresh runs the gate once, not once more through up" || bad "gate ran $n_forced times through refresh: $out"
+# refresh --stub of the same seat likewise (the stub is not standard-named; up must not gate it again)
+gfresh "$ua_stale" $(( NOW - 60 )); gdoc "$ua_stale"
+out=$(FLEET_CLAUDE_CMD=false uafc refresh zeta-canonical --stub 'x'); rc=$?
+[[ "$out" == *"stub written"* && "$out" != *"REFUSED"* ]] \
+    && ok "refresh --stub of a stale stopped seat is not refused by up's gate" \
+    || bad "refresh --stub refused through up (rc=$rc): $out"
+
+# ---- the work-since-park check fails closed ----
+# A listed seat whose transcript cannot be read cannot be shown not to have worked past its park, so
+# the gate refuses (it used to print "skipped" and pass), naming the hatches.
+gfresh "$ua_good" $(( NOW - 60 )); gdoc "$ua_good"; rm -rf "$UAD/transcripts/proj"; mkdir -p "$UAD/transcripts/proj"
+print "[{\"pid\":90444,\"id\":\"ddd4\",\"name\":\"zeta-canonical\",\"sessionId\":\"sz\",\"startedAt\":$(( UA_START * 1000 ))}]" > "$UAD/live.json"
+out=$(uafc down zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"no readable transcript"* && "$out" == *"--force"* && "$out" == *"--stub"* && "$out" == *"handoff zeta-canonical --set"* ]] \
+    && ok "down refuses a listed seat whose transcript cannot be read (work-since-park fails closed)" \
+    || bad "unreadable transcript passed the work check (rc=$rc): $out"
+out=$(uafc down zeta-canonical --force 'x' --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" == *"FORCED"* ]] && ok "--force lifts the unreadable-transcript refusal" || bad "--force unreadable transcript (rc=$rc): $out"
+ua_transcript $(( UA_START + 600 )) 40
+out=$(uafc down zeta-canonical --dry-run); rc=$?
+[[ $rc -eq 0 && "$out" != *"no readable transcript"* ]] \
+    && ok "a transcript with 40 calls after the document passes (control)" \
+    || bad "a readable transcript was refused (rc=$rc): $out"
+print "[]" > "$UAD/live.json"
+
+# ---- --force does not lift the no-pointer refusal; the pointer's equal-second boundary ----
+rm -rf "$GS2"; mkdir -p "$GS2"
+out=$(uafc refresh zeta-canonical --dry-run --force x); rc=$?
+[[ $rc -ne 0 && "$out" == *"no handoff is recorded"* && "$out" != *"FORCED"* ]] \
+    && ok "refresh --force with no pointer is refused" \
+    || bad "--force passed with no pointer (rc=$rc): $out"
+out=$(uafc refresh zeta-canonical --dry-run --stub x); rc=$?
+[[ $rc -eq 0 && "$out" == *"stub written"* ]] && ok "--stub stays the hatch for no pointer" || bad "--stub with no pointer (rc=$rc): $out"
+# a pointer recorded in the very second the session started predates its work: refused, as in the queue
+print "[{\"pid\":90444,\"id\":\"ddd4\",\"name\":\"zeta-canonical\",\"sessionId\":\"sz\",\"startedAt\":$(( UA_START * 1000 ))}]" > "$UAD/live.json"
+rm -f "$UAD/transcripts/proj/sz.jsonl"
+gfresh - $UA_START
+out=$(uafc refresh zeta-canonical --dry-run); rc=$?
+[[ $rc -ne 0 && "$out" == *"PREDATES"* ]] \
+    && ok "a pointer recorded at exactly the session's start second is refused" \
+    || bad "equal-second pointer passed (rc=$rc): $out"
+gfresh - $(( UA_START + 1 ))
+out=$(uafc refresh zeta-canonical --dry-run); rc=$?
+[[ "$out" != *"PREDATES"* ]] && ok "a pointer one second after the start is not refused as predating (control)" \
+    || bad "pointer one second after start refused as PREDATES (rc=$rc): $out"
+print "[]" > "$UAD/live.json"
 
 # (h), resume-at's unnamed-set path under a 30 s hang guard, is in test-fleet-canonicals-bounds.sh.
 

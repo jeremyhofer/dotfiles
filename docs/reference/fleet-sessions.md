@@ -76,7 +76,8 @@ that should start only when someone asks sets `canonicalAutostart: false` in its
   on-demand one. `up <name>...` starts the named seats whatever their key. `up --all` starts every
   missing seat. Names together with `--all` are refused.
 - `status` prints a down on-demand seat as `off (on demand)` and counts it healthy: the exit status
-  and the health check read only `MISSING`, `DUPLICATE` and `LIVE-UNLISTED` as unhealthy. A live
+  and the health check read only `MISSING`, `DUPLICATE`, `LIVE-UNLISTED`, `UNKNOWN`, `LISTED-STOPPED` and
+  `STARTING` as unhealthy. A live
   on-demand seat is `OK`.
 - Nothing acts on seats without naming them and starts an off one: `resume-at` runs a bare `up` after
   a usage reset and so skips it; `refresh`, `resume` and every queued request take a name. `dedupe`,
@@ -301,7 +302,9 @@ The verb refuses inside a sandbox, where it would report hidden sessions as dead
 
 `status`, `up` and `clean` use a snapshot no older than `snapshot-max-age` (45 seconds): a live seat
 the listing omits reads `LIVE-UNLISTED`, an unknown one `UNKNOWN (<why>)` and never `MISSING`, and
-`up` refuses to start either. A stale snapshot makes them refuse, naming the timer. A missing one
+`up` refuses to start either. A seat it reads dead while a pid record started after the snapshot reads
+`STARTING`, and from inside a sandbox a declared seat the fresh snapshot lacks reads `UNKNOWN`, since the
+direct reads there cannot see other sessions' processes. A stale snapshot makes them refuse, naming the timer. A missing one
 (the timer not enabled yet) gives a one-line note and the direct reads these verbs made before. The
 request runner refuses every request while the snapshot is stale and refuses starting a seat it
 reads as `unknown`.

@@ -1,6 +1,6 @@
 ---
 name: canonical-takeover
-description: Use when taking over, launching, relaunching, refreshing, resuming or closing a canonical session — running `fleet-canonicals up`/`down` (or `start`/`stop`)/`refresh`/`resume`/`dedupe`/`status`/`list`, requesting one of those from inside a sandbox (`fleet-canonicals request`, the `serve-requests` runner, a refused request's result file), declaring or changing a canonical in the fleet record (`canonical`, `canonicalLaunchModel`, `canonicalLaunchDir`, `canonicalIdentity`, `canonicalMachines`, `canonicalRemoteControl`), choosing a canonical's model, or when a canonical name resolves to the wrong session, a stale duplicate row appears in the agents view, a canonical is missing on a machine that should run it, or a session comes up on an unexpected model. Covers how a launch is composed from the record, why the model is declared rather than inherited, how a launch resolves its handoff through a pointer, the handoff freshness gate on `down` and `refresh`, the request queue's checks and who may request what, the verify-the-name-landed step, and why opening a stale row silently resumes it.
+description: Use when taking over, launching, relaunching, refreshing, resuming or closing a canonical session — running `fleet-canonicals up`/`down` (or `start`/`stop`)/`refresh`/`resume`/`dedupe`/`status`/`list`, requesting one of those from inside a sandbox (`fleet-canonicals request`, the `serve-requests` runner, a refused request's result file), declaring or changing a canonical in the fleet record (`canonical`, `canonicalLaunchModel`, `canonicalLaunchDir`, `canonicalIdentity`, `canonicalMachines`, `canonicalRemoteControl`), choosing a canonical's model, or when a canonical name resolves to the wrong session, a stale duplicate row appears in the agents view, a canonical is missing on a machine that should run it, or a session comes up on an unexpected model. Covers how a launch is composed from the record, why the model is declared rather than inherited, how a launch resolves its handoff through a pointer, the handoff freshness gate on `up`, `down` and `refresh`, the request queue's checks and who may request what, the verify-the-name-landed step, and why opening a stale row silently resumes it.
 ---
 
 # Canonical takeover, launch and lifecycle
@@ -124,8 +124,11 @@ canonical, with the same newest-wins addressing and the same verify step.
 
 ## The handoff freshness gate
 
-`down <name>` and `refresh <name>` refuse to end the session holding a name unless its pointer was
-recorded **after that session started**. A pointer older than the session it replaces cannot
+`down <name>` and `refresh <name>` refuse to end the session holding a name, and `up` refuses to
+start a seat (compared against its most recent session, listed stopped or not), unless its pointer
+was recorded **after that session started** (a pointer recorded in the very second it started does
+not count). With several seats, `up` reports the refused one, starts the others and exits nonzero;
+`refresh` runs the gate once and passes its own `--force`/`--stub` through to the launch. A pointer older than the session it replaces cannot
 describe that session's work, and the successor would read it as current. Two escape hatches, which
 are opposites; give at most one:
 
@@ -133,11 +136,14 @@ are opposites; give at most one:
   pointer with a generated "nothing to inherit" note. Destructive if a good handoff exists.
 - `--force [reason]`: the **comparison** is wrong, the recorded handoff does describe this sitting.
   Keeps the pointer and skips the check. The usual cause, a session resumed after it parked, is now
-  detected from the transcript, so this should be rare.
+  detected from the transcript, so this should be rare. It is not the hatch when no handoff is
+  recorded at all: with no pointer there is nothing to keep, so `--stub` (or recording one) applies.
 
 The gate also refuses a session that **kept working after its park**: more than 40 main-thread tool
 calls in its transcript after the pointer's document date (subagent and sidechain calls do not count).
 A seat that kept working after a park or checkpoint owes a new park; `--force` keeps the recorded one.
+When a listed session's transcript cannot be read the calls cannot be counted, and the gate refuses
+(naming `--force` and `--stub`) rather than skipping the count.
 
 ## Other lifecycle verbs
 

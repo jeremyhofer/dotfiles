@@ -15,7 +15,7 @@ request there (`request`), and a runner outside every sandbox, started once a mi
 user timer or a LaunchAgent, reads the queue and runs the existing verb (`serve-requests`; where
 neither can be loaded, `serve-requests --loop` repeats the pass every 60 seconds, e.g. in a tmux pane). The
 verb's own checks still apply -- the pre-flight that the name can be launched, the handoff
-freshness gate on `down` and `refresh`, a pointer that resolves -- and the runner adds the checks
+freshness gate on `up`, `down` and `refresh`, a pointer that resolves -- and the runner adds the checks
 the verbs lack, listed in CHECKS below.
 
 THE TRUST IS COOPERATIVE. Anyone who can write the requests directory can write a request, and the

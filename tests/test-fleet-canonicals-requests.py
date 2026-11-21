@@ -50,6 +50,7 @@ whose test has never been seen to fail is of unknown value; the table is how eac
 The mutants run only in the landing lane (RUN_MUTANTS=1, `tests/apply-suites.py land`); a normal run through
 this file's own entry point deselects the tests marked `mutant`.
 """
+import calendar
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -1347,6 +1348,35 @@ def test_serve_blocked_session_parked_before_it_started_waits(fleet):
         "...and the reason says the handoff predates the session: %s" % fleet.result("r-pk3", "detail")
 
 
+# The equal-second boundary: a pointer recorded in the very second the session started does not show a
+# park since the start, and the shell gate (`handoff_gate`) refuses it the same way (at or before).
+
+def _park_pointer_at(fleet, epoch):
+    (fleet.state / "alpha-canonical.handoff").write_text(
+        "%s\n# set-at %d\n" % (fleet.S / "alpha.handoff.md", epoch))
+
+
+def test_serve_pointer_recorded_in_the_start_second_waits(fleet):
+    start = calendar.timegm(time.strptime("2026-11-08T01:00:00", "%Y-%m-%dT%H:%M:%S"))   # fleet.transcript's first entry
+    fleet.live_row("pk000004", "alpha-canonical", "blocked", "s-eq"); fleet.transcript("s-eq", "ended")
+    fleet.pid_for(5104, "alpha-canonical", "s-eq", "idle")
+    _park_pointer_at(fleet, start)
+    fleet.plant("r-pk4", "refresh", "alpha-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-pk4", "waiting", "working", "a pointer recorded at exactly the session's start second is not a park since")
+    assert "recorded before the session started" in fleet.result("r-pk4", "detail"), fleet.result("r-pk4", "detail")
+
+
+def test_serve_pointer_recorded_one_second_after_the_start_is_served(fleet):
+    start = calendar.timegm(time.strptime("2026-11-08T01:00:00", "%Y-%m-%dT%H:%M:%S"))
+    fleet.live_row("pk000005", "alpha-canonical", "blocked", "s-eq"); fleet.transcript("s-eq", "ended")
+    fleet.pid_for(5105, "alpha-canonical", "s-eq", "idle")
+    _park_pointer_at(fleet, start + 1)
+    fleet.plant("r-pk5", "refresh", "alpha-canonical", "director-canonical")
+    fleet.serve()
+    fleet.expect("r-pk5", "done", "", "the same one second later is a park since the start (control)")
+
+
 # the handoff DOCUMENT, not only the pointer: a standard name (YYYY-MM-DD-HHMM-<seat>-park|checkpoint.md)
 # is read, only to refuse, in the same terms as the gate in fleet-canonicals
 
@@ -2415,6 +2445,65 @@ def test_up_ignores_a_newer_pid_record_for_another_seat(fleet):
     out = fleet.fc("up", "gamma-canonical", "--dry-run").out
     assert re.search(r"would start.*gamma-canonical", out, re.S) and "REFUSED" not in out, \
         "up is not refused by another seat's newer record (control): %s" % out
+
+
+# status and resume read the same window: a seat started after the snapshot reads dead in it, and a
+# direct read from a sandbox cannot see its process. status must not call it MISSING (the word that
+# says "absent" and that an operator answers with `up`), and resume refuses as `up` does.
+
+def test_status_a_dead_seat_with_a_newer_pid_record_is_starting_not_missing(fleet):
+    fleet.write_snapshot(30, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 10) * 1000)
+    r, line = _status_line(fleet, "gamma-canonical")
+    assert "STARTING" in line and "pid 7777" in line and "MISSING" not in line, \
+        "status: a dead seat with a pid record newer than the snapshot is STARTING, not MISSING: %s" % r.out
+    assert r.status != 0, "status: STARTING counts as unhealthy (rc=%s): %s" % (r.status, r.out)
+
+
+def test_status_a_dead_seat_with_an_older_pid_record_still_reads_missing(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 60) * 1000)
+    r, line = _status_line(fleet, "gamma-canonical")
+    assert "MISSING" in line and "STARTING" not in line, \
+        "status: a pid record the snapshot already saw does not make a dead seat STARTING (control): %s" % r.out
+
+
+def test_resume_refuses_a_dead_seat_whose_pid_record_started_after_the_snapshot(fleet):
+    fleet.write_snapshot(30, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 10) * 1000)
+    fleet.stopped_row("g0000001", "gamma-canonical")   # a stopped row: resume would wake it in place
+    r = fleet.fc("resume", "gamma-canonical", "--dry-run")
+    assert r.status != 0 and re.search(r"REFUSED.*gamma-canonical.*started after the snapshot was taken", r.out, re.S), \
+        "resume refuses a dead seat whose pid record is newer than the snapshot (rc=%s): %s" % (r.status, r.out)
+
+
+def test_resume_does_not_refuse_a_dead_seat_whose_pid_record_predates_the_snapshot(fleet):
+    fleet.write_snapshot(5, "gamma-canonical", "dead")
+    _started_record(fleet, "gamma-canonical", (int(time.time()) - 60) * 1000)
+    fleet.stopped_row("g0000001", "gamma-canonical")   # a stopped row: resume would wake it in place
+    r = fleet.fc("resume", "gamma-canonical", "--dry-run")
+    assert r.status == 0 and "would wake" in r.out and "started after the snapshot was taken" not in r.out, \
+        "resume is not refused by a record the snapshot already saw (control) (rc=%s): %s" % (r.status, r.out)
+
+
+def _sandboxed(fleet):
+    (fleet.proc / "1").mkdir(parents=True, exist_ok=True)
+    (fleet.proc / "1" / "comm").write_text("bwrap\n")
+
+
+def test_status_a_seat_absent_from_the_snapshot_reads_unknown_in_a_sandbox(fleet):
+    fleet.write_snapshot(5, "beta-canonical", "dead")      # a fresh snapshot that lacks gamma-canonical
+    _sandboxed(fleet)
+    r, line = _status_line(fleet, "gamma-canonical")
+    assert "UNKNOWN" in line and "snapshot" in line and "MISSING" not in line, \
+        "status: from a sandbox, a seat the snapshot lacks is UNKNOWN naming the snapshot, not MISSING: %s" % r.out
+
+
+def test_status_a_seat_absent_from_the_snapshot_still_reads_missing_outside_a_sandbox(fleet):
+    fleet.write_snapshot(5, "beta-canonical", "dead")
+    r, line = _status_line(fleet, "gamma-canonical")
+    assert "MISSING" in line and "UNKNOWN" not in line, \
+        "status: outside a sandbox the direct reads are trusted, so an absent seat reads MISSING (control): %s" % r.out
 
 
 def test_refresh_refuses_an_unlisted_dead_seat_whose_pid_record_started_after_the_snapshot(fleet):
