@@ -440,3 +440,74 @@ def test_nx_config_counts_the_root_lockfile_as_nx_own(path, expected):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+# ---- mise's shims ------------------------------------------------------------------------------
+# A `node` reached through a mise shim runs mise first, which re-reads the workspace's mise
+# configuration in every process; the count follows the process count, so the control varies and a
+# task's own node processes read it more often than the control did (a consumer workspace,
+# 2026-11-20). The fake mise below stands in for the real one: it answers `mise env --json` only.
+
+def _fake_mise(tmp_path, body):
+    data = tmp_path / "mise-data"
+    (data / "shims").mkdir(parents=True)
+    install = tmp_path / "install-bin"
+    install.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    mise = bin_dir / "mise"
+    mise.write_text("#!/bin/sh\n" + body)
+    mise.chmod(0o755)
+    env = {"PATH": os.pathsep.join([str(data / "shims"), str(bin_dir), "/usr/bin", "/bin"]),
+           "MISE_DATA_DIR": str(data), "INSTALL": str(install), "MARK": str(tmp_path / "called")}
+    return env, data / "shims", install
+
+
+RESOLVING = ('[ "$1 $2" = "env --json" ] || exit 9\npwd > "$MARK"\n'
+             'printf \'{"PATH":"%s:%s","FROM_MISE":"1"}\' "$INSTALL" "$PATH"\n')
+
+
+def test_mise_shims_are_replaced_by_the_environment_mise_resolves(tmp_path):
+    env, shims, install = _fake_mise(tmp_path, RESOLVING)
+    root = tmp_path / "ws"
+    root.mkdir()
+    got = vti.resolve_mise(root, env)
+    parts = got["PATH"].split(os.pathsep)
+    assert str(shims) not in parts, got["PATH"]
+    assert parts[0] == str(install), got["PATH"]
+    assert got["FROM_MISE"] == "1"
+    assert (tmp_path / "called").read_text().strip() == str(root)  # resolved for the workspace
+
+
+def test_no_mise_shims_on_path_leaves_the_environment_alone(tmp_path):
+    env, shims, _ = _fake_mise(tmp_path, RESOLVING)
+    env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep) if p != str(shims))
+    assert vti.resolve_mise(tmp_path, env) == env
+    assert not (tmp_path / "called").exists()
+
+
+def test_a_mise_that_cannot_resolve_is_an_untrusted_measurement(tmp_path):
+    env, _, _ = _fake_mise(tmp_path, 'echo "config is not trusted" >&2\nexit 1\n')
+    with pytest.raises(vti.MeasurementError, match="config is not trusted"):
+        vti.resolve_mise(tmp_path, env)
+
+
+def test_main_runs_nx_on_the_environment_mise_resolved(tmp_path, monkeypatch):
+    env, shims, _ = _fake_mise(tmp_path, RESOLVING)
+    root = tmp_path / "ws"
+    (root / "node_modules" / ".bin").mkdir(parents=True)
+    (root / "node_modules" / ".bin" / "nx").write_text("")
+    (root / "nx.json").write_text("{}\n")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    seen = {}
+
+    def fake_audit(root_, nx, scratch, requested, static_only, *a, **k):
+        seen["env"] = nx.env
+        return vti.Result(0)
+
+    monkeypatch.setattr(vti, "audit", fake_audit)
+    assert vti.main(["--workspace", str(root), "--static"]) == 0
+    assert seen["env"].get("FROM_MISE") == "1"
+    assert str(shims) not in seen["env"]["PATH"].split(os.pathsep)

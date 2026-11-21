@@ -47,6 +47,19 @@ sandbox /tmp reads as owned by uid 65534. So these Nx processes alone also get
 NX_ALLOW_INSECURE_DIRECTORIES=true. Nothing else is configured for them, and the scratch directory
 is created by mkdtemp, mode 0700, so only you can change what is in it.
 
+Where mise's shims directory is on PATH, every tool it manages (node, so Nx itself) starts by running
+mise, which re-reads the workspace's mise configuration (mise.toml, mise.local.toml, an env file it
+decrypts) in that process. The number of reads follows the number of processes, so the control's
+count varies between runs and a task's own node processes read the configuration more often than
+the control did: no difference can be attributed (a consumer workspace, 2026-11-20; measured 6 and
+12 reads for identical work). So before anything is traced, mise resolves the workspace's
+environment once (`mise env --json`, never printed: it holds decrypted secrets), every Nx process
+runs on that environment, and the shims directory is dropped from its PATH. The tools and variables
+a task sees are the ones the shims would have given it, without mise running again. A mise that
+cannot resolve the environment makes the run untrusted (exit 2). Without shims on PATH nothing
+changes. A task that runs `mise` itself (`mise run`, `mise exec`) still reads the configuration,
+and that read is attributed to it.
+
 HOW TO READ THE REPORT. One line per target, `ok` or `GAP`, with counts of what each attributed
 read and write was. A read is accounted for as: a declared input; a dependency output the target
 hashes (`dependentTasksOutputFiles`); its own declared output (an incremental tool reading its last
@@ -240,6 +253,41 @@ def caller_env():
     return env
 
 
+def mise_shims(env: dict) -> set[str]:
+    """The PATH entries that are mise's shims directory: `shims` in mise's data directory, which is
+    $MISE_DATA_DIR, else `mise` under $XDG_DATA_HOME, else `mise` under ~/.local/share."""
+    data = env.get("MISE_DATA_DIR") or os.path.join(
+        env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"),
+                                                 ".local", "share"), "mise")
+    shims = os.path.normpath(os.path.join(data, "shims"))
+    return {e for e in env.get("PATH", "").split(os.pathsep) if e and os.path.normpath(e) == shims}
+
+
+def resolve_mise(root: Path, env: dict) -> dict:
+    """`env` with mise's shims replaced by the environment mise resolves for the workspace, once;
+    see ISOLATION. Unchanged when no shims directory is on PATH or no mise binary is."""
+    shims = mise_shims(env)
+    mise = shutil.which("mise", path=env.get("PATH")) if shims else None
+    if mise is None:
+        return env
+    r = subprocess.run([mise, "env", "--json"], cwd=root, env=env, stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise MeasurementError(f"`mise env --json` failed (exit {r.returncode}) in {root}, so mise's "
+                               "shims would resolve the environment again in every process a trace "
+                               f"watches:\n{r.stderr.strip()[-2000:]}")
+    try:
+        resolved = json.loads(r.stdout)
+    except ValueError as e:
+        # The output holds decrypted secrets, so only the parse error is reported.
+        raise MeasurementError(f"`mise env --json` printed something other than JSON ({e})") from None
+    merged = {**env, **{k: str(v) for k, v in resolved.items()}}
+    merged["PATH"] = os.pathsep.join(e for e in merged.get("PATH", "").split(os.pathsep)
+                                     if e and os.path.normpath(e) not in
+                                     {os.path.normpath(s) for s in shims})
+    return merged
+
+
 def safe_name(text: str) -> str:
     return re.sub(r"[^\w.-]", "_", text)
 
@@ -247,11 +295,11 @@ def safe_name(text: str) -> str:
 class Nx:
     """The real workspace, through its own Nx binary, isolated from its cache and daemon."""
 
-    def __init__(self, root: Path, scratch: Path):
+    def __init__(self, root: Path, scratch: Path, env: dict | None = None):
         self.root = root
         self.scratch = scratch
         self.bin = root / "node_modules" / ".bin" / "nx"
-        self.env = {**caller_env(), "NX_DAEMON": "false", "NX_TUI": "false",
+        self.env = {**(caller_env() if env is None else env), "NX_DAEMON": "false", "NX_TUI": "false",
                     "NX_WORKSPACE_DATA_DIRECTORY": str(scratch / "nx-workspace-data"),
                     "NX_CACHE_DIRECTORY": str(scratch / "nx-cache"),
                     # Only the scratch directories above are configured; see ISOLATION.
@@ -972,10 +1020,15 @@ def main(argv=None):
         print("verify-task-io: needs inotifywait (inotify-tools), which this machine lacks.",
               file=sys.stderr)
         return EXIT_PLATFORM
+    try:
+        env = resolve_mise(root, caller_env())
+    except MeasurementError as e:
+        print(f"verify-task-io: {e}", file=sys.stderr)
+        return EXIT_UNTRUSTED
     scratch = Path(tempfile.mkdtemp(prefix="verify-task-io-",
                                     dir=os.environ.get("TMPDIR") or tempfile.gettempdir()))
     try:
-        return audit(root, Nx(root, scratch), scratch, args.targets, args.static).code
+        return audit(root, Nx(root, scratch, env), scratch, args.targets, args.static).code
     finally:
         # The private Nx cache is every target's outputs again; the logs beside it stay for diagnosis.
         shutil.rmtree(scratch / "nx-cache", ignore_errors=True)
