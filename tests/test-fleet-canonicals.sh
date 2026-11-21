@@ -39,7 +39,12 @@ export FLEET_MANAGERNAME_CMD=
 # holding a name, are fixtures too, so no case reads the machine's real sessions.
 export FLEET_PID_RECORD_DIR="$_srcbin/pids" FLEET_PROC_ROOT="$_srcbin/proc"
 mkdir -p "$FLEET_PID_RECORD_DIR" "$FLEET_PROC_ROOT"
-REAL_TMP_BEFORE=$(find /tmp -maxdepth 1 -name 'c-*' 2>/dev/null | sort)
+# Only what new_tmproot makes is a temp root: a DIRECTORY named c-<short>-XXXXXX. Another session's
+# stray file named c-* is not one (2026-11-21: a delegate's one-byte /tmp/c-keystone-initial-never,
+# written during a post-apply run, failed the end check below).
+real_tmproots() { find /tmp -maxdepth 1 -type d -name 'c-*' 2>/dev/null \
+    | { grep -E '^/tmp/c-[A-Za-z0-9-]+-[A-Za-z0-9]{6}$' || true; } | sort; }
+REAL_TMP_BEFORE=$(real_tmproots)
 [[ -f "$TOOL" ]] || { print "FAIL: tool not found at $TOOL"; exit 1 }
 
 # --- fixture pids must not collide with THIS process's ancestry -------------------------------
@@ -2587,7 +2592,7 @@ live_roots=$(cat "$real_state"/*.tmproot 2>/dev/null | sort -u)
 # under /tmp as c-test-XXXXXX, because the guard it tests acts only there: one made while this suite
 # ran was reported as a leak here (2026-11-15, 21:05, a post-apply). No seat in this suite has a name
 # that shortens to `test`, so that exact shape is never this suite's own and is left out.
-leaked_real_tmp=$(comm -13 <(print -r -- "$REAL_TMP_BEFORE") <(find /tmp -maxdepth 1 -name 'c-*' 2>/dev/null | sort) \
+leaked_real_tmp=$(comm -13 <(print -r -- "$REAL_TMP_BEFORE") <(real_tmproots) \
     | comm -23 - <(print -r -- "$live_roots") | { grep -Ev '^/tmp/c-test-[A-Za-z0-9]{6}$' || true; })
 [[ -z "$leaked_real_tmp" ]] \
     && ok "no temp-root directories leaked into the real /tmp during this suite" \
