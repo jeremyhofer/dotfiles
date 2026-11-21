@@ -1367,20 +1367,36 @@ def prim_prompt(keys: list[str], background: bool = False) -> int:
 
 def prim_manual(text: str) -> int:
     """Show an instruction to the person and wait for Enter. A case script's output is captured, so
-    the instruction is written to the terminal itself (/dev/tty), where the answer is read too.
+    the instruction is written to the terminal itself, where the answer is read too. A case script
+    runs in its own session and so has no controlling terminal to open as /dev/tty: `run_one` opens
+    the person's terminal and hands it down as SEAM_PROBE_TTY_FD. Outside a case, /dev/tty is
+    opened directly. Raw reads and writes, since Python refuses a text-mode "r+" open of a tty.
     SEAM_PROBE_MANUAL_AUTO=1, for the tool's own tests, records the instruction and returns at once."""
     t0 = time.monotonic()
     banner = f"\n>>> MANUAL STEP: {text}\n>>> press Enter when done\n"
     if os.environ.get("SEAM_PROBE_MANUAL_AUTO") == "1":
         print(banner, flush=True)
     else:
+        handed = os.environ.get("SEAM_PROBE_TTY_FD", "")
         try:
-            with open("/dev/tty", "r+") as tty:
-                tty.write(banner)
-                tty.flush()
-                tty.readline()
+            fd = int(handed) if handed.isdigit() else os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
         except OSError:
             raise Usage("a manual step needs a terminal")
+        try:
+            if not os.isatty(fd):
+                raise OSError("not a terminal")
+            os.write(fd, banner.encode())
+            while True:
+                b = os.read(fd, 1)
+                if not b or b == b"\n":
+                    break
+            if not b:
+                raise OSError("the terminal closed")
+        except OSError:
+            raise Usage("a manual step needs a terminal")
+        finally:
+            if not handed.isdigit():
+                os.close(fd)
     ledger_append({"kind": "manual", "text": text, "waited_s": round(time.monotonic() - t0, 1)})
     return 0
 
@@ -1588,12 +1604,26 @@ def run_one(suite_dir: Path, case: dict, regime: str, plant: str | None, run_dir
                 "SEAM_PROBE_PLANT": plant or "", "SEAM_PROBE_FIXTURES": str(fixtures),
                 "SEAM_PROBE_SUITE_DIR": str(suite_dir), "SEAM_PROBE_CALLER_PWD": caller_pwd})
     env.pop("CLAUDECODE", None)
+    env.pop("SEAM_PROBE_TTY_FD", None)
     timeout = max(120, case["minutes"] * 60 * 2)
     t0 = datetime.now(timezone.utc)
     rc, note = None, ""
-    proc = subprocess.Popen(["bash", str(suite_dir / case["script"])], cwd=run_dir, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            start_new_session=True)
+    # The script gets its own session, so a timeout can kill its whole process group, and with it
+    # no controlling terminal: the person's terminal, where there is one, is handed down for
+    # `manual`. A terminal that is not the script's controlling one stops no reader with SIGTTIN.
+    try:
+        tty_fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        tty_fd = None
+    if tty_fd is not None:
+        env["SEAM_PROBE_TTY_FD"] = str(tty_fd)
+    try:
+        proc = subprocess.Popen(["bash", str(suite_dir / case["script"])], cwd=run_dir, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                start_new_session=True, pass_fds=(tty_fd,) if tty_fd is not None else ())
+    finally:
+        if tty_fd is not None:
+            os.close(tty_fd)
     try:
         out, _ = proc.communicate(timeout=timeout)
         rc = proc.returncode

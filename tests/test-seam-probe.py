@@ -1659,6 +1659,62 @@ def test_manual_without_a_terminal_is_refused_and_auto_records_it(fake, tmp_path
     assert json.loads(ledger.read_text())["text"] == "open it"
 
 
+
+def run_on_a_pty(env, *args, answer=True, timeout=60):
+    """Run the tool as a person does: its own session, with a pseudo-terminal as its controlling
+    terminal and stdin/stdout. Enter is typed each time a manual step's prompt appears. Returns the
+    exit status and what the terminal showed."""
+    import fcntl, pty, select, termios
+    master, slave = pty.openpty()
+    def ctty():
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    pr = subprocess.Popen([str(TOOL), *args], stdin=slave, stdout=slave, stderr=slave,
+                          env=env["env"], start_new_session=True, preexec_fn=ctty)
+    os.close(slave)
+    shown, answered, end = b"", 0, time.monotonic() + timeout
+    while time.monotonic() < end:
+        r, _, _ = select.select([master], [], [], 0.5)
+        if r:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            shown += chunk
+            if answer and shown.count(b"press Enter when done") > answered:
+                answered += 1
+                os.write(master, b"\n")
+        elif pr.poll() is not None:
+            break
+    pr.wait(timeout=10)
+    os.close(master)
+    return pr.returncode, shown.decode(errors="replace")
+
+
+def test_a_manual_step_in_a_case_reaches_the_persons_terminal(env):
+    # The case script runs in its own session, as every case does, so it has no controlling
+    # terminal of its own: the prompt must still reach the person's terminal and read their Enter.
+    body = '"$sp" manual "attach it" || { "$sp" verdict FAIL "the manual step was refused"; exit 0; }\n' \
+           '"$sp" verdict PASS "the person answered"\n'
+    make_suite(env, {"c": (body, '"none"')})
+    _, shown = run_on_a_pty(env, "run", "s", "--yes")
+    run_dir = max((env["state"] / "s").iterdir(), key=lambda p: p.name)
+    summary = (run_dir / "summary.txt").read_text()
+    # The verdict's reason says which branch the script took; a run never seen red reads
+    # NOT-SEEN-RED whatever its verdict, so the reason is what is checked.
+    assert "MANUAL STEP: attach it" in shown, shown
+    assert "the person answered" in summary and "refused" not in summary, shown + summary
+
+
+def test_manual_called_directly_on_a_terminal_reads_the_enter(env, tmp_path):
+    # Outside a case there is no handed-down terminal and /dev/tty is opened; a text-mode "r+"
+    # open of a tty is refused by Python, so this is the other path that must reach the person.
+    ledger = tmp_path / "m.jsonl"
+    rc, shown = run_on_a_pty({"env": dict(env["env"], SEAM_PROBE_RUN=str(ledger))}, "manual", "open it")
+    assert rc == 0 and "MANUAL STEP: open it" in shown, shown
+    assert json.loads(ledger.read_text())["text"] == "open it"
+
 # ---- idle-holders, end to end against the fakes ------------------------------------------------
 # The fake models the supervisor: with FAKE_CLAUDE_IDLE a session's pid record goes that many
 # seconds after its last holder ended, and never while a background `sleep 9000` or a pending cron
