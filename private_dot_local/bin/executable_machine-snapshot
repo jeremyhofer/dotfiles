@@ -56,6 +56,9 @@ whose io file cannot be read (another user's, or one that exited mid-scan) has n
 /tmp: each sample records the filesystem's used and total bytes (statvfs), because a full or
 nearly full /tmp is a machine-level cause of test failures. A per-user figure is not recorded:
 only a walk of the tree gives it, and walking /tmp every 15 seconds would add the load measured.
+The figure is the whole filesystem's, so the sample also records the mount point `df -P` names,
+and the report labels a /tmp that is not its own mount as the volume holding it (macOS's /tmp is
+on the Data volume, whose use is mostly the home directory, not /tmp).
 
 A SAMPLE IS AN INSTANT. A task stalled for a few milliseconds between samples is never seen. The
 pressure figures (/proc/pressure, averaged by the kernel over 10 seconds) are recorded with each
@@ -84,6 +87,7 @@ so a CI run's load is filed under the run, not under "(not under a session)".
 """
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -148,12 +152,45 @@ def pressure():
     return out
 
 
+def mount_point(path):
+    """The mount point of the filesystem holding path, from `df -P`, or None if df cannot say.
+    df rather than a walk up the device ids, because a bind mount shares its source's device and
+    the walk would name the source's mount instead."""
+    try:
+        out = subprocess.run(["df", "-P", path], capture_output=True, text=True, timeout=5,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = out.stdout.splitlines()
+    if out.returncode != 0 or len(lines) < 2:
+        return None
+    # The mount point is the last field, and the only one that can hold spaces on macOS; it is
+    # absolute, so it starts at the first " /" after the five numeric fields.
+    fields = lines[1].split(None, 5)
+    return fields[5] if len(fields) == 6 and fields[5].startswith("/") else None
+
+
 def tmp_usage():
     try:
         st = os.statvfs(TMP_DIR)
     except OSError:
         return None
-    return {"used": (st.f_blocks - st.f_bfree) * st.f_frsize, "size": st.f_blocks * st.f_frsize}
+    usage = {"used": (st.f_blocks - st.f_bfree) * st.f_frsize, "size": st.f_blocks * st.f_frsize,
+             "dir": TMP_DIR}
+    mount = mount_point(TMP_DIR)
+    if mount:
+        usage["mount"] = mount
+    return usage
+
+
+def tmp_label(t):
+    """What a /tmp figure measures. statvfs reports the whole filesystem, so where the directory is
+    not itself a mount point (macOS's /tmp is on the Data volume) the figure is the volume's and is
+    labeled so. A sample from before the mount point was recorded keeps the directory's name."""
+    d, mount = t.get("dir", TMP_DIR), t.get("mount")
+    if mount and mount != os.path.realpath(d):
+        return f"{mount} (the volume holding {d})"
+    return d
 
 
 def read_io(base):
@@ -493,7 +530,7 @@ def cmd_now():
     age = (float(NOW) if NOW else time.time()) - s["ts"]
     print(f"sample {when(s['ts'])} ({age:.0f}s ago)  {header(s)}")
     if s.get("tmp"):
-        print(f"  {TMP_DIR} used {gb(s['tmp']['used'])} of {gb(s['tmp']['size'])}")
+        print(f"  {tmp_label(s['tmp'])} used {gb(s['tmp']['used'])} of {gb(s['tmp']['size'])}")
     if age > MAX_GAP:
         print(f"  STALE: older than {MAX_GAP:.0f}s, so the timer has stopped; this is not the machine now")
     if not s.get("interval"):
@@ -529,7 +566,7 @@ def summarize(start, end):
     by_session, by_comm, stalls, loads = {}, {}, {}, []
     io_session, io_comm = {}, {}
     press = {key: [] for key, _, _, _ in THRESHOLDS}
-    tmp_used, tmp_size = [], 0
+    tmp_used, tmp_size, tmp_last = [], 0, None
     # A sanity check on the CPU attribution itself: no sample can account for more CPU than the
     # machine has. A sample that does exposes double counting in the reaped figures, which once
     # inflated the totals to twice the machine for hours before anyone noticed.
@@ -558,6 +595,7 @@ def summarize(start, end):
             if s.get("tmp"):
                 tmp_used.append(s["tmp"]["used"])
                 tmp_size = max(tmp_size, s["tmp"]["size"])
+                tmp_last = s["tmp"]
             if s.get("interval"):
                 c = sum(r["own"] + r["reaped"] for r in s["rows"]) / s["interval"]
                 accounted.append(c)
@@ -593,7 +631,8 @@ def summarize(start, end):
         else:
             print(f"  {label:<12} not recorded")
     if tmp_used:
-        print(f"\n{TMP_DIR} used: min {gb(min(tmp_used))}, max {gb(max(tmp_used))} of {gb(tmp_size)}")
+        print(f"\n{tmp_label(tmp_last)} used: min {gb(min(tmp_used))}, max {gb(max(tmp_used))} "
+              f"of {gb(tmp_size)}")
     else:
         print(f"\n{TMP_DIR} used: not recorded")
     print("\nCPU by session (CPU-seconds, mean cores):")

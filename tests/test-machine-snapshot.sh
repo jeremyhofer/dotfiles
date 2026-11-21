@@ -206,6 +206,16 @@ has "pressure: cpu some mean, max and count over 50" "$s" "cpu some     mean  50
 has "pressure: memory full over 10" "$s" "memory full  mean   9.0%  max  20.0%  over 10%: 2 of 4"
 has "pressure: io full is strictly over 10" "$s" "io full      mean  13.9%  max  30.0%  over 10%: 2 of 4"
 has "tmp: min and max used in the window" "$s" "/tmp used: min 1.00 GB, max 3.00 GB of 10.00 GB"
+# A sample from before the mount point was recorded keeps the directory's name, above; one that
+# records it names the volume.
+python3 -c "
+import json
+print(json.dumps({'ts': $day+10*3600+50*60, 'interval': 15, 'load': ['1','1','1'], 'pressure': {},
+  'tmp': {'used': 2**30, 'size': 10*2**30, 'dir': '/tmp', 'mount': '/System/Volumes/Data'},
+  'rows': []}))" >> "$MACHINE_SNAPSHOT_DIR/history.jsonl"
+has "tmp: the window names the volume when a sample records it" \
+  "$(MACHINE_SNAPSHOT_NOW=$now python3 "$TOOL" between 10:45 11:00)" \
+  "/System/Volumes/Data (the volume holding /tmp) used: min 1.00 GB"
 
 # 10) between: HH:MM is today in local time; dates are accepted; the window is closed at both ends.
 n() { printf '%s\n' "$1" | head -n1 | awk '{print $1}'; }
@@ -234,7 +244,17 @@ import json
 s=json.loads(open('$w/state-tmp/history.jsonl').read().splitlines()[-1])
 t=s.get('tmp'); print('none' if not t else ('ok' if 0 < t['used'] <= t['size'] else 'bad'))"; }
 eq "tmp: used and size recorded, used within size" "$(tmpval)" ok
-has "now: shows tmp use" "$(MACHINE_SNAPSHOT_NOW=30016 python3 "$TOOL" now)" "$w used"
+# The figure is the whole filesystem's, so a directory that is not itself a mount point is reported
+# as the volume it sits on (a Mac, 2026-11-21: "/tmp used 355.21 GB" for a 2 GB /private/tmp on
+# the Data volume). `df -P` is the independent oracle for that volume's mount point.
+mnt=$(df -P "$w" | awk 'NR==2 {print $NF}')
+out=$(MACHINE_SNAPSHOT_NOW=30016 python3 "$TOOL" now)
+has "now: tmp use names the volume, then the directory on it" "$out" "$mnt (the volume holding $w) used"
+lacks "now: and never labels the volume's figure with the directory" "$out" "  $w used"
+MACHINE_SNAPSHOT_TMP="$mnt" rec 30020
+has "now: a directory that is its own mount point keeps its own name" \
+  "$(MACHINE_SNAPSHOT_NOW=30021 python3 "$TOOL" now)" "  $mnt used"
+lacks "now: with no volume added" "$(MACHINE_SNAPSHOT_NOW=30021 python3 "$TOOL" now)" "the volume holding"
 MACHINE_SNAPSHOT_TMP="$w/does-not-exist" rec 30030
 eq "tmp: missing directory records no figure" "$(tmpval)" none
 unset MACHINE_SNAPSHOT_TMP TZ MACHINE_SNAPSHOT_MAX_GAP
