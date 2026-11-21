@@ -535,7 +535,9 @@ if "--bg" in argv:
         m = re.search(r'cron expression "([^"]*)"', text)
         call("ToolSearch", {"max_results": 5, "query": "select:CronCreate"}, "No matching deferred tools found" if os.environ.get("FAKE_CLAUDE_NOCRON") else "Loaded CronCreate")
         if os.environ.get("FAKE_CLAUDE_NOCRON"): return
-        call("CronCreate", {"cron": m.group(1), "prompt": "Reply DONE.", "recurring": False}, "Scheduled job cron-1")
+        # FAKE_CLAUDE_CRON_RECURRING: the job is made recurring; FAKE_CLAUDE_CRON_WRONG: for another time.
+        expr = "1 1 1 1 *" if os.environ.get("FAKE_CLAUDE_CRON_WRONG") else m.group(1)
+        call("CronCreate", {"cron": expr, "prompt": "Reply DONE.", "recurring": bool(os.environ.get("FAKE_CLAUDE_CRON_RECURRING"))}, "Scheduled job cron-1")
         if "CronDelete" in text: call("CronDelete", {"id": "cron-1"}, "Deleted cron-1")
         else: holds.append(float("inf"))   # a pending job holds the session for good
     def plugin_timeout():
@@ -1598,6 +1600,17 @@ def test_idle_holders_release_never_stopping_fails(fake, tmp_path):
     idle_run(fake)
     arms, _ = idle_arms(fake)
     assert arms["release"][0] == "FAIL" and "still running at the end of the run" in arms["release"][1], arms
+    assert arms["shell"][0] == "PASS"
+
+
+@pytest.mark.parametrize("knob", ["FAKE_CLAUDE_CRON_RECURRING", "FAKE_CLAUDE_CRON_WRONG"])
+def test_idle_holders_a_job_that_is_not_the_one_shot_asked_for_is_unmeasured(fake, tmp_path, knob):
+    # A recurring job fires and so starts turns; a job for another time may fire inside the run.
+    # Either way the arm would measure something else, so it is INCONCLUSIVE, never PASS.
+    idle(fake, tmp_path)
+    idle_run(fake, extra_env={knob: "1"})
+    arms, _ = idle_arms(fake)
+    assert arms["schedule"][0] == "INCONCLUSIVE" and "not an ok one-shot job" in arms["schedule"][1], arms["schedule"]
     assert arms["shell"][0] == "PASS"
 
 
