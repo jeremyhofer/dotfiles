@@ -68,7 +68,7 @@ removes it: `work="$TMPDIR/<task-name>"`.
 
 | You need | Do | Cost |
 | --- | --- | --- |
-| A full checkout of another commit, with git available in it | `git worktree add --detach "$work/wt" <commit>` | The checked-out files only; history is shared |
+| A full checkout of another commit, with git available in it | Outside a session: `git worktree add --detach "$work/wt" <commit>`. In a sandboxed session's own repository that is refused (`.git/worktrees` is read-only there): a subagent launched with `isolation: "worktree"` runs `git switch --detach <commit>` in its worktree, or use `git archive` below when git is not needed. Never a second clone | The checked-out files only; history is shared |
 | Only some paths at a commit (run a linter or tests on `src/`) | `mkdir -p "$work/tree" && git archive <commit> <path>... \| tar -x -C "$work/tree"` | Only the named paths; no git metadata |
 | To compare two build outputs file by file | Build one arm, record a manifest (`find dist -type f -exec sha256sum {} + \| sort -k2 > "$work/a.sha"`), delete the build, build the other arm, diff the manifests | Two small text files instead of two builds |
 | A tool that needs the complete artifact (a performance audit crawling a whole site, a package installed for real) | Keep the full copy, but one arm at a time where possible. Record the result, delete, then build the next | The honest cost of the proof, once |

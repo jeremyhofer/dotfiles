@@ -266,6 +266,16 @@ approval" is not a reason: it is the case the rule exists for. Where the handoff
 `.doc-lint` sets `scratch-path:`, `doc-lint` refuses an unmarked citation, and a configured
 `stage-check` refuses it at `stage`, before it can hold up a `place` run.
 
+### A workaround is reported as a defect, never taught as the method
+
+A successor copies a handoff's way of working as practice. So when the sitting got past a block
+by a route a standing rule forbids or never sanctions (a second clone of a repository, an unsigned
+commit, a hand-edited deployed file), the handoff names it as a defect, with the rule it broke and
+the sanctioned route, and the block goes to whoever owns the tool or rule that caused it. It never
+reads as instructions to repeat. Measured: a handoff that said a session "worked in a scratch clone
+instead" was followed by about six more scratch clones in its successor, each skipping the
+repository's commit gate, before a person caught it.
+
 ### What follows the park
 
 A park handoff says what happens to the seat after it, and when, in one line near the top (within

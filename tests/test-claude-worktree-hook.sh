@@ -182,13 +182,31 @@ expect_enter "$b" deny "$T/inplace" "broken copy (refusal restored) denies Enter
 echo "== Bash guard: the add refusal names EnterWorktree, where sessions work in place too =="
 bash_payload_at() { jq -cn --arg c "$1" --arg cwd "$2" '{session_id: "s1", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd}'; }
 add_reason() { run "$1" bash "$(bash_payload_at 'git worktree add x' "$2")" | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
-add_reason "$HOOK" "$T/inplace" | grep -q 'the EnterWorktree tool and a subagent launched with isolation' \
-  && ok "work in place: the add refusal names the EnterWorktree tool" || no "the add refusal does not name EnterWorktree: $(add_reason "$HOOK" "$T/inplace")"
+add_reason "$HOOK" "$T/inplace" | grep -q 'In a session, create it with the EnterWorktree tool by name, or launch a subagent with isolation' \
+  && ok "work in place: the add refusal leads a session to the EnterWorktree tool" || no "the add refusal does not lead with EnterWorktree: $(add_reason "$HOOK" "$T/inplace")"
 add_reason "$HOOK" "$T/inplace" | grep -q 'EnterWorktree is refused' \
   && no "the add refusal still says EnterWorktree is refused" || ok "and does not say EnterWorktree is refused"
-broken 's/ In a session, the EnterWorktree tool and a subagent launched with isolation "worktree" create through worktrunk too.//' 'In a session, the EnterWorktree tool and a subagent'
-add_reason "$b" "$T/inplace" | grep -q 'the EnterWorktree tool and a subagent launched with isolation' \
-  && no "broken copy (EnterWorktree sentence removed) still passes" || ok "RED: a copy without the EnterWorktree route fails the first assertion"
+broken 's/In a session, create it with the EnterWorktree tool by name/In a session, ask/' 'In a session, create it with the EnterWorktree tool by name'
+add_reason "$b" "$T/inplace" | grep -q 'In a session, create it with the EnterWorktree tool by name, or launch a subagent with isolation' \
+  && no "broken copy (EnterWorktree route removed) still passes" || ok "RED: a copy without the EnterWorktree route fails the first assertion"
+
+# Measured 2026-11-21 from a sandboxed session: `wt switch --create` in the repository
+# the session started in fails at `.git/worktrees` (read-only there) after creating the branch, and
+# an entered worktree can be moved onto an existing branch with `git switch`.
+echo "== Bash guard: the add refusal says why wt switch --create fails in a session, and how to reach an existing branch =="
+add_reason "$HOOK" "$T/inplace" | grep -qF '`.git/worktrees` read-only, so it fails after creating the branch' \
+  && ok "the add refusal says wt switch --create fails in the session's own repository" || no "the add refusal does not say why wt switch --create fails in a session: $(add_reason "$HOOK" "$T/inplace")"
+broken 's/read-only, so it fails after creating the branch/writable/' 'read-only, so it fails after creating the branch'
+add_reason "$b" "$T/inplace" | grep -qF '`.git/worktrees` read-only, so it fails after creating the branch' \
+  && no "broken copy (sandbox sentence weakened) still passes" || ok "RED: a copy without the sandbox sentence fails that assertion"
+add_reason "$HOOK" "$T/inplace" | grep -qF 'enter by name and then run `git switch <branch>` in the new worktree' \
+  && ok "the add refusal says how a session reaches an existing branch" || no "the add refusal does not say how to reach an existing branch: $(add_reason "$HOOK" "$T/inplace")"
+broken 's/then run `git switch <branch>` in/then work in/' 'then run `git switch <branch>` in'
+add_reason "$b" "$T/inplace" | grep -qF 'enter by name and then run `git switch <branch>` in the new worktree' \
+  && no "broken copy (existing-branch route removed) still passes" || ok "RED: a copy without the existing-branch route fails that assertion"
+move_reason() { run "$1" bash "$(bash_payload_at 'git worktree move x y' "$2")" | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
+move_reason "$HOOK" "$T/inplace" | grep -qF 'the EnterWorktree tool in a session' \
+  && ok "the move refusal names the EnterWorktree tool for a session" || no "the move refusal does not name EnterWorktree: $(move_reason "$HOOK" "$T/inplace")"
 
 echo "== SubagentStart warns about commits not on any remote =="
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not present"; exit 1; }
