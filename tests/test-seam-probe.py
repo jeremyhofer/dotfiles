@@ -54,8 +54,13 @@ def env(tmp_path, monkeypatch):
     suites, sandbox, state = tmp_path / "suites", tmp_path / "sandbox", tmp_path / "state"
     for d in (suites, sandbox, state):
         d.mkdir()
+    # Never the machine's real timing slot: a heavy case skips while another session holds it or a
+    # grant is pending, so a suite that read the live slot failed whenever any seat held it
+    # (measured 2026-11-21: four bootstrap-timeout tests failed under a held slot and passed with
+    # an empty slot state). A test that needs a held slot stubs fleet-slot on PATH instead.
     e = dict(os.environ, SEAM_PROBE_SUITES=str(suites), SEAM_PROBE_SANDBOX=str(sandbox),
-             SEAM_PROBE_STATE=str(state), HOME=os.environ.get("HOME", str(tmp_path)))
+             SEAM_PROBE_STATE=str(state), HOME=os.environ.get("HOME", str(tmp_path)),
+             FLEET_SLOT_STATE=str(tmp_path / "fleet-slot"))
     e.pop("CLAUDECODE", None)
     e.pop("FLEET_SLOT_AS", None)
     return {"suites": suites, "sandbox": sandbox, "state": state, "env": e, "tmp": tmp_path}
@@ -1865,7 +1870,12 @@ def test_idle_holders_a_state_never_readable_leaves_every_arm_inconclusive(fake,
 
 
 def test_idle_holders_a_control_that_becomes_unreadable_is_inconclusive_not_void(fake, tmp_path):
-    idle(fake, tmp_path, records={"garbage.json": "{not json"}, cap=14)
+    # The control must be read as running at least once before the fake supervisor removes its pid
+    # record (idle_s after launch), and then read as unreadable. Under load the setup before the
+    # first poll ran past idle_s=6, so the control was never read and the verdict was a different
+    # one: 15 failures in 20 runs beside a cold run of every other suite (2026-11-21, load 49-107).
+    # idle_s=20 leaves the setup that room; the cap stays 10 s past it.
+    idle(fake, tmp_path, records={"garbage.json": "{not json"}, idle_s=20, cap=30)
     idle_run(fake)
     arms, _ = idle_arms(fake)
     assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "unreadable at the end" in arms["control"][1], arms
