@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pytest==8.4.2"]
+# dependencies = ["pytest==8.4.2", "pytest-xdist==3.8.0"]
 # ///
 """Tests for seam-probe. Every suite here is a scratch directory of tiny case scripts, and every
 fixture lives under a temp sandbox root, so nothing touches a real repository or starts Claude
@@ -2074,4 +2074,9 @@ def test_attached_stop_skips_without_trust(fake, tmp_path):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider", *sys.argv[1:]]))
+    # pytest-xdist runs the tests on several workers. Most of this suite's time is waiting on the
+    # fake claude's idle caps and polls, not CPU: run one at a time it was 515 s of the base's 684 s
+    # cold run (measured 2026-11-21). Every test's state is under its own tmp_path,
+    # which xdist makes per worker. A `-n` given on the command line comes later and wins.
+    workers = str(min(8, os.cpu_count() or 2))
+    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider", "-n", workers, *sys.argv[1:]]))
