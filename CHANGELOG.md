@@ -32,6 +32,21 @@ Entries are newest first.
 
 ---
 
+## 2026-11-22 (seam-probe: idle-holders redesigned, and a long case for a completion's hold)
+
+`idle-holders` (suite `session-lifecycle`) is redesigned to what its last runs measured on Claude
+Code 2.1.330: a background command still running does not keep an idle session up, and one that
+finished, its completion delivered as a new turn, does. Its arms are now control, shell (a running
+command: must stop about the control's idle duration), turn (a one-shot job that fires, a turn with
+no task behind it), schedule (a pending job) and release (a delivered completion), each later turn
+read from its own codeword in the transcript. Its plants are `shell-held`, `schedule-dropped`,
+`completion-withheld` and `control-held`; `holder-dropped` is retired, and the reds recorded for the
+old script no longer count. A new case, `completion-hold`, runs a control and a release arm to an
+eight-hour cap (polled every five minutes) to learn whether a session held by a delivered completion
+is ever stopped. `seam-probe` gains a case `helpers` key (files a case script sources, covered by its
+seen-red record), `prompt --notified WORD`, and `session stop` and the run's cleanup confirm a stop
+by the session's process as well as the agents listing. Nothing to change on a machine.
+
 ## 2026-11-21 (`fleet-slot`: a session's own request no longer holds up its own gates)
 
 ### A free slot whose whole queue is the caller's own request is a go for the caller

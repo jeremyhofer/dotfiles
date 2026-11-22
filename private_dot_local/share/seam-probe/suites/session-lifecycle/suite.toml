@@ -6,32 +6,34 @@ description = "what keeps a background session's process running, and what lets 
 
 [[case]]
 id = "idle-holders"
-question = "Claude Code's supervisor stops a background session that is finished or waiting for the next message and unattached for about an hour (its documentation's agent view, \"The supervisor process\", read 2026-11-11), and counts a running subagent, workflow or monitor, or a pending session-scoped scheduled task, as working. Which keeps an idle, unattached background session's process running past that stop: (a) a running background Bash command, (b) a pending one-shot session-scoped scheduled task (the CronCreate tool), against (c) a control with neither; and (d) is a session whose background command has ended stopped about an hour after that?"
-relies = "A running background Bash command, or a pending one-shot CronCreate job, keeps an idle session's process running past the idle stop, which the control (no holder) is seen to reach; a session whose only holder has ended is stopped about an hour after that, as the control is. Read from the session's pid record and the daemon roster, never from the agents listing, whose rows carry no pid and can stay done or blocked after the process is gone."
+question = "Claude Code's supervisor stops a background session that is finished or waiting for the next message and unattached for about an hour (its documentation's agent view, \"The supervisor process\", read 2026-11-11), and counts a running subagent, workflow or monitor, or a pending session-scoped scheduled task, as working. On 2.1.330 a background Bash command still running did not keep its session up past that stop, and one that had finished, its completion delivered as a new turn, did. Which keeps an idle, unattached background session's process running past the stop, against a control with nothing: (a) a background Bash command still running, (b) a one-shot CronCreate job that has fired, a turn with no task behind it, (c) a pending one-shot CronCreate job, (d) a background command that finished and whose completion was delivered?"
+relies = "A running background command is not a holder: that session is stopped about the control's idle duration after its turn (within the tolerance, 15 min by default). A turn alone restarts the idle clock and holds nothing: a session whose one-shot job fired is stopped about the control's idle duration after that turn ends. A pending one-shot job holds a session at least the margin (30 min by default) past the control's stop. A delivered completion holds a session at least the margin past the control's idle duration after its completion turn, beyond what a turn alone does. Each later turn is read from its codeword in the transcript, and each process from the session's pid record and the daemon roster, never from the agents listing, whose rows carry no pid and can stay done or blocked after the process is gone."
 bears-on = "how a keep-alive for a background session is built"
 regimes = ["real"]
 script = "idle-holders.sh"
+helpers = ["idle-lib.sh"]
 fixtures = ["idl"]
-controls = ["control: a session with no holder must be seen to stop within the cap, or the idle stop was never observed and every arm is VOID", "each arm's holder is read from the session's transcript: a background Bash call with the exact command, or a CronCreate call, status ok; the control made none"]
-# A plant reaches one arm, and the arm's verdict is the only thing it can turn: holder-dropped and
-# schedule-dropped each remove one holder (the shell arm's and the schedule arm's, which share the
-# verdict code that reads when a still-held session stopped). A plant cannot expect FAIL on two arms
-# at once, so each holder has its own. control-held breaks the control, so every arm reads VOID.
+controls = ["control: a session with no holder must be seen to stop within the cap, or the idle stop was never observed and every arm is VOID", "each arm's holder is read from the session's transcript: a background Bash call with the exact command, or a one-shot CronCreate call for the expected minute, status ok; the control made none", "each later turn is read from its own codeword in the transcript (FIRED for the job's turn, RELEASED for the completion's), once a poll round; a FIRED seen before its job was due is INCONCLUSIVE", "an arm whose claim is a stop about the control's idle duration is FAIL only when seen present the margin past it, and INCONCLUSIVE when it stopped outside the tolerance but within the margin"]
+# A plant reaches one arm, and the arm's verdict is the only thing it can turn: shell-held and
+# schedule-dropped each change one holder (a pending job given to the shell arm, the schedule arm's
+# job deleted), and completion-withheld keeps the release arm's command running, so no completion
+# arrives. control-held gives the control a pending job, so every arm reads VOID. The turn arm has
+# no plant of its own: the comparison with release is the finding.
 plants = [
-  { id = "holder-dropped", expect = "FAIL", arm = "shell" },
+  { id = "shell-held", expect = "FAIL", arm = "shell" },
   { id = "schedule-dropped", expect = "FAIL", arm = "schedule" },
+  { id = "completion-withheld", expect = "FAIL", arm = "release" },
   { id = "control-held", expect = "VOID" },
 ]
 minutes = 125
 
 # Each runs as its own Bash call, started in the background (`seam-probe prompt --background`).
-# hold keeps a session's command running past the idle stop; release ends after the seconds it
-# names, which the case reads from this text; dropped is hold's stand-in under the holder-dropped
-# plant, a command that ends at once.
+# hold keeps running past the idle stop; release ends after the seconds it names, and its completion
+# is delivered as a turn the case reads from the transcript. completion-withheld runs hold in
+# release's place.
 [case.commands]
 hold = "sleep 9000"
 release = "sleep 900"
-dropped = "true"
 
 [[case]]
 id = "attached-stop"
@@ -57,3 +59,24 @@ plants = [
   { id = "control-respawn", expect = "VOID" },
 ]
 minutes = 12
+
+[[case]]
+id = "completion-hold"
+question = "On Claude Code 2.1.330 a background session whose background command finished, its completion delivered as a new turn, was still running 105 minutes after that turn, past the idle stop a session with nothing to hold it reached at about 61 (idle-holders). Is such a session stopped at all: within eight hours of launch, against a control with nothing?"
+relies = "A session held only by a delivered completion is stopped within the cap (480 min by default). Still present at the cap is the leak: every session that ever ran a background command would never idle out. The completion turn is read from its codeword in the transcript, and the process from the session's pid record and the daemon roster, never from the agents listing."
+bears-on = "how a keep-alive for a background session is built, and whether finished sessions leak"
+regimes = ["real"]
+script = "completion-hold.sh"
+helpers = ["idle-lib.sh"]
+fixtures = ["cph"]
+controls = ["control: a session with no holder must be seen to stop within the cap, or the idle stop was never observed and every arm is VOID", "the release arm's command is read from its transcript (an ok background Bash call with the exact command), and its completion turn from its codeword (RELEASED); a session never seen to receive one is INCONCLUSIVE, never PASS or FAIL"]
+# held-past-cap gives the release session a pending job past the cap, so it must FAIL; control-held
+# gives the control the same job, so every arm reads VOID.
+plants = [
+  { id = "held-past-cap", expect = "FAIL", arm = "release" },
+  { id = "control-held", expect = "VOID" },
+]
+minutes = 490
+
+[case.commands]
+release = "sleep 900"

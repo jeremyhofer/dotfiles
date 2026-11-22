@@ -97,6 +97,9 @@ def tool(env, *args, extra_env=None, cwd=None):
     (lambda t: t + 'commands = { remove = "wt remove x; ls" }\n', "is compound"),
     (lambda t: t + 'commands = { remove = "git -C a log | head" }\n', "is compound"),
     (lambda t: t.replace('script = "c.sh"', 'script = "missing.sh"'), "is not a file"),
+    (lambda t: t + 'helpers = ["missing.sh"]\n', "helper 'missing.sh' is not a file"),
+    (lambda t: t + 'helpers = ["../c.sh"]\n', "is not a file in the suite directory"),
+    (lambda t: t + 'helpers = "c.sh"\n', "`helpers` must be a list"),
 ])
 def test_lint_refuses(env, mutate, needle):
     d = make_suite(env, {"c": ("", '"none"')})
@@ -142,6 +145,21 @@ def test_red_then_pass_is_zero(env):
     # Changing the case script retires its red.
     (d / "c.sh").write_text((d / "c.sh").read_text() + "# changed\n")
     assert tool(env, "run", "s", "--yes").returncode == 4
+
+
+def test_a_changed_helper_retires_the_red(env):
+    # A case script that sources a helper declares it, so the seen-red record covers what it ran.
+    body = ('. "$SEAM_PROBE_SUITE_DIR/lib.sh"\n'
+            'if [ "$SEAM_PROBE_PLANT" = p1 ]; then "$sp" verdict FAIL planted; else "$sp" verdict "$(word)" fine; fi\n')
+    d = make_suite(env, {"c": (body, '"none"')})
+    (d / "suite.toml").write_text((d / "suite.toml").read_text() + 'helpers = ["lib.sh"]\n')
+    (d / "lib.sh").write_text("word() { echo PASS; }\n")
+    assert tool(env, "lint", "s").returncode == 0
+    assert tool(env, "red", "s", "c", "--yes").returncode == 0
+    assert tool(env, "run", "s", "--yes").returncode == 0
+    (d / "lib.sh").write_text("word() { echo PASS; }\n# changed\n")
+    r = tool(env, "run", "s", "--yes")
+    assert r.returncode == 4 and "NOT-SEEN-RED" in r.stdout, r.stdout
 
 
 def test_red_key_includes_versions(env, tmp_path):
@@ -461,6 +479,44 @@ def term(*_):
 signal.signal(signal.SIGTERM, term)
 while True: time.sleep(0.05)
 '''
+# The supervisor, as measured on Claude Code 2.1.330 (six sessions): a session is stopped IDLE
+# seconds after its last turn ended, unless something holds it. A background command still running
+# holds nothing. A command that has finished delivers its completion as a new turn (a
+# <task-notification>, answered with the prompt's word for it), and that holds the session
+# (FAKE_CLAUDE_COMPLETION_HOLD seconds, default for good). A pending one-shot job holds it; one whose
+# prompt asks for a single word fires FAKE_CLAUDE_FIRE seconds after launch (default 6) as a new
+# turn answered with that word, and then holds nothing (FAKE_CLAUDE_FIRED_HOLD seconds, default 0).
+# Any other job is due past the run, so pends for good. FAKE_CLAUDE_STOP_AFTER overrides the stop,
+# in seconds from launch (null: never). The record goes at the stop; a turn is written only while
+# the record and the transcript are both there, so a session cleanup removed stays removed.
+SUPERVISOR = r'''
+import json, os, sys, time
+cfg = json.loads(sys.argv[1])
+t0, rec, tr, idle, inf = cfg["t0"], cfg["record"], cfg["transcript"], cfg["idle"], float("inf")
+events = sorted(cfg["events"], key=lambda e: e["at"])
+clock, extra = t0, t0
+def stop_at():
+    if cfg["stop_after"] != "model":
+        return inf if cfg["stop_after"] is None else t0 + cfg["stop_after"]
+    held = inf if cfg["pending"] else max([extra] + [t0 + e["at"] for e in events if e["kind"] == "fire"])
+    return max(clock + idle, held)
+while True:
+    nxt, s = (t0 + events[0]["at"] if events else inf), stop_at()
+    if nxt < inf and nxt <= s:
+        time.sleep(max(0.0, nxt - time.time()))
+        if not (os.path.exists(rec) and os.path.exists(tr)): sys.exit(0)
+        e = events.pop(0)
+        with open(tr, "a") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": e["text"]}}) + "\n")
+            fh.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": e["word"]}]}}) + "\n")
+        clock = time.time()
+        extra = max(extra, clock + cfg["completion_hold" if e["kind"] == "completion" else "fired_hold"])
+        continue
+    if s == inf: sys.exit(0)
+    time.sleep(max(0.0, s - time.time()))
+    if os.path.exists(rec): os.unlink(rec)
+    sys.exit(0)
+'''
 def spawn_session(sid, u, disp, transcript, plain=False):
     rec_dir = Path(os.environ["SEAM_PROBE_PID_RECORDS"]); rec_dir.mkdir(parents=True, exist_ok=True)
     rf = rec_dir / (sid + ".json")
@@ -484,9 +540,20 @@ if argv[:1] == ["agents"] and os.environ.get("FAKE_CLAUDE_AGENTS") == "fail":
 if argv[:1] == ["agents"]:
     print(json.dumps(rows if "--all" in argv else [r for r in rows if r["state"] != "stopped"])); sys.exit(0)
 if argv[:1] == ["stop"]:
-    if os.environ.get("FAKE_CLAUDE_STOP") != "ignore":
-        for r in rows:
-            if r["id"] == argv[1]: r["state"] = "stopped"
+    # The session's process ends: its pid record (when the fake writes one, naming the test's own
+    # pid) goes. FAKE_CLAUDE_STOP=ignore: nothing changes; listing-stays: the process ends and its
+    # row stays `working`, as measured for a session holding a pending scheduled job.
+    how = os.environ.get("FAKE_CLAUDE_STOP")
+    if how != "ignore":
+        u = {r["sessionId"] for r in rows if r["id"] == argv[1]}
+        recs = Path(os.environ.get("SEAM_PROBE_PID_RECORDS") or st / "no-records")
+        for f in (recs.glob("*.json") if recs.is_dir() and not os.environ.get("FAKE_CLAUDE_SPAWN") else []):
+            try:
+                if json.loads(f.read_text()).get("sessionId") in u: f.unlink()
+            except (OSError, ValueError): pass
+        if how != "listing-stays":
+            for r in rows:
+                if r["id"] == argv[1]: r["state"] = "stopped"
         save()
     print("stopping"); sys.exit(0)
 if argv[:1] == ["rm"]:
@@ -559,12 +626,12 @@ if "--bg" in argv:
     else:
         run_in = here
     allowed = [run_in] + [Path(flags[i + 1]) for i, a in enumerate(flags) if a == "--add-dir"]
-    events, holds = [], []
+    lines_, events, pending = [], [], []
     def call(name, inp, text, err=False, record=True):
         if not record: return
         tid = "toolu_" + secrets.token_hex(6)
-        events.append({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}})
-        events.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text, "is_error": err}]}})
+        lines_.append({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}})
+        lines_.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text, "is_error": err}]}})
     # The overlay's deny rules for wt remove, and the one form its sandbox exclusion matches: a
     # command with a redirect, pipe or chain is not that form, so it runs sandboxed.
     deny = re.compile(os.environ.get("FAKE_CLAUDE_DENY", r"^wt remove( .*)? (-y|--yes|-f|--force|-D|--reap|-C|--config)( |$)"))
@@ -579,11 +646,16 @@ if "--bg" in argv:
             if "run_in_background" in text and os.environ.get("FAKE_CLAUDE_FOREGROUND"):
                 call("Bash", {"command": cmd}, "", False, record); continue   # asked for background, ran in front
             if "run_in_background" in text:
-                # A background command is started, not run: the fake never waits for it. Its
-                # lifetime, for the idle model below: a `sleep N` N seconds (1000 or more: for good), anything
-                # else none.
+                # A background command is started, not run: the fake never waits for it. For the
+                # supervisor model below, a `sleep N` finishes N seconds after launch (1000 or more:
+                # not within any test), anything else at once; each that finishes delivers its
+                # completion as a turn, answered with the prompt's word for a notification.
                 sm = re.match(r"^sleep (\d+)$", cmd)
-                holds.append((float(sm.group(1)) if float(sm.group(1)) < 1000 else float("inf")) if sm else 0.0)
+                secs = float(sm.group(1)) if sm else 0.0
+                if secs < 1000:
+                    wm = re.search(r"notified that a command finished, reply with the single word (\w+)", text)
+                    events.append({"at": secs, "kind": "completion", "word": wm.group(1) if wm else "DONE",
+                                   "text": "<task-notification><status>completed</status><summary>Background command \"%s\" completed (exit code 0)</summary></task-notification>" % cmd})
                 call("Bash", {"command": cmd, "run_in_background": True}, "Command running in background with ID: bg1", False, record); continue
             if deny.search(cmd):
                 call("Bash", {"command": cmd}, f"Permission to use Bash with command {cmd} has been denied.", True, record); continue
@@ -598,16 +670,23 @@ if "--bg" in argv:
             p = subprocess.run(["sh", "-c", cmd], cwd=where, env=env, capture_output=True, text=True, check=False)
             call("Bash", {"command": cmd}, p.stdout + p.stderr, p.returncode != 0, record)
     def schedule(text):
-        # The idle-holders schedule prompt: ToolSearch loads CronCreate (and CronDelete), then the
+        # A session-lifecycle job prompt: ToolSearch loads CronCreate (and CronDelete), then the
         # job is created and, when the prompt says so, deleted. FAKE_CLAUDE_NOCRON: no such tool.
         m = re.search(r'cron expression "([^"]*)"', text)
+        jp = re.search(r'and the prompt "([^"]*)"', text)
+        job = jp.group(1) if jp else "Reply DONE."
         call("ToolSearch", {"max_results": 5, "query": "select:CronCreate"}, "No matching deferred tools found" if os.environ.get("FAKE_CLAUDE_NOCRON") else "Loaded CronCreate")
         if os.environ.get("FAKE_CLAUDE_NOCRON"): return
         # FAKE_CLAUDE_CRON_RECURRING: the job is made recurring; FAKE_CLAUDE_CRON_WRONG: for another time.
         expr = "1 1 1 1 *" if os.environ.get("FAKE_CLAUDE_CRON_WRONG") else m.group(1)
-        call("CronCreate", {"cron": expr, "prompt": "Reply DONE.", "recurring": bool(os.environ.get("FAKE_CLAUDE_CRON_RECURRING"))}, "Scheduled job cron-1")
-        if "CronDelete" in text: call("CronDelete", {"id": "cron-1"}, "Deleted cron-1")
-        else: holds.append(float("inf"))   # a pending job holds the session for good
+        call("CronCreate", {"cron": expr, "prompt": job, "recurring": bool(os.environ.get("FAKE_CLAUDE_CRON_RECURRING"))}, "Scheduled job cron-1")
+        if "CronDelete" in text:
+            call("CronDelete", {"id": "cron-1"}, "Deleted cron-1"); return
+        w = re.search(r"single word (\w+)", job)
+        if w:
+            events.append({"at": float(os.environ.get("FAKE_CLAUDE_FIRE", "6")), "kind": "fire", "word": w.group(1), "text": job})
+        else:
+            pending.append(job)   # due past the run: pending throughout
     def plugin_timeout():
         # worktrunk's plugin as Claude Code finds it: None when it is not installed.
         try:
@@ -642,23 +721,25 @@ if "--bg" in argv:
         for title, body in zip(parts[1::2], parts[2::2]):
             if "subagent's task" in title: subagent(body)
             else: run_cmds(body, run_in, allowed)
-    elif "Do not use any tool" in prompt and os.environ.get("FAKE_CLAUDE_CONTROL_CALL"):
-        call("Bash", {"command": "true"}, "")   # a control that used a tool anyway
     elif "CronCreate" in prompt:
         schedule(prompt)
+        run_cmds(prompt, run_in, allowed)   # a prompt that also starts commands (none: nothing)
+    elif "Do not use any tool" in prompt and os.environ.get("FAKE_CLAUDE_CONTROL_CALL"):
+        call("Bash", {"command": "true"}, "")   # a control that used a tool anyway
     else:
         run_cmds(prompt, run_in, allowed)
     rows.append({"id": sid, "sessionId": u, "name": opt(flags, "-n"), "cwd": str(run_in), "state": "working",
                  "kind": "background", "startedAt": len(rows)}); save()
     t = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(run_in))
     t.mkdir(parents=True, exist_ok=True)
-    lines = [{"type": "user", "message": {"content": prompt}}, *events,
+    t_launch = time.time()
+    lines = [{"type": "user", "message": {"content": prompt}}, *lines_,
              {"type": "assistant", "message": {"content": [{"type": "text", "text": os.environ.get("FAKE_CLAUDE_REPLY", "DONE")}]}}]
     (t / (u + ".jsonl")).write_text("".join(json.dumps(x) + "\n" for x in lines))
     # The session's process, as Claude Code's pid record shows it: a record naming a pid that is alive
-    # (FAKE_CLAUDE_LIVE_PID, the test's own) until a helper removes it after the delay
-    # FAKE_CLAUDE_STOP_AFTER ({"control": seconds, ...}, matched on the session's display name) gives
-    # for it; a session with no delay is never stopped.
+    # (FAKE_CLAUDE_LIVE_PID, the test's own) until the supervisor (SUPERVISOR, above) removes it, on
+    # its model with FAKE_CLAUDE_IDLE set, or after the delay FAKE_CLAUDE_STOP_AFTER ({"control":
+    # seconds, ...}, matched on the session's display name) gives; with neither it is never stopped.
     if os.environ.get("FAKE_CLAUDE_SPAWN") and os.environ.get("SEAM_PROBE_PID_RECORDS") and not os.environ.get("FAKE_CLAUDE_NORECORD") \
             and not any("seam-probe-%s-" % k in (opt(flags, "-n") or "") for k in json.loads(os.environ.get("FAKE_CLAUDE_NOSPAWN", "[]"))):
         spawn_session(sid, u, opt(flags, "-n"), t / (u + ".jsonl"))
@@ -666,15 +747,15 @@ if "--bg" in argv:
         rec = Path(os.environ["SEAM_PROBE_PID_RECORDS"]); rec.mkdir(parents=True, exist_ok=True)
         rf = rec / (sid + ".json")
         rf.write_text(json.dumps({"pid": int(os.environ["FAKE_CLAUDE_LIVE_PID"]), "sessionId": u, "status": "idle", "name": opt(flags, "-n")}))
-        # The supervisor, modeled: with FAKE_CLAUDE_IDLE seconds set, a session stops that long after
-        # its last holder ended (none: at once), and never while one holds it for good.
-        delay, disp = None, opt(flags, "-n") or ""
-        if os.environ.get("FAKE_CLAUDE_IDLE"):
-            delay = float(os.environ["FAKE_CLAUDE_IDLE"]) + max(holds, default=0.0)
+        disp, stop_after = opt(flags, "-n") or "", "model"
         for key, d in json.loads(os.environ.get("FAKE_CLAUDE_STOP_AFTER", "{}")).items():
-            if "seam-probe-%s-" % key in disp: delay = d
-        if delay is not None and delay != float("inf"):
-            subprocess.Popen([sys.executable, "-c", "import os, sys, time; time.sleep(float(sys.argv[1])); os.path.exists(sys.argv[2]) and os.unlink(sys.argv[2])", str(delay), str(rf)],
+            if "seam-probe-%s-" % key in disp: stop_after = d
+        if os.environ.get("FAKE_CLAUDE_IDLE") or stop_after != "model":
+            cfg = {"t0": t_launch, "record": str(rf), "transcript": str(t / (u + ".jsonl")), "events": events,
+                   "idle": float(os.environ.get("FAKE_CLAUDE_IDLE") or "inf"), "pending": bool(pending),
+                   "stop_after": stop_after, "completion_hold": float(os.environ.get("FAKE_CLAUDE_COMPLETION_HOLD", "inf")),
+                   "fired_hold": float(os.environ.get("FAKE_CLAUDE_FIRED_HOLD", "0"))}
+            subprocess.Popen([sys.executable, "-c", SUPERVISOR, json.dumps(cfg)],
                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not os.environ.get("FAKE_CLAUDE_NOID"): print("backgrounded · " + sid)
     sys.exit(0)
@@ -886,6 +967,34 @@ def test_stop_is_confirmed_against_the_listing(fake):
     d = make_suite(fake, {"c": (STOP, '"real"')})
     tool(fake, "run", "s", "--yes")
     assert (d / "stop").read_text().strip() == "0" and "stop confirmed" in (d / "stop.out").read_text()
+
+
+def stop_records(fake, tmp_path):
+    recs = tmp_path / "pidrecs"
+    recs.mkdir()
+    roster = tmp_path / "roster.json"
+    roster.write_text(json.dumps({"workers": {}}))
+    return {"SEAM_PROBE_PID_RECORDS": str(recs), "SEAM_PROBE_DAEMON_ROSTER": str(roster),
+            "FAKE_CLAUDE_LIVE_PID": str(os.getpid())}
+
+
+def test_stop_is_confirmed_by_the_process_when_the_listing_still_says_working(fake, tmp_path):
+    # Measured: a session holding a pending scheduled job stayed `working` in the active listing
+    # after `claude stop`, so a listing-only check never confirmed it. Its process is read too.
+    d = make_suite(fake, {"c": (STOP, '"real"')})
+    r = tool(fake, "run", "s", "--yes", extra_env={**stop_records(fake, tmp_path), "FAKE_CLAUDE_STOP": "listing-stays"})
+    out = (d / "stop.out").read_text()
+    assert (d / "stop").read_text().strip() == "0" and "stop confirmed" in out and "state=working" in out, out
+    assert "process: no process" in out, out
+    run_dir = max((fake["state"] / "s").iterdir(), key=lambda p: p.name)
+    assert "process: no process" in (run_dir / "cleanup-c.txt").read_text()
+
+
+def test_a_stop_whose_process_stays_is_not_confirmed(fake, tmp_path):
+    d = make_suite(fake, {"c": (STOP, '"real"')})
+    tool(fake, "run", "s", "--yes", extra_env={**stop_records(fake, tmp_path), "FAKE_CLAUDE_STOP": "ignore"})
+    out = (d / "stop.out").read_text()
+    assert (d / "stop").read_text().strip() == "3" and "process: process present" in out, out
 
 
 def test_unconfirmed_stop_is_inconclusive(fake):
@@ -1312,6 +1421,18 @@ def test_prompt_background_asks_for_run_in_background(fake):
     assert "run_in_background" not in plain and plain.rstrip().endswith("1. sleep 9000")
 
 
+def test_prompt_background_names_the_word_a_notification_is_answered_with(fake):
+    d = make_suite(fake, {"c": ('"$sp" prompt --background --notified RELEASED one > "$SEAM_PROBE_SUITE_DIR/p"\n'
+                                '"$sp" prompt --notified RELEASED one > "$SEAM_PROBE_SUITE_DIR/q"; echo "$?" > "$SEAM_PROBE_SUITE_DIR/rc"\n'
+                                '"$sp" verdict FAIL x\n', '"none"')})
+    (d / "suite.toml").write_text((d / "suite.toml").read_text() + 'commands = { one = "sleep 900" }\n')
+    tool(fake, "run", "s", "--yes")
+    text = (d / "p").read_text()
+    assert "reply with the single word DONE and end your turn" in text, text
+    assert "notified that a command finished, reply with the single word RELEASED and nothing else" in text, text
+    assert (d / "rc").read_text().strip() == "2"   # a word for a notification needs --background
+
+
 # ---- session process ---------------------------------------------------------------------------
 
 UUID_A = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -1721,15 +1842,18 @@ def test_manual_called_directly_on_a_terminal_reads_the_enter(env, tmp_path):
     assert json.loads(ledger.read_text())["text"] == "open it"
 
 # ---- idle-holders, end to end against the fakes ------------------------------------------------
-# The fake models the supervisor: with FAKE_CLAUDE_IDLE a session's pid record goes that many
-# seconds after its last holder ended, and never while a background `sleep 9000` or a pending cron
-# job holds it. The release command is shortened to `sleep 2` in a copy of the shipped suite, and
-# the case's times are a tenth of a second to a few seconds.
+# The fake models the supervisor as measured (SUPERVISOR, in the fake claude): a session's pid record
+# goes FAKE_CLAUDE_IDLE seconds after its last turn ended; a running background command holds
+# nothing; a delivered completion and a pending job hold it; a job that fires is a turn and holds
+# nothing after. The release command is shortened to `sleep 1` in a copy of the shipped suite, and
+# the case's times are seconds: idle 10 s, the turn arm's job firing 6 s after launch, a tolerance
+# of 4 s and a margin of 8 s, so the poll rounds' lag under load stays well inside both.
 
 IDL = "seams/session-lifecycle/idl"
+CPH = "seams/session-lifecycle/cph"
 
 
-def idle(fake, tmp_path, stop_after=None, idle_s=6, release_s=2, cap=40, records=None):
+def idle(fake, tmp_path, stop_after=None, idle_s=10, release_s=1, cap=60, records=None, tolerance=4, margin=8):
     suites = tmp_path / "idle-suites"
     shutil.copytree(SHIPPED / "session-lifecycle", suites / "session-lifecycle")
     toml = suites / "session-lifecycle/suite.toml"
@@ -1745,21 +1869,23 @@ def idle(fake, tmp_path, stop_after=None, idle_s=6, release_s=2, cap=40, records
         "SEAM_PROBE_SUITES": str(suites), "SEAM_PROBE_PID_RECORDS": str(recs), "SEAM_PROBE_DAEMON_ROSTER": str(roster),
         "FAKE_CLAUDE_LIVE_PID": str(os.getpid()), "FAKE_CLAUDE_IDLE": str(idle_s),
         "FAKE_CLAUDE_STOP_AFTER": json.dumps(stop_after or {}),
-        "SEAM_PROBE_IDLE_POLL": "0.1", "SEAM_PROBE_IDLE_MARGIN": "1", "SEAM_PROBE_IDLE_CAP": str(cap)})
-    trust(fake, fake["sandbox"] / IDL)
+        "SEAM_PROBE_IDLE_POLL": "0.1", "SEAM_PROBE_IDLE_MARGIN": str(margin), "SEAM_PROBE_IDLE_TOLERANCE": str(tolerance),
+        "SEAM_PROBE_IDLE_CAP": str(cap), "SEAM_PROBE_TURN_AT": "0"})
+    trust(fake, fake["sandbox"] / IDL, fake["sandbox"] / CPH)
     return suites
 
 
-def idle_run(fake, verb="run", extra_env=None):
-    args = ["run", "session-lifecycle", "idle-holders"] if verb == "run" else ["red", "session-lifecycle", "idle-holders"]
+def idle_run(fake, verb="run", extra_env=None, case="idle-holders"):
+    args = ["run", "session-lifecycle", case] if verb == "run" else ["red", "session-lifecycle", case]
     return tool(fake, *args, "--yes", extra_env=extra_env)
 
 
-def idle_arms(fake, plant=None):
+def idle_arms(fake, plant=None, case=None):
+    """The arms of the newest run's record for PLANT, of CASE when named (a run holds one case)."""
     run_dir = max((fake["state"] / "session-lifecycle").glob("2*"), key=lambda p: p.name)
     for line in (run_dir / "results.jsonl").read_text().splitlines():
         rec = json.loads(line)
-        if rec["plant"] == plant:
+        if rec["plant"] == plant and case in (None, rec["case"]):
             return {a["arm"]: (a["verdict"], a["reason"]) for a in rec["arms"]}, run_dir
     raise AssertionError("no record for plant " + str(plant))
 
@@ -1768,80 +1894,133 @@ def verdicts_of(arms):
     return {k: v[0] for k, v in arms.items()}
 
 
+ALL_PASS = {"control": "PASS", "shell": "PASS", "turn": "PASS", "schedule": "PASS", "release": "PASS"}
+
+
 def test_idle_holders_pass_path(fake, tmp_path):
     idle(fake, tmp_path)
     r = idle_run(fake)
     arms, run_dir = idle_arms(fake)
-    assert verdicts_of(arms) == {"control": "PASS", "shell": "PASS", "schedule": "PASS", "release": "PASS"}, r.stdout + str(arms)
+    assert verdicts_of(arms) == ALL_PASS, r.stdout + str(arms)
     assert r.returncode == 4   # every PASS, none seen red yet
-    assert "the idle stop was observed" in arms["control"][1] and "min after its first turn ended" in arms["shell"][1]
-    assert "after its background command ended" in arms["release"][1]
+    assert "the idle stop was observed" in arms["control"][1]
+    assert "within the 0.1 min tolerance" in arms["shell"][1] and "after its first turn ended" in arms["shell"][1]
+    assert "after its job's turn ended" in arms["turn"][1]
+    assert "after its completion turn ended" in arms["release"][1] and "read from its transcript" in arms["release"][1]
     series = (run_dir / "session-idle-holders-poll-series.txt").read_text()
     assert "control=stopped" in series and "shell=running(idle)" in series
-    # One launch per arm, each with its own prompt: the three holders are the shell, release and schedule sessions.
+    assert "turn:FIRED" in series and "release:RELEASED" in series
+    # One launch per arm, each with its own prompt.
     launches = [c["argv"] for c in calls(fake) if "--bg" in c["argv"]]
     prompts = {a[a.index("-n") + 1].split("-")[2]: a[-1] for a in launches}
-    assert set(prompts) == {"control", "shell", "schedule", "release"}
-    assert "run_in_background" in prompts["shell"] and "1. sleep 9000" in prompts["shell"] and "1. sleep 2" in prompts["release"]
-    assert "select:CronCreate" in prompts["schedule"] and '"recurring' not in prompts["schedule"] and "recurring set to false" in prompts["schedule"]
+    assert set(prompts) == set(ALL_PASS)
+    assert "run_in_background" in prompts["shell"] and "1. sleep 9000" in prompts["shell"] and "CronCreate" not in prompts["shell"]
+    assert "1. sleep 1" in prompts["release"] and "reply with the single word RELEASED" in prompts["release"]
+    for a in ("schedule", "turn"):
+        assert "select:CronCreate" in prompts[a] and '"recurring' not in prompts[a] and "recurring set to false" in prompts[a]
+    assert "single word FIRED" in prompts["turn"] and "FIRED" not in prompts["schedule"]
     assert "Do not use any tool" in prompts["control"]
 
 
 def test_idle_holders_red_of_every_plant(fake, tmp_path):
-    idle(fake, tmp_path, cap=25)
+    idle(fake, tmp_path, cap=40)
     r = idle_run(fake, "red")
-    assert r.returncode == 0 and r.stdout.count(" RED ") == 6, r.stdout   # control-held reads on every arm
-    holder, run_dir = idle_arms(fake, "holder-dropped")
-    assert holder["shell"][0] == "FAIL" and "before the end of the run" in holder["shell"][1]
-    assert idle_arms(fake, "schedule-dropped")[0]["schedule"][0] == "FAIL"
+    assert r.returncode == 0 and r.stdout.count(" RED ") == 8, r.stdout   # control-held reads on every arm
+    shell, _ = idle_arms(fake, "shell-held")
+    assert shell["shell"][0] == "FAIL" and "still present" in shell["shell"][1], shell
+    sched, _ = idle_arms(fake, "schedule-dropped")
+    assert sched["schedule"][0] == "FAIL", sched
+    withheld, _ = idle_arms(fake, "completion-withheld")
+    assert withheld["release"][0] == "FAIL" and "no completion turn" in withheld["release"][1], withheld
     held, _ = idle_arms(fake, "control-held")
-    assert set(verdicts_of(held).values()) == {"VOID"} and "never stopped" in held["control"][1]
+    assert set(verdicts_of(held).values()) == {"VOID"} and "never stopped" in held["control"][1], held
     # With the reds recorded, the run reads PASS and exits 0.
     assert idle_run(fake).returncode == 0
 
 
 def test_idle_holders_control_that_never_stops_voids_every_arm(fake, tmp_path):
-    idle(fake, tmp_path, stop_after={"control": None}, cap=6)
+    idle(fake, tmp_path, stop_after={"control": None}, cap=12)
     r = idle_run(fake)
     arms, _ = idle_arms(fake)
     assert set(verdicts_of(arms).values()) == {"VOID"} and "the control was never stopped" in arms["shell"][1], arms
     assert r.returncode == 3
 
 
-@pytest.mark.parametrize("who", ["shell", "schedule"])
-def test_idle_holders_a_holder_stopped_early_fails_its_arm_only(fake, tmp_path, who):
-    idle(fake, tmp_path, stop_after={who: 0.2})
+def test_idle_holders_a_shell_session_held_past_the_margin_fails(fake, tmp_path):
+    idle(fake, tmp_path, stop_after={"shell": None})
     r = idle_run(fake)
     arms, _ = idle_arms(fake)
-    want = {"control": "PASS", "shell": "PASS", "schedule": "PASS", "release": "PASS", who: "FAIL"}
-    assert verdicts_of(arms) == want, arms
-    assert "min after its first turn ended, before the end of the run" in arms[who][1] and r.returncode == 1
+    assert verdicts_of(arms) == dict(ALL_PASS, shell="FAIL"), arms
+    assert "still present" in arms["shell"][1] and r.returncode == 1
 
 
-def test_idle_holders_release_stopped_while_its_command_ran_fails(fake, tmp_path):
-    idle(fake, tmp_path, stop_after={"release": 0.2}, release_s=12)
+@pytest.mark.parametrize("stop,needle", [(2, "sooner than the control"), (16, "later than the control")])
+def test_idle_holders_a_shell_stop_outside_the_tolerance_is_inconclusive(fake, tmp_path, stop, needle):
+    idle(fake, tmp_path, stop_after={"shell": stop})
     idle_run(fake)
     arms, _ = idle_arms(fake)
-    assert arms["release"][0] == "FAIL" and "while its background command" in arms["release"][1], arms
+    assert arms["shell"][0] == "INCONCLUSIVE" and needle in arms["shell"][1], arms
+    assert arms["control"][0] == "PASS" and arms["schedule"][0] == "PASS"
+
+
+def test_idle_holders_a_fired_turn_that_holds_fails_the_turn_arm(fake, tmp_path):
+    idle(fake, tmp_path)
+    r = idle_run(fake, extra_env={"FAKE_CLAUDE_FIRED_HOLD": "inf"})
+    arms, _ = idle_arms(fake)
+    assert verdicts_of(arms) == dict(ALL_PASS, turn="FAIL"), arms
+    assert "still present" in arms["turn"][1] and "after its job's turn ended" in arms["turn"][1] and r.returncode == 1
+
+
+def test_idle_holders_a_job_turn_never_seen_is_inconclusive(fake, tmp_path):
+    idle(fake, tmp_path, cap=24)
+    idle_run(fake, extra_env={"FAKE_CLAUDE_FIRE": "1000"})
+    arms, _ = idle_arms(fake)
+    assert arms["turn"][0] == "INCONCLUSIVE" and "no FIRED" in arms["turn"][1], arms
     assert arms["shell"][0] == "PASS"
 
 
-def test_idle_holders_release_never_stopping_fails(fake, tmp_path):
-    idle(fake, tmp_path, stop_after={"release": None}, cap=20)
+def test_idle_holders_a_job_turn_seen_before_its_job_was_due_is_inconclusive(fake, tmp_path):
+    # The codeword can only come from the job's own turn once it is due; seen sooner, the first
+    # turn wrote it, and the job's turn cannot be told from it.
+    idle(fake, tmp_path)
+    idle_run(fake, extra_env={"SEAM_PROBE_TURN_AT": "600"})
+    arms, _ = idle_arms(fake)
+    assert arms["turn"][0] == "INCONCLUSIVE" and "before its job was due" in arms["turn"][1], arms
+
+
+def test_idle_holders_a_completion_that_does_not_hold_fails_the_release_arm(fake, tmp_path):
+    idle(fake, tmp_path)
+    r = idle_run(fake, extra_env={"FAKE_CLAUDE_COMPLETION_HOLD": "0"})
+    arms, _ = idle_arms(fake)
+    assert verdicts_of(arms) == dict(ALL_PASS, release="FAIL"), arms
+    assert "after its completion turn ended" in arms["release"][1] and r.returncode == 1
+
+
+def test_idle_holders_a_release_held_with_no_completion_is_inconclusive(fake, tmp_path):
+    # Present at the end with no completion turn: something holds it, but not a delivered completion.
+    idle(fake, tmp_path, stop_after={"release": None}, release_s=5000, cap=24)
     idle_run(fake)
     arms, _ = idle_arms(fake)
-    assert arms["release"][0] == "FAIL" and "still running at the end of the run" in arms["release"][1], arms
-    assert arms["shell"][0] == "PASS"
+    assert arms["release"][0] == "INCONCLUSIVE" and "no completion turn" in arms["release"][1], arms
+
+
+def test_idle_holders_a_schedule_session_stopped_early_fails(fake, tmp_path):
+    idle(fake, tmp_path, stop_after={"schedule": 0.2})
+    r = idle_run(fake)
+    arms, _ = idle_arms(fake)
+    assert verdicts_of(arms) == dict(ALL_PASS, schedule="FAIL"), arms
+    assert "before the end of the run" in arms["schedule"][1] and r.returncode == 1
 
 
 @pytest.mark.parametrize("knob", ["FAKE_CLAUDE_CRON_RECURRING", "FAKE_CLAUDE_CRON_WRONG"])
 def test_idle_holders_a_job_that_is_not_the_one_shot_asked_for_is_unmeasured(fake, tmp_path, knob):
     # A recurring job fires and so starts turns; a job for another time may fire inside the run.
     # Either way the arm would measure something else, so it is INCONCLUSIVE, never PASS.
-    idle(fake, tmp_path)
+    idle(fake, tmp_path, cap=30)
     idle_run(fake, extra_env={knob: "1"})
     arms, _ = idle_arms(fake)
-    assert arms["schedule"][0] == "INCONCLUSIVE" and "not an ok one-shot job" in arms["schedule"][1], arms["schedule"]
+    for a in ("schedule", "turn"):
+        assert arms[a][0] == "INCONCLUSIVE" and "not an ok one-shot job" in arms[a][1], arms[a]
     assert arms["shell"][0] == "PASS"
 
 
@@ -1849,13 +2028,13 @@ def test_idle_holders_schedule_tool_unavailable_is_skipped(fake, tmp_path):
     idle(fake, tmp_path)
     r = idle_run(fake, extra_env={"FAKE_CLAUDE_NOCRON": "1"})
     arms, _ = idle_arms(fake)
-    assert verdicts_of(arms) == {"control": "PASS", "shell": "PASS", "schedule": "SKIPPED", "release": "PASS"}, arms
+    assert verdicts_of(arms) == dict(ALL_PASS, schedule="SKIPPED", turn="SKIPPED"), arms
     assert "no CronCreate tool was available" in arms["schedule"][1] and r.returncode == 6
 
 
 def test_idle_holders_a_holder_never_made_is_inconclusive_not_failed(fake, tmp_path):
     idle(fake, tmp_path)
-    r = idle_run(fake, extra_env={"FAKE_CLAUDE_SKIP": "sleep 9000"})
+    idle_run(fake, extra_env={"FAKE_CLAUDE_SKIP": "sleep 9000"})
     arms, _ = idle_arms(fake)
     assert arms["shell"][0] == "INCONCLUSIVE" and 'never ran "sleep 9000"' in arms["shell"][1], arms
     assert arms["control"][0] == "PASS" and arms["release"][0] == "PASS"
@@ -1904,12 +2083,12 @@ def test_idle_holders_a_first_turn_that_never_finishes_is_inconclusive(fake, tmp
 
 
 def test_idle_holders_a_run_cut_short_of_the_margin_cannot_pass_a_holder(fake, tmp_path):
-    idle(fake, tmp_path, cap=14)
-    idle_run(fake, extra_env={"SEAM_PROBE_IDLE_MARGIN": "600"})
+    idle(fake, tmp_path, cap=20, margin=600)
+    idle_run(fake)
     arms, _ = idle_arms(fake)
-    assert arms["control"][0] == "PASS"
-    assert arms["shell"][0] == "INCONCLUSIVE" and "ended too soon" in arms["shell"][1], arms
-    assert arms["schedule"][0] == "INCONCLUSIVE"
+    assert arms["control"][0] == "PASS" and arms["shell"][0] == "PASS"
+    for a in ("schedule", "release"):
+        assert arms[a][0] == "INCONCLUSIVE" and "ended too soon" in arms[a][1], arms
 
 
 def test_idle_holders_skips_without_trust(fake, tmp_path):
@@ -1918,6 +2097,73 @@ def test_idle_holders_skips_without_trust(fake, tmp_path):
     r = idle_run(fake)
     assert r.returncode == 6 and "Claude Code's trust" in r.stdout and not calls(fake, "--bg"), r.stdout
     assert (fake["sandbox"] / IDL / ".git").exists()
+
+
+# ---- completion-hold, end to end against the fakes ---------------------------------------------
+# The same fake supervisor and the same shortened release command as idle-holders. A completion
+# holds for good by default (as measured to 105 minutes), so the run reaches its cap; with
+# FAKE_CLAUDE_COMPLETION_HOLD set it holds that many seconds and the session then idles out.
+
+
+def cph_run(fake, verb="run", extra_env=None):
+    return idle_run(fake, verb, extra_env, case="completion-hold")
+
+
+def test_completion_hold_a_session_stopped_after_its_completion_passes(fake, tmp_path):
+    idle(fake, tmp_path, cap=40)
+    r = cph_run(fake, extra_env={"FAKE_CLAUDE_COMPLETION_HOLD": "3"})
+    arms, run_dir = idle_arms(fake, case="completion-hold")
+    assert verdicts_of(arms) == {"control": "PASS", "release": "PASS"}, r.stdout + str(arms)
+    assert "after its completion turn ended" in arms["release"][1] and "read from its transcript" in arms["release"][1]
+    assert r.returncode == 4
+    series = (run_dir / "session-completion-hold-poll-series.txt").read_text()
+    assert "release:RELEASED" in series and "release=stopped" in series
+    launches = [c["argv"] for c in calls(fake) if "--bg" in c["argv"]]
+    prompts = {a[a.index("-n") + 1].split("-")[2]: a[-1] for a in launches}
+    assert set(prompts) == {"control", "release"} and "reply with the single word RELEASED" in prompts["release"]
+    assert "CronCreate" not in prompts["release"]
+
+
+def test_completion_hold_a_session_present_at_the_cap_fails(fake, tmp_path):
+    idle(fake, tmp_path, cap=20)
+    r = cph_run(fake)
+    arms, _ = idle_arms(fake, case="completion-hold")
+    assert verdicts_of(arms) == {"control": "PASS", "release": "FAIL"}, arms
+    assert "still present at the end of the" in arms["release"][1] and r.returncode == 1
+
+
+def test_completion_hold_red_of_every_plant(fake, tmp_path):
+    idle(fake, tmp_path, cap=20)
+    r = cph_run(fake, "red", extra_env={"FAKE_CLAUDE_COMPLETION_HOLD": "3"})
+    assert r.returncode == 0 and r.stdout.count(" RED ") == 3, r.stdout
+    held, _ = idle_arms(fake, "held-past-cap", case="completion-hold")
+    assert held["release"][0] == "FAIL", held
+    void, _ = idle_arms(fake, "control-held", case="completion-hold")
+    assert set(verdicts_of(void).values()) == {"VOID"}, void
+    assert cph_run(fake, extra_env={"FAKE_CLAUDE_COMPLETION_HOLD": "3"}).returncode == 0
+
+
+def test_completion_hold_a_session_never_completed_is_inconclusive(fake, tmp_path):
+    # Its command never ends within the run, so no completion turn arrives and it idles out.
+    idle(fake, tmp_path, release_s=5000, cap=30)
+    cph_run(fake)
+    arms, _ = idle_arms(fake, case="completion-hold")
+    assert arms["control"][0] == "PASS" and arms["release"][0] == "INCONCLUSIVE", arms
+    assert "never held by a delivered completion" in arms["release"][1]
+
+
+def test_completion_hold_control_that_never_stops_voids_every_arm(fake, tmp_path):
+    idle(fake, tmp_path, stop_after={"control": None}, cap=12)
+    r = cph_run(fake)
+    arms, _ = idle_arms(fake, case="completion-hold")
+    assert set(verdicts_of(arms).values()) == {"VOID"} and r.returncode == 3, arms
+
+
+def test_completion_hold_skips_without_trust(fake, tmp_path):
+    idle(fake, tmp_path)
+    trust(fake)
+    r = cph_run(fake)
+    assert r.returncode == 6 and "Claude Code's trust" in r.stdout and not calls(fake, "--bg"), r.stdout
 
 
 # ---- attached-stop, end to end against the fakes -----------------------------------------------

@@ -22,7 +22,8 @@ current case script, tool versions and regime reports "not seen red" (exit 4), n
 
 Standard library only. The case scripts are bash, run from the terminal by this tool; they call
 this tool's primitives (fixture, session, wait, evidence, prompt, manual, verdict) and end with
-one verdict per arm.
+one verdict per arm. A case script may source HELPERS from its suite directory, which the case
+declares (`helpers`), so that a change to one retires the reds of every case that sources it.
 """
 from __future__ import annotations
 
@@ -56,7 +57,7 @@ VERDICT_EXIT = {"PASS": 0, "FAIL": EXIT_FAIL, "VOID": EXIT_UNKNOWN, "INCONCLUSIV
                 "BLIND": EXIT_BLIND, "NOT-SEEN-RED": EXIT_BLIND}
 REGIMES = ("real", "bare", "candidate", "none")
 CASE_KEYS = {"id", "question", "relies", "bears-on", "regimes", "script", "controls", "plants",
-             "manual", "minutes", "heavy", "commands", "fixtures"}
+             "manual", "minutes", "heavy", "commands", "fixtures", "helpers"}
 REQUIRED = ("id", "question", "relies", "bears-on", "regimes", "script", "plants", "minutes")
 PLANT_KEYS = {"id", "expect", "arm"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -108,7 +109,8 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
   session ask NAME --regime R --cwd DIR [--tools T] [--model M] -- PROMPT
                            headless `claude -p`, tools off unless --tools, prompt on stdin; prints
                            the reply's file; exit 4 when the model declined the prompt
-  session stop NAME        `claude stop`, then confirmed against the listing, else exit 3
+  session stop NAME        `claude stop`, then confirmed against the listing or the session's process
+                           (pid records and roster), else exit 3
   session resume NAME [--prompt P]
                            flagless `claude --bg --resume <uuid>` from the session's directory;
                            exit 0 same id, 1 a new id or a copy, 3 unknown
@@ -119,9 +121,10 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
   session term NAME        stop the session's process as the fleet's refresh does (SIGTERM, up to 5 s,
                            then SIGKILL) and `claude rm` it, the output kept; exit 0 gone and removed,
                            1 gone and `claude rm` failed, 3 no live pid record or the process survived
-  prompt [--background] [KEY...] [NAME=VALUE...]
+  prompt [--background [--notified WORD]] [KEY...] [NAME=VALUE...]
                            a session prompt from the case's declared commands, one Bash call each;
-                           --background has each run with run_in_background and the turn end
+                           --background has each run with run_in_background and the turn end, and
+                           a later notification that one finished answered with WORD (default DONE)
   manual TEXT              show an instruction on the person's terminal; wait for Enter (refused with
                            no terminal; SEAM_PROBE_MANUAL_AUTO=1, for tests, records it and goes on)
   verdict [--arm A] V REASON
@@ -278,6 +281,13 @@ def load(suite_dir: Path) -> tuple[dict, list[str]]:
             sp = suite_dir / script
             if "/" in script or not sp.is_file():
                 errs.append(f"{where}: script {script!r} is not a file in the suite directory")
+        helpers = c.get("helpers", [])
+        if not isinstance(helpers, list) or not all(isinstance(h, str) for h in helpers):
+            errs.append(f"{where}: `helpers` must be a list of file names in the suite directory")
+        else:
+            for h in helpers:
+                if "/" in h or not (suite_dir / h).is_file():
+                    errs.append(f"{where}: helper {h!r} is not a file in the suite directory")
         plants = c.get("plants", [])
         if not isinstance(plants, list) or not plants:
             errs.append(f"{where}: at least one plant is required (a case never seen red is of unknown value)")
@@ -916,14 +926,24 @@ def liveness(sid: str) -> tuple[str, str]:
     return ("live" if live else "stopped"), f"{seen}; in the active listing: {n_active}"
 
 
-def confirm_stopped(sid: str, seconds: float) -> tuple[bool, str]:
-    poll, t0, last = env_seconds("SEAM_PROBE_POLL", 2), time.monotonic(), ""
+def confirm_stopped(sid: str, seconds: float, uuid: str | None = None) -> tuple[bool, str]:
+    """Poll until the stop is seen, or SECONDS pass. Seen when the listing shows the row stopped or
+    gone, or, for a session whose full uuid is known, when its process is read as gone (pid records
+    and roster both read, neither showing it): a session holding a pending scheduled job was
+    measured to stay `working` in the active listing after `claude stop`, so the listing alone
+    can never confirm that stop. Both readings are reported."""
+    poll, t0 = env_seconds("SEAM_PROBE_POLL", 2), time.monotonic()
     while True:
         state, last = liveness(sid)
-        if state in ("gone", "stopped"):
-            return True, f"{state}: {last}"
+        seen = f"{state}: {last}"
+        proc = None
+        if uuid and UUID_RE.match(str(uuid)):
+            proc, ptext = process_reading(str(uuid))
+            seen += f"; process: {ptext}"
+        if state in ("gone", "stopped") or proc == EV_NO:
+            return True, seen
         if time.monotonic() - t0 >= seconds:
-            return False, f"{state}: {last}"
+            return False, seen
         time.sleep(poll)
 
 
@@ -1073,7 +1093,7 @@ def prim_session_stop(name: str) -> int:
         return 3
     p = claude("stop", sid)
     print(f"claude stop {sid}: {' '.join(((p.stdout or '') + (p.stderr or '')).split())}")
-    ok, seen = confirm_stopped(sid, env_seconds("SEAM_PROBE_STOP_WAIT", 90))
+    ok, seen = confirm_stopped(sid, env_seconds("SEAM_PROBE_STOP_WAIT", 90), e.get("uuid"))
     ledger_append({"kind": "session-stop", "name": name, "id": sid, "confirmed": ok, "seen": seen})
     if ok:
         print(f"stop confirmed: {seen}")
@@ -1165,10 +1185,16 @@ def prim_session_process(name: str) -> int:
     if not UUID_RE.match(str(uuid)):
         print(f"INCONCLUSIVE: session {name} has no known full session id to look for")
         return EV_UNREAD
+    code, text = process_reading(str(uuid))
+    print(text)
+    return code
+
+
+def process_reading(uuid: str) -> tuple[int, str]:
+    """`session process`'s reading for a full session uuid: its exit code and what it prints."""
     held, n_records, unreadable = live_pid_records(uuid)
     if held:
-        print(f"process present: pid record of pid {held[0]['pid']}, status {held[0].get('status', 'unknown')}")
-        return EV_YES
+        return EV_YES, f"process present: pid record of pid {held[0]['pid']}, status {held[0].get('status', 'unknown')}"
     roster = Path(os.environ.get("SEAM_PROBE_DAEMON_ROSTER") or claude_config_dir() / "daemon" / "roster.json")
     ids, roster_problem = None, ""
     try:
@@ -1183,15 +1209,12 @@ def prim_session_process(name: str) -> int:
     except (OSError, ValueError):
         roster_problem = f"the daemon roster {roster} cannot be read or parsed"
     if ids is not None and uuid in ids:
-        print("process present: the daemon roster lists a worker for the session")
-        return EV_YES
+        return EV_YES, "process present: the daemon roster lists a worker for the session"
     if unreadable or ids is None:
         reasons = unreadable + ([roster_problem] if roster_problem else [])
-        print("INCONCLUSIVE: " + "; ".join(reasons) + ", so a running process cannot be ruled out")
-        return EV_UNREAD
-    print(f"no process: none of {n_records} pid record(s) names the session with a live pid, "
-          "and the daemon roster lists no worker for it")
-    return EV_NO
+        return EV_UNREAD, "INCONCLUSIVE: " + "; ".join(reasons) + ", so a running process cannot be ruled out"
+    return EV_NO, (f"no process: none of {n_records} pid record(s) names the session with a live pid, "
+                   "and the daemon roster lists no worker for it")
 
 
 def prim_session_resume(name: str, prompt: str | None) -> int:
@@ -1338,14 +1361,20 @@ BACKGROUND_HEAD = ("Run each of the following shell commands with the Bash tool,
                    "in this order. Do not change directory, do not combine commands, and do not run "
                    "anything else. Do not wait for any of them and do not poll or check on them. When all "
                    "have been started, reply with the single word DONE and end your turn. If you are later "
-                   "notified that a command finished, reply with the single word DONE and nothing else.\n")
+                   "notified that a command finished, reply with the single word {notified} and nothing else.\n")
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9-]*)\}")
 
 
-def prim_prompt(keys: list[str], background: bool = False) -> int:
+def prim_prompt(keys: list[str], background: bool = False, notified: str | None = None) -> int:
     """A session prompt built from the case's declared `commands` (the ones `lint` checked), in
     the order named, each {placeholder} filled from a key=value argument. With `background`, the head
-    asks for each command to run in the background (run_in_background) and the turn to end."""
+    asks for each command to run in the background (run_in_background) and the turn to end, and for
+    the word NOTIFIED (default DONE) in reply to a later notification that a command finished, so a
+    case can read that turn from the transcript apart from the first."""
+    if notified is not None and not background:
+        raise Usage("--notified names the reply to a background command's notification; it needs --background")
+    if notified is not None and not re.fullmatch(r"[A-Z][A-Z0-9]*", notified):
+        raise Usage("--notified takes one upper-case word")
     suite_dir = Path(os.environ.get("SEAM_PROBE_SUITE_DIR", ""))
     data, _ = load(suite_dir)
     cmds = get_case(data, os.environ.get("SEAM_PROBE_CASE", "")).get("commands", {})
@@ -1361,7 +1390,8 @@ def prim_prompt(keys: list[str], background: bool = False) -> int:
                 raise Usage(f"command {n!r} needs a value for {{{m.group(1)}}}")
             return shlex.quote(vals[m.group(1)])
         lines.append(f"{i}. {PLACEHOLDER.sub(fill, cmds[n])}")
-    print((BACKGROUND_HEAD if background else PROMPT_HEAD) + "\n".join(lines))
+    head = BACKGROUND_HEAD.replace("{notified}", notified or "DONE") if background else PROMPT_HEAD
+    print(head + "\n".join(lines))
     return 0
 
 
@@ -1434,8 +1464,20 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def script_sha(case: dict, suite_dir: Path) -> str:
+    """The case script's sha256, or, for a case that declares `helpers` (files its script sources),
+    the sha256 of the script's and each helper's own, in order: a change to a helper retires the
+    case's reds as a change to its script does. A case with no helpers keeps its script's own
+    sha256, so the reds recorded before helpers existed still count."""
+    first = sha(suite_dir / case["script"])
+    helpers = case.get("helpers") or []
+    if not helpers:
+        return first
+    return hashlib.sha256("\n".join([first, *(f"{h} {sha(suite_dir / h)}" for h in helpers)]).encode()).hexdigest()
+
+
 def red_key(case: dict, suite_dir: Path, regime: str, vers: dict, plant: str) -> dict:
-    return {"case": case["id"], "script_sha256": sha(suite_dir / case["script"]), "regime": regime,
+    return {"case": case["id"], "script_sha256": script_sha(case, suite_dir), "regime": regime,
             "claude": vers["claude"], "worktrunk": vers["worktrunk"], "plant": plant}
 
 
@@ -1514,7 +1556,7 @@ def cleanup_sessions(ledger: Path, fixtures: Path, log: list[str]) -> list[str]:
                 continue
             if state in ("live", "unknown"):
                 claude("stop", sid)
-                ok, seen = confirm_stopped(sid, stop_wait)
+                ok, seen = confirm_stopped(sid, stop_wait, e.get("uuid"))
                 log.append(f"  stop {'confirmed' if ok else 'NOT confirmed'}: {seen}")
             p = claude("rm", sid)
             out = (p.stdout or "") + (p.stderr or "")
@@ -1883,8 +1925,8 @@ def cmd_show(args) -> int:
     for p in c["plants"]:
         print(f"plant {p['id']}: must come out {p['expect']}{' on arm ' + p['arm'] if p.get('arm') else ''}")
     reds = [e for e in ledger_read(reds_path(args.suite)) if e.get("case") == c["id"]]
-    cur = sha(suite_dir / c["script"])
-    print(f"script sha256: {cur}")
+    cur = script_sha(c, suite_dir)
+    print(f"script sha256: {cur}{' (with its helpers)' if c.get('helpers') else ''}")
     for e in reds:
         print(f"red: plant {e['plant']} {e['regime']} claude {e['claude']} worktrunk {e['worktrunk']} "
               f"{'current script' if e['script_sha256'] == cur else 'an older script'} at {e['at']}")
@@ -1990,7 +2032,8 @@ def main(argv: list[str]) -> int:
     for verb in ("stop", "rm", "process", "term"):
         q = ss.add_parser(verb); q.add_argument("name")
     q = ss.add_parser("resume"); q.add_argument("name"); q.add_argument("--prompt")
-    p = sub.add_parser("prompt"); p.add_argument("--background", action="store_true"); p.add_argument("keys", nargs="*")
+    p = sub.add_parser("prompt"); p.add_argument("--background", action="store_true"); p.add_argument("--notified")
+    p.add_argument("keys", nargs="*")
     p = sub.add_parser("manual"); p.add_argument("text")
     p = sub.add_parser("verdict"); p.add_argument("--arm"); p.add_argument("verdict"); p.add_argument("reason", nargs="+")
     a = ap.parse_args(argv)
@@ -2032,7 +2075,7 @@ def main(argv: list[str]) -> int:
                     case "rm": return prim_session_rm(a.name)
                     case "process": return prim_session_process(a.name)
                     case "term": return prim_session_term(a.name)
-            case "prompt": return prim_prompt(a.keys, a.background)
+            case "prompt": return prim_prompt(a.keys, a.background, a.notified)
             case "manual": return prim_manual(a.text)
             case "verdict": return prim_verdict(a.verdict, " ".join(a.reason), a.arm)
     except Usage as e:
