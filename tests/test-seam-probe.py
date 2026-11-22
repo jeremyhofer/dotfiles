@@ -78,9 +78,9 @@ def make_suite(env, cases, name="s", extra=""):
     return d
 
 
-def tool(env, *args, extra_env=None, cwd=None):
+def tool(env, *args, extra_env=None, cwd=None, timeout=300):
     e = dict(env["env"], **(extra_env or {}))
-    return subprocess.run([str(TOOL), *args], capture_output=True, text=True, env=e, cwd=cwd, timeout=300)
+    return subprocess.run([str(TOOL), *args], capture_output=True, text=True, env=e, cwd=cwd, timeout=timeout)
 
 
 # ---- declarations ------------------------------------------------------------------------------
@@ -220,11 +220,18 @@ def test_fixture_commits_skip_signing_and_hooks(env):
     assert "fixture" in (d / "pushed").read_text()
 
 
+def default_sigint():
+    # The tool is interrupted as a person's Ctrl-C would, so it starts with SIGINT's default action
+    # whatever it inherits: a shell runs a background job with SIGINT ignored, and a suite started
+    # that way had the tool ignore the signal and run its case to the end.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 def test_interrupt_cleans_up(env):
     body = 'repo=$("$sp" fixture repo f1) || exit 1\ntouch "$SEAM_PROBE_SUITE_DIR/ready"\nsleep 60\n"$sp" verdict PASS late\n'
     d = make_suite(env, {"c": (body, '"none"')})
     p = subprocess.Popen([str(TOOL), "run", "s", "--yes"], env=env["env"], stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True)
+                         stderr=subprocess.PIPE, text=True, preexec_fn=default_sigint)
     deadline = time.time() + 60
     while not (d / "ready").exists() and time.time() < deadline:
         time.sleep(0.2)
@@ -450,15 +457,47 @@ with open(st / "calls.jsonl", "a") as f:
                         "project_settings": json.loads(proj.read_text()) if proj.is_file() else None}) + "\n")
 def save(): rows_f.write_text(json.dumps(rows))
 def opt(flags, name): return flags[flags.index(name) + 1] if name in flags else None
+def arm_of(display, var):
+    # The arm a knob names: VAR holds a JSON list (or an object's keys) of arm names, matched on the
+    # display name, which seam-probe gives as seam-probe-<arm>-<run>.
+    return next((k for k in json.loads(os.environ.get(var, "[]")) if "seam-probe-%s-" % k in (display or "")), None)
+# The record the running case writes its looks to (classify.py's JSONL, in the run's results
+# directory), named as the session-lifecycle cases name it; None outside a case run.
+CASE_RECORD = None
+if os.environ.get("SEAM_PROBE_RUN") and os.environ.get("SEAM_PROBE_CASE"):
+    CASE_RECORD = str(Path(os.environ["SEAM_PROBE_RUN"]).parent / ("session-%s%s-record.jsonl" % (
+        os.environ["SEAM_PROBE_CASE"], "-" + os.environ["SEAM_PROBE_PLANT"] if os.environ.get("SEAM_PROBE_PLANT") else "")))
+# Waiting on the case's record, shared by the session process and the supervisor below: until a
+# line of KIND (for ARM, when given) is in it, polled every 0.05 s. The bound is a hang guard only,
+# for a case that never writes the line; READY, when given, ends the wait early when it goes false.
+WAIT_FOR = r'''
+def wait_for(path, kinds, arm=None, bound=300.0, ready=None):
+    t_end = time.time() + bound
+    while path and time.time() < t_end and (ready is None or ready()):
+        try: lines = open(path).read().splitlines()
+        except OSError: lines = []
+        for x in lines:
+            try: o = json.loads(x)
+            except ValueError: continue
+            if o.get("kind") in kinds and (arm is None or o.get("arm") == arm): return True
+        time.sleep(0.05)
+    return False
+'''
 # FAKE_CLAUDE_SPAWN: each session gets a real process of its own, which the pid record names and
 # which a test can signal. On SIGTERM it ends and removes its record (FAKE_CLAUDE_TERM=ignore: it
-# does not, so only SIGKILL stops it). FAKE_CLAUDE_RESPAWN ({"terminal": seconds}, matched on the
-# display name) has a new process write the record again that many seconds after the stop, as a
-# crash-respawn would; FAKE_CLAUDE_GROW has the session's transcript gain a line then.
+# does not, so only SIGKILL stops it; FAKE_CLAUDE_TERM_LAG: its handler first sleeps that many
+# seconds, as a handler on a loaded machine is slow). FAKE_CLAUDE_RESPAWN (["terminal"], arm names)
+# has a new process write the record again, as a crash-respawn would; FAKE_CLAUDE_GROW has the
+# session's transcript gain a line. Each sign waits for the case's `stop` line for its arm, which the
+# case writes once its stop has finished and the transcript's base line count is taken, so the sign
+# always lands after that count, while the case watches: a sign on a timer raced the count, which
+# the case takes only after `session term` and its `claude rm` return.
 SESSION_PROC = r'''
 import json, os, signal, subprocess, sys, time
+''' + WAIT_FOR + r'''
 cfg = json.loads(sys.argv[1])
-time.sleep(cfg.get("after", 0))
+if cfg.get("after_stop") and not wait_for(cfg["case_record"], ("stop",), cfg["arm"]):
+    sys.exit(0)
 if cfg.get("grow_only"):
     open(cfg["transcript"], "a").write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "back"}]}}) + "\n")
     sys.exit(0)
@@ -469,12 +508,13 @@ def after(extra):
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 def term(*_):
     if cfg.get("ignore"): return
+    time.sleep(cfg.get("term_lag", 0))
     try: os.unlink(rec)
     except OSError: pass
-    if cfg.get("respawn") is not None:
-        after(dict(cfg, after=cfg["respawn"], respawn=None, grow=None))
-    if cfg.get("grow") is not None:
-        after({"after": cfg["grow"], "grow_only": True, "transcript": cfg["transcript"]})
+    if cfg.get("respawn"):
+        after(dict(cfg, after_stop=True, respawn=False, grow=False))
+    if cfg.get("grow"):
+        after({"after_stop": True, "grow_only": True, "transcript": cfg["transcript"], "case_record": cfg["case_record"], "arm": cfg["arm"]})
     sys.exit(0)
 signal.signal(signal.SIGTERM, term)
 while True: time.sleep(0.05)
@@ -489,8 +529,19 @@ while True: time.sleep(0.05)
 # Any other job is due past the run, so pends for good. FAKE_CLAUDE_STOP_AFTER overrides the stop,
 # in seconds from launch (null: never). The record goes at the stop; a turn is written only while
 # the record and the transcript are both there, so a session cleanup removed stays removed.
+#
+# A stop never comes before the case has looked once: when it falls due, the supervisor waits until
+# the case's record holds its first `round` (or its `end`, a run that never polls), then removes the
+# pid record. The real supervisor's idle is an hour against seconds of setup, so the case always
+# sees a session present before its stop; here the idle is seconds, and on a loaded machine the
+# launches before the first look outlasted it (the control was gone at the first look, so every arm
+# read INCONCLUSIVE). Waiting on the look, not a longer idle, ties the stop to the event it must
+# follow: it only ever moves a stop later, so a stop is still seen, and turns are untouched.
+# FAKE_CLAUDE_STOP_UNSEEN=1 restores the bare wall-clock stop, for the test of a control that is
+# gone at the first look.
 SUPERVISOR = r'''
 import json, os, sys, time
+''' + WAIT_FOR + r'''
 cfg = json.loads(sys.argv[1])
 t0, rec, tr, idle, inf = cfg["t0"], cfg["record"], cfg["transcript"], cfg["idle"], float("inf")
 events = sorted(cfg["events"], key=lambda e: e["at"])
@@ -516,6 +567,8 @@ while True:
         continue
     if s == inf: sys.exit(0)
     time.sleep(max(0.0, s - time.time()))
+    if not cfg["stop_unseen"]:
+        wait_for(cfg["case_record"], ("round", "end"), ready=lambda: os.path.exists(rec))
     if os.path.exists(rec): os.unlink(rec)
     sys.exit(0)
 '''
@@ -523,17 +576,18 @@ def spawn_session(sid, u, disp, transcript, plain=False):
     rec_dir = Path(os.environ["SEAM_PROBE_PID_RECORDS"]); rec_dir.mkdir(parents=True, exist_ok=True)
     rf = rec_dir / (sid + ".json")
     src = st / "session_proc.py"; src.write_text(SESSION_PROC)
-    def pick(var):
-        for key, d in json.loads(os.environ.get(var, "{}")).items():
-            if "seam-probe-%s-" % key in (disp or ""): return d
-        return None
+    arm = re.sub(r"^seam-probe-|-[^-]*$", "", disp or "")
     cfg = {"record": str(rf), "data": {"sessionId": u, "status": "idle", "name": disp}, "self": str(src),
            "ignore": os.environ.get("FAKE_CLAUDE_TERM") == "ignore", "transcript": str(transcript),
-           "respawn": None if plain else pick("FAKE_CLAUDE_RESPAWN"), "grow": None if plain else pick("FAKE_CLAUDE_GROW")}
+           "term_lag": float(os.environ.get("FAKE_CLAUDE_TERM_LAG", "0")), "case_record": CASE_RECORD, "arm": arm,
+           "respawn": not plain and arm_of(disp, "FAKE_CLAUDE_RESPAWN") is not None,
+           "grow": not plain and arm_of(disp, "FAKE_CLAUDE_GROW") is not None}
     subprocess.Popen([sys.executable, "-c", SESSION_PROC, json.dumps(cfg)], start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(100):
-        if rf.exists(): break
+    # The launch returns once the session's process has written its pid record, as a real launch
+    # returns a running session; the bound is a hang guard only.
+    t_end = time.time() + 120
+    while not rf.exists() and time.time() < t_end:
         time.sleep(0.02)
 if argv[:1] == ["--version"]:
     print("9.9.9 (Claude Code)"); sys.exit(0)
@@ -559,6 +613,11 @@ if argv[:1] == ["stop"]:
         save()
     print("stopping"); sys.exit(0)
 if argv[:1] == ["rm"]:
+    # FAKE_CLAUDE_RM_LAG ({"terminal": seconds}, matched on the display name): rm returns that much
+    # later, as it does on a loaded machine.
+    for r in rows:
+        if r["id"] == argv[1] and arm_of(r.get("name"), "FAKE_CLAUDE_RM_LAG"):
+            time.sleep(json.loads(os.environ["FAKE_CLAUDE_RM_LAG"])[arm_of(r.get("name"), "FAKE_CLAUDE_RM_LAG")])
     if os.environ.get("FAKE_CLAUDE_RM") == "refuse-once" and "--force-remove-worktree" not in argv:
         print("Not removed: the WorktreeRemove hook failed. To delete it anyway: claude rm %s --force-remove-worktree wt-0042" % argv[1])
         sys.exit(1)
@@ -758,7 +817,8 @@ if "--bg" in argv:
             cfg = {"t0": t_launch, "record": str(rf), "transcript": str(t / (u + ".jsonl")), "events": events,
                    "idle": float(os.environ.get("FAKE_CLAUDE_IDLE") or "inf"), "pending": bool(pending),
                    "stop_after": stop_after, "completion_hold": float(os.environ.get("FAKE_CLAUDE_COMPLETION_HOLD", "inf")),
-                   "fired_hold": float(os.environ.get("FAKE_CLAUDE_FIRED_HOLD", "0"))}
+                   "fired_hold": float(os.environ.get("FAKE_CLAUDE_FIRED_HOLD", "0")),
+                   "case_record": CASE_RECORD, "stop_unseen": bool(os.environ.get("FAKE_CLAUDE_STOP_UNSEEN"))}
             subprocess.Popen([sys.executable, "-c", SUPERVISOR, json.dumps(cfg)],
                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # FAKE_CLAUDE_LAUNCH_LAG ({"control": seconds, ...}, matched on the display name): the launch
@@ -797,7 +857,9 @@ esac
 
 # wt-bootstrap as the fixture's pre-start meets it: by lockfile, at the worktree's root or -C DIR. A
 # first install fills the package cache npm_config_cache names; it never falls back to a real cache.
+# FAKE_BOOTSTRAP_LAG: each call first sleeps that many seconds, as a hook on a loaded machine is slow.
 FAKE_BOOTSTRAP = """#!/bin/sh
+[ -z "${FAKE_BOOTSTRAP_LAG:-}" ] || sleep "$FAKE_BOOTSTRAP_LAG"
 dir=.
 [ "${1:-}" = -C ] && dir=$2
 [ -f "$dir/package-lock.json" ] || exit 0
@@ -1128,7 +1190,7 @@ def test_interrupt_stops_and_removes_sessions(fake):
     body = LAUNCH + '"$sp" session launch s1 --regime real --cwd "$repo" -- go\ntouch "$SEAM_PROBE_SUITE_DIR/ready"\nsleep 60\n"$sp" verdict PASS late\n'
     d = make_suite(fake, {"c": (body, '"real"')})
     p = subprocess.Popen([str(TOOL), "run", "s", "--yes"], env=fake["env"], stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True)
+                         stderr=subprocess.PIPE, text=True, preexec_fn=default_sigint)
     deadline = time.time() + 60
     while not (d / "ready").exists() and time.time() < deadline:
         time.sleep(0.2)
@@ -1641,9 +1703,18 @@ def test_exempt_remove_skips_without_trust(fake):
 # ---- bootstrap-timeout, end to end against the fakes -------------------------------------------
 
 BTM = "seams/worktree-takeover/btm"
+# The fake runs each WorktreeCreate hook under the timeout the plugin declares, as Claude Code does,
+# and kills it there (the fake claude's subagent()). The install-past-timeout plant has to be
+# killed by that clock, so a run of it lasts the whole timeout: no event can stand in for a timeout
+# that must expire. An unplanted hook is the fixture's pre-start and the fake wt-bootstrap, a few
+# short commands with no install and no network, so its outcome cannot depend on its duration as
+# long as it finishes inside the timeout. That is the one margin here: 10 s, against a 2 s timeout
+# a loaded machine could outlast. It costs 8 s, once, in the red of the plant; the test with
+# FAKE_BOOTSTRAP_LAG below holds every unplanted hook back 3 s and must still pass.
+BTM_TIMEOUT = 10
 
 
-def btm(fake, timeout=2):
+def btm(fake, timeout=BTM_TIMEOUT):
     shipped(fake)
     trust(fake, fake["sandbox"] / BTM)
     install_plugin(fake, create_hook(timeout))
@@ -1656,7 +1727,7 @@ def test_bootstrap_timeout_case(fake):
     assert r.returncode == 4 and r.stdout.count("NOT-SEEN-RED") == 2, r.stdout + r.stderr
     s = summary(fake)
     # The timeout is the one the plugin declares, read from its file, and recorded in each reason.
-    assert s.count("the 2s timeout (declared, plugin abc123, cache/worktrunk/worktrunk/abc123/hooks/hooks.json)") == 2, s
+    assert s.count(f"the {BTM_TIMEOUT}s timeout (declared, plugin abc123, cache/worktrunk/worktrunk/abc123/hooks/hooks.json)") == 2, s
     assert str(fake["cfg"]) not in s
     assert "cache entries at the start: 0" in s and "cache entries at the start: 1" in s
     (launch,) = [c for c in calls(fake) if "--bg" in c["argv"]]
@@ -1665,7 +1736,7 @@ def test_bootstrap_timeout_case(fake):
     r = tool(fake, "red", "worktree-takeover", "bootstrap-timeout", "--yes")
     assert r.returncode == 0, r.stdout + r.stderr
     # install-past-timeout is read on the cold arm alone; control-fails on both.
-    assert r.stdout.count(" RED ") == 3 and "timed out after 2s" in r.stdout, r.stdout
+    assert r.stdout.count(" RED ") == 3 and f"timed out after {BTM_TIMEOUT}s" in r.stdout, r.stdout
     assert tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes").returncode == 0
     assert rows(fake) == [] and not (fake["sandbox"] / BTM).exists()
 
@@ -1678,6 +1749,14 @@ def test_bootstrap_timeout_readings(fake, extra, code, needle):
     btm(fake)
     r = tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes", extra_env=extra)
     assert r.returncode == code and needle in summary(fake), r.stdout
+
+
+def test_bootstrap_timeout_a_slow_unplanted_hook_still_passes(fake):
+    # Every unplanted hook held back 3 s, as on a loaded machine: each still finishes inside the
+    # timeout, so the control and both arms pass (red against the 2 s timeout this suite once declared).
+    btm(fake)
+    r = tool(fake, "run", "worktree-takeover", "bootstrap-timeout", "--yes", extra_env={"FAKE_BOOTSTRAP_LAG": "3"})
+    assert r.returncode == 4 and r.stdout.count("NOT-SEEN-RED") == 2 and "timed out" not in summary(fake), r.stdout
 
 
 def test_bootstrap_timeout_skips_without_the_plugin_or_its_grants(fake):
@@ -1710,6 +1789,9 @@ def test_red_of_a_heavy_case_waits_for_the_slot(env, tmp_path):
 
 SLEEPER = "import time\nwhile True: time.sleep(0.05)"
 DEAF = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nprint('ready', flush=True)\nwhile True: time.sleep(0.05)"
+# A session whose SIGTERM handler takes 1 s before it exits, as a handler can on a loaded machine.
+SLOW = ("import signal, sys, time\ndef h(*_):\n    time.sleep(1)\n    sys.exit(0)\nsignal.signal(signal.SIGTERM, h)\n"
+        "print('ready', flush=True)\nwhile True: time.sleep(0.05)")
 
 
 PROCS = []
@@ -1733,7 +1815,11 @@ def term_env(fake, tmp_path, code, session=True):
         assert pr.stdout.readline().strip() == "ready"
     e = process_env(fake, tmp_path, {"1.json": {"pid": pr.pid, "sessionId": UUID_A, "status": "idle"}} if session else {}, EMPTY_ROSTER)
     fake["env"].update(e)
-    fake["env"]["SEAM_PROBE_TERM_WAIT"] = "0.6"
+    # TERM_WAIT bounds each of `session term`'s two waits, for the process to end after SIGTERM and
+    # again after SIGKILL. Each wait ends as soon as the process is gone, so 30 s costs nothing when
+    # it ends at once: a bound on failure, not a race. 0.6 s was one, lost to a slow handler (SLOW).
+    # A process that ignores SIGTERM always runs the first wait out, so its test sets a shorter one.
+    fake["env"]["SEAM_PROBE_TERM_WAIT"] = "30"
     return pr
 
 
@@ -1755,8 +1841,17 @@ def test_session_term_sigterm_is_enough_then_rm_runs(fake, tmp_path):
     assert len(t) == 1 and t[0]["pid"] == pr.pid and t[0]["killed"] is False and t[0]["rm_rc"] == 0
 
 
+def test_session_term_a_slow_handler_is_still_ended_by_sigterm(fake, tmp_path):
+    pr = term_env(fake, tmp_path, SLOW)
+    r = term(fake)
+    assert pr.wait(timeout=5) == 0
+    assert r.returncode == 0 and "SIGTERM was enough" in r.stdout, r.stdout + r.stderr
+    assert ledger_kinds(fake, "session-term")[0]["killed"] is False
+
+
 def test_session_term_a_process_that_ignores_term_gets_kill(fake, tmp_path):
     pr = term_env(fake, tmp_path, DEAF)
+    fake["env"]["SEAM_PROBE_TERM_WAIT"] = "3"   # run out in full: SIGTERM is ignored; the wait after SIGKILL ends at once
     r = term(fake)
     pr.wait(timeout=5)
     assert r.returncode == 0 and "SIGKILL was needed" in r.stdout, r.stdout + r.stderr
@@ -1774,6 +1869,7 @@ def test_session_term_without_a_live_pid_record_is_inconclusive_and_removes_noth
 
 def test_session_term_a_process_that_survives_kill_is_inconclusive(fake, tmp_path, monkeypatch, capsys):
     e = process_env(fake, tmp_path, {"1.json": {"pid": LIVE, "sessionId": UUID_A, "status": "idle"}}, EMPTY_ROSTER)
+    # No signal reaches the process, so both waits always run out: the shortest costs least.
     for k, v in {**fake["env"], **e, "SEAM_PROBE_TERM_WAIT": "0.2"}.items():
         monkeypatch.setenv(k, v)
     sent = []
@@ -1883,27 +1979,46 @@ def test_manual_called_directly_on_a_terminal_reads_the_enter(env, tmp_path):
     assert json.loads(ledger.read_text())["text"] == "open it"
 
 # ---- the session-lifecycle cases, end to end against the fakes -----------------------------------
-# The cases write a record and decide nothing; classify.py judges every verdict from it, and its
-# branches are tested with no clock in test-seam-probe-classify.py. What is tested here is the
-# plumbing: that a run launches, reads holders and polls, that its record holds what it saw, and that
-# each declared plant comes out as declared. A test here asserts only what load cannot move:
+# The cases write a record and decide nothing; classify.py judges every verdict from it, and each of
+# its branches is tested with no clock in test-seam-probe-classify.py. What is tested here is the
+# plumbing: that a run launches, reads holders and polls, that its record holds what it saw, that the
+# run's verdicts are classify.py's own judgment of that record (agree, below), and that each
+# declared plant comes out as declared. No outcome asserted here may be one machine load can change,
+# so each is one of:
 #   - a verdict decided before polling (a holder, a first turn, the trust check), which no clock
-#     reaches; or
-#   - an outcome whose timeline has margins load cannot close. The fake supervisor stops an idle
-#     session FAKE_CLAUDE_IDLE (20 s) after its last turn, the same for every arm, so load moves
-#     the control and the arm it is compared with together. The setup before the first poll was
-#     measured at 1.8 s at a load of 16 (2026-11-21), so 20 s leaves an 11-fold slowdown. The 10 s
-#     tolerance and 20 s margin are several loaded poll rounds wide.
-# Two of today's applies were refused by tests that compressed the case's minutes into a 2 s stop
-# against a 4 s tolerance (2026-11-22); that shape is what the classifier tests replace.
+#     reaches;
+#   - a coarse verdict tied to an event: a session held for good is present until the run decides
+#     it, and a session the fake supervisor stops is stopped only after the case's first look (the
+#     stop waits for the record's first `round`; SUPERVISOR, in the fake claude). So the control is
+#     always seen present and then stopped, however long the launches before the first look took;
+#   - the record's plumbing: header, config, launches and prompts, rounds, codewords.
+# Fine verdicts are not asserted here. Whether shell and turn stop within the tolerance of the
+# control's idle duration depends on how far apart the launches were, which load moves: once the
+# first look comes after every arm's idle has run out, every arm stops at that look, and an arm
+# launched later reads "sooner" than the control. The classifier tests hold a row for each such
+# reason. The setup before the first look was measured at 1.8 s at a load of 16 on a Linux
+# workstation (2026-11-21), and at over 24 s for five launches on a Mac running every suite 8 wide
+# (2026-11-22); waiting on the look makes that duration irrelevant to every stop.
+#
+# A run polls until every watched arm is decided, so a test that decides early takes a cap of 600 s,
+# a hang guard that costs nothing when the run passes. A test whose outcome is read at the cap (a
+# session present at the cap; a control that never stops) cannot wait on an event, because the cap
+# is the outcome. A never-stopping control needs only the one round every run writes before its cap
+# check, so its cap is free. A session present at the cap needs the control seen stopped before it,
+# which takes the setup and two rounds: those tests idle the control 5 s and cap the run at 90 s,
+# several times the worst setup measured, and a margin that cannot be replaced by an event.
 #
 # The fake models the supervisor as measured (SUPERVISOR, in the fake claude): a session's pid record
-# goes FAKE_CLAUDE_IDLE seconds after its last turn ended; a running background command holds
-# nothing; a delivered completion and a pending job hold it; a job that fires is a turn and holds
-# nothing after. The release command is shortened to `sleep 1` in a copy of the shipped suite.
+# goes FAKE_CLAUDE_IDLE seconds after its last turn ended, and not before the case's first look; a
+# running background command holds nothing; a delivered completion and a pending job hold it; a job
+# that fires is a turn and holds nothing after. The release command is shortened to `sleep 1` in a
+# copy of the shipped suite.
 
 IDL = "seams/session-lifecycle/idl"
 CPH = "seams/session-lifecycle/cph"
+CLASSIFY = SHIPPED / "session-lifecycle" / "classify.py"
+EARLY_CAP = 600   # a hang guard for a run that decides early: it ends once every arm is decided
+AT_CAP = 90       # a run whose outcome is read at the cap: see above
 
 
 def only_plant(toml, case, plant):
@@ -1920,7 +2035,7 @@ def only_plant(toml, case, plant):
     assert f'id = "{plant}"' in toml.read_text()
 
 
-def idle(fake, tmp_path, stop_after=None, idle_s=20, release_s=1, cap=90, records=None, tolerance=10, margin=20,
+def idle(fake, tmp_path, stop_after=None, idle_s=20, release_s=1, cap=EARLY_CAP, records=None, tolerance=10, margin=20,
          plant=None, case="idle-holders"):
     suites = tmp_path / "idle-suites"
     shutil.copytree(SHIPPED / "session-lifecycle", suites / "session-lifecycle")
@@ -1947,7 +2062,8 @@ def idle(fake, tmp_path, stop_after=None, idle_s=20, release_s=1, cap=90, record
 
 def idle_run(fake, verb="run", extra_env=None, case="idle-holders"):
     args = ["run", "session-lifecycle", case] if verb == "run" else ["red", "session-lifecycle", case]
-    return tool(fake, *args, "--yes", extra_env=extra_env)
+    # The run's own cap ends it; this bound is a hang guard past the largest cap here.
+    return tool(fake, *args, "--yes", extra_env=extra_env, timeout=EARLY_CAP + 300)
 
 
 def idle_arms(fake, plant=None, case=None):
@@ -1960,43 +2076,76 @@ def idle_arms(fake, plant=None, case=None):
     raise AssertionError("no record for plant " + str(plant))
 
 
+def record_name(case, plant=None):
+    return f"session-{case}{'-' + plant if plant else ''}-record.jsonl"
+
+
 def case_record(run_dir, name):
     """The case's own record (classify.py's JSONL), as a list of its lines."""
     return [json.loads(x) for x in (run_dir / name).read_text().splitlines()]
+
+
+def agree(arms, run_dir, name):
+    """The run's verdicts are classify.py's judgment of the run's own record, word for word (a
+    reason as the run shows it may go on with seam-probe's note that no red is recorded)."""
+    p = subprocess.run([sys.executable, str(CLASSIFY), "verdicts", str(run_dir / name)],
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    judged = {a: (v, r) for a, v, r in (x.split("\t", 2) for x in p.stdout.splitlines())}
+    assert judged.keys() == arms.keys(), (judged, arms)
+    for a, (v, r) in judged.items():
+        assert arms[a][0] == v and arms[a][1].startswith(r), (a, judged[a], arms[a])
 
 
 def verdicts_of(arms):
     return {k: v[0] for k, v in arms.items()}
 
 
-ALL_PASS = {"control": "PASS", "shell": "PASS", "turn": "PASS", "schedule": "PASS", "release": "PASS"}
+def rounds_of(rec):
+    return [x for x in rec if x["kind"] == "round"]
+
+
+def seen_stopped(rounds, arm):
+    """The arm was read running in some round and stopped in a later one: a stop the run saw happen."""
+    states = [x["arms"].get(arm) for x in rounds]
+    return "running" in states and "stopped" in states[states.index("running"):]
+
+
+IDLE_ARMS = ["control", "shell", "turn", "schedule", "release"]
 
 
 def test_idle_holders_pass_path(fake, tmp_path):
     idle(fake, tmp_path)
     r = idle_run(fake)
     arms, run_dir = idle_arms(fake)
-    assert verdicts_of(arms) == ALL_PASS, r.stdout + str(arms)
-    assert r.returncode == 4   # every PASS, none seen red yet
+    v = verdicts_of(arms)
+    # The control is seen present and then stopped; schedule (a pending job) and release (a
+    # delivered completion) are held for good, so each is seen present the margin past what it is
+    # compared with before the run ends. Shell and turn are stopped, so neither can FAIL; whether
+    # they stop within the tolerance of the control depends on the launches' spacing, so their PASS
+    # is the classifier tests' (the pass path and the idle_like rows), not asserted here.
+    assert (v["control"], v["schedule"], v["release"]) == ("PASS", "PASS", "PASS"), r.stdout + str(arms)
+    assert v["shell"] in ("PASS", "INCONCLUSIVE") and v["turn"] in ("PASS", "INCONCLUSIVE"), arms
+    assert r.returncode == 4   # a PASS never seen red reads NOT-SEEN-RED (4), which outranks INCONCLUSIVE (3)
     assert "the idle stop was observed" in arms["control"][1]
-    assert "within the 0.2 min tolerance" in arms["shell"][1] and "after its first turn ended" in arms["shell"][1]
-    assert "after its job's turn ended" in arms["turn"][1]
     assert "after its completion turn ended" in arms["release"][1] and "read from its transcript" in arms["release"][1]
     # The record holds what the run saw: its header, a line per round, and its end.
-    rec = case_record(run_dir, "session-idle-holders-record.jsonl")
-    head, rounds, end = rec[0], [x for x in rec if x["kind"] == "round"], rec[-1]
-    assert head["kind"] == "header" and head["case"] == "idle-holders" and head["watch"] == list(ALL_PASS)
-    assert all(head["arms"][a]["turn_end"] for a in ALL_PASS) and end["kind"] == "end"
-    assert head["config"] == {"record": "session-idle-holders-record.jsonl", "tolerance": "10", "margin": "20", "cap": "90",
-                              "turn_due": head["config"]["turn_due"]}
-    assert any(x["arms"].get("control") == "stopped" for x in rounds) and rounds[0]["arms"]["shell"] == "running"
+    rec = case_record(run_dir, record_name("idle-holders"))
+    head, rounds, end = rec[0], rounds_of(rec), rec[-1]
+    assert head["kind"] == "header" and head["case"] == "idle-holders" and head["watch"] == IDLE_ARMS
+    assert all(head["arms"][a]["turn_end"] for a in IDLE_ARMS) and end["kind"] == "end"
+    assert head["config"] == {"record": record_name("idle-holders"), "tolerance": "10", "margin": "20",
+                              "cap": str(EARLY_CAP), "turn_due": head["config"]["turn_due"]}
+    assert all(seen_stopped(rounds, a) for a in ("control", "shell", "turn")), rounds
+    assert all(x["arms"]["schedule"] == "running" and x["arms"]["release"] == "running" for x in rounds)
     assert rounds[0]["status"].get("shell") == "idle"
     assert [x["words"]["turn"]["word"] for x in rounds if "turn" in x["words"]] == ["FIRED"]
     assert [x["words"]["release"]["word"] for x in rounds if "release" in x["words"]] == ["RELEASED"]
+    agree(arms, run_dir, record_name("idle-holders"))
     # One launch per arm, each with its own prompt.
     launches = [c["argv"] for c in calls(fake) if "--bg" in c["argv"]]
     prompts = {a[a.index("-n") + 1].split("-")[2]: a[-1] for a in launches}
-    assert set(prompts) == set(ALL_PASS)
+    assert set(prompts) == set(IDLE_ARMS)
     assert "run_in_background" in prompts["shell"] and "1. sleep 9000" in prompts["shell"] and "CronCreate" not in prompts["shell"]
     assert "1. sleep 1" in prompts["release"] and "reply with the single word RELEASED" in prompts["release"]
     for a in ("schedule", "turn"):
@@ -2006,10 +2155,10 @@ def test_idle_holders_pass_path(fake, tmp_path):
 
 
 @pytest.mark.parametrize("plant,arm,reads,cap", [
-    ("shell-held", "shell", 1, 90),
-    ("schedule-dropped", "schedule", 1, 90),
-    ("completion-withheld", "release", 1, 90),
-    ("control-held", None, 5, 30),   # the control never stops, so every arm reads VOID at the cap
+    ("shell-held", "shell", 1, EARLY_CAP),
+    ("schedule-dropped", "schedule", 1, EARLY_CAP),
+    ("completion-withheld", "release", 1, EARLY_CAP),
+    ("control-held", None, 5, 30),   # the control never stops: one round, then every arm VOID at the cap
 ])
 def test_idle_holders_red_of_each_plant(fake, tmp_path, plant, arm, reads, cap):
     idle(fake, tmp_path, cap=cap, plant=plant)
@@ -2020,7 +2169,7 @@ def test_idle_holders_red_of_each_plant(fake, tmp_path, plant, arm, reads, cap):
         assert arms[arm][0] == "FAIL", arms
     else:
         assert set(verdicts_of(arms).values()) == {"VOID"} and "never stopped" in arms["control"][1], arms
-    assert (run_dir / f"session-idle-holders-{plant}-record.jsonl").is_file()
+    agree(arms, run_dir, record_name("idle-holders", plant))
 
 
 def test_idle_holders_control_that_never_stops_voids_every_arm(fake, tmp_path):
@@ -2032,51 +2181,71 @@ def test_idle_holders_control_that_never_stops_voids_every_arm(fake, tmp_path):
 
 
 def test_idle_holders_a_control_gone_at_the_first_look_is_not_timed(fake, tmp_path):
-    # The last launch outlasts the control's idle, so the first round finds it already gone: slower
-    # launches only make that more so.
+    # The last launch outlasts the control's idle, and the supervisor stops it on the wall clock
+    # alone (FAKE_CLAUDE_STOP_UNSEEN), so the first round finds it already gone: slower launches
+    # only make that more so.
     idle(fake, tmp_path, idle_s=3, cap=20)
-    r = idle_run(fake, extra_env={"FAKE_CLAUDE_LAUNCH_LAG": json.dumps({"release": 8})})
+    r = idle_run(fake, extra_env={"FAKE_CLAUDE_LAUNCH_LAG": json.dumps({"release": 8}), "FAKE_CLAUDE_STOP_UNSEEN": "1"})
     arms, _ = idle_arms(fake)
     assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "already gone at the first look" in arms["shell"][1], arms
     assert r.returncode == 3
 
 
-# The holder tests: each assertion is on a verdict decided from the transcripts before polling.
+def test_idle_holders_a_control_whose_idle_ends_before_the_first_look_is_still_seen_to_stop(fake, tmp_path):
+    # The test above with the supervisor every other test here runs: the stop waits for the case's
+    # first look, so the control is seen present and then stopped however long the launches took.
+    # Without that wait this is the test above (red: every arm INCONCLUSIVE).
+    idle(fake, tmp_path, idle_s=3, margin=4, tolerance=2)
+    idle_run(fake, extra_env={"FAKE_CLAUDE_LAUNCH_LAG": json.dumps({"release": 8})})
+    arms, run_dir = idle_arms(fake)
+    assert arms["control"][0] == "PASS" and "the idle stop was observed" in arms["control"][1], arms
+    rounds = rounds_of(case_record(run_dir, record_name("idle-holders")))
+    assert rounds[0]["arms"]["control"] == "running" and seen_stopped(rounds, "control"), rounds
+    agree(arms, run_dir, record_name("idle-holders"))
+
+
+# The holder tests: each asserts a verdict decided from the transcripts before polling, which the
+# judge gives only when the control was measured, as it always is now that a stop waits for the
+# first look.
 
 @pytest.mark.parametrize("knob", ["FAKE_CLAUDE_CRON_RECURRING", "FAKE_CLAUDE_CRON_WRONG"])
 def test_idle_holders_a_job_that_is_not_the_one_shot_asked_for_is_unmeasured(fake, tmp_path, knob):
     # A recurring job fires and so starts turns; a job for another time may fire inside the run.
     # Either way the arm would measure something else, so it is INCONCLUSIVE, never PASS.
-    idle(fake, tmp_path, cap=30)
+    idle(fake, tmp_path)
     idle_run(fake, extra_env={knob: "1"})
     arms, run_dir = idle_arms(fake)
     for a in ("schedule", "turn"):
         assert arms[a][0] == "INCONCLUSIVE" and "not an ok one-shot job" in arms[a][1], arms[a]
-    head = case_record(run_dir, "session-idle-holders-record.jsonl")[0]
+    head = case_record(run_dir, record_name("idle-holders"))[0]
     assert head["watch"] == ["control", "shell", "release"] and head["arms"]["turn"]["pre"]["verdict"] == "INCONCLUSIVE"
+    agree(arms, run_dir, record_name("idle-holders"))
 
 
 def test_idle_holders_schedule_tool_unavailable_is_skipped(fake, tmp_path):
-    idle(fake, tmp_path, cap=30)
+    idle(fake, tmp_path)
     idle_run(fake, extra_env={"FAKE_CLAUDE_NOCRON": "1"})
-    arms, _ = idle_arms(fake)
+    arms, run_dir = idle_arms(fake)
     assert arms["schedule"][0] == "SKIPPED" and arms["turn"][0] == "SKIPPED", arms
     assert "no CronCreate tool was available" in arms["schedule"][1]
+    agree(arms, run_dir, record_name("idle-holders"))
 
 
 def test_idle_holders_a_holder_never_made_is_inconclusive_not_failed(fake, tmp_path):
-    idle(fake, tmp_path, cap=30)
+    idle(fake, tmp_path)
     idle_run(fake, extra_env={"FAKE_CLAUDE_SKIP": "sleep 9000"})
-    arms, _ = idle_arms(fake)
+    arms, run_dir = idle_arms(fake)
     assert arms["shell"][0] == "INCONCLUSIVE" and 'never ran "sleep 9000"' in arms["shell"][1], arms
+    agree(arms, run_dir, record_name("idle-holders"))
 
 
 def test_idle_holders_a_command_not_run_in_the_background_is_inconclusive(fake, tmp_path):
-    idle(fake, tmp_path, cap=30)
+    idle(fake, tmp_path)
     idle_run(fake, extra_env={"FAKE_CLAUDE_FOREGROUND": "1"})
-    arms, _ = idle_arms(fake)
+    arms, run_dir = idle_arms(fake)
     assert arms["shell"][0] == "INCONCLUSIVE" and "not an ok background call" in arms["shell"][1], arms
     assert arms["release"][0] == "INCONCLUSIVE"
+    agree(arms, run_dir, record_name("idle-holders"))
 
 
 def test_idle_holders_a_control_that_used_a_tool_voids_every_arm(fake, tmp_path):
@@ -2085,7 +2254,7 @@ def test_idle_holders_a_control_that_used_a_tool_voids_every_arm(fake, tmp_path)
     arms, run_dir = idle_arms(fake)
     assert set(verdicts_of(arms).values()) == {"VOID"} and "the control made tool calls" in arms["shell"][1], arms
     # Judged from a record with no rounds: the control's verdict, given before any poll.
-    rec = case_record(run_dir, "session-idle-holders-record.jsonl")
+    rec = case_record(run_dir, record_name("idle-holders"))
     assert [x["kind"] for x in rec] == ["header", "end"] and rec[0]["arms"]["control"]["pre"]["verdict"] == "VOID"
 
 
@@ -2101,7 +2270,7 @@ def test_idle_holders_a_state_never_readable_leaves_every_arm_inconclusive(fake,
     idle_run(fake, extra_env={"FAKE_CLAUDE_NORECORD": "1"})
     arms, run_dir = idle_arms(fake)
     assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "could not be read at any poll" in arms["control"][1], arms
-    rounds = [x for x in case_record(run_dir, "session-idle-holders-record.jsonl") if x["kind"] == "round"]
+    rounds = rounds_of(case_record(run_dir, record_name("idle-holders")))
     assert rounds and all(x["arms"]["control"] == "unreadable" and x["notes"].get("control") for x in rounds)
 
 
@@ -2132,15 +2301,16 @@ def cph_run(fake, verb="run", extra_env=None):
 
 
 def test_completion_hold_a_session_stopped_after_its_completion_passes(fake, tmp_path):
-    idle(fake, tmp_path, cap=90)
+    idle(fake, tmp_path)
     r = cph_run(fake, extra_env={"FAKE_CLAUDE_COMPLETION_HOLD": "3"})
     arms, run_dir = idle_arms(fake, case="completion-hold")
     assert verdicts_of(arms) == {"control": "PASS", "release": "PASS"}, r.stdout + str(arms)
     assert "after its completion turn ended" in arms["release"][1] and "read from its transcript" in arms["release"][1]
     assert r.returncode == 4
-    rec = case_record(run_dir, "session-completion-hold-record.jsonl")
-    assert rec[0]["case"] == "completion-hold" and rec[0]["config"]["cap"] == "90"
+    rec = case_record(run_dir, record_name("completion-hold"))
+    assert rec[0]["case"] == "completion-hold" and rec[0]["config"]["cap"] == str(EARLY_CAP)
     assert any(x.get("words", {}).get("release") for x in rec) and rec[-2]["arms"]["release"] == "stopped"
+    agree(arms, run_dir, record_name("completion-hold"))
     launches = [c["argv"] for c in calls(fake) if "--bg" in c["argv"]]
     prompts = {a[a.index("-n") + 1].split("-")[2]: a[-1] for a in launches}
     assert set(prompts) == {"control", "release"} and "reply with the single word RELEASED" in prompts["release"]
@@ -2148,23 +2318,27 @@ def test_completion_hold_a_session_stopped_after_its_completion_passes(fake, tmp
 
 
 def test_completion_hold_a_session_present_at_the_cap_fails(fake, tmp_path):
-    idle(fake, tmp_path, cap=45)
+    # Read at the cap by design, so the control idles 5 s and the cap leaves room for the setup.
+    idle(fake, tmp_path, idle_s=5, cap=AT_CAP)
     r = cph_run(fake)
-    arms, _ = idle_arms(fake, case="completion-hold")
+    arms, run_dir = idle_arms(fake, case="completion-hold")
     assert verdicts_of(arms) == {"control": "PASS", "release": "FAIL"}, arms
     assert "still present at the end of the" in arms["release"][1] and r.returncode == 1
+    agree(arms, run_dir, record_name("completion-hold"))
 
 
-@pytest.mark.parametrize("plant,cap", [("held-past-cap", 45), ("control-held", 30)])
+@pytest.mark.parametrize("plant,cap", [("held-past-cap", AT_CAP), ("control-held", 30)])
 def test_completion_hold_red_of_each_plant(fake, tmp_path, plant, cap):
-    idle(fake, tmp_path, cap=cap, plant=plant, case="completion-hold")
+    # held-past-cap is read at the cap, as the test above; control-held needs only the one round.
+    idle(fake, tmp_path, idle_s=5, cap=cap, plant=plant, case="completion-hold")
     r = cph_run(fake, "red", extra_env={"FAKE_CLAUDE_COMPLETION_HOLD": "3"})
     assert r.returncode == 0 and r.stdout.count(" RED ") == (1 if plant == "held-past-cap" else 2), r.stdout
-    arms, _ = idle_arms(fake, plant, case="completion-hold")
+    arms, run_dir = idle_arms(fake, plant, case="completion-hold")
     if plant == "held-past-cap":
         assert arms["release"][0] == "FAIL", arms
     else:
         assert set(verdicts_of(arms).values()) == {"VOID"}, arms
+    agree(arms, run_dir, record_name("completion-hold", plant))
 
 
 def test_completion_hold_control_that_never_stops_voids_every_arm(fake, tmp_path):
@@ -2183,10 +2357,21 @@ def test_completion_hold_skips_without_trust(fake, tmp_path):
 
 # ---- attached-stop, end to end against the fakes -----------------------------------------------
 # Each session is a real process the fake's pid record names (FAKE_CLAUDE_SPAWN), so `session term`
-# really signals it. A planted sign of return comes 0.3 s after the stop (3 s for a transcript's
-# growth, below). The watch is 8 s, read
-# every 0.5 s: a 0.6 s watch missed a sign once under a full 8-wide suite run (2026-11-22 01:40),
-# because one loaded poll outlasted the whole watch; 8 s leaves several loaded polls after the sign.
+# really signals it, and a launch or resume returns only once that process has written its pid
+# record. A planted sign of return (FAKE_CLAUDE_RESPAWN's process, FAKE_CLAUDE_GROW's new transcript
+# line) waits for the case's `stop` line for its arm, which the case writes after the stop and the
+# transcript's base count, so the sign always lands after that count, while the watch runs; a sign
+# on a timer raced the count (SESSION_PROC, in the fake claude). The respawn plant's resume runs
+# before that line, and its process is up when the resume returns. The one margin left is between
+# the line and the end of the watch: the sign's process notices the line within a 0.05 s poll, and
+# the watch is 8 s, read every 0.5 s, its loop reading at least once before it checks the time. No
+# event can end the watch, because the watch is what looks for a return that may never come. (A
+# 0.6 s watch once missed a sign under a full 8-wide suite run, one loaded poll outlasting it.)
+# `session term`'s SEAM_PROBE_TERM_WAIT bounds its wait for the process to end after SIGTERM, and
+# again after SIGKILL; each wait ends as soon as the process is gone, so 30 s costs nothing when the
+# process ends at once, and is a bound on failure, not a race (0.5 s was outlasted by the fake's
+# SIGTERM handler under load, so SIGKILL landed before it could plant its sign). Only a session
+# that ignores SIGTERM always runs its first wait out, so that test sets 3 s.
 # `manual` records its instruction and goes on (SEAM_PROBE_MANUAL_AUTO), where a person would attach
 # a client and press Enter. The verdict branches are classify.py's, tested with no clock; these
 # tests check that each sign is read into the record and each plant comes out as declared.
@@ -2206,7 +2391,7 @@ def ats(fake, tmp_path, watch="8", roster=True, plant=None, **env):
         roster_f.write_text(json.dumps({"workers": {}}))
     fake["env"].update({"SEAM_PROBE_SUITES": str(suites), "SEAM_PROBE_PID_RECORDS": str(recs), "SEAM_PROBE_DAEMON_ROSTER": str(roster_f),
                         "FAKE_CLAUDE_SPAWN": "1", "SEAM_PROBE_MANUAL_AUTO": "1", "SEAM_PROBE_RESPAWN_WATCH": watch,
-                        "SEAM_PROBE_POLL": "0.5", "SEAM_PROBE_TERM_WAIT": "0.5", **env})
+                        "SEAM_PROBE_POLL": "0.5", "SEAM_PROBE_TERM_WAIT": "30", **env})
     trust(fake, fake["sandbox"] / ATS)
 
 
@@ -2245,7 +2430,7 @@ def test_attached_stop_pass_path(fake, tmp_path):
     stops = [x for x in rec if x["kind"] == "stop"]
     assert [x["arm"] for x in stops] == ["control", "terminal", "agentview"] and all(x["term_rc"] == 0 and x["base"] for x in stops)
     watches = [x for x in rec if x["kind"] == "watch" and x["arm"] == "control"]
-    assert len(watches) >= 2 and all(x["process"] == "absent" and x["listed"] == "no" and isinstance(x["transcript"], int) for x in watches)
+    assert len(watches) >= 1 and all(x["process"] == "absent" and x["listed"] == "no" and isinstance(x["transcript"], int) for x in watches)
 
 
 @pytest.mark.parametrize("plant", ["respawn", "control-respawn"])
@@ -2269,11 +2454,11 @@ def test_attached_stop_red_of_each_plant(fake, tmp_path, plant):
 
 
 @pytest.mark.parametrize("knob,sign,field", [
-    ({"FAKE_CLAUDE_RESPAWN": '{"terminal": 0.3}'}, "a process for its session uuid", "process"),
-    # The transcript's growth is a sign only past the line count the case takes once `session term`
-    # returns, which includes `claude rm`; a line added 0.3 s after SIGTERM can land before that
-    # count on a loaded machine and never read as growth. 3 s is past it, inside the 8 s watch.
-    ({"FAKE_CLAUDE_GROW": '{"terminal": 3}'}, "new lines in its transcript", "transcript"),
+    # Each sign with the load that once lost it planted: a SIGTERM handler slowed 1 s, against what
+    # was a 0.5 s TERM_WAIT, and a `claude rm` slowed 4 s, against what was a line added 3 s after
+    # SIGTERM, before the case's base count.
+    ({"FAKE_CLAUDE_RESPAWN": '["terminal"]', "FAKE_CLAUDE_TERM_LAG": "1"}, "a process for its session uuid", "process"),
+    ({"FAKE_CLAUDE_GROW": '["terminal"]', "FAKE_CLAUDE_RM_LAG": '{"terminal": 4}'}, "new lines in its transcript", "transcript"),
     ({"FAKE_CLAUDE_RM_KEEP": '["terminal"]'}, "a listed row for its id or uuid", "listed"),
 ], ids=["process", "transcript", "listing"])
 def test_attached_stop_each_sign_of_return_is_read_into_the_record(fake, tmp_path, knob, sign, field):
@@ -2289,7 +2474,7 @@ def test_attached_stop_each_sign_of_return_is_read_into_the_record(fake, tmp_pat
 
 
 def test_attached_stop_a_session_that_needs_kill_is_still_stopped_and_read(fake, tmp_path):
-    ats(fake, tmp_path, FAKE_CLAUDE_TERM="ignore")
+    ats(fake, tmp_path, FAKE_CLAUDE_TERM="ignore", SEAM_PROBE_TERM_WAIT="3")
     ats_run(fake)
     arms, run_dir = idle_arms(fake)
     stops = [x for x in case_record(run_dir, "session-attached-stop-record.jsonl") if x["kind"] == "stop"]
