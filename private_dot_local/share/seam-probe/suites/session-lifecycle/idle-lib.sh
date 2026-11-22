@@ -3,15 +3,20 @@
 # `helpers`, so a change here retires both cases' seen-red records, as a change to their own script
 # does.
 #
-# Before sourcing, the case sets: sp ($SEAM_PROBE), arms (its arm names, the control first),
-# session_wait and first_poll (seconds). After idle_setup, `repo` is the fixture repository.
+# Before sourcing, the case sets: sp ($SEAM_PROBE), plant, arms (its arm names, the control first),
+# session_wait and first_poll (seconds). After idle_setup, `repo` is the fixture repository. Before
+# write_header it sets case_id, record (the record's path), watch (the arms still polled) and
+# t_launch.
+#
+# The case decides no verdict: it writes what it sees to a JSONL record, and classify.py, declared
+# beside this file in the case's `helpers`, judges every verdict from the record alone, with no clock.
 #
 # The conventions every function here keeps:
 #   - A holder (a background command, a scheduled job) is read from the session's transcript
 #     (`evidence calls`), never from the session's own account.
 #   - A turn after the first (a job firing, a completion delivered) is read from the transcript too:
-#     its prompt asks for a codeword no other turn is asked for, and `evidence codeword` is read once
-#     a poll round, so the turn's end is placed within one round.
+#     its prompt asks for a codeword no other turn is asked for, looked for once a poll round, and
+#     the turn's end is the time the transcript records for that reply (`evidence codeword --at`).
 #   - The process is read by `session process`, from Claude Code's pid records and the daemon's
 #     roster, because the agents listing carries no pid and keeps showing a stopped session as done
 #     or blocked.
@@ -28,11 +33,7 @@ setv() { eval "$1=\$2"; }
 command -v python3 >/dev/null 2>&1 || { all SKIPPED "python3 is not installed (this case's time arithmetic needs it)"; exit 0; }
 now() { python3 -c 'import time; print("%.3f" % time.time())'; }
 since() { python3 -c 'import sys; print("%.3f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$1" "$2"; }
-plus() { python3 -c 'import sys; print("%.3f" % sum(float(x) for x in sys.argv[1:]))' "$@"; }
-minutes() { python3 -c 'import sys; print("%.1f" % (float(sys.argv[1]) / 60))' "$1"; }
 atleast() { python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)' "$1" "$2"; }
-# Minutes from instant $2 to instant $1.
-mins_between() { minutes "$(since "$1" "$2")"; }
 
 # A one-shot job's local wall-clock cron expression for SECONDS (summed) from now, and the epoch at
 # which it is due, separated by "|". The expression names the minute that instant falls in, so the
@@ -192,64 +193,54 @@ control_or_exit() {
 }
 set_unless_ok() { [ "$2" = OK ] || setv res_$1 "$2"; }
 
-# One round's reading of arm A's process, stamped t_round: seen_<a> (last seen present), stop_<a>
-# (first seen gone), read_<a> (read at least once), last_<a> (running or unreadable). Appends the
-# arm's reading to `line`; an unreadable reading's reason goes to the series as a comment.
+# The record and its judge (classify.py, declared beside this file in each case's `helpers`): the
+# case writes what it sees, and every verdict is judged from that record alone, with no clock.
+classify() { python3 "$SEAM_PROBE_SUITE_DIR/classify.py" "$@"; }
+# Each arm's verdict, judged from the record and recorded; a record that cannot be judged leaves
+# every arm INCONCLUSIVE, naming why.
+judge() {
+  local out rc=0 a v r tab
+  tab=$(printf '\t')
+  out=$(classify verdicts "$record" 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ]; then all INCONCLUSIVE "the record could not be judged: $(oneline "$out")"; return; fi
+  printf '%s\n' "$out" | while IFS="$tab" read -r a v r; do "$sp" verdict --arm "$a" "$v" "$r"; done
+}
+# The record's header, once the first turns and holders are read: each arm's first turn's end and any
+# verdict already decided (res_<arm>), the arms still watched, and CONFIG (K=V words) besides the record's
+# own name.
+write_header() { # CONFIG...
+  local a args=()
+  for a in $arms; do args+=(--turn-end "$a=$(getv end_$a)" --pre "$a=$(getv res_$a)"); done
+  for a in "$@"; do args+=(--config "$a"); done
+  : > "$record"
+  classify header "$record" --case "$case_id" --plant "$plant" --arms "$arms" --watch "$watch" \
+    --t-launch "$t_launch" --config "record=$(basename "$record")" "${args[@]}"
+}
+# With no usable control no arm can be read: the record says so, and the judge gives every arm the
+# control's verdict.
+control_or_exit() { # CONFIG...
+  [ -n "$(getv res_control)" ] || return 0
+  watch=""; write_header "$@"; classify end "$record" --t "$(now)"; judge; exit 0
+}
+set_unless_ok() { [ "$2" = OK ] || setv res_$1 "$2"; }
+
+# One round's reading of arm A's process, added to the round's record line (rargs). stop_<a> is kept
+# so a stopped arm is not looked at again; the judge derives every other state from the rounds.
 poll_process() { # ARM
   local a=$1 rc=0 out st
-  if [ -n "$(getv stop_$a)" ]; then line="$line $a=stopped"; return; fi
+  if [ -n "$(getv stop_$a)" ]; then rargs+=(--read "$a=stopped"); return; fi
   out=$("$sp" session process "$a") || rc=$?
   case $rc in
     0) st=$(printf '%s' "$out" | sed -n 's/.*status \([A-Za-z]*\)$/\1/p'); st=${st:-roster}
-       setv seen_$a "$t_round"; setv read_$a 1; setv last_$a running; line="$line $a=running($st)" ;;
-    1) setv stop_$a "$t_round"; setv read_$a 1; line="$line $a=stopped" ;;
-    *) setv last_$a unreadable; line="$line $a=unreadable"; printf '# %s: %s\n' "$a" "$(oneline "$out")" >> "$series" ;;
+       rargs+=(--read "$a=running" --status "$a=$st") ;;
+    1) setv stop_$a "$t_round"; rargs+=(--read "$a=stopped") ;;
+    *) rargs+=(--read "$a=unreadable" --note "$a=$(oneline "$out")") ;;
   esac
 }
-# One round's look for WORD in arm A's replies; the first that sees it sets <var>_<a>, the reply's
-# time by reply_time (this round's when the transcript has none).
+# One round's look for WORD in arm A's replies; the first that sees it sets <var>_<a> and adds the
+# reply's time by reply_time (this round's when the transcript has none) to the round's line.
 poll_word() { # ARM WORD VAR
   local t
   [ -z "$(getv "$3_$1")" ] || return 0
-  if t=$(reply_time "$1" "$2" "$t_round"); then setv "$3_$1" "$t"; line="$line $1:$2"; fi
-}
-# Was arm A seen present at or after instant REF (so a later stop is timed by the round that
-# found it gone)?
-sighted() { # ARM REF
-  local s
-  s=$(getv seen_$1)
-  [ -n "$s" ] && atleast "$(since "$s" "$2")" 0
-}
-# Is arm A seen present at least SECONDS (summed) after instant REF?
-seen_past() { # ARM REF SECONDS...
-  local a=$1 ref=$2 s; shift 2
-  s=$(getv seen_$a)
-  [ -n "$s" ] && atleast "$(since "$s" "$ref")" "$(plus "$@")"
-}
-
-# The control's verdict, once the polls are over. Without a stop, every arm's verdict and exit;
-# with one, PASS, and cs (its stop), cidle (its idle seconds: stop less first turn's end) and cmin.
-control_verdict() {
-  cs=$(getv stop_control)
-  if [ -z "$cs" ]; then
-    if [ -z "$(getv read_control)" ]; then
-      all INCONCLUSIVE "the control's process state could not be read at any poll ($where)"
-    elif [ "$(getv last_control)" = unreadable ]; then
-      all INCONCLUSIVE "the control's process state was unreadable at the end of the run (last read, still present, $(mins_between "$(getv seen_control)" "$end_control") min after its turn ended), so a stop could not be seen ($where)"
-    else
-      all VOID "the control was never stopped, so the idle stop was not observed (an attached client such as an open agent view, or a changed idle duration): its process was still present $(mins_between "$(getv seen_control)" "$end_control") min after its turn ended, at the end of the ${cap}s cap"
-    fi
-    exit 0
-  fi
-  cidle=$(since "$cs" "$end_control")
-  cmin=$(minutes "$cidle")
-  # A stop is timed by the poll round that first finds the process gone, which is only a time if a
-  # round before it found the process present. Gone at the first look, it stopped at some time
-  # before then, and the idle duration is not measured: on a loaded machine the launches after the
-  # control's can outlast it.
-  if ! sighted control "$end_control"; then
-    all INCONCLUSIVE "the control was already gone at the first look, $cmin min after its turn ended, so it stopped at some time before then and its idle duration was not measured ($where)"
-    exit 0
-  fi
-  "$sp" verdict --arm control PASS "the idle stop was observed: no process $cmin min after its turn ended"
+  if t=$(reply_time "$1" "$2" "$t_round"); then setv "$3_$1" "$t"; rargs+=(--word "$1=$2@$t"); fi
 }

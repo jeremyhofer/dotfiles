@@ -11,7 +11,7 @@ relies = "A running background command is not a holder: that session is stopped 
 bears-on = "how a keep-alive for a background session is built"
 regimes = ["real"]
 script = "idle-holders.sh"
-helpers = ["idle-lib.sh"]
+helpers = ["idle-lib.sh", "classify.py"]
 fixtures = ["idl"]
 controls = ["control: a session with no holder must be seen to stop within the cap, or the idle stop was never observed and every arm is VOID", "each arm's holder is read from the session's transcript: a background Bash call with the exact command, or a one-shot CronCreate call for the expected minute, status ok; the control made none", "each later turn is read from its own codeword in the transcript (FIRED for the job's turn, RELEASED for the completion's), once a poll round; a FIRED seen before its job was due is INCONCLUSIVE", "an arm whose claim is a stop about the control's idle duration is FAIL only when seen present the margin past it, and INCONCLUSIVE when it stopped outside the tolerance but within the margin"]
 # A plant reaches one arm, and the arm's verdict is the only thing it can turn: shell-held and
@@ -42,6 +42,7 @@ relies = "A stopped session stays stopped whether or not a client is attached to
 bears-on = "a session's request for its own refresh"
 regimes = ["real"]
 script = "attached-stop.sh"
+helpers = ["classify.py"]
 fixtures = ["ats"]
 controls = ["control: the same stop applied to a session nothing is attached to must leave it stopped (the fleet already relies on that), or a respawn cannot be laid to attachment and every arm is VOID", "each arm's stop is read from its pid record: `session term` refuses (INCONCLUSIVE) a session with no live pid record, and a process that survived SIGKILL", "each arm's watch reads three signs independently (process, transcript, listing); an arm whose sign could not be read at any poll is INCONCLUSIVE, never PASS"]
 # A person is at the terminal for these two and for the two looks that follow the watches; under a
@@ -67,7 +68,7 @@ relies = "A session held only by a delivered completion is stopped within the ca
 bears-on = "how a keep-alive for a background session is built, and whether finished sessions leak"
 regimes = ["real"]
 script = "completion-hold.sh"
-helpers = ["idle-lib.sh"]
+helpers = ["idle-lib.sh", "classify.py"]
 fixtures = ["cph"]
 controls = ["control: a session with no holder must be seen to stop within the cap, or the idle stop was never observed and every arm is VOID", "the release arm's command is read from its transcript (an ok background Bash call with the exact command), and its completion turn from its codeword (RELEASED); a session never seen to receive one is INCONCLUSIVE, never PASS or FAIL"]
 # held-past-cap gives the release session a pending job past the cap, so it must FAIL; control-held

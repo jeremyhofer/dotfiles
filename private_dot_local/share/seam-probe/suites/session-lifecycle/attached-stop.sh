@@ -19,7 +19,9 @@
 #   process     `session process` finds a process for its session uuid again
 #   transcript  its transcript has more lines than when the stop finished
 #   listing     `claude agents --json --all` lists a row with its id or uuid after the `claude rm`
-# One line per poll goes to the results directory (session-attached-stop[-PLANT]-watch.txt). After
+# Each stop and each poll is one line of the run's record (session-attached-stop[-PLANT]-record.jsonl
+# in the results directory), and every verdict is judged from that record by classify.py, which
+# reads no clock; the case declares it as its helper. After
 # each attached arm's watch the person is asked to look at the attached client; what the client's own
 # display shows is not read by anything, so it is a prompt for the person, not evidence.
 #
@@ -54,6 +56,7 @@ command -v python3 >/dev/null 2>&1 || { all SKIPPED "python3 is not installed (t
 now() { python3 -c 'import time; print("%.3f" % time.time())'; }
 since() { python3 -c 'import sys; print("%.1f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$1" "$2"; }
 atleast() { python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)' "$1" "$2"; }
+classify() { python3 "$SEAM_PROBE_SUITE_DIR/classify.py" "$@"; }
 
 # The display name a session was launched under, read from this run's ledger.
 display_of() {
@@ -144,61 +147,47 @@ if [ -z "$(getv res_agentview)" ]; then
     || setv res_agentview "INCONCLUSIVE|the person could not be asked to open the agent view (a manual step needs a terminal)"
 fi
 
-series=$(dirname "$SEAM_PROBE_RUN")/session-attached-stop${plant:+-$plant}-watch.txt
-: > "$series"
+record=$(dirname "$SEAM_PROBE_RUN")/session-attached-stop${plant:+-$plant}-record.jsonl
+: > "$record"
+hargs=()
+for a in $arms; do hargs+=(--pre "$a=$(getv res_$a)"); done
+classify header "$record" --case attached-stop --plant "$plant" --arms "$arms" \
+  --config "watch=$watch" --config "record=$(basename "$record")" "${hargs[@]}"
 
-# Stop an arm as the fleet does, then watch it for signs that it came back. The first time each sign
-# was seen, in seconds after the stop, goes in proc_/tr_/row_ARM; a sign never read at any poll in
-# noread_ARM.
+# Stop an arm as the fleet does, then watch it for signs that it came back: the stop, and each poll's
+# reading of the process, the transcript's line count and the listing, go to the record.
 stop_and_watch() { # ARM
-  local a=$1 rc=0 out base t_stop el n lr line pr_rc
+  local a=$1 rc=0 out base t_stop el n lr pr_rc proc tr lst rargs
   [ -z "$(getv res_$a)" ] || return 0   # already unmeasured: nothing to stop
   out=$("$sp" session term "$a") || rc=$?
-  printf '# %s: session term exit %s: %s\n' "$a" "$rc" "$(oneline "$out")" >> "$series"
+  rargs=()
+  if { [ "$plant" = respawn ] && [ "$a" = terminal ]; } || { [ "$plant" = control-respawn ] && [ "$a" = control ]; }; then
+    if [ "$rc" -eq 0 ]; then
+      rrc=0; rout=$("$sp" session resume "$a") || rrc=$?
+      rargs=(--resume "$rrc@$(oneline "$rout")")
+    fi
+  fi
+  base=""
+  [ "$rc" -ne 0 ] || base=$(tlines "$(getv uuid_$a)")
+  classify stop "$record" --arm "$a" --rc "$rc" --out "$out" --base "$base" ${rargs[@]+"${rargs[@]}"}
   case $rc in
     0) ;;
-    1) setv res_$a "INCONCLUSIVE|the process ended but \`claude rm\` failed, so a listed row would say nothing: $(oneline "$out")"; return ;;
-    *) setv res_$a "INCONCLUSIVE|the session could not be stopped as the fleet stops one: $(oneline "$out")"; return ;;
+    1) setv res_$a "INCONCLUSIVE|the process ended but \`claude rm\` failed"; return ;;
+    *) setv res_$a "INCONCLUSIVE|the session could not be stopped as the fleet stops one"; return ;;
   esac
-  if { [ "$plant" = respawn ] && [ "$a" = terminal ]; } || { [ "$plant" = control-respawn ] && [ "$a" = control ]; }; then
-    rrc=0; rout=$("$sp" session resume "$a") || rrc=$?
-    printf '# %s: plant %s: session resume exit %s: %s\n' "$a" "$plant" "$rrc" "$(oneline "$rout")" >> "$series"
-  fi
-  base=$(tlines "$(getv uuid_$a)")
   t_stop=$(now)
-  [ -n "$base" ] || setv res_$a "INCONCLUSIVE|the transcript could not be found to count its lines at the stop"
-  local seen_p="" seen_t="" seen_r="" ok_p="" ok_t="" ok_r=""
   while :; do
     el=$(since "$(now)" "$t_stop")
-    line="+${el}s"
     pr_rc=0; "$sp" session process "$a" >/dev/null || pr_rc=$?
-    case $pr_rc in
-      0) [ -n "$seen_p" ] || seen_p=$el; ok_p=1; line="$line process=present" ;;
-      1) ok_p=1; line="$line process=absent" ;;
-      *) line="$line process=unreadable" ;;
-    esac
+    case $pr_rc in 0) proc=present ;; 1) proc=absent ;; *) proc=unreadable ;; esac
     n=$(tlines "$(getv uuid_$a)")
-    if [ -z "$n" ] || [ -z "$base" ]; then line="$line transcript=unreadable"
-    else
-      ok_t=1; line="$line transcript=$n/$base"
-      if [ "$n" -gt "$base" ]; then [ -n "$seen_t" ] || seen_t=$el; fi
-    fi
+    tr=${n:-unreadable}
     lr=0; listed "$(getv id_$a)" "$(getv uuid_$a)" || lr=$?
-    case $lr in
-      0) [ -n "$seen_r" ] || seen_r=$el; ok_r=1; line="$line listed=yes" ;;
-      1) ok_r=1; line="$line listed=no" ;;
-      *) line="$line listed=unreadable" ;;
-    esac
-    printf '%s %s\n' "$a" "$line" >> "$series"
+    case $lr in 0) lst=yes ;; 1) lst=no ;; *) lst=unreadable ;; esac
+    classify watch "$record" --arm "$a" --el "$el" --process "$proc" --transcript "$tr" --listed "$lst"
     if atleast "$(since "$(now)" "$t_stop")" "$watch"; then break; fi
     sleep "$poll"
   done
-  setv proc_$a "$seen_p"; setv tr_$a "$seen_t"; setv row_$a "$seen_r"
-  local nr=""
-  [ -n "$ok_p" ] || nr="$nr process"
-  [ -n "$ok_t" ] || nr="$nr transcript"
-  [ -n "$ok_r" ] || nr="$nr listing"
-  setv noread_$a "${nr# }"
 }
 look() { # ARM: the person looks at the attached client
   "$sp" manual "$1: look at the attached $2 now: has it ended, or shown the session running again? Then press Enter. (Nothing reads the client's own display; this is for the person.)" || true
@@ -210,48 +199,9 @@ stop_and_watch terminal
 stop_and_watch agentview
 [ -n "$(getv res_agentview)" ] || look "agentview arm" "agent view and its peek panel"
 
-# What came back, in words: the signs seen and when.
-came() { # ARM
-  local a=$1 t=""
-  [ -z "$(getv proc_$a)" ] || t="$t a process for its session uuid ($(getv proc_$a) s after the stop);"
-  [ -z "$(getv tr_$a)" ] || t="$t new lines in its transcript ($(getv tr_$a) s after the stop);"
-  [ -z "$(getv row_$a)" ] || t="$t a listed row for its id or uuid ($(getv row_$a) s after the stop);"
-  printf '%s' "${t# }"
-}
-has_sign() { [ -n "$(getv proc_$1)" ] || [ -n "$(getv tr_$1)" ] || [ -n "$(getv row_$1)" ]; }
-# A sign set that would show a respawn could not be fully read: not a PASS.
-unread() { getv noread_$1; }
-
-control_state=ok
-if [ -n "$(getv res_control)" ]; then control_state=unmeasured
-elif has_sign control; then control_state=came-back
-fi
-if [ "$control_state" = came-back ]; then
-  all VOID "an unattached session came back after the stop too ($(came control)), so a respawn cannot be laid to attachment"
-  exit 0
-fi
-
-if [ "$control_state" = unmeasured ]; then
-  v=$(getv res_control); "$sp" verdict --arm control "${v%%|*}" "control: ${v#*|}"
-elif [ -n "$(unread control)" ]; then
-  "$sp" verdict --arm control INCONCLUSIVE "the control's $(unread control) could not be read at any poll during its ${watch}s watch, so a return could not be ruled out ($(basename "$series"))"
-  control_state=unmeasured
-else
-  "$sp" verdict --arm control PASS "nothing came back within ${watch}s of the stop (process, transcript and listing each read): an unattached session stays stopped, as the fleet relies on"
-fi
-
-confirmed="the attachment was made and confirmed by the person at the terminal, not observed by the instrument, and the client's own display was not read"
-for a in terminal agentview; do
-  v=$(getv res_$a)
-  if [ -n "$v" ]; then "$sp" verdict --arm "$a" "${v%%|*}" "${v#*|}"; continue; fi
-  if [ "$control_state" != ok ]; then
-    "$sp" verdict --arm "$a" INCONCLUSIVE "the control could not be measured, so a result here cannot be laid to attachment ($confirmed)"; continue
-  fi
-  if has_sign "$a"; then
-    "$sp" verdict --arm "$a" FAIL "the session came back after the stop: $(came "$a") while the control stayed stopped; $confirmed"
-  elif [ -n "$(unread "$a")" ]; then
-    "$sp" verdict --arm "$a" INCONCLUSIVE "its $(unread "$a") could not be read at any poll during the ${watch}s watch, so a return could not be ruled out ($(basename "$series"))"
-  else
-    "$sp" verdict --arm "$a" PASS "nothing came back within ${watch}s of the stop (process, transcript and listing each read), as with the unattached control; $confirmed"
-  fi
-done
+classify end "$record"
+out=""; jrc=0
+out=$(classify verdicts "$record" 2>&1) || jrc=$?
+if [ "$jrc" -ne 0 ]; then all INCONCLUSIVE "the record could not be judged: $(oneline "$out")"; exit 0; fi
+tab=$(printf '\t')
+printf '%s\n' "$out" | while IFS="$tab" read -r a v r; do "$sp" verdict --arm "$a" "$v" "$r"; done

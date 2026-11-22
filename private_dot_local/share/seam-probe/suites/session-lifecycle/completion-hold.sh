@@ -14,8 +14,10 @@
 #             and FAILs.
 # Holders are read from the session's transcript (`evidence calls`), the completion turn from its
 # codeword once a poll round, and the process by `session process`, from Claude Code's pid records
-# and the daemon's roster. Every poll is one line in the run's results directory. The shared
-# mechanics are in idle-lib.sh, which this case declares as its helper.
+# and the daemon's roster. Every poll round is one line of the run's record
+# (session-completion-hold[-PLANT]-record.jsonl), and every verdict is judged from it by
+# classify.py, which reads no clock. The shared mechanics are in idle-lib.sh; the case declares both
+# as its helpers.
 #
 # The run polls every SEAM_PROBE_IDLE_POLL seconds (default 300) until both sessions have stopped,
 # or until the cap (SEAM_PROBE_IDLE_CAP, default 28800: eight hours). A control never seen to stop
@@ -65,52 +67,34 @@ fi
 
 await_first_turns
 
+# The record, in the run's results directory: the header once the holders are read, one line a poll
+# round, and every verdict judged from it by classify.py.
+case_id=completion-hold
+record=$(dirname "$SEAM_PROBE_RUN")/session-completion-hold${plant:+-$plant}-record.jsonl
+config="cap=$cap"
+watch=""
+
 control_holder "$control_cron"
-control_or_exit
+control_or_exit $config
 if [ -z "$(getv res_release)" ]; then
   h=$(bash_holder release "$release_cmd")
   if [ "$h" = OK ] && [ "$plant" = held-past-cap ]; then h=$(cron_holder release "$late_cron"); fi
   set_unless_ok release "$h"
 fi
 
-# Poll until both sessions have stopped, or the cap (both bounded by the clock).
-series=$(dirname "$SEAM_PROBE_RUN")/session-completion-hold${plant:+-$plant}-poll-series.txt
-: > "$series"
-where="the poll series is at <results>/$(basename "$series")"
+# Poll until both sessions have stopped, or the cap.
 watch="control"
 [ -n "$(getv res_release)" ] || watch="$watch release"
+write_header $config
 while :; do
-  line=""
+  rargs=()
   t_round=$(now)
   for a in $watch; do poll_process "$a"; done
   case " $watch " in *" release "*) poll_word release RELEASED comp ;; esac
-  printf '+%ss%s\n' "$(since "$t_round" "$t_launch")" "$line" >> "$series"
-  all_done=1
-  for a in $watch; do [ -n "$(getv stop_$a)" ] || { all_done=0; break; }; done
-  [ "$all_done" -eq 0 ] || break
+  classify round "$record" --t "$t_round" ${rargs[@]+"${rargs[@]}"}
+  if classify decided "$record"; then break; fi
   if atleast "$(since "$(now)" "$t_launch")" "$cap"; then break; fi
   sleep "$poll"
 done
-t_end=$(now)
-
-control_verdict
-
-v=$(getv res_release)
-rd=$(getv comp_release)
-rs=$(getv stop_release)
-if [ -n "$v" ]; then "$sp" verdict --arm release "${v%%|*}" "${v#*|}"
-elif [ -z "$(getv read_release)" ]; then
-  "$sp" verdict --arm release INCONCLUSIVE "its process state could not be read at any poll ($where)"
-elif [ -z "$rd" ]; then
-  if [ -n "$rs" ]; then
-    "$sp" verdict --arm release INCONCLUSIVE "stopped $(mins_between "$rs" "$end_release") min after its first turn ended with no completion turn in its transcript (no RELEASED), so it was never held by a delivered completion"
-  else
-    "$sp" verdict --arm release INCONCLUSIVE "no completion turn in its transcript (no RELEASED) by the end of the run, $(mins_between "$t_end" "$end_release") min after its first turn, so it was never held by a delivered completion ($where)"
-  fi
-elif [ -n "$rs" ]; then
-  "$sp" verdict --arm release PASS "stopped $(mins_between "$rs" "$rd") min after its completion turn ended (RELEASED, read from its transcript $(mins_between "$rd" "$end_release") min after its first turn), within the $(minutes "$cap") min cap; the control stopped $cmin min after its own turn"
-elif [ "$(getv last_release)" = unreadable ]; then
-  "$sp" verdict --arm release INCONCLUSIVE "its process state was unreadable at the end of the run (last read, still present, $(mins_between "$(getv seen_release)" "$rd") min after its completion turn ended), so a stop could not be seen ($where)"
-else
-  "$sp" verdict --arm release FAIL "still present at the end of the $(minutes "$cap") min cap, $(mins_between "$(getv seen_release)" "$rd") min after its completion turn ended (RELEASED, read from its transcript): a session held by a delivered completion was not stopped (the control stopped $cmin min after its own turn)"
-fi
+classify end "$record" --t "$(now)"
+judge

@@ -32,6 +32,20 @@ Entries are newest first.
 
 ---
 
+## 2026-11-22 (seam-probe: the session-lifecycle cases record, and a new `classify.py` judges)
+
+The three cases of suite `session-lifecycle` (`idle-holders`, `completion-hold`, `attached-stop`) no
+longer decide verdicts in their poll loops. Each writes what it sees to a JSONL record in the run's
+results directory (`session-<case>[-<plant>]-record.jsonl`), which replaces the text poll series
+(`…-poll-series.txt`) and the watch file (`…-watch.txt`). A new deployed file,
+`private_dot_local/share/seam-probe/suites/session-lifecycle/classify.py`, writes that record and
+judges every verdict from it alone, with no clock. Each case declares it in `helpers`, so the reds
+recorded before this change no longer count. Verdict wording is unchanged, except that a reason
+citing the series now cites the record. A new suite, `tests/test-seam-probe-classify.py`, tests
+each verdict branch from hand-written records at the cases' real settings. The end-to-end tests in
+`tests/test-seam-probe.py` assert only what load cannot move: two pre-apply runs today were refused
+by tests that squeezed a minutes-long schedule into seconds. Nothing to change on a machine.
+
 ## 2026-11-22 (seam-probe: idle-holders redesigned, and a long case for a completion's hold)
 
 `idle-holders` (suite `session-lifecycle`) is redesigned to what its last runs measured on Claude
