@@ -2523,10 +2523,28 @@ def test_attached_stop_skips_without_trust(fake, tmp_path):
     assert (fake["sandbox"] / ATS / ".git").exists()
 
 
+# The two tests read at the cap (AT_CAP, 90 s) are the suite's longest by twice, so the run is
+# shortest when each starts at once, on a worker of its own. pytest collects a module's tests in
+# the order of its namespace, and pytest-xdist's first hand-out gives each worker a block of
+# consecutive tests in that order: with `--maxschedchunk 1` (below) the block is always 2. FIRST is
+# laid out for that: the first at-cap test and one quick test make worker 0's block, and the
+# parametrized test's two cases (90 s and 30 s caps) make worker 1's. Every other test follows, on
+# every worker alike. Defined near the end, the at-cap tests started last and the run waited on
+# them; moved first without the fixed block, xdist's default block of 5 put them all on worker 0,
+# in series (214.8 s). Measured 2026-11-22 on 16 CPUs, 8 workers, interleaved: 157.4 s and 156.7 s
+# this way, against 223.9 s in namespace order between them.
+FIRST = ("test_completion_hold_a_session_present_at_the_cap_fails", "test_lint_accepts_a_single_command",
+         "test_completion_hold_red_of_each_plant")
+assert all(n in globals() for n in FIRST), "a test named in FIRST was renamed; name it again here"
+for _name in [*FIRST, *(n for n in list(globals()) if n.startswith("test_") and n not in FIRST)]:
+    globals()[_name] = globals().pop(_name)
+
+
 if __name__ == "__main__":
     # pytest-xdist runs the tests on several workers. Most of this suite's time is waiting on the
     # fake claude's idle caps and polls, not CPU: run one at a time it was 515 s of the base's 684 s
     # cold run (measured 2026-11-21). Every test's state is under its own tmp_path,
     # which xdist makes per worker. A `-n` given on the command line comes later and wins.
     workers = str(min(8, os.cpu_count() or 2))
-    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider", "-n", workers, *sys.argv[1:]]))
+    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider", "-n", workers, "--maxschedchunk", "1",
+                          *sys.argv[1:]]))
