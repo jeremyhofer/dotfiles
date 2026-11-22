@@ -43,9 +43,13 @@ read from its own codeword in the transcript. Its plants are `shell-held`, `sche
 `completion-withheld` and `control-held`; `holder-dropped` is retired, and the reds recorded for the
 old script no longer count. A new case, `completion-hold`, runs a control and a release arm to an
 eight-hour cap (polled every five minutes) to learn whether a session held by a delivered completion
-is ever stopped. `seam-probe` gains a case `helpers` key (files a case script sources, covered by its
-seen-red record), `prompt --notified WORD`, and `session stop` and the run's cleanup confirm a stop
-by the session's process as well as the agents listing. Nothing to change on a machine.
+is ever stopped. Both cases source a new shared file, `session-lifecycle/idle-lib.sh`. `seam-probe`
+gains a case `helpers` key (files a case script sources, covered by its seen-red record),
+`prompt --notified WORD`, and `session stop` and the run's cleanup confirm a stop by the session's
+process as well as the agents listing. Later the same day, both cases time each turn's end from the
+transcript's own timestamp (`evidence codeword --at`) rather than from the poll that found it, and
+report a stop first seen at the first poll as not timed rather than compare it; a loaded pre-apply
+run had read an early stop as a PASS. Nothing to change on a machine.
 
 ## 2026-11-21 (`fleet-slot`: a session's own request no longer holds up its own gates)
 
