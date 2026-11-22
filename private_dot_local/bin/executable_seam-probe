@@ -1667,6 +1667,33 @@ class Interrupted(Exception):
     pass
 
 
+def person_terminal() -> int | None:
+    """A descriptor on the person's terminal, to hand down to a case script, or None without one.
+
+    It is opened from the terminal's device (/dev/ttys001, /dev/pts/0), never kept as /dev/tty. On
+    macOS, as on the BSDs, /dev/tty is an indirect device: each read and write on it is resolved
+    against the CALLING process's controlling terminal, so in a case script, which runs in its own
+    session with none, every write fails with EIO. On Linux, opening /dev/tty yields the device
+    itself, which is why a /dev/tty descriptor worked there (measured 2026-11-22 on both machines).
+    The device is named by the first of stdin, stdout and stderr that is this process's
+    controlling terminal (tcgetpgrp succeeds only on that). With none of them, /dev/tty itself is
+    handed down: it proves a terminal exists and serves on Linux, and on macOS a manual step is
+    then refused as needing a terminal."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return None
+    for std in (0, 1, 2):
+        try:
+            os.tcgetpgrp(std)
+            dev = os.open(os.ttyname(std), os.O_RDWR | os.O_NOCTTY)
+        except OSError:
+            continue
+        os.close(fd)
+        return dev
+    return fd
+
+
 def run_one(suite_dir: Path, case: dict, regime: str, plant: str | None, run_dir: Path,
             fixtures: Path, keep: bool, caller_pwd: str) -> dict:
     """Run one case script once. Returns its result record (without the seen-red reading)."""
@@ -1684,10 +1711,7 @@ def run_one(suite_dir: Path, case: dict, regime: str, plant: str | None, run_dir
     # The script gets its own session, so a timeout can kill its whole process group, and with it
     # no controlling terminal: the person's terminal, where there is one, is handed down for
     # `manual`. A terminal that is not the script's controlling one stops no reader with SIGTTIN.
-    try:
-        tty_fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
-    except OSError:
-        tty_fd = None
+    tty_fd = person_terminal()
     if tty_fd is not None:
         env["SEAM_PROBE_TTY_FD"] = str(tty_fd)
     try:

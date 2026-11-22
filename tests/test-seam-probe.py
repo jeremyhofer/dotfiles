@@ -1858,6 +1858,22 @@ def test_a_manual_step_in_a_case_reaches_the_persons_terminal(env):
     assert "the person answered" in summary and "refused" not in summary, shown + summary
 
 
+def test_the_terminal_handed_to_a_case_is_its_device_not_dev_tty(env):
+    # On macOS a /dev/tty descriptor is resolved against the caller's controlling terminal at each
+    # write, so in the case's own session it fails with EIO; on Linux the same descriptor works. The
+    # test above is therefore blind on Linux to a /dev/tty hand-down, and this one is not: it reads
+    # the handed descriptor's name, which is "/dev/tty" on both systems when that is what was opened.
+    body = ('name=$(python3 -c \'import os; print(os.ttyname(int(os.environ["SEAM_PROBE_TTY_FD"])))\')\n'
+            '"$sp" verdict PASS "handed: $name"\n')
+    make_suite(env, {"c": (body, '"none"')})
+    run_on_a_pty(env, "run", "s", "--yes")
+    run_dir = max((env["state"] / "s").iterdir(), key=lambda p: p.name)
+    summary = (run_dir / "summary.txt").read_text()
+    assert "handed: " in summary, summary
+    handed = summary.split("handed: ", 1)[1].split()[0]
+    assert handed.startswith("/dev/") and handed != "/dev/tty", summary
+
+
 def test_manual_called_directly_on_a_terminal_reads_the_enter(env, tmp_path):
     # Outside a case there is no handed-down terminal and /dev/tty is opened; a text-mode "r+"
     # open of a tty is refused by Python, so this is the other path that must reach the person.
