@@ -108,7 +108,14 @@ const ENV_INPUTS = ['SANDBOX_RUNTIME', 'RUN_MUTANTS'];
 //   * no color. Nx sets FORCE_COLOR=true for every task, so a child pytest colored its summary and a
 //     suite matching `\b1 failed\b` in it found an escape code where the word boundary was: every
 //     mutant meta-test failed under Nx while passing outside it (measured with Nx 24.0.5). A suite
-//     reads its tools' output as plain text, as it did when no runner forced color.
+//     reads its tools' output as plain text, as it did when no runner forced color;
+//   * never the machine's timing slot. A commit hook the suites install in a scratch repository
+//     calls `fleet-slot check` and, while another session holds the slot, waits up to 45 minutes
+//     for it, so a slot held during an apply stalled the after-apply run by that long. The state
+//     directory named here does not exist and cannot be created without root: a check reads it as
+//     a free slot, and a suite that writes the slot without setting its own fails loudly instead
+//     of leaving a held slot for the next suite to wait on. A suite that tests the slot sets
+//     FLEET_SLOT_STATE itself.
 const SUITE_ENV = {
   GIT_CONFIG_NOSYSTEM: '1',
   TEST_GIT_ISOLATED: '1',
@@ -117,6 +124,7 @@ const SUITE_ENV = {
   FORCE_COLOR: '0',
   NO_COLOR: '1',
   PY_COLORS: '0',
+  FLEET_SLOT_STATE: '/nonexistent/fleet-slot-for-suites',
 };
 const SHELLS = ['sh', 'bash', 'zsh'];
 

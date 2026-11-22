@@ -122,7 +122,7 @@ nenv=$(awk -F '\t' '$5 == "RUN_MUTANTS,SANDBOX_RUNTIME"' "$tmp/targets" | wc -l 
 ncached=$(awk -F '\t' '$3 == "true"' "$tmp/targets" | wc -l | tr -d ' ')
 [ "$ncached" = $((nwant - 1)) ] && ok "every other suite target is cached ($ncached)" \
   || bad "cached suite targets" "$ncached of $((nwant - 1))"
-niso=$(grep -cF '"GIT_CONFIG_NOSYSTEM":"1","TEST_GIT_ISOLATED":"1","PYTHONDONTWRITEBYTECODE":"1","PYTEST_ADDOPTS":"-p no:cacheprovider","FORCE_COLOR":"0","NO_COLOR":"1","PY_COLORS":"0"' "$tmp/targets")
+niso=$(grep -cF '"GIT_CONFIG_NOSYSTEM":"1","TEST_GIT_ISOLATED":"1","PYTHONDONTWRITEBYTECODE":"1","PYTEST_ADDOPTS":"-p no:cacheprovider","FORCE_COLOR":"0","NO_COLOR":"1","PY_COLORS":"0","FLEET_SLOT_STATE":"/nonexistent/fleet-slot-for-suites"' "$tmp/targets")
 [ "$niso" = "$nwant" ] && ok "all $nwant suite targets get the isolating environment" || bad "suite targets with the isolating environment" "$niso of $nwant"
 
 for s in suite-repo-hygiene suite-coverage-map suite-nx-suites suite-npm-registry; do
@@ -189,13 +189,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 [ "$PYTHONDONTWRITEBYTECODE" = 1 ] || { echo "bytecode may be written"; exit 1; }
 case "$PYTHONPYCACHEPREFIX" in "$(cd "$here/.." && pwd)"*|'') echo "bytecode is read from the checkout: $PYTHONPYCACHEPREFIX"; exit 1 ;; esac
 [ "$FORCE_COLOR" = 0 ] && [ "$PY_COLORS" = 0 ] && [ "$NO_COLOR" = 1 ] || { echo "color is forced: FORCE_COLOR=$FORCE_COLOR"; exit 1; }
+case "${FLEET_SLOT_STATE:-}" in /nonexistent/*) [ ! -e "$FLEET_SLOT_STATE" ] || { echo "the slot state exists: $FLEET_SLOT_STATE"; exit 1; } ;;
+  *) echo "the machine's timing slot is reachable: FLEET_SLOT_STATE=${FLEET_SLOT_STATE:-unset}"; exit 1 ;; esac
 [ ! -t 0 ] && [ -z "$(cat)" ] || { echo "stdin is not empty"; exit 1; }
 echo probe-ran
 EOF
 printf 'test-zz-probe.sh tests/git-isolate.sh\n' >> "$ws/tests/coverage.map"
 git -C "$ws" add -A
 if nxin "$ws" run suite-zz-probe:test --outputStyle=static && grep -q probe-ran "$tmp/out"; then
-  ok "a probe suite run through Nx sees isolated git, no bytecode, no color, an empty stdin"
+  ok "a probe suite run through Nx sees isolated git, no bytecode, no color, no timing slot, an empty stdin"
 else bad "the probe suite through Nx" "$(grep -v '^$' "$tmp/out" | tail -5) $(errs)"; fi
 
 echo "== the differential: Nx's reach against the map's own dialect"
