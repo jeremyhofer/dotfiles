@@ -1922,13 +1922,15 @@ def test_idle_holders_skips_without_trust(fake, tmp_path):
 
 # ---- attached-stop, end to end against the fakes -----------------------------------------------
 # Each session is a real process the fake's pid record names (FAKE_CLAUDE_SPAWN), so `session term`
-# really signals it. The watch is a second or so, and `manual` records its instruction and goes on
+# really signals it. The watch is 2 s: a planted sign of return comes 0.3 s after the stop, and a
+# 0.6 s watch missed it once under a full 8-wide suite run (2026-11-22), so the watch keeps a wide
+# margin over the sign. `manual` records its instruction and goes on
 # (SEAM_PROBE_MANUAL_AUTO), where a person would attach a client and press Enter.
 
 ATS = "seams/session-lifecycle/ats"
 
 
-def ats(fake, tmp_path, watch="0.6", roster=True, **env):
+def ats(fake, tmp_path, watch="2", roster=True, **env):
     suites = tmp_path / "ats-suites"
     shutil.copytree(SHIPPED / "session-lifecycle", suites / "session-lifecycle")
     recs = tmp_path / "pidrecs"
