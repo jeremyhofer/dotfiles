@@ -55,6 +55,16 @@ PASS   test-good.sh
 
 Nx read the output from the cache instead of running the command for 1 out of 2 tasks.
 """
+# Nx's profile (NX_PROFILE), trace events in microseconds; only "X" events are tasks.
+NX_PROFILE_EVENTS = [
+    {"name": "thread_name", "ph": "M", "pid": 1, "tid": 0, "ts": 0, "args": {"name": "Group #1"}},
+    {"name": "suite-mid:test", "ph": "X", "ts": 0, "dur": 30_000_000, "pid": 1, "tid": 1},
+    {"name": "suite-slow:test", "ph": "X", "ts": 0, "dur": 90_400_000, "pid": 1, "tid": 0},
+    {"name": "suite-tiny:test", "ph": "X", "ts": 0, "dur": 100_000, "pid": 1, "tid": 2},
+    {"name": "suite-fast:test", "ph": "X", "ts": 0, "dur": 2_000_000, "pid": 1, "tid": 2},
+]
+SLOWEST = "slowest: suite-slow 90s, suite-mid 30s, suite-fast 2s"
+
 NX_FAIL = """
 > nx run suite-good:test
 
@@ -128,11 +138,15 @@ class Rig:
         for name in ("test-good.sh", "test-broken.sh"):
             (self.src / "tests" / name).write_text("#!/bin/sh\nexit 0\n")
         (self.src / ".nvmrc").write_text(PIN + "\n")
-        (self.src / ".gitignore").write_text("node_modules/\n")
+        (self.src / ".gitignore").write_text("node_modules/\n.nx/\n")
         self.write_lock(LOCK)
         self.write_installed(installed_record(LOCK))
         self.nx_out = root / "nx.out"
         self.nx_out.write_text(NX_PASS)
+        # The profile the stand-in writes where NX_PROFILE points, as Nx does (joined to the
+        # workspace root); delete it for a run that writes none.
+        self.nx_profile = root / "nx.profile.json"
+        self.nx_profile.write_text(json.dumps(NX_PROFILE_EVENTS))
         # The stand-in Nx: records its argv, the environment it got, the Node it ran under, then
         # prints the canned log and exits NX_STUB_RC. With NX_STUB_HOLD it waits for the release file.
         stub(self.src / "node_modules" / ".bin" / "nx", f"""
@@ -147,6 +161,11 @@ if os.environ.get("NX_STUB_DIRTY"):
 if os.environ.get("NX_STUB_HOLD"):
     while not os.path.exists({str(root / "release")!r}):
         time.sleep(0.05)
+prof = os.environ.get("NX_PROFILE")
+if prof and os.path.exists({str(self.nx_profile)!r}):
+    full = os.path.join(os.getcwd(), prof.lstrip("/"))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    open(full, "w").write(open({str(self.nx_profile)!r}).read())
 sys.stdout.write(open({str(self.nx_out)!r}).read())
 sys.exit(int(os.environ.get("NX_STUB_RC", "0")))
 """)
@@ -693,6 +712,51 @@ def test_post_failure_calls_the_alert_hook_with_the_suites_and_the_log(rig):
     assert " FAIL " in rig.status.read_text()
 
 
+# --- the profile: each mode's latest run keeps what every suite took ------------------------------
+
+@pytest.mark.parametrize("mode", ["pre", "check"])
+def test_a_pass_names_the_three_slowest_suites_from_its_own_profile(rig, mode):
+    out = rig.run(mode)
+    assert out.returncode == 0, out.stderr
+    [call] = rig.nx_calls()
+    assert call["env"].get("NX_PROFILE") == f".nx/profile-{mode}.json"
+    assert (rig.src / ".nx" / f"profile-{mode}.json").exists(), "the profile is kept after a pass"
+    assert SLOWEST in out.stderr, out.stderr
+
+
+def test_a_profile_the_caller_set_is_used_and_read(rig):
+    out = rig.run("pre", NX_PROFILE="mine/p.json")
+    assert out.returncode == 0, out.stderr
+    assert rig.nx_calls()[0]["env"].get("NX_PROFILE") == "mine/p.json"
+    assert SLOWEST in out.stderr and not (rig.src / ".nx" / "profile-pre.json").exists()
+
+
+def test_a_run_that_writes_no_profile_reports_none_and_never_the_last_runs(rig):
+    old = rig.src / ".nx" / "profile-pre.json"
+    old.parent.mkdir()
+    old.write_text(json.dumps(NX_PROFILE_EVENTS))
+    rig.nx_profile.unlink()
+    out = rig.run("pre")
+    assert out.returncode == 0, out.stderr
+    assert "slowest" not in out.stderr and not old.exists()
+
+
+def test_an_unreadable_profile_reports_none_and_the_pass_stands(rig):
+    rig.nx_profile.write_text("{not json")
+    out = rig.run("pre")
+    assert out.returncode == 0 and "slowest" not in out.stderr, out.stderr
+
+
+@pytest.mark.parametrize("rc", ["0", "1"])
+def test_post_s_ledger_line_names_the_slowest_suites_pass_or_fail(rig, rc):
+    if rc == "1":
+        rig.nx_out.write_text(NX_FAIL)
+    out = rig.run("post", "--run", NX_STUB_RC=rc)
+    assert out.returncode == int(rc), out.stderr
+    [row] = [r for r in rig.ledger() if r[1] in ("post-pass", "post-FAIL")]
+    assert row[1] == ("post-pass" if rc == "0" else "post-FAIL") and row[3].endswith("; " + SLOWEST), row
+
+
 def test_post_without_an_alert_hook_fails_quietly_and_a_plain_file_is_not_run(rig):
     rig.nx_out.write_text(NX_FAIL)
     out = rig.run("post", "--run", NX_STUB_RC="1")
@@ -942,7 +1006,8 @@ def test_a_dry_run_is_recorded_as_a_dry_run_not_an_apply(rig, args):
     rig.run("post", "--run", CHEZMOI_ARGS=args)
     assert rig.events() == ["dry-run", "dry-run", "dry-run"]
     assert [r[3] for r in rig.ledger()] == ["start", "post-start",
-                                            "post-pass: log: " + rig.status.read_text().split()[3]]
+                                            "post-pass: log: " + rig.status.read_text().split()[3]
+                                            + "; " + SLOWEST]
 
 
 def test_a_refusal_in_a_dry_run_is_not_recorded_as_a_refusal(rig):

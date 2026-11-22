@@ -71,7 +71,9 @@ NX'S ENVIRONMENT. NX_DAEMON=false and NX_ISOLATE_PLUGINS=false, so Nx opens no s
 sandbox no socket directory passes Nx's ownership walk (from Nx 24.0.3), and plugin workers need a
 socket as much as the daemon does. NX_TUI=false and --outputStyle=static, so the log is plain lines,
 each task's output printed whole when it ends. NX_PARALLEL, unless the caller set it, is the CPU
-count up to 8.
+count up to 8. NX_PROFILE, unless the caller set it, is .nx/profile-<mode>.json (`pre`, `check` or
+`post`; .nx/ is gitignored), removed before the run, so each mode's latest run leaves what every
+suite took on disk. A passing run deletes its log, so without the profile nothing would.
 
 THE LEDGER. Every step below also appends a line to the machine's apply ledger,
 ${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/apply.log, through the SOURCE copy of the
@@ -90,7 +92,8 @@ that is still going from one that died), then `post-pass` or
 is ignored here: it never changes a hook's exit code.
 
 THE REPORT. `pre` and `check` keep Nx's output in a log under $TMPDIR and print one summary line on a
-pass (how many suites ran, how many replayed from the cache), deleting the log. On a failure they
+pass (how many suites ran, how many replayed from the cache, and the three slowest suites from the
+profile), deleting the log. `post`'s ledger line names its three slowest suites too, pass or fail. On a failure they
 name each failing suite, the log, and the command that re-runs one (`npx nx run <suite>:test`);
 `check` also prints an excerpt of each failing suite's output: its lines that say FAIL (at most 60,
 the rest counted), or its last 15 lines when none does. `land` prints Nx's output as it goes, since
@@ -174,6 +177,7 @@ SRC = HERE.parent
 REQUIRED = ("git", "python3", "uv", "jq", "yq", "gitleaks", "wt")
 TARGET = "test"
 KEEP_LOGS = 5
+PROFILE_DIR = ".nx"   # gitignored; each mode's latest Nx profile is kept there
 LEDGER_TOOL = SRC / "private_dot_local" / "bin" / "executable_apply-status"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -414,15 +418,44 @@ def nx_env(env: dict) -> dict:
     return out
 
 
-def run_nx(prefix: list, env: dict, extra: list, log) -> int:
+def profile_file(env: dict, mode: str) -> Path:
+    """Where this mode's run writes its Nx profile. Nx joins NX_PROFILE to the workspace root even
+    when it is absolute, so the file is read the same way."""
+    return SRC / (env.get("NX_PROFILE") or f"{PROFILE_DIR}/profile-{mode}.json").lstrip("/")
+
+
+def run_nx(prefix: list, env: dict, extra: list, log, mode: str) -> int:
     nx = SRC / "node_modules" / ".bin" / "nx"
     if not nx.exists():
         raise Refused(f"{nx} is missing after the install, so Nx cannot run")
     cmd = prefix + [str(nx), "run-many", "-t", TARGET, "--outputStyle=static"] + extra
     log.write("apply-suites: " + " ".join(cmd) + "\n")
     log.flush()
-    return subprocess.run(cmd, env=nx_env(env), cwd=str(SRC), stdin=subprocess.DEVNULL,
+    nenv = nx_env(env)
+    if not nenv.get("NX_PROFILE"):
+        nenv["NX_PROFILE"] = f"{PROFILE_DIR}/profile-{mode}.json"
+        # A run that ends before Nx writes its profile must not report the last run's suites.
+        profile_file(nenv, mode).unlink(missing_ok=True)
+    return subprocess.run(cmd, env=nenv, cwd=str(SRC), stdin=subprocess.DEVNULL,
                           stdout=log, stderr=subprocess.STDOUT).returncode
+
+
+def slowest(env: dict, mode: str, n: int = 3) -> str:
+    """The n longest suites of this mode's last run, from its Nx profile, as "slowest: <project>
+    <seconds>s, ..."; "" when the profile is missing or cannot be read. Never raises."""
+    try:
+        events = json.loads(profile_file(env, mode).read_text())
+        tasks = [e for e in events if isinstance(e, dict) and e.get("ph") == "X"]
+        tasks.sort(key=lambda e: -float(e.get("dur", 0)))
+        top = [f"{str(e['name']).split(':')[0]} {float(e['dur']) / 1e6:.0f}s" for e in tasks[:n]]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return ""
+    return "slowest: " + ", ".join(top) if top else ""
+
+
+def with_slowest(text: str, env: dict, mode: str) -> str:
+    tail = slowest(env, mode)
+    return f"{text}; {tail}" if tail else text
 
 
 def read_log(path: Path) -> list:
@@ -588,7 +621,7 @@ def pre() -> int:
             seed_uv_cache(log)
             say("pre-apply", f"running the suites through Nx ({node}; {installed}); a suite whose"
                 " inputs are unchanged replays from Nx's cache...")
-            rc = run_nx(prefix, env, [], log)
+            rc = run_nx(prefix, env, [], log, "pre")
         except Refused as e:
             log.write(f"apply-suites: refused: {e}\n")
             log.flush()
@@ -598,7 +631,7 @@ def pre() -> int:
             return 1
     lines = read_log(logpath)
     if rc == 0:
-        say("pre-apply", nx_summary(lines))
+        say("pre-apply", with_slowest(nx_summary(lines), env, "pre"))
         logpath.unlink()
         return 0
     failed = failures(lines)
@@ -640,7 +673,7 @@ def check() -> int:
             require_install(prefix)
             say("suites", f"running the suites through Nx ({node}); a suite whose inputs are"
                 " unchanged replays from Nx's cache, and output shows only if one fails...")
-            rc = run_nx(prefix, env, [], log)
+            rc = run_nx(prefix, env, [], log, "check")
         except Refused as e:
             say("suites", f"{e}.")
             log.close()
@@ -648,7 +681,7 @@ def check() -> int:
             return 1
     lines = read_log(logpath)
     if rc == 0:
-        say("suites", nx_summary(lines))
+        say("suites", with_slowest(nx_summary(lines), env, "check"))
         logpath.unlink()
         return 0
     failed = failures(lines)
@@ -829,7 +862,7 @@ def post_body(env: dict, sd: Path) -> int:
             prefix, node, env = select_node(env)
             log.write(f"apply-suites: {node}; {ensure_install(prefix, env, log)}\n")
             seed_uv_cache(log)
-            rc = run_nx(prefix, env, ["--skip-nx-cache"], log)
+            rc = run_nx(prefix, env, ["--skip-nx-cache"], log, "post")
             refusal = ""
         except Refused as e:
             log.write(f"apply-suites: refused: {e}\n")
@@ -843,7 +876,7 @@ def post_body(env: dict, sd: Path) -> int:
     tmp.write_text(f"{now} {tree or 'dirty'} {result} {logpath}\n")
     os.replace(tmp, sd / "post-apply.last")
     if rc == 0:
-        ledger("post-pass", f"log: {logpath}", head)
+        ledger("post-pass", with_slowest(f"log: {logpath}", env, "post"), head)
         return 0
     lines = read_log(logpath)
     misses = cache_misses(lines, failures(lines))
@@ -853,7 +886,7 @@ def post_body(env: dict, sd: Path) -> int:
                 log.write(hint + "\n")
     suites = [suite_file(p) for p in failures(lines)]
     what = ", ".join(suites) or (f"none ran ({refusal})" if refusal else "unknown")
-    ledger("post-FAIL", f"suites: {what}; log: {logpath}", head)
+    ledger("post-FAIL", with_slowest(f"suites: {what}; log: {logpath}", env, "post"), head)
     alert_hook(f"dotfiles post-apply: suites failed after the apply: {what}; log: {logpath}")
     return 1
 
