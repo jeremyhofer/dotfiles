@@ -88,17 +88,27 @@ launch() { # NAME PROMPT [RULE...]
   "$sp" session launch "$n" --regime "$SEAM_PROBE_REGIME" --cwd "$repo" ${args[@]+"${args[@]}"} -- "$p"
 }
 
-# Each first turn's end is when it replies DONE: end_<arm>. Every pending session is looked at in
-# each round, so a late look at one does not move another's time. Bounded by session_wait; an arm
-# whose turn did not end gets res_<arm>, INCONCLUSIVE.
+# When ARM's reply holding WORD was written, from its transcript's own timestamp; FALLBACK (the
+# look's time) when the transcript has none. Exit 1 when the word is not there yet. The look is not
+# the turn: the arms launch one after another and are looked at only once all are up, so a look's
+# time trails the turn by the launches after it, and on a loaded machine that is seconds.
+reply_time() { # ARM WORD FALLBACK
+  local out t
+  out=$("$sp" evidence codeword "$1" "$2" --at) || return 1
+  t=$(printf '%s\n' "$out" | sed -n 's/^at: //p')
+  printf '%s\n' "${t:-$3}"
+}
+
+# Each first turn's end is when it replied DONE: end_<arm>, read by reply_time. Every pending
+# session is looked at in each round. Bounded by session_wait; an arm whose turn did not end gets
+# res_<arm>, INCONCLUSIVE.
 await_first_turns() {
-  local pending=$arms still a rc t_wait
+  local pending=$arms still a t t_wait
   t_wait=$(now)
   while [ -n "$pending" ]; do
     still=""
     for a in $pending; do
-      rc=0; "$sp" evidence codeword "$a" DONE >/dev/null || rc=$?
-      if [ "$rc" -eq 0 ]; then setv end_$a "$(now)"; else still="$still $a"; fi
+      if t=$(reply_time "$a" DONE "$(now)"); then setv end_$a "$t"; else still="$still $a"; fi
     done
     pending=${still# }
     [ -z "$pending" ] && break
@@ -196,10 +206,19 @@ poll_process() { # ARM
     *) setv last_$a unreadable; line="$line $a=unreadable"; printf '# %s: %s\n' "$a" "$(oneline "$out")" >> "$series" ;;
   esac
 }
-# One round's look for WORD in arm A's replies; the first round that sees it is <var>_<a>.
+# One round's look for WORD in arm A's replies; the first that sees it sets <var>_<a>, the reply's
+# time by reply_time (this round's when the transcript has none).
 poll_word() { # ARM WORD VAR
+  local t
   [ -z "$(getv "$3_$1")" ] || return 0
-  if "$sp" evidence codeword "$1" "$2" >/dev/null; then setv "$3_$1" "$t_round"; line="$line $1:$2"; fi
+  if t=$(reply_time "$1" "$2" "$t_round"); then setv "$3_$1" "$t"; line="$line $1:$2"; fi
+}
+# Was arm A seen present at or after instant REF (so a later stop is timed by the round that
+# found it gone)?
+sighted() { # ARM REF
+  local s
+  s=$(getv seen_$1)
+  [ -n "$s" ] && atleast "$(since "$s" "$2")" 0
 }
 # Is arm A seen present at least SECONDS (summed) after instant REF?
 seen_past() { # ARM REF SECONDS...
@@ -224,5 +243,13 @@ control_verdict() {
   fi
   cidle=$(since "$cs" "$end_control")
   cmin=$(minutes "$cidle")
+  # A stop is timed by the poll round that first finds the process gone, which is only a time if a
+  # round before it found the process present. Gone at the first look, it stopped at some time
+  # before then, and the idle duration is not measured: on a loaded machine the launches after the
+  # control's can outlast it.
+  if ! sighted control "$end_control"; then
+    all INCONCLUSIVE "the control was already gone at the first look, $cmin min after its turn ended, so it stopped at some time before then and its idle duration was not measured ($where)"
+    exit 0
+  fi
   "$sp" verdict --arm control PASS "the idle stop was observed: no process $cmin min after its turn ended"
 }

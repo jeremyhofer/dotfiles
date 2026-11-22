@@ -506,9 +506,11 @@ while True:
         time.sleep(max(0.0, nxt - time.time()))
         if not (os.path.exists(rec) and os.path.exists(tr)): sys.exit(0)
         e = events.pop(0)
+        n = time.time()
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(n)) + ".%03dZ" % (n % 1 * 1000)
         with open(tr, "a") as fh:
-            fh.write(json.dumps({"type": "user", "message": {"content": e["text"]}}) + "\n")
-            fh.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": e["word"]}]}}) + "\n")
+            fh.write(json.dumps({"type": "user", "message": {"content": e["text"]}, "timestamp": ts}) + "\n")
+            fh.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": e["word"]}]}, "timestamp": ts}) + "\n")
         clock = time.time()
         extra = max(extra, clock + cfg["completion_hold" if e["kind"] == "completion" else "fired_hold"])
         continue
@@ -735,7 +737,9 @@ if "--bg" in argv:
     t_launch = time.time()
     lines = [{"type": "user", "message": {"content": prompt}}, *lines_,
              {"type": "assistant", "message": {"content": [{"type": "text", "text": os.environ.get("FAKE_CLAUDE_REPLY", "DONE")}]}}]
-    (t / (u + ".jsonl")).write_text("".join(json.dumps(x) + "\n" for x in lines))
+    # Every line carries its time, as Claude Code writes it (ISO 8601 UTC, 2.1.330).
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t_launch)) + ".%03dZ" % (t_launch % 1 * 1000)
+    (t / (u + ".jsonl")).write_text("".join(json.dumps({**x, "timestamp": stamp}) + "\n" for x in lines))
     # The session's process, as Claude Code's pid record shows it: a record naming a pid that is alive
     # (FAKE_CLAUDE_LIVE_PID, the test's own) until the supervisor (SUPERVISOR, above) removes it, on
     # its model with FAKE_CLAUDE_IDLE set, or after the delay FAKE_CLAUDE_STOP_AFTER ({"control":
@@ -757,6 +761,11 @@ if "--bg" in argv:
                    "fired_hold": float(os.environ.get("FAKE_CLAUDE_FIRED_HOLD", "0"))}
             subprocess.Popen([sys.executable, "-c", SUPERVISOR, json.dumps(cfg)],
                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # FAKE_CLAUDE_LAUNCH_LAG ({"control": seconds, ...}, matched on the display name): the launch
+    # returns that much later, after the session is up and its first turn written, as a launch does
+    # on a loaded machine.
+    for key, d in json.loads(os.environ.get("FAKE_CLAUDE_LAUNCH_LAG", "{}")).items():
+        if "seam-probe-%s-" % key in (opt(flags, "-n") or ""): time.sleep(d)
     if not os.environ.get("FAKE_CLAUDE_NOID"): print("backgrounded · " + sid)
     sys.exit(0)
 print("fake claude: unhandled", argv, file=sys.stderr); sys.exit(2)
@@ -1224,6 +1233,22 @@ def test_evidence_codeword_from_a_transcript(fake):
     tool(fake, "run", "s", "--yes", extra_env={"FAKE_CLAUDE_REPLY": "I see SPROBE-X-1"})
     lines = (d / "seen").read_text().splitlines()
     assert lines[0].startswith("seen:") and lines[1] == "0" and lines[3] == "3"
+
+
+def test_evidence_codeword_at_reads_the_reply_time_from_the_transcript(tmp_path):
+    def reply(text, **extra):
+        return json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}, **extra})
+    f = tmp_path / "t.jsonl"
+    f.write_text("\n".join([json.dumps({"type": "user", "message": {"content": "DONE"}, "timestamp": "2026-11-22T10:00:00.000Z"}),
+                            reply("working", timestamp="2026-11-22T10:00:05.000Z"),
+                            reply("DONE", timestamp="2026-11-22T10:00:09.250Z"),
+                            reply("DONE again", timestamp="2026-11-22T10:05:00.000Z")]) + "\n")
+    assert sp.reply_at(f, "DONE") == 1795341609.25   # the first REPLY holding it, not the prompt
+    assert sp.reply_at(f, "FIRED") is None
+    f.write_text(reply("DONE") + "\n")
+    assert sp.reply_at(f, "DONE") is None   # no timestamp: the caller falls back to its look
+    f.write_text(reply("DONE", timestamp="2026-11-22T10:00:09") + "\n")
+    assert sp.reply_at(f, "DONE") is None   # no zone: not a time to compare
 
 
 def test_wait_mark(fake, tmp_path):
@@ -1847,7 +1872,9 @@ def test_manual_called_directly_on_a_terminal_reads_the_enter(env, tmp_path):
 # nothing; a delivered completion and a pending job hold it; a job that fires is a turn and holds
 # nothing after. The release command is shortened to `sleep 1` in a copy of the shipped suite, and
 # the case's times are seconds: idle 10 s, the turn arm's job firing 6 s after launch, a tolerance
-# of 4 s and a margin of 8 s, so the poll rounds' lag under load stays well inside both.
+# of 4 s and a margin of 8 s. Load does not move a turn's end, which is read from the transcript's
+# own timestamp; it can delay the first poll round past a stop, which the case then reports as not
+# timed rather than compares (2026-11-22: a loaded pre-apply run read a 2 s shell stop as PASS).
 
 IDL = "seams/session-lifecycle/idl"
 CPH = "seams/session-lifecycle/cph"
@@ -1961,6 +1988,25 @@ def test_idle_holders_a_shell_stop_outside_the_tolerance_is_inconclusive(fake, t
     arms, _ = idle_arms(fake)
     assert arms["shell"][0] == "INCONCLUSIVE" and needle in arms["shell"][1], arms
     assert arms["control"][0] == "PASS" and arms["schedule"][0] == "PASS"
+
+
+def test_idle_holders_times_a_first_turn_from_its_transcript_not_from_the_look(fake, tmp_path):
+    # The arms launch one after another and their first turns are looked for once all are up, so a
+    # slow launch after the control's makes the control's turn look later than it ended, and its
+    # idle look shorter. A shell stop 8 s sooner than the control's must still read sooner.
+    idle(fake, tmp_path, stop_after={"shell": 2})
+    idle_run(fake, extra_env={"FAKE_CLAUDE_LAUNCH_LAG": json.dumps({"control": 6})})
+    arms, _ = idle_arms(fake)
+    assert arms["shell"][0] == "INCONCLUSIVE" and "sooner than the control" in arms["shell"][1], arms
+
+
+def test_idle_holders_a_control_gone_at_the_first_look_is_not_timed(fake, tmp_path):
+    # The last launch outlasts the control's 10 s idle, so the first round finds it already gone.
+    idle(fake, tmp_path)
+    r = idle_run(fake, extra_env={"FAKE_CLAUDE_LAUNCH_LAG": json.dumps({"release": 12})})
+    arms, _ = idle_arms(fake)
+    assert set(verdicts_of(arms).values()) == {"INCONCLUSIVE"} and "already gone at the first look" in arms["shell"][1], arms
+    assert r.returncode == 3
 
 
 def test_idle_holders_a_fired_turn_that_holds_fails_the_turn_arm(fake, tmp_path):

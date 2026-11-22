@@ -91,7 +91,11 @@ primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set)
                            a commit on WORKTREE's HEAD since REF-BEFORE, read from git
     refused MARK [--text T]...
                            a declared refusal text (default git's "Read-only file system")
-    codeword SOURCE WORD   WORD in a reply: an output file, or a session or ask of this run by name
+    codeword SOURCE WORD [--at]
+                           WORD in a reply: an output file, or a session or ask of this run by name.
+                           With --at, a session's reply also prints "at: EPOCH", the transcript's
+                           own timestamp of the first reply holding WORD (when the turn ended, not
+                           when it was looked at); no such line when the transcript has none
     trusted REPO           Claude Code's workspace trust for REPO's root
     worktree REPO PATH     git lists a worktree at PATH (and whether its directory is on disk)
     calls NAME [--tool T]... [--command C]
@@ -603,10 +607,34 @@ def assistant_text(transcript: Path) -> str:
     return "\n".join(out)
 
 
-def prim_codeword(src: str, word: str) -> int:
+def reply_at(transcript: Path, word: str) -> float | None:
+    """The epoch of the first assistant entry whose text holds WORD, from the entry's own
+    `timestamp` (Claude Code writes one on every transcript line, ISO 8601 UTC, as of 2.1.330); None
+    when no single entry holds it or its timestamp cannot be read."""
+    for line in transcript.read_text(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("type") != "assistant":
+            continue
+        content = (e.get("message") or {}).get("content")
+        texts = [content] if isinstance(content, str) else \
+            [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"] if isinstance(content, list) else []
+        if any(word in t for t in texts):
+            try:
+                ts = datetime.fromisoformat(str(e.get("timestamp", "")).replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return ts.timestamp() if ts.tzinfo else None   # no zone: not a time to compare
+    return None
+
+
+def prim_codeword(src: str, word: str, at: bool = False) -> int:
     """Whether a codeword appears in what the model replied: a file (a `session ask` output), or a
-    session this run launched or asked, by name (its transcript's assistant text)."""
-    text, where = None, src
+    session this run launched or asked, by name (its transcript's assistant text). With AT, a
+    session's reply also prints its time, read from the transcript (reply_at)."""
+    text, where, transcript = None, src, None
     if Path(src).is_file():
         text = Path(src).read_text(errors="replace")
     else:
@@ -620,13 +648,16 @@ def prim_codeword(src: str, word: str) -> int:
                 s = session_entry(src)
                 files = transcript_files(s.get("uuid", ""))
                 if files:
-                    text, where = assistant_text(files[0]), str(files[0])
+                    text, where, transcript = assistant_text(files[0]), str(files[0]), files[0]
                 break
     if text is None:
         print(f"INCONCLUSIVE: nothing to read for {src} (no output file, no transcript)")
         return EV_UNREAD
     if word in text:
         print(f"seen: {word} in {where}")
+        t = reply_at(transcript, word) if at and transcript else None
+        if t is not None:
+            print(f"at: {t:.3f}")
         return EV_YES
     print(f"not seen: {word} in {where}")
     return EV_NO
@@ -2008,7 +2039,7 @@ def main(argv: list[str]) -> int:
         g.add_argument(f"--{m}", dest="mode", action="store_const", const=m)
     q = es.add_parser("committed"); q.add_argument("worktree"); q.add_argument("before"); q.add_argument("--message")
     q = es.add_parser("refused"); q.add_argument("mark"); q.add_argument("--text", action="append")
-    q = es.add_parser("codeword"); q.add_argument("source"); q.add_argument("word")
+    q = es.add_parser("codeword"); q.add_argument("source"); q.add_argument("word"); q.add_argument("--at", action="store_true")
     q = es.add_parser("trusted"); q.add_argument("repo")
     q = es.add_parser("worktree"); q.add_argument("repo"); q.add_argument("path")
     q = es.add_parser("calls"); q.add_argument("name"); q.add_argument("--tool", action="append")
@@ -2057,7 +2088,7 @@ def main(argv: list[str]) -> int:
                     case "path": return prim_path(a.path, a.mode, a.root)
                     case "committed": return prim_committed(a.worktree, a.before, a.message)
                     case "refused": return prim_refused(a.mark, a.text)
-                    case "codeword": return prim_codeword(a.source, a.word)
+                    case "codeword": return prim_codeword(a.source, a.word, a.at)
                     case "trusted": return prim_trusted(a.repo)
                     case "worktree": return prim_worktree(a.repo, a.path)
                     case "calls": return prim_calls(a.name, a.tool, a.command)

@@ -23,8 +23,12 @@
 #             the control's idle duration after that completion turn ended, so a delivered completion
 #             holds the session beyond restarting its clock (the comparison with turn)
 # Each holder is read from the session's transcript (`evidence calls`), never from the session's
-# own account, and so is each later turn: the job's and the completion's codewords are looked for
-# once a poll round, so each turn's end is placed within one round, never inferred from the launch.
+# own account, and so is each turn: the first turn's DONE and the job's and completion's codewords
+# are looked for once a poll round, and each turn's end is the time the transcript itself records
+# for that reply (`evidence codeword --at`), never the round that found it and never the launch.
+# The rounds start only once all five sessions are up, so on a loaded machine a round can trail an
+# earlier arm's turn by the later launches; the round's time stands in only for a transcript that
+# records none.
 # The process is read by `session process`, from Claude Code's pid records and the daemon's roster.
 # Every poll is one line in the run's results directory, with each arm's reading and the round a
 # codeword was first seen in, so the time series survives the run. The shared mechanics are in
@@ -35,7 +39,11 @@
 # (SEAM_PROBE_IDLE_MARGIN, default 1800 s) past that duration, shell and turn FAIL. Stopped outside
 # the tolerance but before the margin, they are INCONCLUSIVE: something held them a while, or stopped
 # them early, and this case does not read what. The margin is wider than the tolerance, so no
-# reading is both.
+# reading is both. A stop is timed by the round that first finds the process gone, which is a time
+# only if an earlier round found it present: gone at the first look, it stopped at some time before
+# then. A control gone at the first look makes every arm INCONCLUSIVE (its idle duration was not
+# measured); an arm gone at the first look is INCONCLUSIVE, and reads "sooner" only when even that
+# first look is sooner than the control's stop by more than the tolerance. Neither ever PASSes.
 #
 # A monitor is NOT an arm. The Monitor tool's own schema caps its timeout_ms at 1,800,000 ms (30
 # minutes), so a monitor holds a session past the hour only by being re-armed, and each re-arm is a
@@ -186,6 +194,16 @@ idle_like() { # ARM REF WHAT
   fi
   if [ -n "$sa" ]; then
     d=$(since "$sa" "$ref"); diff=$(since "$d" "$cidle")
+    if ! sighted "$a" "$ref"; then
+      # Gone at the first look after REF: it stopped at some time up to d, so only "sooner" can be
+      # read, and only when even d is sooner by more than the tolerance (control_verdict).
+      if ! atleast "$tolerance" "$(since "$cidle" "$d")"; then
+        "$sp" verdict --arm "$a" INCONCLUSIVE "stopped at most $(minutes "$d") min after $what (gone at the first look), sooner than the control's $cmin min by more than the $tmin min tolerance: not the idle stop the control showed"
+      else
+        "$sp" verdict --arm "$a" INCONCLUSIVE "already gone at the first look, $(minutes "$d") min after $what, so it stopped at some time before then, which cannot be compared with the control's $cmin min ($where)"
+      fi
+      return
+    fi
     if atleast "$tolerance" "${diff#-}"; then
       "$sp" verdict --arm "$a" PASS "stopped $(minutes "$d") min after $what, against the control's $cmin min after its own: within the $tmin min tolerance"
     elif atleast 0 "$diff"; then
