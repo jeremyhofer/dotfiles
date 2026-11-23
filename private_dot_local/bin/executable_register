@@ -566,6 +566,20 @@ def relation_findings(entries, args):
     return out
 
 
+def documents_in(base, folder):
+    """The files under `folder` that are documents: tracked, or untracked and not ignored. A file
+    git ignores (a test run's screenshots, a tool's cache) is scratch, and naming it would be wrong.
+    An untracked file git does not ignore still counts, so a new document is seen before its commit.
+    Where git cannot answer, every file on disk counts, as before."""
+    if not folder.is_dir():
+        return []
+    out = git_out(base, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+                  folder.relative_to(base).as_posix())
+    if out is None:
+        return sorted(p for p in folder.rglob("*") if p.is_file())
+    return sorted({base / name for name in out.split("\0") if name and (base / name).is_file()})
+
+
 def unclaimed_documents(base, entries):
     """Documents in the repository-wide type folders that no initiative names (or only one does).
 
@@ -595,7 +609,7 @@ def unclaimed_documents(base, entries):
                           r.read_text(encoding="utf-8", errors="replace")))
     out = []
     for t in TYPE_DIRS:
-        for f in sorted(p for p in (docs / t).rglob("*") if p.is_file()) if (docs / t).is_dir() else []:
+        for f in documents_in(base, docs / t):
             if f.name == "README.md":
                 continue
             rel = f.relative_to(base).as_posix()

@@ -190,6 +190,12 @@ assert_has "show lists an ADR id the README names" "ABC-ADR-0005" "$out"
 assert_has "show lists an ADR file the README names" "docs/adr/0006-x.md" "$out"
 assert_lacks "show of an entry with no folder adds no folder section" "docs/initiatives" "$(grun show ABC-0003)"
 
+# A file git ignores is scratch, not a document: a test run's screenshots under a type folder must
+# not count (keystone's 62nd finding, an ignored `.vitest-attachments/*.png`). A new document not yet
+# committed still counts, so a session sees its own unclaimed file before it commits.
+printf 'docs/research/ignored-scratch/\n' > "$g/.gitignore"
+fdoc docs/research/ignored-scratch/shot.png
+fdoc docs/runbooks/new-uncommitted.md
 out=$(grun health)
 assert_has "health names an active entry whose folder is stale" "ABC-0002" "$(echo "$out" | grep -i 'no commit')"
 assert_lacks "health leaves an active entry with a recent commit alone" "ABC-0001" "$(echo "$out" | grep -i 'no commit')"
@@ -206,6 +212,8 @@ assert_lacks "a file in an asset directory a README names is named" "asset-note/
 assert_lacks "a nested file in a named asset directory is named" "asset-note/real/case.ts" "$out"
 assert_has "a directory whose name only ends in a named one is not named" "docs/research/old-asset-note/stray.mjs" "$(echo "$out" | grep -i 'named by nothing')"
 assert_has "a directory named without its slash is not named" "docs/research/same-name/unlisted.mjs" "$(echo "$out" | grep -i 'named by nothing')"
+assert_lacks "a file git ignores is not a document" "ignored-scratch/shot.png" "$out"
+assert_has "an untracked document git does not ignore still counts" "docs/runbooks/new-uncommitted.md" "$(echo "$out" | grep -i 'named by nothing')"
 python3 "$reg" health --root "$gr" >/dev/null 2>&1 && ok "health exits 0 with findings" || bad "health exits 0 with findings"
 # Near miss: a folder committed today is not stale, at the edge of the window.
 echo x >> "$g/docs/initiatives/ABC-0002-beta/plans/2026-01-01-b.md"; gt add -A >/dev/null; gt commit -q -m touch
