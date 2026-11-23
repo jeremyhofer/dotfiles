@@ -2234,3 +2234,233 @@ def test_help_documents_curve_set_env_and_the_curve_report(capsys):
     out = capsys.readouterr().out
     for word in ("curve", "--set-env", "knee", "ceiling", "quiet", "DRIFTED", "--resume", "--seed"):
         assert word in out, word
+
+
+# ---- curve: one loop per gate ------------------------------------------------------------
+
+def gate_decl(tmp_path, project, n=3):
+    """n loops g1..gn, each in its own directory under the root, each writing its `pwd` to a file."""
+    body = ""
+    for i in range(1, n + 1):
+        (project / f"g{i}").mkdir(exist_ok=True)
+        body += f'[[loop]]\nid="g{i}"\ncwd="g{i}"\ncommand="pwd >> {tmp_path}/g{i}.pwd"\n'
+    return write_decl(tmp_path, project, body)
+
+
+def gate_curve(decl, res, loops, *extra):
+    return run_main("curve", decl, "--loop", loops, "--var", "W", "--no-pressure", "--quiet-for", "0",
+                    "--quiet-timeout", "0", "--results", res, "--n", "2", "--samples", "2", "--control", "2",
+                    "--seed", "1", *extra)
+
+
+def test_each_gate_of_a_cell_runs_in_its_own_loops_directory(tmp_path, project, quiet_machine):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g1,g2,g3") == 0
+    for i in (1, 2, 3):
+        dirs = set((tmp_path / f"g{i}.pwd").read_text().split())
+        assert dirs == {str((project / f"g{i}").resolve())}, i
+    cells = [r for r in records(res) if r["role"] == "cell"]
+    assert len(cells) == 6 and all(r["concurrent"] and r["gates"] == 3 for r in cells)
+    assert {r["loop"] for r in cells} == {"g1", "g2", "g3"}
+    assert all(sorted(r["group_loops"]) == ["g1", "g2", "g3"] for r in cells)
+
+
+def test_a_control_cell_runs_the_first_listed_loop_alone(tmp_path, project, quiet_machine):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g2,g1,g3") == 0
+    ctl = [r for r in records(res) if r["role"] == "control"]
+    assert len(ctl) == 3 and all(r["loop"] == "g2" and r["gates"] == 1 and not r["concurrent"] for r in ctl)
+    # g1 and g3 ran only as gates of the two real cells (2 samples), never as a control
+    assert len((tmp_path / "g1.pwd").read_text().split()) == 2
+    assert len((tmp_path / "g2.pwd").read_text().split()) == 2 + 3
+
+
+def test_every_curve_record_carries_curve_loops_as_given(tmp_path, project, quiet_machine):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g3,g1") == 0
+    assert all(r["curve_loops"] == ["g3", "g1"] for r in records(res))
+    res1 = tmp_path / "r1.jsonl"
+    assert gate_curve(d, res1, "g1") == 0
+    assert all(r["curve_loops"] == ["g1"] for r in records(res1))
+
+
+def test_a_loop_list_names_every_unknown_id_and_runs_nothing(tmp_path, project, quiet_machine, capsys):
+    d = gate_decl(tmp_path, project)
+    assert gate_curve(d, tmp_path / "r.jsonl", "g1,nope,g2,zip") == 2
+    err = capsys.readouterr().err
+    assert "unknown loop 'nope'" in err and "unknown loop 'zip'" in err and "g1.pwd" not in err
+    assert not (tmp_path / "g1.pwd").exists()
+
+
+@pytest.mark.parametrize("gates,rc", [("1", 0), ("2", 0), ("3", 2), ("4", 2)])
+def test_gates_with_a_loop_list_must_be_left_at_one_or_equal_the_list_length(
+        tmp_path, project, quiet_machine, capsys, gates, rc):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g1,g2", "--gates", gates) == rc
+    if rc:
+        assert "--gates" in capsys.readouterr().err and not (tmp_path / "g1.pwd").exists()
+    else:
+        assert {r["gates"] for r in records(res) if r["role"] == "cell"} == {2}
+
+
+def test_resume_refuses_a_changed_loop_list_and_accepts_the_same_one(tmp_path, project, quiet_machine, capsys):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g1,g2") == 0
+    cid = records(res)[0]["curve"]
+    for other in ("g2,g1", "g1,g3", "g1"):
+        assert gate_curve(d, res, other, "--resume", cid) == 2, other
+    assert gate_curve(d, res, "g1,g2", "--resume", cid) == 0
+
+
+def test_resume_message_names_the_recorded_and_the_given_list(tmp_path, project, quiet_machine, capsys):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g1,g2") == 0
+    cid = records(res)[0]["curve"]
+    capsys.readouterr()
+    assert gate_curve(d, res, "g1,g3", "--resume", cid) == 2
+    err = capsys.readouterr().err
+    assert "g1,g2" in err and "g1,g3" in err
+
+
+def test_resume_of_a_record_written_before_curve_loops_reads_its_single_loop(
+        tmp_path, project, quiet_machine, capsys):
+    d = gate_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert gate_curve(d, res, "g1") == 0
+    old = [{k: v for k, v in r.items() if k != "curve_loops"} for r in records(res)]
+    write_curve(res, old)
+    cid = old[0]["curve"]
+    assert gate_curve(d, res, "g2", "--resume", cid) == 2
+    assert gate_curve(d, res, "g1,g2", "--resume", cid) == 2
+    assert gate_curve(d, res, "g1", "--resume", cid) == 0
+
+
+def test_report_curve_shows_the_loop_list_in_the_header_and_json(tmp_path, capsys):
+    res = tmp_path / "r.jsonl"
+    recs = curve_recs({4: [40] * 3})
+    for r in recs:
+        r["curve_loops"] = ["e2e-g1", "e2e-g2"]
+        r["loop"] = "e2e-g1"
+    write_curve(res, recs)
+    assert run_main("report", "--results", res, "--curve", "c1") == 0
+    assert "e2e-g1,e2e-g2" in capsys.readouterr().out.splitlines()[0]
+    assert run_main("report", "--results", res, "--curve", "c1", "--json") == 0
+    assert json.loads(capsys.readouterr().out)["loops"] == ["e2e-g1", "e2e-g2"]
+
+
+def test_report_curve_of_an_older_record_reports_its_one_loop(tmp_path, capsys):
+    res = tmp_path / "r.jsonl"
+    recs = curve_recs({4: [40] * 3})
+    for r in recs:
+        r["loop"] = "w"
+    write_curve(res, recs)
+    assert run_main("report", "--results", res, "--curve", "c1", "--json") == 0
+    assert json.loads(capsys.readouterr().out)["loops"] == ["w"]
+
+
+def test_help_documents_the_loop_list_and_gates(capsys):
+    with pytest.raises(SystemExit):
+        run_main("--help")
+    out = capsys.readouterr().out
+    assert "--loop ID[,ID" in out and "one loop per gate" in out and "--against" in out
+
+
+# ---- report --curve --against: Pass B against Pass A ------------------------------------
+
+def pass_recs(curve_id, walls, k, var="W"):
+    """A pass's records: walls {n: [wall, ...]}; each cell is k member records (k gates)."""
+    out = []
+    for n, ws in walls.items():
+        for i, w in enumerate(ws):
+            for m in range(k):
+                r = crec(n, w, i, gates=k)
+                r.update(curve=curve_id, var=var, loop=f"g{m}", curve_loops=[f"g{j}" for j in range(k)])
+                out.append(r)
+    return out
+
+
+def against(tmp_path, capsys, a_walls, b_walls, *flags, a_k=1, b_k=3, var_b="W", a_id="A", b_id="B"):
+    res = tmp_path / "r.jsonl"
+    write_curve(res, pass_recs("A", a_walls, a_k) + pass_recs("B", b_walls, b_k, var=var_b))
+    rc = run_main("report", "--results", res, "--curve", b_id, "--against", a_id, *flags)
+    return rc
+
+
+A_100 = {1: [150], 2: [110] * 3, 4: [100] * 3}
+
+
+@pytest.mark.parametrize("b_wall,saturates", [(104.0, False), (110.0, False), (110.5, True), (118.0, True)])
+def test_against_a_rise_over_ten_percent_saturates_and_one_at_or_under_holds(
+        tmp_path, capsys, b_wall, saturates):
+    assert against(tmp_path, capsys, A_100, {2: [200] * 3, 4: [b_wall] * 3}, "--json") == 0
+    out = json.loads(capsys.readouterr().out)
+    ag = out["against"]
+    assert out["knee"] == 4 and ag["saturates"] is saturates and ag["reason"] is None
+    assert ag["curve"] == "A" and ag["n"] == 4 and ag["gates"] == 3
+    assert ag["wall_one_gate"] == 100.0 and ag["wall_k_gates"] == b_wall
+    assert ag["rise"] == pytest.approx((b_wall - 100.0) / 100.0)
+
+
+def test_against_the_ten_percent_boundary_is_strict_even_with_float_error(tmp_path, capsys):
+    # (1.1 - 1.0) / 1.0 is 0.10000000000000009 in floating point: still exactly 10%, so it holds.
+    assert against(tmp_path, capsys, {4: [1.0] * 3}, {4: [1.1] * 3}, "--json") == 0
+    ag = json.loads(capsys.readouterr().out)["against"]
+    assert ag["rise"] > 0.1 and ag["saturates"] is False
+
+
+def test_against_text_gives_one_line_after_the_normal_report(tmp_path, capsys):
+    assert against(tmp_path, capsys, A_100, {2: [200] * 3, 4: [118.0] * 3}) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("curve B") and "knee 4" in "\n".join(lines)
+    assert lines[-1] == ("against curve A: at N=4, 3 gates 118.0 s vs 1 gate 100.0 s, +18.0%: "
+                         "saturates within 3 gates")
+    assert against(tmp_path, capsys, A_100, {2: [200] * 3, 4: [104.0] * 3}) == 0
+    assert capsys.readouterr().out.splitlines()[-1].endswith("+4.0%: holds at 3 gates")
+
+
+def test_against_without_a_knee_in_b_is_unknown_and_says_so(tmp_path, capsys):
+    b = {4: [100.0, 100.0, 300.0]}  # p90 far over the median: nothing is eligible
+    assert against(tmp_path, capsys, A_100, b, "--json") == 0
+    ag = json.loads(capsys.readouterr().out)["against"]
+    assert ag["saturates"] is None and ag["rise"] is None and "no knee" in ag["reason"]
+    assert against(tmp_path, capsys, A_100, b) == 0
+    assert "against curve A:" in capsys.readouterr().out.splitlines()[-1]
+
+
+def test_against_without_a_passing_median_in_a_at_the_knee_is_unknown_and_says_so(tmp_path, capsys):
+    a_missing = {1: [150], 2: [110] * 3}
+    assert against(tmp_path, capsys, a_missing, {4: [100.0] * 3}, "--json") == 0
+    ag = json.loads(capsys.readouterr().out)["against"]
+    assert ag["saturates"] is None and "curve A" in ag["reason"] and "N=4" in ag["reason"]
+    res = tmp_path / "r2.jsonl"
+    failed = pass_recs("A", {2: [110] * 3}, 1) + [dict(r, exit_code=1) for r in pass_recs("A", {4: [100] * 3}, 1)]
+    write_curve(res, failed + pass_recs("B", {4: [100.0] * 3}, 3))
+    assert run_main("report", "--results", res, "--curve", "B", "--against", "A", "--json") == 0
+    assert json.loads(capsys.readouterr().out)["against"]["saturates"] is None
+
+
+def test_against_refuses_when_a_ran_more_than_one_gate(tmp_path, capsys):
+    assert against(tmp_path, capsys, A_100, {4: [100.0] * 3}, a_k=2, b_k=3) == 2
+    assert "gates 1" in capsys.readouterr().err
+
+
+def test_against_refuses_when_b_ran_one_gate(tmp_path, capsys):
+    assert against(tmp_path, capsys, A_100, {4: [100.0] * 3}, b_k=1) == 2
+    assert "more than one gate" in capsys.readouterr().err
+
+
+def test_against_refuses_curves_that_vary_different_variables(tmp_path, capsys):
+    assert against(tmp_path, capsys, A_100, {4: [100.0] * 3}, var_b="X") == 2
+    assert "same variable" in capsys.readouterr().err
+
+
+def test_against_an_unknown_curve_is_an_error_naming_it(tmp_path, capsys):
+    assert against(tmp_path, capsys, A_100, {4: [100.0] * 3}, a_id="nope") == 2
+    err = capsys.readouterr().err
+    assert "no records of curve 'nope'" in err
