@@ -337,7 +337,7 @@ machine where Claude Code's hooks are not available, has none of them.
   "…is too complex to verify that it stays inside the worktree" or "…names git in a form too
   complex to verify". It needs no git command to fire: a `cd $DIR && …`, a heredoc, a loop or a
   variable in a path is enough. Measured across the home machines' transcripts on 2026-11-22: about
-  1,100 refusals on Claude Code 2.1.302 to 2.1.330, three in four of them in commands that never named git. Run plain,
+  1,300 refusals on Claude Code 2.1.302 to 2.1.330, about half of them in commands that never named git. Run plain,
   separate commands with literal paths, and name a path with `git -C <path>` rather than relying on
   the current directory, which can drift after leaving.
 - **Each command has its own network namespace**, so a server started in one command cannot be
