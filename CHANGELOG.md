@@ -48,6 +48,16 @@ generated key, so a future change in how worktrunk derives one fails there.
 long as the install. Before applying, run seam-probe's `worktree-takeover` case `bootstrap-timeout`,
 which measures that hook against its timeout. Nothing in the overlay changes.
 
+## 2026-11-23 (fleet-canonicals: one unparseable transcript line does not decide the handoff gate)
+
+No action. The handoff gate read a session's transcript with one `jq` over the whole file, so a single
+line that does not parse (a session cut off mid-write leaves a truncated last line) failed the read.
+With a listing row, the work-since-park count then refused a countable session as unreadable. With no
+row, the gate passed a park the session had worked past, and a bad first line hid the seat's newest
+session, so an older one was compared. Both reads now go line by line and skip a line that does not
+parse, as the request queue's count already did. The work-since-park check fails closed for any
+session the gate identified, whether by its row or from its transcripts.
+
 ## 2026-11-23 (fleet-canonicals: the handoff gate runs when the listing has no row; `up` and `resume` refuse from a sandbox a seat the snapshot lacks)
 
 No action. Three changes to `fleet-canonicals`:
