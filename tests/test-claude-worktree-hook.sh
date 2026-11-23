@@ -112,9 +112,8 @@ out=$(run "$HOOK" bash "$(bash_payload 'git worktree add x')")
 printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'wt switch --create' \
   && ok "add names wt switch --create" || no "add reason does not name wt switch --create: $out"
 
-echo "== Bash guard: raw git worktree remove is allowed, with a warning naming wt remove =="
-for c in 'git worktree remove x' 'git -C "/path with space" worktree remove x' 'git --no-pager worktree remove z' \
-         'true; git worktree remove q' 'sh -ec '"'"'git worktree remove q'"'"''; do
+echo "== Bash guard: a bare raw git worktree remove is allowed, with a warning naming wt remove =="
+for c in 'git worktree remove x' 'git worktree remove "/path with space"'; do
   out=$(run "$HOOK" bash "$(bash_payload "$c")")
   if [ "$(decision "$out")" = allow ] && printf '%s' "$out" | jq -r '.systemMessage, .hookSpecificOutput.additionalContext' | grep -q 'wt remove --no-hooks --foreground'; then
     ok "warned, not refused: $c"
@@ -133,10 +132,29 @@ for c in 'wt remove x' 'wt remove --no-hooks x' 'cd /r && wt remove x' 'bash -c 
          'wt -C /r remove x' 'wt remove'; do
   expect_bash "$HOOK" deny "$c" "refused: $c"
 done
-for c in 'wt remove --foreground x' 'wt -C /r remove --no-hooks --foreground x' 'echo "wt remove x"' \
-         'wt list' 'wt switch --create remove'; do
+for c in 'echo "wt remove x"' 'wt list' 'wt switch --create remove'; do
   expect_bash "$HOOK" allow "$c" "allowed: $c"
 done
+
+echo "== Bash guard: a removal that is not the whole command is refused =="
+# Only the two bare forms are exempt from the sandbox; any other spelling runs sandboxed and refuses
+# or stops halfway on the placeholders (measured 2026-11-22).
+for c in 'cd /r && wt remove --no-hooks --foreground x' 'wt remove --no-hooks --foreground x 2>&1 | tail -4' \
+         'for w in a b; do wt remove --no-hooks --foreground "$w"; done' 'wt remove --no-hooks --foreground $W' \
+         'wt -C /r remove --no-hooks --foreground x' 'wt remove --foreground x' \
+         'git -C "/path with space" worktree remove x' 'git --no-pager worktree remove z' \
+         'true; git worktree remove q' 'sh -ec '"'"'git worktree remove q'"'"'' 'X=1 git worktree remove q' \
+         'cd /r && git worktree remove x' "git worktree remove x
+ls"; do
+  expect_bash "$HOOK" deny "$c" "refused: $c"
+done
+for c in 'wt remove --no-hooks --foreground x' 'wt remove --no-hooks --foreground agent-a1b2'; do
+  out=$(run "$HOOK" bash "$(bash_payload "$c")")
+  [ -z "$out" ] && ok "bare wt remove allowed silently: $c" || no "bare wt remove not silent: $c :: $out"
+done
+out=$(run "$HOOK" bash "$(bash_payload 'cd /r && wt remove --no-hooks --foreground x')")
+printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q 'as a Bash call of its own' \
+  && ok "the compound-removal refusal names the bare form" || no "compound-removal reason does not name the bare form: $out"
 out=$(run "$HOOK" bash "$(bash_payload 'wt remove x')")
 printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -q -- '--foreground' \
   && ok "the wt remove refusal names --foreground" || no "wt remove reason does not name --foreground: $out"
@@ -153,10 +171,15 @@ broken 's/^        wt-remove-bg) printf .%s. "\$sub"; exit 0 ;;$/        wt-remo
 expect_bash "$b" allow 'wt remove x' "broken copy (wt-remove-bg match removed) allows a background wt remove"
 broken 's/\*worktree\* | \*remove\*)/*worktree*)/' '*worktree\* | \*remove\*)'
 expect_bash "$b" allow 'wt remove x' "broken copy (fast path without remove) lets wt remove through unscanned"
+broken 's/^      bare_removal "\$cmd" || deny /      true || deny /' 'bare_removal "$cmd" || deny'
+expect_bash "$b" allow 'cd /r && wt remove --no-hooks --foreground x' "broken copy (bare check removed) allows a compound wt remove"
+expect_bash "$b" allow 'git -C /r worktree remove x' "broken copy (bare check removed) allows git -C worktree remove"
+broken "s/^  case \"\$1\" in \*\[';&|<>()\$\`'\]\* | \*\"\$nl\"\*) return 1 ;; esac\$/  :/" "case \"\$1\" in \*\[';&|<>()"
+expect_bash "$b" allow 'wt remove --no-hooks --foreground x | tail -4' "broken copy (operator test removed) allows a piped bare-prefixed removal"
 echo "== Remove RED: making remove refuse again turns the warning test red =="
 broken 's/^    remove) warn .*/    remove) how=x ;;/' "    remove) warn '"
 expect_bash "$b" deny 'git worktree remove x' "broken copy (warning turned into a refusal) denies git worktree remove"
-out=$(run "$b" bash "$(bash_payload 'git -C /r worktree remove x')")
+out=$(run "$b" bash "$(bash_payload 'git worktree remove x')")
 printf '%s' "$out" | jq -r '.systemMessage // empty' | grep -q 'wt remove' \
   && no "broken copy still warned" || ok "and the allowed-with-warning assertion would fail against it"
 

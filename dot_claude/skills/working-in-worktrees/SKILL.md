@@ -326,13 +326,20 @@ machine where Claude Code's hooks are not available, has none of them.
   outside the sandbox, where the placeholders do not exist: exactly
   `wt remove --no-hooks --foreground <name>` (the standard) or a plain `git worktree remove <path>`
   (the fallback), each as a command of its own. A compound command, a `git -C <path>` spelling or
-  any other variant runs sandboxed; so does ExitWorktree's `remove`, which is never used. Never
-  force a removal. Where no exception is set up, removal is the person's step.
-- **Where Claude Code's background-isolation guard is on** (a repository can turn it off with
-  `worktree.bgIsolation: "none"`, as one whose owning session works in its checkout does), it
-  **refuses compound commands** in a worktree: a git command inside `&&`, a
-  path in a variable, a loop, a heredoc that touches git. Run single commands, and name paths with
-  `git -C <path>` rather than relying on the current directory, which can drift after leaving.
+  any other variant runs sandboxed; so does ExitWorktree's `remove`, which is never used. Several
+  worktrees take one call each, never a loop. Where `claude-worktree-hook` is installed it refuses
+  any removal that is not the whole command. Never force a removal. Where no exception is set up,
+  removal is the person's step.
+- **Inside a worktree Claude Code gave the session, its isolation guard refuses compound
+  commands**, whatever `worktree.bgIsolation` says: that key decides only whether a session must
+  enter a worktree before writing, not what the guard does once it has. It applies to a session
+  after EnterWorktree and to a subagent launched with `isolation: "worktree"`, and refuses with
+  "…is too complex to verify that it stays inside the worktree" or "…names git in a form too
+  complex to verify". It needs no git command to fire: a `cd $DIR && …`, a heredoc, a loop or a
+  variable in a path is enough. Measured across the home machines' transcripts on 2026-11-22: about
+  1,100 refusals on Claude Code 2.1.302 to 2.1.330, three in four of them in commands that never named git. Run plain,
+  separate commands with literal paths, and name a path with `git -C <path>` rather than relying on
+  the current directory, which can drift after leaving.
 - **Each command has its own network namespace**, so a server started in one command cannot be
   reached from the next. Start the server and the client in the same command.
 
