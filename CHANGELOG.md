@@ -32,6 +32,22 @@ Entries are newest first.
 
 ---
 
+## 2026-11-23 (wt-config-gen: per-project tables keep the remote's port, so `wt-bootstrap` runs again)
+
+worktrunk 0.82 keys a project by `<host>:<port>/<owner>/<repo>` when the remote is a scheme URL with
+a port (measured: `ssh://git@h:3022/o/r.git` is `h:3022/o/r`). `wt-config-gen` dropped the port, so
+for every repository on the forge (`ssh://…:3022/…`) its `[projects."…"]` table matched nothing:
+the manifest's `bootstrap: true` was dark, and new worktrees started with no dependencies.
+`wt -C <repo> hook show pre-start` listed no `bootstrap` on either machine. The generator and
+`fleet-repo check` now keep the port. The generator's suite asks the installed worktrunk to match a
+generated key, so a future change in how worktrunk derives one fails there.
+
+**What changes on apply:** creating a worktree in a repository whose manifest entry sets
+`bootstrap: true` runs `wt-bootstrap` again as a blocking `pre-start`, including inside Claude Code's
+`WorktreeCreate` hook (EnterWorktree, and a subagent's `isolation: "worktree"`). Creation takes as
+long as the install. Before applying, run seam-probe's `worktree-takeover` case `bootstrap-timeout`,
+which measures that hook against its timeout. Nothing in the overlay changes.
+
 ## 2026-11-23 (fleet-canonicals: the handoff gate runs when the listing has no row; `up` and `resume` refuse from a sandbox a seat the snapshot lacks)
 
 No action. Three changes to `fleet-canonicals`:

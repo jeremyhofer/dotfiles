@@ -961,16 +961,18 @@ EOF
 }
 
 # ---- check ------------------------------------------------------------------------------------
-# <host>/<owner>/<repo> from a remote URL, as wt-config-gen derives it for worktrunk's per-project
-# table: ssh:// and https:// (user, port optional) and scp-style user@host:path.
+# <host>[:<port>]/<owner>/<repo> from a remote URL, exactly as wt-config-gen derives it for
+# worktrunk's per-project table (keep the two copies identical): a scheme URL keeps its port, as
+# worktrunk 0.82 does; scp-style user@host:path has none.
 url_to_id() {
-  printf '%s\n' "$1" | sed -E \
-    -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
-    -e 's#^[^@/]*@##' \
-    -e 's#^([^/:]+):[0-9]+/#\1/#' \
-    -e 's#^([^/:]+):#\1/#' \
-    -e 's#\.git/?$##' \
-    -e 's#/+$##' | grep -E '^[^/]+/.+' || true
+  case "$1" in
+    *://*) printf '%s\n' "$1" | sed -E \
+             -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
+             -e 's#^[^@/]*@##' ;;
+    *) printf '%s\n' "$1" | sed -E \
+         -e 's#^[^@/]*@##' \
+         -e 's#^([^/:]+):#\1/#' ;;
+  esac | sed -E -e 's#\.git/?$##' -e 's#/+$##' | grep -E '^[^/]+/.+' || true
 }
 
 drift() { printf '[%s] %s: %s\n' "$1" "$2" "$3"; DRIFT=$((DRIFT + 1)); }

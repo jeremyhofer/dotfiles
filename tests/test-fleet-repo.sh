@@ -522,6 +522,13 @@ check "check: a container the generated worktrunk config has no table for is dri
 printf '[projects."code.example.org/org/chk"]\n' >> "$HOME/.config/worktrunk/config.toml"
 FR check chk > "$TMP/out" 2>&1; rc=$?
 check "check: ...and clean once wt-config-gen has written one" '[ "$rc" = 0 ]'
+# worktrunk keeps a scheme URL's port in its key (0.82), so a table keyed without it matches nothing.
+chk_manifest ssh://git@code.example.org:3022/org/chk.git
+FR check chk > "$TMP/out" 2>&1; rc=$?
+check "check: a port URL whose table is keyed without the port is drift" '[ "$rc" = 1 ] && grep -q "^\[worktrunk-missing\] chk: .*code.example.org:3022/org/chk" "$TMP/out"'
+printf '[projects."code.example.org:3022/org/chk"]\n' >> "$HOME/.config/worktrunk/config.toml"
+FR check chk > "$TMP/out" 2>&1; rc=$?
+check "check: ...and clean with the port in the key" '[ "$rc" = 0 ]'
 rm -rf "$HOME/.config"
 chk_manifest "$(url ob)"
 

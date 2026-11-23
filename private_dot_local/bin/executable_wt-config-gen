@@ -13,7 +13,7 @@
 # are overwritten on the next run.
 #
 # THE MANIFEST FORMAT (per project):
-#     url: <the primary remote>          worktrunk keys projects by <host>/<owner>/<repo> from this
+#     url: <the primary remote>          worktrunk keys projects by <host>[:<port>]/<owner>/<repo>
 #     worktrunk:
 #       layout: bare | nested            bare: worktrees beside the container's branch dirs;
 #                                        nested: under <repo>/<worktree dir>/ (below)
@@ -148,16 +148,21 @@ starts_with_table() {
   case "$first" in ''|\[*) return 0 ;; *) return 1 ;; esac
 }
 
-# <host>/<owner>/<repo> from a remote URL: ssh:// and https:// (with optional user and port), and
-# scp-style user@host:path. Anything else prints nothing, and the caller reports it.
+# worktrunk's project identifier from a remote URL, which must match the one worktrunk derives or the
+# table applies to nothing, silently: <host>[:<port>]/<owner>/<repo>. A scheme URL (ssh://, https://)
+# keeps its port, as worktrunk 0.82 does (measured 2026-11-22: ssh://git@h:3022/o/r.git ->
+# h:3022/o/r; the forge's URLs all carry one); scp-style user@host:path has none. IPv6 hosts are
+# not handled. Anything else prints nothing, and the caller reports it. The suite asks the installed
+# worktrunk to match a generated key, so a change in how it derives one fails there.
 url_to_id() {
-  printf '%s\n' "$1" | sed -E \
-    -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
-    -e 's#^[^@/]*@##' \
-    -e 's#^([^/:]+):[0-9]+/#\1/#' \
-    -e 's#^([^/:]+):#\1/#' \
-    -e 's#\.git/?$##' \
-    -e 's#/+$##' | grep -E '^[^/]+/.+' || true
+  case "$1" in
+    *://*) printf '%s\n' "$1" | sed -E \
+             -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' \
+             -e 's#^[^@/]*@##' ;;
+    *) printf '%s\n' "$1" | sed -E \
+         -e 's#^[^@/]*@##' \
+         -e 's#^([^/:]+):#\1/#' ;;
+  esac | sed -E -e 's#\.git/?$##' -e 's#/+$##' | grep -E '^[^/]+/.+' || true
 }
 
 # --- 1. per-repo conventions from the manifest --------------------------------------------------

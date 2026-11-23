@@ -65,13 +65,21 @@ base; frag; record '      layout: bare
       bootstrap: true'; seed
 rc=$(run); c=$(cat "$tmp/config.toml")
 [ "$rc" = 0 ] && ok "valid layers generate" || bad "valid layers generate" "rc=$rc $(cat "$tmp/err")"
-case "$c" in *'[projects."forge.example/team/alpha"]'*) ok "ssh:// url with port -> host/owner/repo";; *) bad "ssh id" "$c";; esac
+case "$c" in *'[projects."forge.example:3022/team/alpha"]'*) ok "ssh:// url with port -> host:port/owner/repo";; *) bad "ssh id" "$c";; esac
 case "$c" in *'[projects."code.example.org/group/sub/beta"]'*) ok "scp-style url with subgroups -> id";; *) bad "scp id" "$c";; esac
 case "$c" in *'code.example.org/org/gamma'*) bad "project without a worktrunk block got an entry" "$c";; *) ok "no worktrunk block -> no entry";; esac
 case "$c" in *'{{ repo_path }}/../{{ branch | sanitize }}'*) ok "layout bare -> sibling worktree path";; *) bad "layout bare" "$c";; esac
 case "$c" in *'pre-start.bootstrap = "wt-bootstrap"'*) ok "bootstrap true -> blocking pre-start";; *) bad "bootstrap" "$c";; esac
 case "$c" in *'guard = "hook-doctor'*) ok "private fragment included";; *) bad "fragment" "$c";; esac
 wt --config "$tmp/config.toml" config show >/dev/null 2>&1 && ok "worktrunk parses the result" || bad "wt parse" "$(cat "$tmp/config.toml")"
+# The installed worktrunk is the judge of the key: a clone whose remote is alpha's URL must see the
+# generated bootstrap among its pre-start hooks. A key worktrunk derives differently (worktrunk 0.82
+# keeps a scheme URL's port) matches nothing, silently, and no other arm here would notice.
+git init -q "$tmp/alpha-clone" && git -C "$tmp/alpha-clone" remote add origin ssh://git@forge.example:3022/team/alpha.git
+case "$(cd "$tmp/alpha-clone" && wt --config "$tmp/config.toml" hook show pre-start 2>&1)" in
+  *bootstrap*) ok "worktrunk matches the generated key: a clone of alpha sees its bootstrap" ;;
+  *) bad "worktrunk does not match the generated key for alpha" "$(cd "$tmp/alpha-clone" && wt --config "$tmp/config.toml" config show 2>&1 | grep -n Identifier)" ;;
+esac
 
 # 2. no fragment (a machine with no private layer) -> base + projects only
 rm -f "$tmp/frag.toml"; seed; rc=$(run)
@@ -85,7 +93,7 @@ frag
 nested_off='worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"'
 nested_on='worktree-path = "{{ repo_path }}/.claude/worktrees/{{ branch | sanitize }}"'
 sibling='worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"'
-beta=code.example.org/group/sub/beta; alpha=forge.example/team/alpha
+beta=code.example.org/group/sub/beta; alpha=forge.example:3022/team/alpha
 rm -f "$tmp/worktree-dir"; seed; rc=$(run)
 [ "$rc" = 0 ] && [ "$(table "$tmp/config.toml" "$beta" | grep '^worktree-path')" = "$nested_off" ] \
   && ok "worktree-dir absent: a nested project's worktrees go under .worktrees/" \
