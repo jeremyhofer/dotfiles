@@ -2800,6 +2800,68 @@ def test_the_gate_compares_against_the_seats_newest_session_not_the_first_match(
         "up refused against the older session (rc=%s): %s" % (r.rc, r.out))
 
 
+# ---- one unparseable transcript line does not decide the gate ---------------------------------------
+# A session cut off mid-write leaves a truncated last line. The count skips that line and counts the rest,
+# as the queue's tool_calls_after does; it must neither pass a seat that worked past its park (with no row,
+# the gate used to fall to "skipped" and pass) nor refuse one that did not (with a row, it used to refuse
+# the whole transcript as unreadable).
+
+TRUNCATED = '{"type":"assistant","timesta'
+
+
+def test_one_bad_line_does_not_pass_a_seat_with_no_row_that_worked_past_its_park(fx, ua, nr):
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    f = nr.session("sz", ua.start, doc, calls=41)
+    with open(f, "a") as h:
+        h.write(TRUNCATED)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and "41" in r.out and "would start" not in r.out,
+        "with no row, a truncated transcript line is skipped and the 41 calls after the park still refuse",
+        "up passed a park the session worked past, its transcript ending in a bad line (rc=%s): %s" % (r.rc, r.out))
+    # Control: 40 calls and the same bad line pass, so the line is skipped rather than refused.
+    f = nr.session("sz", ua.start, doc, calls=40)
+    with open(f, "a") as h:
+        h.write(TRUNCATED)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would start" in r.out, "with no row, 40 calls and a bad line pass (the boundary; control)",
+        "up refused 40 calls and a bad line (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_one_bad_line_does_not_make_a_listed_session_uncountable(fx, gate):
+    w = Wsp(fx, gate)
+    w.build(40, 0, 0)
+    with open(w.dir / "proj" / "swp.jsonl", "a") as h:
+        h.write(TRUNCATED)
+    w.fresh()
+    r = w.fc("refresh", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would refresh" in r.out and "cannot be counted" not in r.out,
+        "a listed session whose transcript ends in a bad line is counted, not refused as unreadable",
+        "refresh refused a countable transcript with one bad line (rc=%s): %s" % (r.rc, r.out))
+    w.build(41, 0, 0)
+    with open(w.dir / "proj" / "swp.jsonl", "a") as h:
+        h.write(TRUNCATED)
+    w.fresh()
+    r = w.fc("refresh", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and "41" in r.out,
+        "a listed session with 41 calls after the park and a bad line is refused as having kept working",
+        "41 calls and a bad line (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_a_bad_first_line_does_not_hide_the_seats_newest_session(fx, ua, nr):
+    # The park lies between the two sessions' starts, so it predates the newer one. A bad FIRST line in the
+    # newer transcript used to make its start unreadable, so it was skipped and the older one compared.
+    ua.g.gfresh(ua.g.staged(fx.now - 5000), fx.now - 5000)
+    ua.g.gdoc(ua.g.staged(fx.now - 5000))
+    nr.session("aa-old", fx.now - 7200)
+    new = nr.session("zz-new", fx.now - 3600)
+    new.write_text(TRUNCATED + "\n" + new.read_text())
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "PREDATES" in r.out and "would start" not in r.out,
+        "a bad first line does not hide the newest session: the park is compared against it and refused",
+        "up compared against the older session (rc=%s): %s" % (r.rc, r.out))
+
+
 # ---- up and resume from a sandbox refuse a seat a fresh snapshot lacks -----------------------------------------
 
 def in_sandbox_snapshot(fx, seats, taken=None):

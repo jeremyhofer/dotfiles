@@ -2617,9 +2617,12 @@ session_true_start() {
 }
 
 # transcript_start_epoch FILE -- the epoch of a transcript's first timestamped entry, or fail.
+# Read line by line (-R, fromjson?): a line that does not parse is skipped, never the end of the read,
+# so a bad first line cannot make a session's start unreadable and hide it from
+# last_session_from_transcripts.
 transcript_start_epoch() {
   local first
-  first=$(jq -r 'select(.timestamp)|.timestamp' "$1" 2>/dev/null | head -n1)
+  first=$(jq -R -r 'fromjson? | objects | select(.timestamp) | .timestamp' "$1" 2>/dev/null | head -n1)
   [ -n "$first" ] || return 1
   iso_to_epoch "$first"
 }
@@ -2709,11 +2712,14 @@ WORK_SINCE_PARK_MAX=40
 # Distinct tool_use ids, not lines: one assistant message can be split across several lines, each
 # repeating the message's content blocks. Sidechain entries (isSidechain true) are another thread's
 # work. Timestamps are UTC ISO 8601 with fractional seconds, stripped for fromdateiso8601; an entry
-# whose timestamp cannot be parsed counts as epoch 0, so it is never counted as after.
+# whose timestamp cannot be parsed counts as epoch 0, so it is never counted as after. Read line by
+# line (-R, fromjson?), as the queue's tool_calls_after reads: a line that does not parse (a session
+# cut off mid-write leaves a truncated last line) is skipped and the rest are counted. Parsed whole,
+# one such line failed the count, refusing a countable session or, with no listing row, passing one.
 tool_calls_after() {
   local n
-  n=$(jq -n --argjson e "$2" '
-    [ inputs
+  n=$(jq -R -n --argjson e "$2" '
+    [ inputs | fromjson?
       | select(type == "object" and .type == "assistant" and .isSidechain != true)
       | (try (.timestamp | sub("\\.[0-9]+"; "") | fromdateiso8601) catch 0) as $t
       | select($t > $e)
@@ -2969,10 +2975,13 @@ handoff_gate() {
   Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
       fi
-    elif [ -n "$(holder_field "$json" "$name" name)" ]; then
-      # FAILS CLOSED. A listed session whose transcript cannot be read cannot be shown not to have
-      # worked past its park, and "skipped" read as a pass: the successor then inherits an orientation
-      # nobody measured. A name with no row at all has no session to count, so it falls to the note.
+    elif [ -n "$sid" ] || [ -n "$(holder_field "$json" "$name" name)" ]; then
+      # FAILS CLOSED. A session that was identified, by its listing row or from its transcripts when
+      # the row is gone, and whose transcript cannot be counted, cannot be shown not to have worked
+      # past its park; "skipped" read as a pass, and the successor then inherits an orientation nobody
+      # measured. Keyed on the session found, not on the row: with no row the session came from its
+      # transcripts above, and a count that then fails is the same unknown. Only a seat shown never to
+      # have run (no row, no transcript) has no session to count, and falls to the note.
       die "$verb: the work '$name' did after its recorded handoff cannot be counted: no readable transcript for session ${sid:-(none)}.
       document           $ptr_target
       $tgt_label$(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
