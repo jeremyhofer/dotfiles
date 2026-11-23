@@ -1213,6 +1213,16 @@ def handoff_since_start(name: str, session_id: str, placed_under: str = "") -> s
     # one may exist. Only standard names are read, and only to refuse.
     start_min = start - start % 60
     target_stamp = standard_handoff_stamp(target, name)
+    # A stamp later than the pointer is refused: `stage` records the pointer right after it stamps, so a
+    # genuine park's stamp is never after the pointer's set-at. A later one dates the document past the
+    # session's work and switches off the newer-handoff and work-since-park checks (the gate in
+    # fleet-canonicals refuses the same). Standard names only; a plain name is dated by its commit.
+    if target_stamp is not None and target_stamp > set_at:
+        return (f"the handoff pointer names a document stamped "
+                f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(target_stamp))}, after the pointer was "
+                f"recorded ({time.strftime('%Y-%m-%d %H:%M', time.localtime(set_at))}), so its date is not "
+                f"trustworthy ({target}); stage a fresh park, or `fleet-canonicals refresh {name} --force "
+                f"'<why>'` keeps the pointer and skips the comparison")
     # A name with no standard stamp is dated by the commit that added the file, never by the
     # pointer's own time (which only says when the pointer was recorded).
     dated, how = target_stamp, "stamped"

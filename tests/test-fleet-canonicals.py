@@ -2691,9 +2691,11 @@ class NoRow:
         self.key = re.sub(r"[^A-Za-z0-9]", "-", str(fx.T / "zeta"))
         (self.tdir / self.key).mkdir(parents=True, exist_ok=True)
 
-    def session(self, sid, start, doc=None, calls=0, name="zeta-canonical"):
+    def session(self, sid, start, doc=None, calls=0, name="zeta-canonical", renamed_to=None, last=None):
         """A transcript for session <sid> naming the seat (the compact spelling a real transcript has),
-        beginning at <start>, with <calls> main-thread tool calls after <doc>. Returns its path."""
+        beginning at <start>, with <calls> main-thread tool calls after <doc>. A fork copies its source's
+        `agent-name` entry and then records its own new name: <renamed_to> appends that entry, and <last>
+        a final user entry at that epoch (when the fork was last active). Returns its path."""
         def dump(o):
             return json.dumps(o, separators=(",", ":")) + "\n"
         lines = [dump({"type": "agent-name", "agentName": name, "sessionId": sid}),
@@ -2701,6 +2703,10 @@ class NoRow:
         for i in range(1, calls + 1):
             lines.append(dump({"type": "assistant", "isSidechain": False, "timestamp": iso(doc + 60 + i, ".250Z"),
                                "message": {"id": "%s-m%d" % (sid, i), "content": [{"type": "tool_use", "id": "%s-t%d" % (sid, i)}]}}))
+        if renamed_to:
+            lines.append(dump({"type": "agent-name", "agentName": renamed_to, "sessionId": sid}))
+        if last:
+            lines.append(dump({"type": "user", "isSidechain": False, "timestamp": iso(last, ".250Z")}))
         f = self.tdir / self.key / (sid + ".jsonl")
         f.write_text("".join(lines))
         return f
@@ -2938,6 +2944,83 @@ def test_an_identified_session_whose_transcript_cannot_be_counted_is_refused(fx,
     r = ua.fc("up", "zeta-canonical", "--dry-run")
     chk(r.rc == 0 and "would start" in r.out, "the same session under a plain id is counted and passes (control)",
         "up refused a countable session (rc=%s): %s" % (r.rc, r.out))
+
+
+# ---- a fork renamed away from the seat does not stand in for the seat's session --------------------------------
+# A fork copies its source's history, `agent-name` entries included, and then records its own new name. Matching
+# the seat's name anywhere in a file counts the renamed fork as the seat's session; only a transcript whose LAST
+# `agent-name` entry names the seat is the seat's.
+
+@pytest.mark.parametrize("with_row", [False, True])
+def test_a_renamed_fork_active_last_does_not_stand_in_for_the_seat(fx, ua, nr, with_row):
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session("sseat", ua.start, doc, calls=60)
+    nr.session("sfork", ua.start, doc, renamed_to="scratch-fork", last=doc + 5000)
+    if with_row:
+        ua.all = fx.agents("ua/seatrow.json", [{"pid": None, "id": "old1", "name": "zeta-canonical", "sessionId": "sseat",
+                                                "state": "done", "startedAt": ua.start * 1000}])
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and "60" in r.out and "would start" not in r.out,
+        "a fork renamed away from the seat, active after it, is not judged in the seat's place (row present: %s)" % with_row,
+        "up judged the renamed fork (rc=%s): %s" % (r.rc, r.out))
+    # Control: the seat's own session with no work past the park passes beside the same renamed fork.
+    nr.session("sseat", ua.start, doc, calls=0)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would start" in r.out, "the same renamed fork beside a seat session with no work past its park passes (control)",
+        "up refused (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_a_fork_renamed_back_to_the_seat_still_counts(fx, ua, nr):
+    # Control for the last-name rule: the LAST entry decides, so a session whose final name is the seat's counts.
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session("sseat", ua.start, doc, calls=0)
+    f = nr.session("sback", ua.start, doc, calls=60, renamed_to="scratch-fork")
+    f.write_text(f.read_text() + json.dumps({"type": "agent-name", "agentName": "zeta-canonical", "sessionId": "sback"}, separators=(",", ":")) + "\n")
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and "sback" in r.out,
+        "a session whose last name is the seat's counts even after another name", "up ignored it (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_init_first_launch_check_is_not_fooled_by_a_renamed_fork(fx, gate):
+    # init refuses a seat that has run. A transcript that only a fork renamed away from the seat left is not the seat's.
+    itd = fx.T / "init-transcripts-fork"
+    itd.mkdir()
+    key = itd / re.sub(r"[^A-Za-z0-9]", "-", str(fx.T / "theta"))
+    key.mkdir()
+
+    def initfc():
+        return gate.zfc("init", "--dry-run", "theta-canonical", listing=gate.empty, env={"FLEET_TRANSCRIPT_DIR": itd})
+    copied = '{"type":"agent-name","agentName":"theta-canonical","sessionId":"s1"}\n'
+    (key / "s1.jsonl").write_text(copied + '{"type":"agent-name","agentName":"scratch-fork","sessionId":"s1"}\n')
+    r = initfc()
+    chk(r.rc == 0 and "would init" in r.out, "init does not read a renamed fork's transcript as the seat having run",
+        "init refused on a renamed fork (rc=%s): %s" % (r.rc, r.out))
+    (key / "s1.jsonl").write_text(copied)
+    r = initfc()
+    chk(r.rc != 0 and "has a session transcript" in r.out, "init still refuses a transcript whose last name is the seat's (control)",
+        "init passed a seat that has run (rc=%s): %s" % (r.rc, r.out))
+
+
+# ---- a park stamped after its pointer was recorded is refused ---------------------------------------------------
+# `stage` records the pointer right after it stamps, so a genuine park's stamp minute is never after the pointer's
+# set-at. A later stamp (a mistyped stamp, a hand-named file) would put the document's date past the session's
+# work, so the newer-handoff and work-since-park checks would see nothing.
+
+def test_a_park_stamped_after_its_pointer_was_recorded_is_refused(fx, ua, nr):
+    doc = ua.start + 600
+    nr.session("sz", ua.start, doc, calls=0)
+    ua.fresh(ua.g.staged(fx.now + 3600))
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "STAMPED AFTER" in r.out and "would start" not in r.out and "--force" in r.out,
+        "a park whose stamp is later than the pointer's set-at is refused", "up passed a future stamp (rc=%s): %s" % (r.rc, r.out))
+    # Controls: a stamp in the set-at minute, and one before it, pass.
+    for stamp in (fx.now - 60, doc):
+        ua.fresh(ua.g.staged(stamp))
+        r = ua.fc("up", "zeta-canonical", "--dry-run")
+        chk(r.rc == 0 and "would start" in r.out, "a stamp at or before the set-at minute passes (control)",
+            "up refused stamp %s (rc=%s): %s" % (stamp, r.rc, r.out))
 
 
 # ---- up and resume from a sandbox refuse a seat a fresh snapshot lacks -----------------------------------------

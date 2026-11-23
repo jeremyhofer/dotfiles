@@ -2049,14 +2049,29 @@ launch_transcript_dir() {
 }
 
 # transcripts_under_launch_dir NAME -- the first transcript under NAME's launch directory that
-# records NAME as its session name, or nothing. A named session writes an `agent-name` entry carrying
+# records NAME as its session name (as its LAST name: see transcript_last_name_is), or nothing. A named session writes an `agent-name` entry carrying
 # its name. Only that one directory is read: the whole transcript tree is gigabytes, and a seat that
 # ever launched through this tool also has a pointer, which `init` checks first.
 transcripts_under_launch_dir() {
-  local name=$1 d
+  local name=$1 d f
   d=$(launch_transcript_dir "$name") || return 0
   [ -d "$d" ] || return 0
-  grep -lF "\"agentName\":\"$name\"" "$d"/*.jsonl 2>/dev/null | head -n 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    transcript_last_name_is "$f" "$name" && { printf '%s\n' "$f"; return 0; }
+  done < <(grep -lF "\"agentName\":\"$name\"" "$d"/*.jsonl 2>/dev/null)
+  return 0
+}
+
+# transcript_last_name_is FILE NAME -- succeed when the LAST `agentName` entry in FILE is NAME. A fork
+# copies its source's history, the source's `agent-name` entries included, and then records its own
+# new name; a file merely CONTAINING the seat's name can therefore be a fork renamed to something
+# else, and would stand in for the seat's session. The last entry is the name the session ended under.
+# The cheap `grep -lF` over the directory stays the prefilter; this reads only the files it hit.
+transcript_last_name_is() {
+  local last
+  last=$(grep -o '"agentName":"[^"]*"' "$1" 2>/dev/null | tail -n1)
+  [ "$last" = "\"agentName\":\"$2\"" ]
 }
 
 # transcript_last_epoch FILE -- the epoch of a transcript's LAST timestamped entry, or fail: when the
@@ -2080,13 +2095,15 @@ transcript_last_epoch() {
 # that worked last. Why the transcripts at all: `close_one` deletes a stopped session's listing row,
 # and a session that stopped another way (idle-stopped, crashed, rebooted) leaves an older row behind,
 # so the listing can name neither the last session nor any. A transcript whose dates cannot be read
-# is skipped.
+# is skipped, and so is one whose LAST `agentName` entry is not NAME (a fork renamed away from the
+# seat copies the seat's name and would otherwise stand in for it).
 last_session_from_transcripts() {
   local name=$1 d f s l id best="" best_s=0 best_l=0 best_id=""
   d=$(launch_transcript_dir "$name") || return 1
   [ -d "$d" ] || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    transcript_last_name_is "$f" "$name" || continue
     s=$(transcript_start_epoch "$f") || continue
     l=$(transcript_last_epoch "$f") || l=$s
     id=$(basename "$f" .jsonl)
@@ -2763,7 +2780,7 @@ handoff_gate() {
   local name="$1" json="$2" stub_set="$3" stub_text="$4" verb="$5"
   local force_set="${6:-0}" force_text="${7:-}" dry="${8:-0}"
   local started started_s set_at set_at_s ptr_target stub_file now sid true_s
-  local started_min tgt_e tgt_label floor_e newest newest_e newest_p
+  local started_min tgt_e tgt_label floor_e newest newest_e newest_p std_stamp
 
   started=$(holder_field "$json" "$name" startedAt)
   started_s=$(to_secs "$started") || started_s=""
@@ -2932,9 +2949,9 @@ handoff_gate() {
 
   ptr_target=$(read_pointer "$name") || ptr_target=""
   started_min=$(( ${started_s:-0} - ${started_s:-0} % 60 ))
-  tgt_e=""; tgt_label='document stamped   '
+  tgt_e=""; tgt_label='document stamped   '; std_stamp=0
   if tgt_e=$(std_handoff_epoch "$ptr_target" "$name"); then
-    floor_e=$tgt_e
+    floor_e=$tgt_e; std_stamp=1
   else
     # A name with no standard stamp is dated by the commit that added the file. The pointer's own
     # time is NOT a date for the document: a pointer recorded after the start can name an old file.
@@ -2955,6 +2972,27 @@ handoff_gate() {
   Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
       fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
     fi
+  fi
+  # A STAMP LATER THAN THE POINTER IS REFUSED. `stage` records the pointer right after it stamps, so a
+  # genuine park's stamp minute is never after the pointer's set-at. A later stamp (FLEET_STAGE_STAMP
+  # set wrong, a hand-named file) puts the document's date past the session's work, and then both the
+  # newer-handoff check and the work-since-park count see nothing. Standard names only: a plain name
+  # is dated by its commit, and its floor is deliberately the pointer's own minute.
+  if [ "$std_stamp" = 1 ] && [ "$tgt_e" -gt "$set_at_s" ]; then
+    die "$verb: the handoff recorded for '$name' is STAMPED AFTER the pointer was recorded.
+      document           $ptr_target
+      document stamped   $(fmt_epoch "$tgt_e" '%Y-%m-%d %H:%M')
+      handoff recorded   $(fmt_epoch "$set_at_s" '%Y-%m-%d %H:%M')
+  \`stage\` records the pointer right after it stamps, so a genuine park is never stamped later than
+  its pointer. A later stamp dates the document past the session's work, which would switch off the
+  checks for a newer handoff and for work since the park.
+  Park properly (stage a fresh one), then retry:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD and the stamp is what is wrong, keep the pointer
+  and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'"
   fi
   if [ -n "$started_s" ] && [ -n "$tgt_e" ] && [ "$tgt_e" -lt "$started_min" ]; then
     die "$verb: the handoff recorded for '$name' names a document written BEFORE the session started.

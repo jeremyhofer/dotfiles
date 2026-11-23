@@ -1581,6 +1581,24 @@ def test_serve_a_non_standard_document_never_committed_waits_naming_force(fleet)
     assert "cannot be dated" in detail and "--force" in detail, detail
 
 
+def test_serve_a_park_stamped_after_its_pointer_was_recorded_waits(fleet):
+    # `stage` records the pointer right after it stamps, so a genuine park's stamp is never after the
+    # pointer's set-at; a later stamp would put the document's date past the session's work.
+    _parked_blocked(fleet, "dc000007")
+    fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, int(time.time()) + 3600)))
+    _serve_one(fleet, "r-dc7")
+    fleet.expect("r-dc7", "waiting", "working", "a document stamped after the pointer was recorded waits")
+    detail = fleet.result("r-dc7", "detail")
+    assert "after the pointer was recorded" in detail and "--force" in detail, detail
+
+
+def test_serve_a_park_stamped_in_the_pointers_own_minute_is_served(fleet):
+    _parked_blocked(fleet, "dc000008")
+    fleet.set_handoff("alpha-canonical", str(_doc(fleet, "staged", None, int(time.time()))))
+    _serve_one(fleet, "r-dc8")
+    fleet.expect("r-dc8", "done", "", "a stamp in the set-at minute passes (control)")
+
+
 def test_serve_a_newer_standard_handoff_than_the_recorded_one_waits(fleet):
     _parked_blocked(fleet, "dc000003")
     target = fleet.S / "alpha.handoff.md"
