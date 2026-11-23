@@ -2862,6 +2862,84 @@ def test_a_bad_first_line_does_not_hide_the_seats_newest_session(fx, ua, nr):
         "up compared against the older session (rc=%s): %s" % (r.rc, r.out))
 
 
+# ---- the gate compares against the seat's most recently active session ----------------------------------------
+# Every listing row for the name and every transcript naming it are candidates, and the one whose transcript was
+# written to last is the session the park must describe. A row left by an older session that stopped without
+# close_one (idle-stopped, crashed, rebooted) must not hide a later one; a fork, which copies its source's history
+# with the original timestamps and so ties it on its first entry, must not be decided by file order.
+
+def leftover_row(fx, ua, nr, sid="sold", age=86400):
+    """An older session's transcript, and its `done` row still in the full listing."""
+    nr.session(sid, fx.now - age)
+    ua.all = fx.agents("ua/leftover.json", [{"pid": None, "id": "old1", "name": "zeta-canonical", "sessionId": sid,
+                                             "state": "done", "startedAt": (fx.now - age) * 1000}])
+
+
+def test_a_leftover_older_row_does_not_hide_the_seats_last_session(fx, ua, nr):
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session("snew", ua.start, doc, calls=60)
+    leftover_row(fx, ua, nr)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and "60" in r.out and "snew" in r.out and "would start" not in r.out,
+        "a leftover row from an older session does not hide the later session that worked past its park",
+        "up compared against the leftover row's older session (rc=%s): %s" % (r.rc, r.out))
+    # Control: the same state with no work after the park passes, so the refusal is the later session's work.
+    nr.session("snew", ua.start, doc, calls=0)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would start" in r.out, "the same leftover row with a later session that did not keep working passes (control)",
+        "up refused a later session with no work after its park (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_a_leftover_older_row_does_not_pass_the_older_sessions_park(fx, ua, nr):
+    # The pointer names a park written in the OLDER session's sitting; the later session never parked.
+    old_start = fx.now - 86400
+    doc = old_start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session("snew", ua.start)
+    leftover_row(fx, ua, nr)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "would start" not in r.out and ("PREDATES" in r.out or "BEFORE the session started" in r.out),
+        "an older session's park is refused against the later session a leftover row would have hidden",
+        "up handed the successor the older session's park (rc=%s): %s" % (r.rc, r.out))
+
+
+@pytest.mark.parametrize("names", [("aa-orig", "zz-fork"), ("zz-orig", "aa-fork")])
+def test_a_fork_tied_with_its_source_is_decided_by_activity_not_file_order(fx, ua, nr, names):
+    orig, fork = names
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session(orig, ua.start, doc, calls=0)
+    nr.session(fork, ua.start, doc, calls=60)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and fork in r.out and "would start" not in r.out,
+        "of a fork and its source, which share a first entry, the one active last is compared (%s beside %s)" % (fork, orig),
+        "up compared against the fork's idle source (rc=%s): %s" % (r.rc, r.out))
+    # Control: when neither did work after the park, the pair passes.
+    nr.session(fork, ua.start, doc, calls=0)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would start" in r.out, "a fork and its source with no work after the park pass (control)",
+        "up refused an idle fork pair (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_an_identified_session_whose_transcript_cannot_be_counted_is_refused(fx, ua, nr):
+    # The fail-closed branch for a session found from its transcripts. Real session ids are UUIDs; an id with a
+    # glob character is the one way a single run can find and date a transcript that the count, which looks the
+    # session up by id, then cannot open. A plain id is the control.
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    f = nr.session("s[1]", ua.start, doc, calls=3)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "cannot be counted" in r.out and "would start" not in r.out,
+        "a session found from its transcripts whose work cannot be counted is refused, not skipped",
+        "up passed an identified session it could not count (rc=%s): %s" % (r.rc, r.out))
+    f.unlink()
+    nr.session("s1", ua.start, doc, calls=3)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would start" in r.out, "the same session under a plain id is counted and passes (control)",
+        "up refused a countable session (rc=%s): %s" % (r.rc, r.out))
+
+
 # ---- up and resume from a sandbox refuse a seat a fresh snapshot lacks -----------------------------------------
 
 def in_sandbox_snapshot(fx, seats, taken=None):

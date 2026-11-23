@@ -2059,25 +2059,44 @@ transcripts_under_launch_dir() {
   grep -lF "\"agentName\":\"$name\"" "$d"/*.jsonl 2>/dev/null | head -n 1
 }
 
-# last_session_from_transcripts NAME -- the seat's LAST session, from the transcripts under its launch
-# directory that record NAME: print "<session id><TAB><start epoch>" for the one that STARTED last, or
-# fail when none is found. `close_one` deletes a stopped session's listing row, so after `down` or
-# `refresh` the listing no longer names the session whose park the next `up` must be checked against;
-# the transcript outlives the row. The order is by each transcript's own first timestamp
-# (transcript_start_epoch, the start session_true_start reads), never by file time or name: a resumed
-# session appends to an old file, so file time follows the last write and not the start. A transcript
-# whose start cannot be read is skipped.
+# transcript_last_epoch FILE -- the epoch of a transcript's LAST timestamped entry, or fail: when the
+# session was last active. Read from the file's tail (the last 200 lines), line by line as
+# transcript_start_epoch reads, so a truncated last line is skipped rather than ending the read.
+transcript_last_epoch() {
+  local last
+  last=$(tail -n 200 "$1" 2>/dev/null | jq -R -r 'fromjson? | objects | select(.timestamp) | .timestamp' 2>/dev/null | tail -n1)
+  [ -n "$last" ] || return 1
+  iso_to_epoch "$last"
+}
+
+# last_session_from_transcripts NAME -- the seat's MOST RECENTLY ACTIVE session, from the transcripts
+# under its launch directory that record NAME: print "<session id><TAB><start epoch><TAB><last epoch>"
+# for the one whose last timestamped entry is latest, or fail when none is found. Ties go to the later
+# start, then the later id, so the choice never rests on glob order.
+#
+# Why activity, not the start. A fork copies its source's history with the original timestamps, so
+# the two share a first entry and a start cannot tell them apart; a session woken in place appends to
+# a transcript that began before another session did. The session the park must describe is the one
+# that worked last. Why the transcripts at all: `close_one` deletes a stopped session's listing row,
+# and a session that stopped another way (idle-stopped, crashed, rebooted) leaves an older row behind,
+# so the listing can name neither the last session nor any. A transcript whose dates cannot be read
+# is skipped.
 last_session_from_transcripts() {
-  local name=$1 d f s best="" best_s=0
+  local name=$1 d f s l id best="" best_s=0 best_l=0 best_id=""
   d=$(launch_transcript_dir "$name") || return 1
   [ -d "$d" ] || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     s=$(transcript_start_epoch "$f") || continue
-    if [ -z "$best" ] || [ "$s" -gt "$best_s" ]; then best=$f; best_s=$s; fi
+    l=$(transcript_last_epoch "$f") || l=$s
+    id=$(basename "$f" .jsonl)
+    if [ -z "$best" ] || [ "$l" -gt "$best_l" ] \
+       || { [ "$l" -eq "$best_l" ] && { [ "$s" -gt "$best_s" ] || { [ "$s" -eq "$best_s" ] && [[ "$id" > "$best_id" ]]; }; }; }; then
+      best=$f; best_s=$s; best_l=$l; best_id=$id
+    fi
   done < <(grep -lF "\"agentName\":\"$name\"" "$d"/*.jsonl 2>/dev/null)
   [ -n "$best" ] || return 1
-  printf '%s\t%s\n' "$(basename "$best" .jsonl)" "$best_s"
+  printf '%s\t%s\t%s\n' "$best_id" "$best_s" "$best_l"
 }
 
 # write_first_launch_handoff NAME -- a dated handoff for a seat's FIRST launch, written where stubs
@@ -2835,10 +2854,30 @@ handoff_gate() {
   # transcript names it AND the recorded pointer is the first-launch handoff `init` wrote
   # (<stub dir>/<date>-<name>-first-launch.md, write_first_launch_handoff). Anything else is refused,
   # because "no row and no transcript" is also what a seat whose transcripts were moved looks like.
-  if [ -z "$(holder_field "$json" "$name" name)" ]; then
-    local last tdir
+  #
+  # A ROW IS NOT "THE LAST SESSION" EITHER. The newest row for the name is the newest session the
+  # listing still holds, and a session that stopped without close_one leaves an older row behind
+  # while a later session's row is gone. So with a row, the transcripts are read too, and a session
+  # active after the row's session (or, when the row's transcript cannot be found, after the row's
+  # start) is the one compared against.
+  local last tdir t_sid t_start t_last row_last tfile
+  if [ -n "$(holder_field "$json" "$name" name)" ]; then
     if last=$(last_session_from_transcripts "$name"); then
-      IFS=$'\t' read -r sid started_s <<<"$last"
+      IFS=$'\t' read -r t_sid t_start t_last <<<"$last"
+      if [ "$t_sid" != "$sid" ]; then
+        row_last=""
+        tfile=$(session_transcript_file "$sid") && row_last=$(transcript_last_epoch "$tfile")
+        [ -n "$row_last" ] || row_last=${started_s:-0}
+        if [ "$t_last" -gt "$row_last" ]; then
+          printf 'note     %-24s the listing'"'"'s newest row is session %s, but session %s was active later (last entry %s); using it\n' \
+            "$name" "${sid:-(none)}" "$t_sid" "$(fmt_epoch "$t_last" '%Y-%m-%d %H:%M')"
+          sid=$t_sid; started_s=$t_start
+        fi
+      fi
+    fi
+  else
+    if last=$(last_session_from_transcripts "$name"); then
+      IFS=$'\t' read -r sid started_s t_last <<<"$last"
       printf 'note     %-24s the listing has no row for this name; session start taken from the transcript of session %s (%s)\n' \
         "$name" "$sid" "$(fmt_epoch "$started_s" '%Y-%m-%d %H:%M')"
     else

@@ -32,6 +32,15 @@ Entries are newest first.
 
 ---
 
+## 2026-11-23 (fleet-canonicals: the handoff gate compares against the seat's most recently active session)
+
+No action. The handoff gate compared a park against the newest listing row for the seat, or, with no
+row, against the transcript that started last. A session that stopped without `fleet-canonicals`
+(idle-stopped, crashed, rebooted) leaves an older row behind, which hid a later session with no row,
+so `up` passed a park that session had worked past. A fork shares its source's first entry, so file
+order decided between them. The gate now reads every transcript that names the seat, takes the one
+written to last, and uses it whenever it was active after the listing's newest row.
+
 ## 2026-11-23 (wt-config-gen: per-project tables keep the remote's port, so `wt-bootstrap` runs again)
 
 worktrunk 0.82 keys a project by `<host>:<port>/<owner>/<repo>` when the remote is a scheme URL with
