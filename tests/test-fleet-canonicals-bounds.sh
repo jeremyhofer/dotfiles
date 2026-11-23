@@ -4,7 +4,7 @@
 # (`timeout`, or perl's alarm where macOS has no coreutils) so that a regression in the delay clamp
 # fails instead of hanging the suite. A bound is wall-clock, so this suite runs serially (the
 # suites' rule: a threshold is never loosened to cope with load). It is its own file so that
-# test-fleet-canonicals.sh, which has no other bound, runs in the concurrent batch.
+# test-fleet-canonicals.py, which has no other bound, runs in the concurrent batch.
 _TMP=${TMPDIR:-/tmp}; _TMP=${_TMP%/}
 set -u
 HERE=${0:A:h}
@@ -30,7 +30,7 @@ export FLEET_LAUNCH_ENV="$_srcbin/no-launch-env"; unset SSH_CONNECTION
 export FLEET_MANAGERNAME_CMD=
 mkdir -p "$FLEET_PID_RECORD_DIR" "$FLEET_PROC_ROOT" "$FLEET_STATE"
 # A session snapshot holding no seats: up, status, clean and refresh refuse without one (since
-# 2026-11-17). Why it is shaped this way: tests/test-fleet-canonicals.sh, where the same fixture is set up.
+# 2026-11-17). Why it is shaped this way: tests/test-fleet-canonicals.py (class Fx), where the same fixture is set up.
 export FLEET_SNAPSHOT_FILE="$TMPROOT/sessions.json" FLEET_SNAPSHOT_MAX_AGE=86400
 printf '{"version":1,"takenAt":%s,"seats":{}}\n' "$(date +%s)" > "$FLEET_SNAPSHOT_FILE"
 print 'projects:\n  seed:\n    scope: seed' > "$FLEET_RECORD"

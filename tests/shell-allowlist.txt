@@ -66,7 +66,6 @@ tests/test-doc-lint.sh
 tests/test-fleet-canonicals-bounds.sh
 tests/test-fleet-canonicals-context.sh
 tests/test-fleet-canonicals-place.sh
-tests/test-fleet-canonicals.sh
 tests/test-fleet-decl.sh
 tests/test-fleet-repo.sh
 tests/test-git-ai-coauthor.sh

@@ -128,7 +128,7 @@ export LAUNCHLOG="$T/launches.log" FORK_CWD="$ROOT/alpha"
 export FLEET_CANONICALS_CONFIG="$T/no-config" FLEET_PID_RECORD_DIR="$T/pids" FLEET_PROC_ROOT="$T/proc"
 export FLEET_HANDOFFS_SEARCH="$T"
 # A session snapshot holding no seats: up, status, clean and refresh refuse without one (since
-# 2026-11-17). Why it is shaped this way: tests/test-fleet-canonicals.sh, where the same fixture is set up.
+# 2026-11-17). Why it is shaped this way: tests/test-fleet-canonicals.py (class Fx), where the same fixture is set up.
 export FLEET_SNAPSHOT_FILE="$T/sessions.json" FLEET_SNAPSHOT_MAX_AGE=86400
 printf '{"version":1,"takenAt":%s,"seats":{}}\n' "$(date +%s)" > "$FLEET_SNAPSHOT_FILE"
 # No launch fragment, and no SSH_CONNECTION from the session this runs in (on macOS a launch over
