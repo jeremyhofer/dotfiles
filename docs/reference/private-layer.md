@@ -230,7 +230,8 @@ Some base skills end by pointing at a fragment with this domain's specifics (its
 incidents). Currently: `brew-and-brewfiles`, `canonical-takeover`, `claude-config-layers`,
 `cross-platform-tooling`, `dotfiles-layout-and-bootstrap`, `dotfiles-update`, `fault-isolation`,
 `fleet-messaging`, `kb-tier0-writes`, `naming-build-tasks`, `overlay-doctor`, `parking-and-handoff`,
-`register-standard`, `spellcheck-standard`, `vetting-tooling`, `visual-baselines`, `working-in-worktrees`. A missing
+`register-standard`, `seam-review`, `spellcheck-standard`, `vetting-tooling`, `visual-baselines`,
+`working-in-worktrees`. A missing
 fragment means the generic skill stands alone. Write it as plain
 markdown that completes the skill; do not restate it. Leave a skill out on one machine with
 `skipSkills`.

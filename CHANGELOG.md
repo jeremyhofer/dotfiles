@@ -32,6 +32,15 @@ Entries are newest first.
 
 ---
 
+## 2026-11-23 (a new skill: `seam-review`)
+
+No action. A new skill, `seam-review`, carries a 21-seam checklist for architecture and security
+reviews, drawn from NIST CSF 2.0, CIS Controls v8.1 and AWS Well-Architected, with the method: a row
+per seam in every system review and machine crosswalk, STRIDE for each data flow across a trust
+boundary, and which evidence may answer a cell. It reads a domain half at
+`~/.dotlocal/skills/seam-review.md` where the private layer supplies one (the record that owns the
+list, where the crosswalks live); without one the skill stands alone.
+
 ## 2026-11-23 (fleet-canonicals: the handoff gate compares against the seat's most recently active session)
 
 No action. The handoff gate compared a park against the newest listing row for the seat, or, with no
