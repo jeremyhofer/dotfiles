@@ -2,8 +2,8 @@
 #
 # Walks <repo>/.claude/worktrees for every repository the fleet manifest declares whose directory
 # exists and holds a .git, and fails on any symlink from the repository root down. The manifest is
-# $FLEET_RECORD, else mani.yaml at or above the directory the run was started from, else
-# ~/Devel/mani.yaml, read through fleet-decl (as claude-trust-check reads it).
+# $FLEET_RECORD, else the nearest of mani's four names at or above the directory the run was started
+# from, else ~/Devel/mani.yaml, read through fleet-decl (as claude-trust-check reads it).
 #
 # Control: a clean fixture repository must pass the same walk, or the case is VOID.
 # Plants ($SEAM_PROBE_PLANT): symlink-dotclaude and symlink-worktrees add a fixture whose .claude,
@@ -40,8 +40,11 @@ rec=${FLEET_RECORD:-}
 if [ -z "$rec" ]; then
   d=${SEAM_PROBE_CALLER_PWD:-$PWD}
   while :; do
-    if [ -f "$d/mani.yaml" ]; then rec=$d/mani.yaml; break; fi
-    if [ -f "$d/mani.yml" ]; then rec=$d/mani.yml; break; fi
+    # mani's four names, in its order within a directory; the nearest directory wins.
+    for n in mani.yaml mani.yml .mani.yaml .mani.yml; do
+      if [ -f "$d/$n" ]; then rec=$d/$n; break; fi
+    done
+    [ -n "$rec" ] && break
     [ "$d" = / ] && break
     d=$(dirname "$d")
   done

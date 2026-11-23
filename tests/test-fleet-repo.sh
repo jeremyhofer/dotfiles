@@ -398,6 +398,42 @@ cd "$TMP" || exit 1
 FLEET_RECORD="$WS/mani.yaml" FR clone sub > "$TMP/out" 2>&1; rc=$?
 check "FLEET_RECORD names the manifest when no mani.yaml is above the current directory" '[ "$rc" = 0 ] && grep -q "already present" "$TMP/out"'
 
+# --- which manifest file is found ----------------------------------------------------------------
+# mani v0.32.1, measured 2026-11-23: the nearest directory holding any of its four names wins, and
+# within one directory the order is mani.yaml, mani.yml, .mani.yaml, .mani.yml. fleet-repo must pick
+# the same file, or it acts on a manifest mani is not using. Each manifest below declares the same
+# project with a different path, so the directory created names the file that was read. HOME holds
+# no Devel/mani.yaml, so a name the tool does not know fails with "no manifest" rather than passing.
+mfile() {  # $1 file  $2 path for project `pick`
+  cat > "$1" <<EOF
+projects:
+  pick:
+    path: $2/develop
+    url: $(url os)
+    clone: fleet-repo clone pick
+EOF
+}
+for n in .mani.yaml .mani.yml; do
+  d="$TMP/names-only${n//./-}"; mkdir -p "$d"; cd "$d" || exit 1
+  mfile "$n" "via${n//./-}"
+  FR clone pick > "$TMP/out" 2>&1; rc=$?
+  check "a manifest named only $n is found, as mani finds it" "[ \"\$rc\" = 0 ] && [ -d \"$d/via${n//./-}/develop\" ]"
+done
+d="$TMP/names-order"; mkdir -p "$d"; cd "$d" || exit 1
+mfile .mani.yaml via-dot-yaml; mfile .mani.yml via-dot-yml
+FR clone pick > "$TMP/out" 2>&1; rc=$?
+check "in one directory .mani.yaml wins over .mani.yml, as in mani" '[ "$rc" = 0 ] && [ -d via-dot-yaml/develop ] && [ ! -e via-dot-yml ]'
+d="$TMP/names-nearest"; mkdir -p "$d/child"; mfile "$d/mani.yaml" via-parent; mfile "$d/child/.mani.yml" via-child
+cd "$d/child" || exit 1
+FR clone pick > "$TMP/out" 2>&1; rc=$?
+check "the nearest directory wins: a .mani.yml below a mani.yaml is the one read, as in mani" \
+  '[ "$rc" = 0 ] && [ -d "$d/child/via-child/develop" ] && [ ! -e "$d/via-parent" ]'
+d="$TMP/names-none"; mkdir -p "$d"; cd "$d" || exit 1
+FR clone pick > "$TMP/out" 2>&1; rc=$?
+check "no manifest anywhere: exit 2, the message names all four file names" \
+  '[ "$rc" = 2 ] && grep -q "mani.yaml, mani.yml, .mani.yaml or .mani.yml" "$TMP/out"'
+cd "$TMP" || exit 1
+
 # A path naming the container: the directory above must not become a repository.
 mkdir -p "$TMP/ws3"; echo keep > "$TMP/ws3/notes"; cd "$TMP/ws3" || exit 1
 cat > mani.yaml <<EOF

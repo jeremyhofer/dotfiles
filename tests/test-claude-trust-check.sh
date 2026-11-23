@@ -195,6 +195,16 @@ nostate; state "$LIVE"
 run
 check "true or no key: an untrusted project is still reported" '[ "$(verdict p)" = UNTRUSTED ] && [ "$(verdict q)" = UNTRUSTED ] && ! printf "%s" "$OUT" | grep -q "opted out"'
 
+# Which manifest file is found, with no FLEET_RECORD: mani's four names, as fleet-repo reads them
+# (its suite covers the order). A directory holding only .mani.yml is the case a two-name search
+# misses: it falls through to ~/Devel/mani.yaml, absent here, and exits 2.
+echo "manifest named .mani.yml"
+mkdir -p "$TMP/dotman"
+printf 'projects:\n  dm:\n    path: %s\n' "$WS/plain" > "$TMP/dotman/.mani.yml"
+nostate; state "$LIVE" "$WS/plain"
+OUT=$(cd "$TMP/dotman" && sh "$TOOL" 2>&1); RC=$?
+check "a manifest named only .mani.yml is found from its directory" '[ "$(verdict dm)" = trusted ] && [ $RC -eq 0 ]'
+
 run --help
 check "--help exits 0" '[ $RC -eq 0 ] && printf "%s" "$OUT" | grep -q "usage\|claude-trust-check"'
 

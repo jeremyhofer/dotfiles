@@ -141,10 +141,11 @@
 #   on demand and need the network. A filter declared for an EXISTING unfiltered container is
 #   reported and not applied: converting one is a re-clone.
 #
-# WHERE THE MANIFEST IS. $FLEET_RECORD if set; else the nearest mani.yaml (or mani.yml) at or above
-# the current directory, as mani itself finds it; else ~/Devel/mani.yaml. `path` is resolved against
-# the manifest's directory, never the current one: run by hand from a subdirectory, the old tool
-# built the container there. The manifest is read with fleet-decl (a sibling file, else on PATH).
+# WHERE THE MANIFEST IS. $FLEET_RECORD if set; else the nearest of mani's four names at or above the
+# current directory, as mani itself finds it (the nearest directory wins; within one, mani.yaml,
+# mani.yml, .mani.yaml, .mani.yml, measured on mani v0.32.1); else ~/Devel/mani.yaml. `path` is
+# resolved against the manifest's directory, never the current one: run by hand from a
+# subdirectory, the old tool built the container there. The manifest is read with fleet-decl (a sibling file, else on PATH).
 #
 # Two hooks are offered, not required: post-worktree-create and post-clone, each described at its
 # runner below (run_post_worktree_create_hook, run_post_clone_hook).
@@ -218,13 +219,15 @@ load_manifest() {
   else
     d=$PWD
     while :; do
-      if [ -f "$d/mani.yaml" ]; then r="$d/mani.yaml"; break; fi
-      if [ -f "$d/mani.yml" ]; then r="$d/mani.yml"; break; fi
+      for n in mani.yaml mani.yml .mani.yaml .mani.yml; do
+        if [ -f "$d/$n" ]; then r="$d/$n"; break; fi
+      done
+      [ -n "$r" ] && break
       [ "$d" = / ] && break
       d=$(dirname "$d")
     done
     if [ -z "$r" ] && [ -f "$HOME/Devel/mani.yaml" ]; then r="$HOME/Devel/mani.yaml"; fi
-    [ -n "$r" ] || die "no manifest: looked for mani.yaml at or above $PWD and at $HOME/Devel/mani.yaml (set FLEET_RECORD to name one)" 2
+    [ -n "$r" ] || die "no manifest: looked for mani.yaml, mani.yml, .mani.yaml or .mani.yml at or above $PWD, and at $HOME/Devel/mani.yaml (set FLEET_RECORD to name one)" 2
   fi
   MDIR=$(cd "$(dirname "$r")" && pwd)
   RECORD="$MDIR/$(basename "$r")"

@@ -43,8 +43,9 @@
 # the first has a `projects` object it alone decides; else the second if it has one; else UNKNOWN.
 #
 # WHERE THE MANIFEST IS. The same resolution as fleet-repo: $FLEET_RECORD if set; else the nearest
-# mani.yaml (or mani.yml) at or above the current directory; else ~/Devel/mani.yaml. It is read only
-# through fleet-decl (a sibling file, else on PATH).
+# of mani's four names (mani.yaml, mani.yml, .mani.yaml, .mani.yml, in that order within a directory)
+# at or above the current directory; else ~/Devel/mani.yaml. It is read only through fleet-decl (a
+# sibling file, else on PATH).
 #
 # --names-only prints just the names of untrusted projects, one per line, with no path anywhere, for
 # a caller that must not print directories.
@@ -82,13 +83,15 @@ if [ -n "${FLEET_RECORD:-}" ]; then
 else
   rec=""; d=$PWD
   while :; do
-    if [ -f "$d/mani.yaml" ]; then rec="$d/mani.yaml"; break; fi
-    if [ -f "$d/mani.yml" ]; then rec="$d/mani.yml"; break; fi
+    for n in mani.yaml mani.yml .mani.yaml .mani.yml; do
+      if [ -f "$d/$n" ]; then rec="$d/$n"; break; fi
+    done
+    [ -n "$rec" ] && break
     [ "$d" = / ] && break
     d=$(dirname "$d")
   done
   if [ -z "$rec" ] && [ -f "$HOME/Devel/mani.yaml" ]; then rec="$HOME/Devel/mani.yaml"; fi
-  [ -n "$rec" ] || die "no manifest: looked for mani.yaml at or above $PWD and at ~/Devel/mani.yaml (set FLEET_RECORD to name one)" 2
+  [ -n "$rec" ] || die "no manifest: looked for mani.yaml, mani.yml, .mani.yaml or .mani.yml at or above $PWD, and at ~/Devel/mani.yaml (set FLEET_RECORD to name one)" 2
 fi
 MDIR=$(cd "$(dirname "$rec")" && pwd)
 FLEET_RECORD="$MDIR/$(basename "$rec")"; export FLEET_RECORD
