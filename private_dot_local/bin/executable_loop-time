@@ -17,6 +17,7 @@ import json
 import math
 import os
 import platform
+import random
 import re
 import resource
 import shlex
@@ -115,8 +116,40 @@ report --percentile P adds the P-th percentile of wall time (nearest rank, so p9
 is the largest and the report says so), over the passing runs. Concurrent records are grouped by cell,
 the group's composition (a+a+b), apart from solo runs and from other compositions.
 
+--set-env KEY=VALUE (run, run-group, curve; repeatable) overrides one environment value for every
+command of the run, over the declaration's and the loop's env. This is how one declaration serves every
+N of a curve (NX_PARALLEL, PLAYWRIGHT_WORKERS). Records list the key name only, never the value.
+
+curve: `curve <decl> --loop ID --var NAME --n 1,2,4,6,8 --samples 3 --samples-at-1 1 --control 4
+[--seed S] [--gates K]` measures one loop at several values of N, the variable NAME, to find where
+adding workers stops paying. The cells are N by sample. They run round by round, each round shuffled
+from the seed (one seed, one order; a seed is drawn when none is given, and printed and recorded
+either way), so a slow drift of the machine does not line up with one N. A control cell (N = --control,
+one gate) runs at the start, the middle and the end. --gates K runs each cell as K copies of the loop
+at once, as run-group does (Pass B); control cells stay one gate. --mode warm (default) or cold.
+Before every cell the quiet wait: CPU pressure avg10 (macOS: cpu_busy) must stay below --quiet-below
+(5) for --quiet-for seconds (20). After --quiet-timeout seconds (300) it gives up, writes a
+`quiet_timeout` event record saying why, and exits 4: a cell is never timed on a busy machine. The
+load-average guard is not used on a curve, because it lags a heavy cell by minutes and would refuse the
+next one; each record says `load_guard` was not used. Every record carries curve (an id per
+invocation), seed, role (control or cell), var, n, gates, quiet_wait_s, curve_cell and curve_sample.
+--flaky-regex R and --failed-regex R, each with one numeric capture group, read a count from the cell's
+output into `flaky` and `failed_tests` when they match. A cell whose command fails is recorded and
+counted as a failure; the curve goes on and exits 1. Ctrl-C stops the current cell and the records so
+far stay valid; `--resume ID` reruns only the cells the curve has not finished, with its recorded seed.
+
+report --curve ID [--json] reads one curve. Per N: the median wall time of the passing cells, the p90
+(nearest rank, so p90 of three is the largest, and the report says so), failed and flaky counts. A cell
+is passing when its command exited 0 and reported no failed tests; a gate group's cell takes its
+slowest member. The knee is the smallest N that is within 10% of the curve's minimum median, has
+p90 at most 1.25 times its median, had no failed cell and, when flaky counts were recorded, whose
+median flaky count does not exceed the control cells'. The ceiling is the largest such N. The
+per-gate cap is the knee: a cap at the ceiling gains nothing over it and takes capacity from every
+other session. The control spread is (max - min) / min over the passing control cells; over 5% the
+slot is marked DRIFTED and the curve should be rerun.
+
 exit status: 0 ok; 1 a loop exited non-zero; 2 invalid declaration or arguments; 3 a scenario was
-blind; 4 refused under load; 5 a file could not be restored; 6 refused: another session holds the
+blind; 4 refused under load, or a curve's machine never went quiet; 5 a file could not be restored; 6 refused: another session holds the
 timing slot.
 results: ~/.local/state/loop-time/results.jsonl, or $LOOP_TIME_RESULTS, or --results.
 """
@@ -132,6 +165,10 @@ class DeclError(Exception):
 
 class LoadError(Exception):
     pass
+
+
+class QuietError(LoadError):
+    """The machine did not go quiet within the timeout: a cell is never timed on a busy machine."""
 
 
 class SlotError(Exception):
@@ -944,14 +981,18 @@ _RESULTS_LOCK = threading.Lock()
 
 class Session:
     def __init__(self, decl, results, max_load, force, wait=120, slot_holder=None, ignore_slot=False,
-                 pressure_interval=1.0):
+                 pressure_interval=1.0, set_env=None, extra=None, run_id=None, count_regexes=None):
         self.decl, self.results, self.max_load, self.force, self.wait = decl, Path(results), max_load, force, wait
         self.slot_holder, self.ignore_slot = slot_holder, ignore_slot
         self.pressure_interval = pressure_interval
         # A group member: its identity in the records, a hook run just before the command starts (the
         # barrier), and whether the machine was already busy before the group began.
         self.tag, self.group, self.before_measure, self.pre_under = "", None, None, False
-        self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        self.run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        # --set-env pairs override the declaration's and the loop's env for every command; `extra`
+        # is merged into every record (a curve's fields); `count_regexes` maps a record field to a
+        # compiled pattern whose one numeric group is read from the command's output.
+        self.set_env, self.extra, self.count_regexes = dict(set_env or {}), dict(extra or {}), count_regexes or {}
         # Git state per loop cwd, not per root: a root may hold several checkouts (a directory of
         # worktrees), and each record must name the tree its loop ran in. Measured 2026-11-10:
         # finmodel's loops in two worktrees at different commits both recorded the enclosing
@@ -965,7 +1006,7 @@ class Session:
 
     def env_for(self, loop):
         """(the process environment for this loop's commands, the env key names set)."""
-        merged = {**self.decl.env, **loop.env}
+        merged = {**self.decl.env, **loop.env, **self.set_env}
         if not merged:
             return None, []
         out = caller_env()
@@ -1039,6 +1080,19 @@ class Session:
                 rec["nx"] = parse_nx_output(outp.read_text(errors="replace"))
             except OSError:
                 rec["nx"] = parse_nx_output("")
+        if self.count_regexes:
+            try:
+                text = ANSI.sub("", outp.read_text(errors="replace"))
+            except OSError:
+                text = ""
+            for name, rx in self.count_regexes.items():
+                found = rx.findall(text)
+                if found:
+                    try:
+                        rec[name] = int(found[-1])
+                    except ValueError:
+                        pass
+        rec.update(self.extra)
         self.results.parent.mkdir(parents=True, exist_ok=True)
         with _RESULTS_LOCK, open(self.results, "a") as f:
             f.write(json.dumps(rec) + "\n")
@@ -1055,8 +1109,8 @@ class Session:
 
 
 def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120, slot_holder=None,
-             ignore_slot=False, pressure_interval=1.0):
-    s = Session(decl, results, max_load, force, wait, slot_holder, ignore_slot, pressure_interval)
+             ignore_slot=False, pressure_interval=1.0, **session_kw):
+    s = Session(decl, results, max_load, force, wait, slot_holder, ignore_slot, pressure_interval, **session_kw)
     scenarios = decl.scenarios_for(loop.id)
     if mode.startswith("scenario:"):
         scenarios = [decl.scenario(mode.split(":", 1)[1])]
@@ -1112,14 +1166,15 @@ def run_loop(decl, loop, mode, samples, results, max_load, force, wait=120, slot
 
 
 def run_group(decl, loops, mode, samples, results, max_load, force, wait=120, slot_holder=None,
-              ignore_slot=False, pressure_interval=1.0):
+              ignore_slot=False, pressure_interval=1.0, **session_kw):
     """Run K loops at once, `samples` rounds. Each round every member starts its command at a
     barrier, in its own scratch directory, and all K records carry one group id. The load guard is
     asked once, before the first round: from then on the members are each other's load, so it is
     recorded as `concurrent`, not `under_load`. Returns the first member's Session with `.failed`
     and `.counter` summed over the group."""
     k = len(loops)
-    first = Session(decl, results, float("inf"), False, wait, slot_holder, ignore_slot, pressure_interval)
+    first = Session(decl, results, float("inf"), False, wait, slot_holder, ignore_slot, pressure_interval,
+                    **session_kw)
     first.pre_under = wait_for_load(max_load, force, wait=wait)
     gid = f"{first.run_id}-g"
     barrier = threading.Barrier(k)
@@ -1198,6 +1253,8 @@ def cell_of(r):
 def summarize(recs, percentile=None):
     groups = {}
     for r in recs:
+        if r.get("event"):
+            continue
         key = (r.get("project"), r.get("loop"), r.get("mode"), r.get("step"), cell_of(r))
         groups.setdefault(key, []).append(r)
     out = []
@@ -1232,9 +1289,11 @@ def cmd_report(args):
         print(f"loop-time: no results at {path}", file=sys.stderr)
         return EXIT_INVALID
     recs, bad = load_records(path)
-    groups = summarize(recs, args.percentile)
     if bad:
         print(f"loop-time: skipped {bad} unreadable line(s)", file=sys.stderr)
+    if args.curve:
+        return cmd_report_curve(args, recs)
+    groups = summarize(recs, args.percentile)
     if args.json:
         print(json.dumps(groups, indent=2))
         return 0
@@ -1266,6 +1325,327 @@ def cmd_report(args):
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    return 0
+
+
+# ---- curve: the saturation grid ----------------------------------------------------------
+
+CONTROL_CELLS = 3
+
+
+def curve_plan(ns, samples, samples_at_1, control, seed):
+    """The cells of a curve, in the order they run. Round r holds sample r of every N that has one
+    (N=1 may have fewer samples than the rest), and each round is shuffled from one seeded generator,
+    so a seed names an order. A control cell (N=control, one gate) runs before the first round, after
+    the middle one and after the last: three readings of the same cell across the slot."""
+    rng = random.Random(seed)
+    count = {n: (samples_at_1 if n == 1 else samples) for n in ns}
+    rounds = []
+    for r in range(max(count.values())):
+        cells = [{"role": "cell", "n": n, "sample": r, "round": r} for n in ns if count[n] > r]
+        rng.shuffle(cells)
+        rounds.append(cells)
+    half = (len(rounds) + 1) // 2
+
+    def ctl(i):
+        return [{"role": "control", "n": control, "sample": i, "round": None}]
+
+    plan = ctl(0)
+    for cells in rounds[:half]:
+        plan += cells
+    plan += ctl(1)
+    for cells in rounds[half:]:
+        plan += cells
+    return plan + ctl(2)
+
+
+def read_cpu_pressure():
+    """The CPU reading the quiet wait watches: avg10 of cpu `some` on Linux, busy percent on macOS
+    (cpu_busy). None when neither can be read, which counts as not quiet."""
+    v = read_pressure()["values"]
+    return v.get("cpu_some", v.get("cpu_busy"))
+
+
+def wait_quiet(read, below, hold, timeout, sleep=time.sleep, clock=time.monotonic, interval=1.0):
+    """Wait until `read()` has stayed below `below` for `hold` seconds; return the seconds waited.
+    A reading at or above the threshold, or None, restarts the hold. Raises QuietError once
+    `timeout` seconds have passed without it."""
+    start = clock()
+    quiet_since = None
+    last = None
+    while True:
+        now = clock()
+        last = read()
+        if last is not None and last < below:
+            if quiet_since is None:
+                quiet_since = now
+            if now - quiet_since >= hold:
+                return round(now - start, 2)
+        else:
+            quiet_since = None
+        if now - start >= timeout:
+            seen = "unreadable" if last is None else f"{last:g}"
+            raise QuietError(f"the CPU did not stay below {below:g} for {hold:g}s within {timeout:g}s "
+                             f"(last reading {seen})")
+        sleep(interval)
+
+
+DRIFT_LIMIT = 0.05
+KNEE_BAND = 0.10
+P90_RATIO = 1.25
+
+
+def _cells(recs, role):
+    """One entry per cell: a group's members are one cell, as slow as its slowest member, and failed
+    when any member failed (a nonzero exit, or a reported failed-test count above zero)."""
+    cells = {}
+    for r in recs:
+        if r.get("role") == role:
+            cells.setdefault(r.get("curve_cell"), []).append(r)
+    out = []
+    for members in cells.values():
+        failed = any(m.get("exit_code", 0) != 0 or (m.get("failed_tests") or 0) > 0 for m in members)
+        out.append({"n": members[0].get("n"), "sample": members[0].get("curve_sample"),
+                    "wall": max(m.get("wall_seconds", 0.0) for m in members), "failed": failed,
+                    "flaky": sum(m.get("flaky") or 0 for m in members), "gates": len(members)})
+    return sorted(out, key=lambda c: (c["n"], c["sample"] if c["sample"] is not None else 0))
+
+
+def analyze_curve(recs):
+    """The per-N timings of one curve's records, with its knee and ceiling.
+
+    Per N: median and p90 (nearest rank) of the passing cells' wall time. An N is eligible when it
+    had no failed cell, its median is within 10% of the curve's minimum median, its p90 is at most
+    1.25 times its median and, when flaky counts were recorded, its median flaky count does not
+    exceed the control cells'. The knee is the smallest eligible N, the ceiling the largest."""
+    cells = _cells(recs, "cell")
+    controls = _cells(recs, "control")
+    flaky_recorded = any("flaky" in r for r in recs)
+    ctl_pass = [c for c in controls if not c["failed"]]
+    ctl_flaky = statistics.median([c["flaky"] for c in ctl_pass]) if ctl_pass else 0
+    per_n = []
+    for n in sorted({c["n"] for c in cells}):
+        mine = [c for c in cells if c["n"] == n]
+        ok = [c for c in mine if not c["failed"]]
+        walls = [c["wall"] for c in ok]
+        gates = max(c["gates"] for c in mine)
+        med = statistics.median(walls) if walls else None
+        per_n.append({"n": n, "cells": len(mine), "samples": len(ok), "failures": len(mine) - len(ok),
+                      "flaky": sum(c["flaky"] for c in mine),
+                      "flaky_median": statistics.median([c["flaky"] for c in ok]) if ok else None,
+                      "wall_median": med, "wall_p90": percentile(walls, 90),
+                      "p90_is_max": percentile_is_max(len(walls), 90), "gates": gates,
+                      "throughput": gates / med if med else None, "eligible": False, "reasons": []})
+    medians = [x["wall_median"] for x in per_n if x["wall_median"] is not None]
+    best = min(medians) if medians else None
+    for x in per_n:
+        why = x["reasons"]
+        if x["failures"]:
+            why.append(f"{x['failures']} failed")
+        if x["wall_median"] is None:
+            why.append("no passing sample")
+        else:
+            if x["wall_median"] > best * (1 + KNEE_BAND) + 1e-9:
+                why.append("median not within 10% of the minimum")
+            if x["wall_p90"] > x["wall_median"] * P90_RATIO + 1e-9:
+                why.append("p90 above 1.25 x median")
+            if flaky_recorded and x["flaky_median"] > ctl_flaky:
+                why.append(f"flaky median {x['flaky_median']:g} above the control's {ctl_flaky:g}")
+        x["eligible"] = not why
+    ok_n = [x["n"] for x in per_n if x["eligible"]]
+    walls = [c["wall"] for c in ctl_pass]
+    spread = (max(walls) - min(walls)) / min(walls) if len(walls) >= 2 and min(walls) > 0 else None
+    return {"per_n": per_n, "knee": min(ok_n) if ok_n else None, "ceiling": max(ok_n) if ok_n else None,
+            "control": {"n": controls[0]["n"] if controls else None, "walls": walls, "spread": spread,
+                        "drifted": None if spread is None else spread > DRIFT_LIMIT}}
+
+
+def _curve_key(cell):
+    return f"{cell['role']}:{cell['n']}:{cell['sample']}"
+
+
+def run_curve(decl, loop, plan, curve_id, seed, var, gates, mode, results, set_env, quiet, count_regexes,
+              done=None, slot_holder=None, ignore_slot=False, pressure_interval=1.0):
+    """Run a curve's cells in plan order. Before each, wait for the machine to be quiet (`quiet` is
+    (below, hold, timeout, interval)); a timeout is written to the results as an event record and
+    raised as QuietError. Each cell is one run (one gate) or one run-group of `gates` copies of the
+    loop; its records carry the curve fields. `done` maps a cell key to the records it already has,
+    so a resumed curve runs only what is left. The load guard is not used: the 1-minute load
+    average lags a heavy cell by minutes and would refuse every cell after it. Returns (cells run,
+    whether any run failed)."""
+    below, hold, timeout, interval = quiet
+    done = done or {}
+    ran, failed = 0, False
+    for idx, cell in enumerate(plan):
+        key = _curve_key(cell)
+        k = 1 if cell["role"] == "control" else gates
+        if done.get(key, 0) >= k:
+            continue
+        try:
+            waited = wait_quiet(lambda: read_cpu_pressure(), below, hold, timeout, interval=interval)
+        except QuietError as e:
+            event = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                     "event": "quiet_timeout", "project": decl.project, "curve": curve_id, "seed": seed,
+                     "var": var, "curve_cell": key, "reason": str(e)}
+            with _RESULTS_LOCK, open(results, "a") as f:
+                f.write(json.dumps(event) + "\n")
+            raise
+        extra = {"curve": curve_id, "seed": seed, "role": cell["role"], "var": var, "n": cell["n"],
+                 "gates": k, "quiet_wait_s": waited, "curve_cell": key, "curve_sample": cell["sample"],
+                 "load_guard": "not used: the quiet wait replaces it"}
+        kw = dict(set_env={**set_env, var: str(cell["n"])}, extra=extra, run_id=f"{curve_id}-{idx:03d}",
+                  count_regexes=count_regexes)
+        if k == 1:
+            s = run_loop(decl, loop, mode, 1, results, float("inf"), False, 0, slot_holder, ignore_slot,
+                         pressure_interval, **kw)
+        else:
+            s = run_group(decl, [loop] * k, mode, 1, results, float("inf"), False, 0, slot_holder,
+                          ignore_slot, pressure_interval, **kw)
+        ran += 1
+        failed = failed or s.failed
+    return ran, failed
+
+
+def _positive_ints(text):
+    try:
+        vals = [int(x) for x in text.split(",")]
+    except ValueError:
+        return None
+    return vals if vals and all(v >= 1 for v in vals) and len(set(vals)) == len(vals) else None
+
+
+def _count_regex(text, name, problems):
+    if text is None:
+        return None
+    try:
+        rx = re.compile(text)
+    except re.error as e:
+        problems.append(f"{name}: not a regular expression ({e})")
+        return None
+    if rx.groups != 1:
+        problems.append(f"{name} needs exactly one capture group (the count), '{text}' has {rx.groups}")
+        return None
+    return rx
+
+
+def cmd_curve(args):
+    try:
+        d = load_decl(args.declaration)
+    except DeclError as e:
+        _print_problems(e)
+        return EXIT_INVALID
+    problems = []
+    loop = d.loop(args.loop)
+    if loop is None:
+        problems.append(f"unknown loop '{args.loop}' (declared: {', '.join(l.id for l in d.loops)})")
+    if not ENV_NAME.match(args.var):
+        problems.append(f"--var '{args.var}' is not a valid variable name")
+    if args.var in dict(args.set_env):
+        problems.append(f"--var {args.var} is set by the curve for each N; drop it from --set-env")
+    ns = _positive_ints(args.n)
+    if ns is None:
+        problems.append(f"--n '{args.n}' must be distinct whole numbers of at least 1, comma separated")
+    for flag, value in (("--samples", args.samples), ("--samples-at-1", args.samples_at_1),
+                        ("--control", args.control), ("--gates", args.gates)):
+        if value < 1:
+            problems.append(f"{flag} must be at least 1")
+    if args.mode not in ("warm", "cold"):
+        problems.append(f"curve takes --mode warm or cold, not '{args.mode}'")
+    regexes = {}
+    for name, text in (("flaky", args.flaky_regex), ("failed_tests", args.failed_regex)):
+        rx = _count_regex(text, "--flaky-regex" if name == "flaky" else "--failed-regex", problems)
+        if rx is not None:
+            regexes[name] = rx
+    results = Path(args.results) if args.results else default_results()
+    seed, curve_id, done = args.seed, None, {}
+    if args.resume:
+        curve_id = args.resume
+        prior = [r for r in (load_records(results)[0] if results.is_file() else []) if r.get("curve") == curve_id]
+        if not prior:
+            problems.append(f"--resume {curve_id}: no records of that curve in {results}")
+        else:
+            recorded = prior[0].get("seed")
+            if seed is not None and seed != recorded:
+                problems.append(f"--resume {curve_id}: it ran with seed {recorded}, not {seed}; "
+                                "leave --seed out to resume with the recorded one")
+            seed = recorded
+            if prior[0].get("var") != args.var:
+                problems.append(f"--resume {curve_id}: it varied {prior[0].get('var')}, not {args.var}")
+            for r in prior:
+                if not r.get("event"):
+                    done[r.get("curve_cell")] = done.get(r.get("curve_cell"), 0) + 1
+    if problems:
+        _print_problems(DeclError(problems))
+        return EXIT_INVALID
+    if seed is None:
+        seed = random.SystemRandom().randrange(2 ** 32)
+    if curve_id is None:
+        curve_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + f"-{random.SystemRandom().randrange(16 ** 4):04x}"
+    plan = curve_plan(ns, args.samples, args.samples_at_1, args.control, seed)
+    if not _results_writable(results):
+        return EXIT_INVALID
+    try:
+        slot_check(args.slot_holder, args.ignore_slot)
+    except SlotError as e:
+        print(f"loop-time: refused: {e}; nothing was run", file=sys.stderr)
+        return EXIT_SLOT
+    quiet = (args.quiet_below, args.quiet_for, args.quiet_timeout, args.quiet_interval)
+    print(f"loop-time: curve {curve_id} seed {seed}: {len(plan)} cell(s)"
+          + (f", {sum(1 for c in plan if done.get(_curve_key(c), 0))} already done" if done else ""))
+    _install_signal_handlers()
+    rc, out = _run_errors(lambda: run_curve(
+        d, loop, plan, curve_id, seed, args.var, args.gates, args.mode, results, dict(args.set_env), quiet,
+        regexes, done, args.slot_holder, args.ignore_slot, _pressure_interval(args)))
+    if rc is not None:
+        return rc
+    ran, failed = out
+    print(f"loop-time: {ran} cell(s) run for curve {curve_id}; "
+          f"`loop-time report --curve {curve_id} --results {results}` gives the knee")
+    return EXIT_LOOP_FAILED if failed else 0
+
+
+def cmd_report_curve(args, recs):
+    mine = [r for r in recs if r.get("curve") == args.curve and not r.get("event")]
+    if not mine:
+        print(f"loop-time: no records of curve '{args.curve}'", file=sys.stderr)
+        return EXIT_INVALID
+    a = analyze_curve(mine)
+    first = mine[0]
+    a.update(curve=args.curve, seed=first.get("seed"), var=first.get("var"), project=first.get("project"),
+             loop=first.get("loop"), gates=max(r.get("gates", 1) for r in mine if r.get("role") == "cell")
+             if any(r.get("role") == "cell" for r in mine) else 1)
+    if args.json:
+        print(json.dumps(a, indent=2))
+        return 0
+
+    def f(v):
+        return "-" if v is None else f"{v:.2f}"
+
+    print(f"curve {args.curve}  {first.get('project')}/{first.get('loop')}  vary {first.get('var')}  "
+          f"seed {first.get('seed')}  gates {a['gates']}")
+    rows = [("N", "cells", "ok", "wall med", "wall p90", "failed", "flaky", "note")]
+    for x in a["per_n"]:
+        note = []
+        if x["p90_is_max"]:
+            note.append(f"p90 is the max of {x['samples']}")
+        if x["failures"]:
+            note.append(f"{x['failures']} failed")
+        note.append("eligible" if x["eligible"] else "rejected: " + "; ".join(x["reasons"]))
+        rows.append((str(x["n"]), str(x["cells"]), str(x["samples"]), f(x["wall_median"]), f(x["wall_p90"]),
+                     str(x["failures"]), str(x["flaky"]), ", ".join(note)))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    knee = "none" if a["knee"] is None else a["knee"]
+    ceil = "none" if a["ceiling"] is None else a["ceiling"]
+    print(f"knee {knee}, ceiling {ceil}  (the per-gate cap is the knee; a cap at the ceiling gains "
+          "nothing over it)")
+    c = a["control"]
+    if c["spread"] is None:
+        print("control: fewer than two passing control cells, so drift is unknown")
+    else:
+        print(f"control N={c['n']}: spread {c['spread'] * 100:.1f}% over "
+              f"{', '.join(f'{w:.2f}' for w in c['walls'])}  " + ("DRIFTED" if c["drifted"] else "ok"))
     return 0
 
 
@@ -1402,7 +1782,7 @@ def cmd_run_group(args):
     _install_signal_handlers()
     rc, s = _run_errors(lambda: run_group(d, loops, args.mode, args.samples, results, max_load, args.force,
                                           args.load_wait, args.slot_holder, args.ignore_slot,
-                                          _pressure_interval(args)))
+                                          _pressure_interval(args), set_env=dict(args.set_env)))
     if rc is not None:
         return rc
     print(f"loop-time: {s.counter} record(s) appended to {results}")
@@ -1449,7 +1829,8 @@ def cmd_run(args):
     _install_signal_handlers()
     try:
         s = run_loop(d, loop, mode, args.samples, results, max_load, args.force, args.load_wait,
-                     args.slot_holder, args.ignore_slot, _pressure_interval(args))
+                     args.slot_holder, args.ignore_slot, _pressure_interval(args),
+                     set_env=dict(args.set_env))
     except SlotError as e:
         print(f"loop-time: refused mid-run: {e}; the samples before it were recorded", file=sys.stderr)
         return EXIT_SLOT
@@ -1486,6 +1867,19 @@ def _percent(text):
     return v
 
 
+def _env_pair(text):
+    key, sep, value = text.partition("=")
+    if not sep or not ENV_NAME.match(key):
+        raise argparse.ArgumentTypeError(f"'{text}' is not KEY=VALUE with a valid variable name")
+    return key, value
+
+
+def _add_set_env(p):
+    p.add_argument("--set-env", action="append", type=_env_pair, default=[], metavar="KEY=VALUE",
+                   help="override one environment value for every command of the run (repeatable); "
+                        "it wins over the declaration's and the loop's env; records list the key name only")
+
+
 def _add_pressure_args(p):
     p.add_argument("--pressure-interval", type=float, default=1.0,
                    help="seconds between pressure readings while a sample runs (default 1)")
@@ -1517,6 +1911,7 @@ def build_parser():
     r.add_argument("--slot-holder", default=None,
                    help="the slot holder to check as (default: the calling session's name)")
     _add_pressure_args(r)
+    _add_set_env(r)
     g = sub.add_parser("run-group", help="time several loops at once, started at a barrier",
                        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG)
     g.add_argument("declaration")
@@ -1533,8 +1928,39 @@ def build_parser():
     g.add_argument("--ignore-slot", action="store_true")
     g.add_argument("--slot-holder", default=None)
     _add_pressure_args(g)
+    _add_set_env(g)
+    c = sub.add_parser("curve", help="run a saturation curve: one loop at several worker counts",
+                       formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG)
+    c.add_argument("declaration")
+    c.add_argument("--loop", required=True, help="the loop to time")
+    c.add_argument("--var", required=True, metavar="NAME",
+                   help="the environment variable that carries N (NX_PARALLEL, PLAYWRIGHT_WORKERS ...)")
+    c.add_argument("--n", default="1,2,4,6,8", help="comma-separated values of N (default 1,2,4,6,8)")
+    c.add_argument("--samples", type=int, default=3, help="samples at each N of 2 and above (default 3)")
+    c.add_argument("--samples-at-1", type=int, default=1, help="samples at N=1 (default 1)")
+    c.add_argument("--seed", type=int, default=None,
+                   help="seed for the order of the cells (default: one is drawn; printed and recorded either way)")
+    c.add_argument("--control", type=int, default=4, help="N of the control cell, run at the start, middle and end")
+    c.add_argument("--gates", type=int, default=1,
+                   help="run each cell as K copies of the loop at once (Pass B); control cells stay one gate")
+    c.add_argument("--mode", default="warm", help="warm (default) or cold")
+    c.add_argument("--quiet-below", type=float, default=5.0, metavar="P",
+                   help="CPU pressure avg10 (macOS: cpu_busy) the machine must stay under before a cell (default 5)")
+    c.add_argument("--quiet-for", type=float, default=20.0, metavar="S", help="seconds it must stay under (default 20)")
+    c.add_argument("--quiet-timeout", type=float, default=300.0, metavar="S",
+                   help="give up waiting for quiet after this long: exit 4 (default 300)")
+    c.add_argument("--quiet-interval", type=float, default=1.0, metavar="S", help="seconds between readings (default 1)")
+    c.add_argument("--flaky-regex", metavar="R", help="a pattern with one numeric group: the flaky count in a cell's output")
+    c.add_argument("--failed-regex", metavar="R", help="a pattern with one numeric group: the failed-test count")
+    c.add_argument("--resume", metavar="ID", help="rerun only the cells curve ID has not finished")
+    c.add_argument("--results")
+    c.add_argument("--ignore-slot", action="store_true")
+    c.add_argument("--slot-holder", default=None)
+    _add_pressure_args(c)
+    _add_set_env(c)
     rp = sub.add_parser("report", help="summarize a results file")
     rp.add_argument("--results")
+    rp.add_argument("--curve", metavar="ID", help="report one curve: per-N median and p90, knee, ceiling, control drift")
     rp.add_argument("--json", action="store_true")
     rp.add_argument("--percentile", type=_percent, default=None, metavar="P",
                     help="also give the P-th percentile of wall time (nearest rank, 1 to 100), per cell")
@@ -1543,7 +1969,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    return {"plan": cmd_plan, "run": cmd_run, "run-group": cmd_run_group, "report": cmd_report}[args.cmd](args)
+    return {"plan": cmd_plan, "run": cmd_run, "run-group": cmd_run_group, "curve": cmd_curve,
+            "report": cmd_report}[args.cmd](args)
 
 
 if __name__ == "__main__":

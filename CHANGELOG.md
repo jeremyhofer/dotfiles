@@ -32,6 +32,16 @@ Entries are newest first.
 
 ---
 
+## 2026-11-23 (loop-time: `curve`, `report --curve`, `--set-env`)
+
+Nothing to do on adopting it; results files written before it read as before. `loop-time curve`
+runs one loop at several values of a variable (`--var NX_PARALLEL --n 1,2,4,6,8`), in a seeded
+round-by-round shuffle with control cells at the start, middle and end, waiting for CPU pressure to
+be quiet before each cell (exit 4 if it never is). `report --curve ID` gives the per-N median and
+p90, the knee and ceiling, and the control drift. `--set-env KEY=VALUE` on `run`, `run-group` and
+`curve` overrides one environment value for the run. A curve skips the load-average guard; its
+records say so.
+
 ## 2026-11-23 (a new skill: `seam-review`)
 
 No action. A new skill, `seam-review`, carries a 21-seam checklist for architecture and security
