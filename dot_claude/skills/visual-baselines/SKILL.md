@@ -1,6 +1,6 @@
 ---
 name: visual-baselines
-description: Use before recording, re-recording or committing visual-regression screenshot baselines (Playwright `toHaveScreenshot`, `--update-snapshots`, a `__screenshots__` directory), when adding a size guard for them, or when a repository's history or clone has grown large from images. Covers why each re-record stores a whole new file, committing once per landed batch, the commit-path size guard, per-section images instead of full-page ones, measuring growth, and what Git LFS needs before it is safe, including why a history rewrite breaks every cited commit hash.
+description: Use before recording, re-recording or committing visual-regression screenshot baselines (Playwright `toHaveScreenshot`, `--update-snapshots`, a `__screenshots__` directory), when adding a size guard for them, or when a repository's history or clone has grown large from images. Covers why each re-record stores a whole new file, committing once per landed batch, the commit-path size guard, per-section images instead of full-page ones, measuring growth, and what Git LFS needs before it is safe, including why every git-based size check reads the ~130-byte pointer once images are in LFS (a size guard that never fires, a growth gauge at zero) and why a history rewrite breaks every cited commit hash.
 ---
 
 # Visual-regression baselines in git
@@ -44,7 +44,15 @@ So the lever is how often, and how much, gets re-recorded and committed. The sto
      arrived (Forgejo, measured on 15.0.6), so a client pushing with hooks skipped can publish dangling
      pointers that break other checkouts.
    - **Adopt forward-only.** `.gitattributes` routes new commits to LFS and leaves old history as it is.
-     Converting old history (`git lfs migrate import`, `git filter-repo`) is a rewrite (next section).
+     Converting old history (`git lfs migrate import`, `git filter-repo`) is a rewrite (see "A history
+     rewrite breaks every cited commit hash" below).
+   - **Every size check goes blind, and stays green.** Once an image is in LFS, its git blob is the pointer,
+     about 130 bytes, so anything that sizes files through git reads the pointer and not the image:
+     `git cat-file -s`, `--batch-check` with `%(objectsize)`, the sizes in `git log --raw`. The commit-path
+     guard (practice 2) then sums 130 bytes per staged image and can never fire, and a growth gauge reads
+     near zero. Nothing errors. Read each image's size from its pointer instead (see "Reading an image's
+     size through an LFS pointer" below). Then stage an LFS image over the threshold and see the guard
+     refuse it before trusting the guard again.
 
 ## Measure before and after
 
@@ -59,6 +67,26 @@ git rev-list --objects --all \
 ```
 
 The monthly growth rate is the number to track, not the total. Re-measure after each practice is adopted.
+In a repository using LFS this counts what clones and history hold, which is pointers. The LFS store still
+grows at the images' rate, and measuring that needs each pointer's `size` line (next section).
+
+### Reading an image's size through an LFS pointer
+
+A pointer is a text blob that begins with the line `version https://git-lfs.github.com/spec/v1` and
+records the image's byte count on a `size <N>` line. The LFS specification requires a pointer to be under
+1024 bytes, so test both: a blob of 1024 bytes or more is content, whatever its first line says.
+
+```text
+version https://git-lfs.github.com/spec/v1
+oid sha256:10b38acb02c80b3951f5de8feb4b04ace9f357546461effced931ee700f37cde
+size 50000
+```
+
+Git sizes that blob at 130 bytes, and the image it stands for is 50,000. To read many blobs in one
+process, use `git cat-file --batch`. Each object arrives as a `<name> <type> <size>` header line, then
+exactly `<size>` bytes and a newline. Walk that output by **byte** offsets. The header counts bytes, so
+stepping through decoded characters falls out of alignment at the first multi-byte character and misreads
+every object after it.
 
 ## A history rewrite breaks every cited commit hash
 
