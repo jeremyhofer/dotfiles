@@ -2672,31 +2672,30 @@ def _refresh_fixture(fleet):
         "state": "live", "why": "listed (idle); pid 6101 (fixture)", "pids": [6101]}}}))
 
 
-def _snap_seat_after(fleet, delay, state):
-    """After `delay` seconds, write a snapshot taken then, showing gamma in `state`."""
-    def write():
-        time.sleep(delay)
-        tmp = Path(str(fleet.snap) + ".n")
-        tmp.write_text(json.dumps({"version": 1, "takenAt": int(time.time()), "seats": {"gamma-canonical": {
-            "state": state, "why": "fixture, after the stop", "pids": []}}}))
-        tmp.replace(fleet.snap)
-    t = threading.Thread(target=write)
-    t.start()
-    return t
-
-
-def test_refresh_a_pre_stop_snapshot_listing_the_stopped_pid_does_not_block_the_relaunch(fleet):
+def test_refresh_a_pre_stop_snapshot_listing_the_stopped_pid_does_not_block_the_relaunch(fleet, slow_stop=None):
     _refresh_fixture(fleet)
-    t = _snap_seat_after(fleet, 3, "dead")
-    r = fleet.fc("refresh", "gamma-canonical", env={"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)})
+    done = threading.Event()
+    t = _snap_seat_after_the_stop(fleet, done, "dead")
+    env = {"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)}
+    if slow_stop:
+        env["CLAUDE_STUB_RM_DELAY"] = str(slow_stop)
+    r = fleet.fc("refresh", "gamma-canonical", env=env)
+    done.set()
     t.join()
     assert r.status == 0 and "started 1" in r.out and "REFUSED" not in r.out, \
         "refresh: a snapshot from before the stop that lists the stopped pid does not block the relaunch (rc=%s): %s" % (r.status, r.out)
 
 
-def _snap_seat_live_after_the_stop(fleet, done):
-    """Once the stub has removed gamma's row (the stop), write a fresh snapshot showing it live every
-    half second until `done` is set, as the snapshot timer would. A single write on a fixed delay
+def test_refresh_a_pre_stop_snapshot_does_not_block_the_relaunch_under_a_slow_stop(fleet):
+    """The same with the stop taking 4 s. Its snapshot was once written on a fixed 3 s delay, which
+    landed before the stop whenever the gate and the stop together took longer (post-apply on the
+    workstation, 2026-11-23); nothing wrote again, so refresh waited out LOADED_WAIT and refused."""
+    test_refresh_a_pre_stop_snapshot_listing_the_stopped_pid_does_not_block_the_relaunch(fleet, slow_stop=4)
+
+
+def _snap_seat_after_the_stop(fleet, done, state):
+    """Once the stub has removed gamma's row (the stop), write a fresh snapshot showing it in `state`
+    every half second until `done` is set, as the snapshot timer would. A single write on a fixed delay
     raced the stop on a loaded machine (2026-11-13): written before refresh's stop, it predated it."""
     def write():
         deadline = time.time() + LOADED_WAIT
@@ -2711,7 +2710,7 @@ def _snap_seat_live_after_the_stop(fleet, done):
         while not done.is_set() and time.time() < deadline:
             tmp = Path(str(fleet.snap) + ".n")
             tmp.write_text(json.dumps({"version": 1, "takenAt": int(time.time()), "seats": {"gamma-canonical": {
-                "state": "live", "why": "fixture, after the stop", "pids": []}}}))
+                "state": state, "why": "fixture, after the stop", "pids": []}}}))
             tmp.replace(fleet.snap)
             time.sleep(0.5)
     t = threading.Thread(target=write)
@@ -2722,7 +2721,7 @@ def _snap_seat_live_after_the_stop(fleet, done):
 def test_refresh_a_post_stop_snapshot_that_still_shows_the_seat_running_refuses(fleet, slow_stop=None):
     _refresh_fixture(fleet)
     done = threading.Event()
-    t = _snap_seat_live_after_the_stop(fleet, done)
+    t = _snap_seat_after_the_stop(fleet, done, "live")
     env = {"FLEET_REFRESH_SNAPSHOT_WAIT": str(LOADED_WAIT)}
     if slow_stop:
         env["CLAUDE_STUB_RM_DELAY"] = str(slow_stop)
