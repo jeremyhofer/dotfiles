@@ -442,6 +442,12 @@ FAKE_CLAUDE = r"""#!/usr/bin/env python3
 import json, os, re, secrets, shlex, shutil, signal, subprocess, sys, time, uuid
 from pathlib import Path
 st = Path(os.environ["FAKE_CLAUDE_STATE"]); st.mkdir(parents=True, exist_ok=True)
+# Every process the fake starts in a session of its own, which outlives the fake: the test's
+# fixture reads this list and fails a test that leaves one running (SPAWNED_GRACE, outside).
+SPAWNED = st / "spawned.pids"
+def spawned(p):
+    with SPAWNED.open("a") as fh: fh.write("%d\n" % p.pid)
+    return p
 rows_f = st / "rows.json"
 rows = json.loads(rows_f.read_text()) if rows_f.exists() else []
 argv = sys.argv[1:]
@@ -504,8 +510,9 @@ if cfg.get("grow_only"):
 rec = cfg["record"]
 open(rec, "w").write(json.dumps(dict(cfg["data"], pid=os.getpid())))
 def after(extra):
-    subprocess.Popen([sys.executable, "-c", open(cfg["self"]).read(), json.dumps(extra)], start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = subprocess.Popen([sys.executable, "-c", open(cfg["self"]).read(), json.dumps(dict(extra, spawned=cfg["spawned"]))],
+                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    open(cfg["spawned"], "a").write("%d\n" % p.pid)
 def term(*_):
     if cfg.get("ignore"): return
     time.sleep(cfg.get("term_lag", 0))
@@ -546,6 +553,12 @@ cfg = json.loads(sys.argv[1])
 t0, rec, tr, idle, inf = cfg["t0"], cfg["record"], cfg["transcript"], cfg["idle"], float("inf")
 events = sorted(cfg["events"], key=lambda e: e["at"])
 clock, extra = t0, t0
+def nap(until):
+    # Sleeps until UNTIL, but ends the supervisor once the record is gone (a stop, or the test's
+    # cleanup): a sleep to a far stop time outlived its test.
+    while time.time() < until:
+        if not os.path.exists(rec): sys.exit(0)
+        time.sleep(min(0.05, max(0.0, until - time.time())))
 def stop_at():
     if cfg["stop_after"] != "model":
         return inf if cfg["stop_after"] is None else t0 + cfg["stop_after"]
@@ -554,7 +567,7 @@ def stop_at():
 while True:
     nxt, s = (t0 + events[0]["at"] if events else inf), stop_at()
     if nxt < inf and nxt <= s:
-        time.sleep(max(0.0, nxt - time.time()))
+        nap(nxt)
         if not (os.path.exists(rec) and os.path.exists(tr)): sys.exit(0)
         e = events.pop(0)
         n = time.time()
@@ -566,7 +579,7 @@ while True:
         extra = max(extra, clock + cfg["completion_hold" if e["kind"] == "completion" else "fired_hold"])
         continue
     if s == inf: sys.exit(0)
-    time.sleep(max(0.0, s - time.time()))
+    nap(s)
     if not cfg["stop_unseen"]:
         wait_for(cfg["case_record"], ("round", "end"), ready=lambda: os.path.exists(rec))
     if os.path.exists(rec): os.unlink(rec)
@@ -581,9 +594,9 @@ def spawn_session(sid, u, disp, transcript, plain=False):
            "ignore": os.environ.get("FAKE_CLAUDE_TERM") == "ignore", "transcript": str(transcript),
            "term_lag": float(os.environ.get("FAKE_CLAUDE_TERM_LAG", "0")), "case_record": CASE_RECORD, "arm": arm,
            "respawn": not plain and arm_of(disp, "FAKE_CLAUDE_RESPAWN") is not None,
-           "grow": not plain and arm_of(disp, "FAKE_CLAUDE_GROW") is not None}
-    subprocess.Popen([sys.executable, "-c", SESSION_PROC, json.dumps(cfg)], start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+           "grow": not plain and arm_of(disp, "FAKE_CLAUDE_GROW") is not None, "spawned": str(SPAWNED)}
+    spawned(subprocess.Popen([sys.executable, "-c", SESSION_PROC, json.dumps(cfg)], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     # The launch returns once the session's process has written its pid record, as a real launch
     # returns a running session; the bound is a hang guard only.
     t_end = time.time() + 120
@@ -599,14 +612,31 @@ if argv[:1] == ["stop"]:
     # The session's process ends: its pid record (when the fake writes one, naming the test's own
     # pid) goes. FAKE_CLAUDE_STOP=ignore: nothing changes; listing-stays: the process ends and its
     # row stays `working`, as measured for a session holding a pending scheduled job.
+    # With FAKE_CLAUDE_SPAWN the session is a real process (SESSION_PROC): it gets SIGTERM, as a real
+    # stop ends the session's process, and SIGKILL if it is still there 2 s later, its record then
+    # removed here since a killed process cannot. Without this, every holder a case left to its
+    # cleanup's `claude stop` outlived the test (130 were once found on one Mac).
     how = os.environ.get("FAKE_CLAUDE_STOP")
     if how != "ignore":
         u = {r["sessionId"] for r in rows if r["id"] == argv[1]}
         recs = Path(os.environ.get("SEAM_PROBE_PID_RECORDS") or st / "no-records")
-        for f in (recs.glob("*.json") if recs.is_dir() and not os.environ.get("FAKE_CLAUDE_SPAWN") else []):
+        for f in (recs.glob("*.json") if recs.is_dir() else []):
             try:
-                if json.loads(f.read_text()).get("sessionId") in u: f.unlink()
-            except (OSError, ValueError): pass
+                rec = json.loads(f.read_text())
+                if rec.get("sessionId") not in u: continue
+                if not os.environ.get("FAKE_CLAUDE_SPAWN"):
+                    f.unlink(); continue
+                pid = int(rec["pid"])
+                os.kill(pid, signal.SIGTERM)
+                t_end = time.time() + 2
+                while time.time() < t_end:
+                    try: os.kill(pid, 0)
+                    except ProcessLookupError: break
+                    time.sleep(0.02)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+                    f.unlink(missing_ok=True)
+            except (OSError, ValueError, KeyError): pass
         if how != "listing-stays":
             for r in rows:
                 if r["id"] == argv[1]: r["state"] = "stopped"
@@ -819,8 +849,8 @@ if "--bg" in argv:
                    "stop_after": stop_after, "completion_hold": float(os.environ.get("FAKE_CLAUDE_COMPLETION_HOLD", "inf")),
                    "fired_hold": float(os.environ.get("FAKE_CLAUDE_FIRED_HOLD", "0")),
                    "case_record": CASE_RECORD, "stop_unseen": bool(os.environ.get("FAKE_CLAUDE_STOP_UNSEEN"))}
-            subprocess.Popen([sys.executable, "-c", SUPERVISOR, json.dumps(cfg)],
-                             start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            spawned(subprocess.Popen([sys.executable, "-c", SUPERVISOR, json.dumps(cfg)],
+                                     start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     # FAKE_CLAUDE_LAUNCH_LAG ({"control": seconds, ...}, matched on the display name): the launch
     # returns that much later, after the session is up and its first turn written, as a launch does
     # on a loaded machine.
@@ -888,7 +918,56 @@ def fake(env, tmp_path):
                        "SEAM_PROBE_POLL": "0.05", "SEAM_PROBE_LIST_WAIT": "1", "SEAM_PROBE_STOP_WAIT": "1",
                        "SEAM_PROBE_SESSION_WAIT": "10", "SEAM_PROBE_SETUP_WAIT": "1"})
     env.update({"calls": tmp_path / "fake-state/calls.jsonl", "rows": tmp_path / "fake-state/rows.json", "cfg": cfg})
-    return env
+    yield env
+    leaked = outliving(tmp_path / "fake-state/spawned.pids")
+    if leaked:
+        pytest.fail("%d process(es) the fake claude started outlived the test and were killed: %s"
+                    % (len(leaked), ", ".join(leaked)), pytrace=False)
+
+
+# How long a process the fake started may take to end once its test is done: a session holder ends
+# at its SIGTERM, a sign's waiter a poll after its case's line. Past it, the process is a leak.
+SPAWNED_GRACE = 5.0
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def outliving(pid_file):
+    """The processes listed in PID_FILE still running after SPAWNED_GRACE, as `<pid> <command>`, each
+    then killed with its process group. Each was started with a session of its own, so it leads its
+    group, and nothing else (a pytest run, a sibling test) is in that group. These outlive the test
+    unless something ends them: 130 were once found on one Mac, up to a day old."""
+    try:
+        pids = [int(x) for x in pid_file.read_text().split()]
+    except (OSError, ValueError):
+        return []
+    t_end = time.time() + SPAWNED_GRACE
+    while any(alive(p) for p in pids) and time.time() < t_end:
+        time.sleep(0.05)
+    leaked = []
+    for p in pids:
+        if not alive(p):
+            continue
+        try:
+            what = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(p)], capture_output=True, text=True).stdout
+        except OSError:
+            what = ""
+        kind = ("a session holder" if "signal.signal(signal.SIGTERM, term)" in what
+                else "a supervisor" if "def stop_at" in what else "a process")
+        leaked.append("%d (%s)" % (p, kind))
+        try:
+            os.killpg(p, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return leaked
 
 
 def calls(env, first=None):
@@ -2471,6 +2550,18 @@ def test_attached_stop_each_sign_of_return_is_read_into_the_record(fake, tmp_pat
     seen = [x[field] for x in rec if x["kind"] == "watch" and x["arm"] == "terminal"]
     want = {"process": "present", "listed": "yes"}
     assert any((v > base) if field == "transcript" else v == want[field] for v in seen), seen
+    # FAKE_CLAUDE_RESPAWN models Claude Code bringing a removed session back by itself: the case
+    # removed the row, so its cleanup rightly finds nothing to stop, and the test ends the process.
+    end_recorded_sessions(tmp_path / "pidrecs")
+
+
+def end_recorded_sessions(recs):
+    """SIGTERM every process a pid record in RECS names, as a session's own stop would."""
+    for f in recs.glob("*.json"):
+        try:
+            os.kill(int(json.loads(f.read_text())["pid"]), signal.SIGTERM)
+        except (OSError, ValueError, KeyError):
+            pass
 
 
 def test_attached_stop_a_session_that_needs_kill_is_still_stopped_and_read(fake, tmp_path):
