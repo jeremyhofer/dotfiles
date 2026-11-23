@@ -32,6 +32,24 @@ Entries are newest first.
 
 ---
 
+## 2026-11-23 (fleet-canonicals: the handoff gate runs when the listing has no row; `up` and `resume` refuse from a sandbox a seat the snapshot lacks)
+
+No action. Three changes to `fleet-canonicals`:
+
+- The handoff gate no longer reads "no listing row" as "a seat that never ran". `down`, `down --all`
+  and `refresh` delete the row of the session they stop, so the next `up` found none and started on a
+  stale park unchecked. The gate now recovers the seat's last session (the one that started last) from
+  the transcripts filed under its launch directory and runs the predates and work-since-park checks
+  against it. With no row and no transcript, it passes only when the recorded handoff is the first-launch
+  handoff `init` wrote, and otherwise refuses, naming `--force` and `--stub`. A seat whose transcripts
+  were moved or pruned is therefore refused until it is parked again or forced.
+- From inside the Linux sandbox, `up` and `resume` of a seat a fresh snapshot does not list now refuse
+  and point at `fleet-canonicals request`, as `status` already reported such a seat UNKNOWN. Outside
+  the sandbox nothing changes.
+- A pid record that does not parse as JSON and was modified after the snapshot is treated as possibly
+  the seat: `status` prints UNKNOWN (not MISSING) and `up` and `resume` refuse. The `--stub` dry run
+  now names the directory the stub would be written to.
+
 ## 2026-11-22 (seam-probe: the session-lifecycle cases record, and a new `classify.py` judges)
 
 The three cases of suite `session-lifecycle` (`idle-holders`, `completion-hold`, `attached-stop`) no

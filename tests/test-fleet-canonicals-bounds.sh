@@ -161,8 +161,12 @@ projects:
     canonicalMachines: [$(hostname)]
 YAML
 for _n in auto-opt-canonical auto-plain-canonical auto-crit-canonical; do
-  printf 'fixture handoff for %s\n' "$_n" > "$AU/st/$_n.handoff.md"
-  FLEET_ROOT="$AU" FLEET_RECORD="$AU/rec.yaml" FLEET_STATE="$AU/st" bash "$TOOL" handoff "$_n" --set "$AU/st/$_n.handoff.md" >/dev/null 2>&1
+  # Seats that never ran: the first-launch handoff `init` writes, which the gate accepts for a seat
+  # with no listing row and no transcript.
+  mkdir -p "$AU/st/stub-handoffs"
+  _h="$AU/st/stub-handoffs/2026-01-01-000000-$_n-first-launch.md"
+  printf 'fixture first-launch handoff for %s\n' "$_n" > "$_h"
+  FLEET_ROOT="$AU" FLEET_RECORD="$AU/rec.yaml" FLEET_STATE="$AU/st" bash "$TOOL" handoff "$_n" --set "$_h" >/dev/null 2>&1
 done
 echo '[]' > "$AU/none.json"
 # (h) the unnamed-set path: resume-at launches whatever is missing after a usage reset. A past --at

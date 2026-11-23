@@ -244,6 +244,14 @@ class Fleet:
         for d in (self.transcripts, self.usage, self.pids, self.proc, T / "tmproots", T / "home"):
             d.mkdir(parents=True, exist_ok=True)
         shutil.copytree(world / "state-template", self.state)
+        # The seats are declared and have never run (no listing row, no transcript). The handoff gate
+        # accepts only the first-launch handoff `init` writes, in this state's stub directory, for such
+        # a seat, so each case points its seats at one. A case that records its own pointer overrides it.
+        (self.state / "stub-handoffs").mkdir()
+        for n in ("alpha", "beta", "gamma", "director"):
+            f = self.state / "stub-handoffs" / ("2026-01-01-000000-%s-canonical-first-launch.md" % n)
+            f.write_text("first-launch handoff for %s\n" % n)
+            (self.state / (n + "-canonical.handoff")).write_text("%s\n# set-at %s\n" % (f, int(time.time())))
         self.config.write_text("")
         self.log.write_text("")
         self.agents.write_text("[]")
@@ -381,7 +389,16 @@ class Fleet:
     def _rows(self):
         return json.loads(self.agents.read_text())
 
+    def has_run(self, name):
+        """A seat with a listing row is a seat that ran: its pointer goes back to the world's handoff, a
+        committed document the gate can date against that session (the first-launch handoff is only for
+        a seat that never ran)."""
+        ptr = self.state / (name + ".handoff")
+        if "first-launch" in ptr.read_text():     # not one the case recorded itself
+            shutil.copy(self.S / "state-template" / (name + ".handoff"), ptr)
+
     def live_row(self, rid, name, state, session, **extra):
+        self.has_run(name)
         rows = self._rows()
         rows.append(dict({"id": rid, "name": name, "state": state, "sessionId": session, "cwd": "/x",
                           "kind": "background", "startedAt": 1000, "live": True}, **extra))
@@ -389,6 +406,7 @@ class Fleet:
 
     def done_row(self, rid, name, session):
         """A row that is not live: the live listing leaves it out, the full one has it."""
+        self.has_run(name)
         rows = self._rows()
         rows.append({"id": rid, "name": name, "state": "done", "sessionId": session, "cwd": "/x",
                      "kind": "background", "startedAt": 1000})

@@ -143,8 +143,11 @@ fc() { FLEET_RECORD="$T/rec.yaml" FLEET_ROOT="$ROOT" FLEET_STATE="$STATE" FLEET_
        FLEET_AGENTS_JSON_CMD="$T/agents-cmd" KB_ROOT="${KB_ROOT-$KB}" XDG_CONFIG_HOME="$T/xdg" FLEET_SEAT_SETTINGS_ROOT="${FLEET_SEAT_SETTINGS_ROOT-$SEATSET}" \
        bash "$TOOL" "$@" 2>&1 }
 for n in alpha beta gamma delta ls-missing ls-badjson ls-array ls-tmpdir ls-abs ls-dotdot; do
-  print "handoff for $n" > "$T/$n.md"
-  fc handoff "$n-canonical" --set "$T/$n.md" >/dev/null
+  # Declared seats that never ran: the handoff `init` writes (the gate accepts nothing else for a seat
+  # with no listing row and no transcript), in the stub directory of this state.
+  mkdir -p "$STATE/stub-handoffs"
+  print "handoff for $n" > "$STATE/stub-handoffs/2026-01-01-000000-$n-canonical-first-launch.md"
+  fc handoff "$n-canonical" --set "$STATE/stub-handoffs/2026-01-01-000000-$n-canonical-first-launch.md" >/dev/null
 done
 reset() { : > "$LAUNCHLOG" }
 FLAG='--append-system-prompt-file'

@@ -276,11 +276,20 @@ class Fx:
         for d in ALL_DIRS:
             (T / d).mkdir(parents=True, exist_ok=True)
         for n in ALL_NAMES:
-            f = self.state / (n + ".handoff.md")
-            f.write_text("fixture handoff for %s\n" % n)
+            f = self.first_launch_handoff(self.state, n)
             self.pointer(self.state, n, f, self.now)
 
     # ---- fixtures
+    @staticmethod
+    def first_launch_handoff(state, name):
+        """The handoff `init` writes for a seat that never ran, in the shape the gate recognizes it by.
+        A seat with no listing row and no transcript passes the gate on nothing else, and the default
+        fixture seats are exactly that: declared, never run."""
+        f = Path(state) / "stub-handoffs" / ("2026-01-01-000000-%s-first-launch.md" % name)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("fixture first-launch handoff for %s\n" % name)
+        return f
+
     def agents(self, name, rows):
         """Write a sessions listing under the case's directory; returns its path."""
         p = self.T / name
@@ -837,7 +846,7 @@ def test_refresh_of_a_name_that_is_not_running_launches_and_still_gates(fx, gate
     chk(r.rc != 0 and "no handoff is recorded" in r.out, "refresh of a NOT-RUNNING name still runs the handoff gate (no handoff -> refused)",
         "not-running refresh skipped the gate (rc=%s): %s" % (r.rc, r.out))
     # theta is not running, is declared, and HAS a handoff recorded. It must launch.
-    gate.set_ptr(gate.now, name="theta-canonical")
+    gate.set_ptr(gate.now, name="theta-canonical", target=fx.first_launch_handoff(gate.gstate, "theta-canonical"))
     r = gate.zfc("refresh", "theta-canonical", "--dry-run", listing=gate.empty)
     chk(r.rc == 0 and "not running" in r.out and seq(r.out, "would start", "theta-canonical"),
         "refresh launches a not-running name instead of making the operator retype it as 'up'",
@@ -1400,8 +1409,7 @@ class Leak:
         self.rec.write_text(RECORD_HEAD + "".join(seat_yaml(n, n, n + "-canonical", n, "fable") for n in ("one", "two", "three")))
         for n in ("one", "two", "three"):
             (self.dir / n).mkdir()
-            (self.st / (n + ".md")).write_text("handoff for %s\n" % n)
-            fx.pointer(self.st, n + "-canonical", self.st / (n + ".md"), fx.now)
+            fx.pointer(self.st, n + "-canonical", fx.first_launch_handoff(self.st, n + "-canonical"), fx.now)
         self.agents = fx.agents("leak/agents.json", [])
         for name, text in (("stub", STUB_STDIN), ("argstub", STUB_ARGS), ("envstub", STUB_ENV)):
             p = self.dir / name
@@ -1686,7 +1694,9 @@ class Provenance:
         d, search = ("", "") if noconf else (hp / "tree" / "handoffs", hp / "tree")
         self.fx.run("handoff", "one-canonical", "--set", path, env={"FLEET_STATE": hp / "st"})
         (hp / "args.log").write_text("")
-        r = self.fx.run("up", env={"FLEET_ROOT": hp, "FLEET_RECORD": self.rec, "FLEET_STATE": hp / "st", "FLEET_HANDOFFS_DIR": d,
+        # --force: where the handoff sits is the subject here, not its freshness, and the seat has no row
+        # and no transcript (the gate would otherwise accept only init's first-launch handoff).
+        r = self.fx.run("up", "--force", "freshness is not under test", env={"FLEET_ROOT": hp, "FLEET_RECORD": self.rec, "FLEET_STATE": hp / "st", "FLEET_HANDOFFS_DIR": d,
                                    "FLEET_HANDOFFS_SEARCH": search, "FLEET_TMPROOT_PREFIX": hp / "tmproots",
                                    "FLEET_CLAUDE_CMD": self.leak.dir / "argstub", "LEAKDIR": hp,
                                    "FLEET_AGENTS_JSON_CMD": self.fx.cat(self.leak.agents)})
@@ -2402,8 +2412,7 @@ class Auto:
         (self.dir / "rec-bad.yaml").write_text(rec(opt_extra="    canonicalAutostart: maybe\n"))
         for k, n, _i, _e in AU_SEATS:
             (self.dir / k).mkdir()
-            (self.st / (n + ".handoff.md")).write_text("fixture handoff for %s\n" % n)
-            fx.pointer(self.st, n, self.st / (n + ".handoff.md"), fx.now)
+            fx.pointer(self.st, n, fx.first_launch_handoff(self.st, n), fx.now)
         fx.agents("autostart/none.json", [])
         # Only the always-on pair is running: the optional seat is down.
         fx.agents("autostart/pair.json", [
@@ -2575,8 +2584,8 @@ def test_up_refuses_a_dead_seat_whose_park_predates_its_last_session(fx, ua):
 def test_up_with_several_seats_refuses_the_stale_one_and_starts_the_other(fx, ua):
     ua.fresh(ua.stale)
     ua.transcript(ua.start + 600, 3)
-    theta = ua.g.staged(fx.now - 1800, "theta-canonical-park.md")
-    ua.g.gdoc(theta)
+    # theta never ran: no row, no transcript, and the first-launch handoff init writes.
+    theta = fx.first_launch_handoff(ua.g.gs2, "theta-canonical")
     fx.pointer(ua.g.gs2, "theta-canonical", theta, fx.now - 60)
     r = ua.fc("up", "zeta-canonical", "theta-canonical", "--dry-run")
     chk(r.rc != 0 and seq(r.out, "REFUSED", "zeta-canonical", "BEFORE the session started") and seq(r.out, "would start", "theta-canonical")
@@ -2610,9 +2619,22 @@ def test_a_dry_run_stub_writes_nothing(fx, ua, dv):
     r = ua.fc(dv, "zeta-canonical", "--dry-run", "--stub", "x")
     after = ua.fc("handoff", "zeta-canonical").out
     chk(r.rc == 0 and before == after and before != "" and not (ua.g.gs2 / "stub-handoffs").exists()
-        and "would write a stub handoff" in r.out and "stub written" not in r.out,
-        "%s --dry-run --stub writes no stub and leaves the pointer alone" % dv,
+        and "would write a stub handoff" in r.out and "stub written" not in r.out and str(ua.g.gs2 / "stub-handoffs") in r.out,
+        "%s --dry-run --stub writes no stub, leaves the pointer alone and names the directory it would write to" % dv,
         "%s --dry-run --stub changed state or did not say so (rc=%s, ptr %s -> %s): %s" % (dv, r.rc, before, after, r.out))
+
+
+def test_down_dry_run_stub_writes_nothing_and_names_its_directory(fx, ua):
+    ua.fresh(ua.good)
+    ua.transcript(ua.start + 600, 3)
+    ua.live_row()
+    before = ua.fc("handoff", "zeta-canonical").out
+    r = ua.fc("down", "zeta-canonical", "--dry-run", "--stub", "x")
+    after = ua.fc("handoff", "zeta-canonical").out
+    d = ua.g.gs2 / "stub-handoffs"
+    chk(r.rc == 0 and before == after and before != "" and not d.exists() and "would write a stub handoff" in r.out and str(d) in r.out,
+        "down --dry-run --stub writes nothing, leaves the pointer alone and names the stub directory",
+        "down --dry-run --stub (rc=%s, ptr %s -> %s, dir exists %s): %s" % (r.rc, before, after, d.exists(), r.out))
 
 
 def test_the_work_since_park_check_fails_closed(fx, ua):
@@ -2650,6 +2672,188 @@ def test_force_does_not_lift_the_no_pointer_refusal_and_the_equal_second_boundar
     r = ua.fc("refresh", "zeta-canonical", "--dry-run")
     chk("PREDATES" not in r.out, "a pointer one second after the start is not refused as predating (control)",
         "pointer one second after start refused as PREDATES (rc=%s): %s" % (r.rc, r.out))
+
+
+# ---- the gate when the seat's listing row is gone ----------------------------------------------------------
+# `down`, `down --all` and `refresh` close a session with `claude rm`, which deletes its row, so the next
+# `up` finds no row for the seat. The gate used to read "no row" as "a seat that never ran" and skip both
+# the predates comparison and the work-since-park count, launching on a stale park unchecked. It now
+# recovers the seat's LAST session from the transcripts filed under its launch directory, and a seat with
+# neither a row nor a transcript passes only on the first-launch handoff `init` writes.
+
+class NoRow:
+    """zeta with no listing row anywhere, and transcripts filed where its launch directory says."""
+
+    def __init__(self, fx, ua):
+        self.fx, self.ua = fx, ua
+        ua.all = fx.agents("ua/norow.json", [])
+        self.tdir = ua.dir / "transcripts"
+        self.key = re.sub(r"[^A-Za-z0-9]", "-", str(fx.T / "zeta"))
+        (self.tdir / self.key).mkdir(parents=True, exist_ok=True)
+
+    def session(self, sid, start, doc=None, calls=0, name="zeta-canonical"):
+        """A transcript for session <sid> naming the seat (the compact spelling a real transcript has),
+        beginning at <start>, with <calls> main-thread tool calls after <doc>. Returns its path."""
+        def dump(o):
+            return json.dumps(o, separators=(",", ":")) + "\n"
+        lines = [dump({"type": "agent-name", "agentName": name, "sessionId": sid}),
+                 dump({"type": "user", "isSidechain": False, "timestamp": iso(start, ".250Z")})]
+        for i in range(1, calls + 1):
+            lines.append(dump({"type": "assistant", "isSidechain": False, "timestamp": iso(doc + 60 + i, ".250Z"),
+                               "message": {"id": "%s-m%d" % (sid, i), "content": [{"type": "tool_use", "id": "%s-t%d" % (sid, i)}]}}))
+        f = self.tdir / self.key / (sid + ".jsonl")
+        f.write_text("".join(lines))
+        return f
+
+
+@pytest.fixture
+def nr(fx, ua):
+    return NoRow(fx, ua)
+
+
+def test_the_gate_runs_without_a_row_and_refuses_a_park_older_than_the_last_session(fx, ua, nr):
+    # (a) The pointer was recorded before the seat's last session began, and the row that would say so is gone.
+    ua.g.gfresh(ua.stale, ua.start - 100)
+    ua.g.gdoc(ua.stale)
+    nr.session("sz", ua.start)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and seq(r.out, "REFUSED", "zeta-canonical", "PREDATES") and "would start" not in r.out and "from the transcript" in r.out,
+        "up with no listing row compares the park against the last session found in the seat's transcripts",
+        "up launched on a park older than the seat's last session (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_the_work_since_park_count_runs_without_a_row(fx, ua, nr):
+    # (b) A session that began before its park and kept working after it: counted from its transcript.
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session("sz", ua.start, doc, calls=41)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "kept working" in r.out and "41" in r.out and "would start" not in r.out,
+        "up with no listing row counts the tool calls the last session made after its park",
+        "up launched on a park the last session worked past (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_a_seat_with_no_row_and_no_transcript_is_refused_unless_it_never_ran(fx, ua, nr):
+    # (c) Nothing shows the seat never ran: fail closed, naming the places looked and the hatches.
+    ua.fresh(ua.good)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "would start" not in r.out and "no row" in r.out and "--force" in r.out and "--stub" in r.out
+        and "transcript" in r.out and nr.key in r.out,
+        "up with no row and no transcript refuses, naming what was looked for, where, and both hatches",
+        "up passed a seat with no row and no transcript (rc=%s): %s" % (r.rc, r.out))
+    r = ua.fc("up", "zeta-canonical", "--force", "x", "--dry-run")
+    chk(r.rc == 0 and "FORCED" in r.out and "would start" in r.out, "--force lifts that refusal (control)", "--force (rc=%s): %s" % (r.rc, r.out))
+    r = ua.fc("up", "zeta-canonical", "--stub", "x", "--dry-run")
+    chk(r.rc == 0 and "would write a stub handoff" in r.out and "would start" in r.out, "--stub lifts that refusal (control)", "--stub (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_a_seat_with_no_row_passes_on_a_fresh_park_with_little_work_after_it(fx, ua, nr):
+    # (d) Control: the last session began before the park and did little after it.
+    doc = ua.start + 600
+    ua.fresh(ua.g.staged(doc))
+    nr.session("sz", ua.start, doc, calls=3)
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and seq(r.out, "would start", "zeta-canonical") and "REFUSED" not in r.out and "listing has no row" in r.out,
+        "up with no row passes a fresh park, and says the session start came from the transcript",
+        "up refused a fresh park (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_a_first_launch_handoff_passes_for_a_seat_that_never_ran(fx, ua, nr):
+    # (e) Control: `init` wrote the pointer's target; no row, no transcript. theta is the seat whose
+    # declaration is complete enough for init (see the init case above).
+    ua.g.gs2.mkdir(parents=True)
+    r = ua.fc("init", "theta-canonical")
+    chk(r.rc == 0 and "first-launch" in r.out, "init writes the first-launch handoff", "init (rc=%s): %s" % (r.rc, r.out))
+    r = ua.fc("up", "theta-canonical", "--dry-run")
+    chk(r.rc == 0 and seq(r.out, "would start", "theta-canonical") and "REFUSED" not in r.out,
+        "up with no row and no transcript passes on the first-launch handoff init wrote",
+        "up refused a never-run seat (rc=%s): %s" % (r.rc, r.out))
+    # The same file name somewhere else is not init's file: a copy outside the stub directory is refused.
+    other = fx.T / "elsewhere"
+    other.mkdir()
+    copy = other / Path(ua.fc("handoff", "theta-canonical").out).name
+    copy.write_text("x\n")
+    fx.pointer(ua.g.gs2, "theta-canonical", copy, fx.now)
+    r = ua.fc("up", "theta-canonical", "--dry-run")
+    chk(r.rc != 0 and "would start" not in r.out, "a first-launch-shaped file outside the stub directory does not pass",
+        "up passed a look-alike (rc=%s): %s" % (r.rc, r.out))
+
+
+def test_the_gate_compares_against_the_seats_newest_session_not_the_first_match(fx, ua, nr):
+    # (f) Two sessions name the seat. The park lies between their starts, so against the older session it
+    # would pass and against the newer it predates. The older one sorts first by name and is newer by file
+    # time, so choosing by name, by file time or by first match all pick it.
+    ua.g.gfresh(ua.g.staged(fx.now - 5000), fx.now - 5000)
+    ua.g.gdoc(ua.g.staged(fx.now - 5000))
+    old = nr.session("aa-old", fx.now - 7200)
+    new = nr.session("zz-new", fx.now - 3600)
+    os.utime(new, (fx.now - 9000, fx.now - 9000))
+    os.utime(old, (fx.now, fx.now))
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "PREDATES" in r.out and "would start" not in r.out,
+        "the gate compares against the session that started last, not the first or the most recently written transcript",
+        "up compared against the older session (rc=%s): %s" % (r.rc, r.out))
+    # Control: with only the older session on file, the same pointer passes.
+    new.unlink()
+    r = ua.fc("up", "zeta-canonical", "--dry-run")
+    chk(r.rc == 0 and "would start" in r.out, "the same pointer passes against the older session alone (control)",
+        "up refused against the older session (rc=%s): %s" % (r.rc, r.out))
+
+
+# ---- up and resume from a sandbox refuse a seat a fresh snapshot lacks -----------------------------------------
+
+def in_sandbox_snapshot(fx, seats, taken=None):
+    """Make this case's process tree read as the Linux sandbox, and write the snapshot's seats."""
+    (fx.proc / "1").mkdir(exist_ok=True)
+    (fx.proc / "1" / "comm").write_text("bwrap\n")
+    (fx.T / "sessions.json").write_text(json.dumps({"version": 1, "takenAt": taken or fx.now, "seats": seats}) + "\n")
+
+
+@pytest.mark.parametrize("verb", ["up", "resume"])
+def test_from_a_sandbox_a_seat_the_snapshot_lacks_is_refused(fx, ua, verb):
+    ua.fresh(ua.good)
+    ua.transcript(ua.start + 600, 3)
+    ua.live = fx.agents("ua/live.json", [])
+    in_sandbox_snapshot(fx, {})
+    r = ua.fc(verb, "zeta-canonical", "--dry-run")
+    chk(r.rc != 0 and "snapshot lacks" in r.out and "fleet-canonicals request %s zeta-canonical" % verb in r.out
+        and "would start" not in r.out and "would wake" not in r.out and "would fork" not in r.out,
+        "%s from a sandbox refuses a seat the fresh snapshot does not list, pointing at the request queue" % verb,
+        "%s acted on the blind reading (rc=%s): %s" % (verb, r.rc, r.out))
+    # Controls: the same seat listed dead goes on; out of the sandbox the absent seat is read directly.
+    in_sandbox_snapshot(fx, {"zeta-canonical": {"state": "dead", "why": "no session"}})
+    r = ua.fc(verb, "zeta-canonical", "--dry-run")
+    chk("snapshot lacks" not in r.out and "REFUSED" not in r.out, "%s proceeds for a seat the snapshot lists dead (control)" % verb,
+        "%s refused a dead seat (rc=%s): %s" % (verb, r.rc, r.out))
+    shutil.rmtree(fx.proc / "1")
+    (fx.T / "sessions.json").write_text(json.dumps({"version": 1, "takenAt": fx.now, "seats": {}}) + "\n")
+    r = ua.fc(verb, "zeta-canonical", "--dry-run")
+    chk("snapshot lacks" not in r.out and "REFUSED" not in r.out, "%s outside a sandbox reads the absent seat directly, as before (control)" % verb,
+        "%s refused outside a sandbox (rc=%s): %s" % (verb, r.rc, r.out))
+
+
+# ---- an unreadable pid record newer than the snapshot -----------------------------------------------------------
+
+@pytest.mark.parametrize("snap_state", ["dead", None])
+def test_an_unreadable_pid_record_newer_than_the_snapshot_reads_unknown(fx, snap_state):
+    taken = fx.now - 100
+    seats = {"zeta-canonical": {"state": snap_state, "why": "no session"}} if snap_state else {}
+    (fx.T / "sessions.json").write_text(json.dumps({"version": 1, "takenAt": taken, "seats": seats}) + "\n")
+    rec = fx.pids / "4999888.json"
+    rec.write_text('{"pid": 4999888, "name": "zeta-can')     # caught mid-write
+    line = lambda: [l for l in fx.run("status").out.split("\n") if l.startswith("zeta-canonical")][0]
+    got = line()
+    chk("UNKNOWN" in got and "MISSING" not in got, "status reads UNKNOWN, not MISSING, when a half-written pid record is newer than the snapshot",
+        "status line: %s" % got)
+    r = fx.run("up", "zeta-canonical", "--dry-run")
+    if snap_state:
+        chk("REFUSED" in r.out and "would start" not in r.out and "unreadable pid record" in r.out,
+            "up refuses on that record too", "up (rc=%s): %s" % (r.rc, r.out))
+    # Control: the same file older than the snapshot changes nothing.
+    t = taken - 1000
+    os.utime(rec, (t, t))
+    got = line()
+    chk("UNKNOWN" not in got and "MISSING" in got, "a garbage pid record older than the snapshot is still skipped (control)", "status line: %s" % got)
 
 
 # ============================================================================== no leak into the real /tmp

@@ -141,7 +141,9 @@ REMOTE_CONTROL=$(config_value FLEET_REMOTE_CONTROL remote-control)
 #     snapshot fell back to the direct reads, which inside a sandbox read a live seat as MISSING
 #     and invite a second launch; every machine now runs the timer, so a missing file means the
 #     timer is off, not that the machine predates it.
-# A seat a fresh snapshot does not list is still read directly.
+# A seat a fresh snapshot does not list is read directly out of a sandbox, where its process is
+# visible. From inside the sandbox that direct reading cannot see another session's process, so `status`
+# reports such a seat UNKNOWN and `up` and `resume` refuse it, pointing at the request queue.
 SNAPSHOT_FILE=${FLEET_SNAPSHOT_FILE:-"$FLEET_STATE/sessions.json"}
 SNAPSHOT_MAX_AGE=$(config_value FLEET_SNAPSHOT_MAX_AGE snapshot-max-age)
 SNAPSHOT_MAX_AGE=${SNAPSHOT_MAX_AGE:-45}
@@ -167,25 +169,46 @@ snapshot_seat() {
   jq -r --arg n "$1" '.seats[$n] // empty | [.state, .why] | @tsv' "$SNAPSHOT_FILE" 2>/dev/null
 }
 
-# snapshot_newer_record NAME -- when a pid record names NAME with a `startedAt` later than the snapshot's
-# `takenAt`, print "pid N, started HH:MM:SS UTC" and return 0; else return 1. Needs snapshot_gate. A seat
-# started after the snapshot reads `dead` in it and a sandbox cannot see its process, so a launch on that
-# reading would start a duplicate; the pid records (~/.claude/sessions, Claude Code's own per-process
-# files) are readable from a sandbox. `startedAt` is epoch milliseconds, `takenAt` seconds. A record that
-# cannot be parsed is skipped here: the snapshot has already read such a seat as unknown.
+# snapshot_newer_record NAME -- is there a pid record that may be NAME and is newer than the snapshot? Needs
+# snapshot_gate. A seat started after the snapshot reads `dead` in it and a sandbox cannot see its process,
+# so a launch on that reading would start a duplicate; the pid records (~/.claude/sessions, Claude Code's
+# own per-process files) are readable from a sandbox. `startedAt` is epoch milliseconds, `takenAt` seconds.
+#   return 0, printing "pid N, started HH:MM:SS UTC": a record names NAME with a `startedAt` after `takenAt`.
+#   return 2, printing "<file>": no such record, but a file that does not parse as JSON was modified after
+#             `takenAt`. A record caught mid-write for a seat started since the snapshot looks exactly
+#             like this, and its name cannot be read, so it may be this seat. Callers turn it into
+#             UNKNOWN or a refusal, never into "absent"; the snapshot knows nothing of it (it is newer).
+#             A parseable record naming NAME wins over an unreadable one.
+#   return 1: neither. An unparseable file at or before `takenAt` is skipped: the snapshot's own read of
+#             the records had the same chance to see it.
 snapshot_newer_record() {
-  local taken f got
+  local taken f got unreadable="" mt
   [ "$SNAP_USE" = 1 ] || return 1
   taken=$(jq -r '.takenAt // empty' "$SNAPSHOT_FILE" 2>/dev/null)
   case "$taken" in ''|*[!0-9]*) return 1 ;; esac
   for f in "${FLEET_PID_RECORD_DIR:-$HOME/.claude/sessions}"/*.json; do
     [ -f "$f" ] || continue
+    # One jq per record: invalid JSON makes it exit non-zero, and an empty file (a record just created)
+    # prints nothing and exits 0, so it is tested in the shell. Either is the unreadable case.
     got=$(jq -r --arg n "$1" --argjson t "$taken" \
       'select(type == "object" and .name == $n and (.startedAt | type) == "number" and .startedAt > ($t * 1000))
-       | "pid \(.pid // "?"), started \(.startedAt / 1000 | floor | strftime("%H:%M:%S")) UTC"' "$f" 2>/dev/null | head -n 1)
+       | "pid \(.pid // "?"), started \(.startedAt / 1000 | floor | strftime("%H:%M:%S")) UTC"' "$f" 2>/dev/null)
+    if [ $? -ne 0 ] || [ ! -s "$f" ]; then
+      mt=$(file_mtime "$f") || mt=""
+      case "$mt" in ''|*[!0-9]*) ;; *) [ -n "$unreadable" ] || [ "$mt" -le "$taken" ] || unreadable=$(basename "$f") ;; esac
+      continue
+    fi
+    got=${got%%$'\n'*}
     [ -n "$got" ] && { printf '%s\n' "$got"; return 0; }
   done
+  [ -n "$unreadable" ] && { printf '%s\n' "$unreadable"; return 2; }
   return 1
+}
+
+# newer_clause RC -- the reason snapshot_newer_record gave (its return status), in words for a refusal.
+newer_clause() {
+  if [ "$1" = 2 ]; then printf 'an unreadable pid record was written after the snapshot was taken, and it may name it'
+  else printf 'a pid record names it and started after the snapshot was taken'; fi
 }
 
 # in_sandbox -- success when this process runs inside the Linux sandbox, where PID 1 is bwrap and other
@@ -195,11 +218,11 @@ in_sandbox() { [ "$(cat "${FLEET_PROC_ROOT:-/proc}/1/comm" 2>/dev/null)" = bwrap
 
 # refuse_unlisted_by_snapshot VERB NAME -- for a seat this session's sessions list omits (the caller
 # has found no row and no live holder): die when the snapshot, taken outside every sandbox, reads it
-# live, unknown or stopped, or dead with a pid record started after the snapshot (snapshot_newer_record);
-# return 0 for dead or absent. Needs snapshot_gate to have run. The way
+# live, unknown or stopped, or dead with a pid record started after the snapshot (snapshot_newer_record,
+# which also reports a newer record it could not read); return 0 for dead or absent. Needs snapshot_gate to have run. The way
 # forward named is the request queue, whose runner works outside every sandbox.
 refuse_unlisted_by_snapshot() {
-  local verb=$1 name=$2 sst="" swhy="" newer
+  local verb=$1 name=$2 sst="" swhy="" newer nrc
   IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
   case "$sst" in
     live)    die "$verb: '$name' is not in the sessions list here, but the session snapshot shows it running: $swhy
@@ -211,11 +234,17 @@ refuse_unlisted_by_snapshot() {
     stopped) die "$verb: '$name' is not running, but the sessions list outside this sandbox still shows it ($swhy).
   Only a $verb that can see that row can close it. Ask the runner:
       fleet-canonicals request $verb $name --reason '<why>'" ;;
-    dead)    if newer=$(snapshot_newer_record "$name"); then
-               die "$verb: '$name' reads dead in the session snapshot, but a pid record names it and started after the snapshot was taken ($newer).
+    dead)    newer=$(snapshot_newer_record "$name"); nrc=$?
+             if [ "$nrc" != 1 ]; then
+               die "$verb: '$name' reads dead in the session snapshot, but $(newer_clause "$nrc") ($newer).
   It may be running; a sandbox cannot see its process, so this session would not know. Ask the runner,
   or retry after the next snapshot:
       fleet-canonicals request $verb $name --reason '<why>'"
+             fi ;;
+    '')      newer=$(snapshot_newer_record "$name"); nrc=$?
+             if [ "$nrc" = 2 ]; then
+               die "$verb: '$name' is not in the session snapshot, and $(newer_clause 2) ($newer).
+  Retry after the next snapshot, or ask the runner: fleet-canonicals request $verb $name --reason '<why>'"
              fi ;;
   esac
 }
@@ -1057,7 +1086,7 @@ report_line() {
   local name="$1" json="$2" count ids holder
   count=$(printf '%s' "$json" | jq --arg n "$name" '[.[] | select(.name == $n)] | length')
   case "$count" in
-    0) local sst="" swhy=""
+    0) local sst="" swhy="" newer nrc
        IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
        case "$sst" in
          live)    printf '%-28s LIVE-UNLISTED (%s; the sessions list here omits it)%s\n' "$name" "$swhy" "$(snapshot_context "$name")"; return ;;
@@ -1067,14 +1096,21 @@ report_line() {
          # A seat started after the snapshot reads dead in it, and a sandbox cannot see its process
          # (snapshot_newer_record). Not MISSING either: the pid record names it, so `up` would
          # start a duplicate. Counted unhealthy by the *STARTING* arm of cmd_status.
-         dead)    local newer
-                  if newer=$(snapshot_newer_record "$name"); then
-                    printf '%-28s STARTING (a pid record started after the snapshot: %s)\n' "$name" "$newer"; return
-                  fi ;;
+         # A record the tool could not parse, modified after the snapshot, may be this seat caught
+         # mid-write: UNKNOWN rather than MISSING, for the same reason.
+         dead)    newer=$(snapshot_newer_record "$name"); nrc=$?
+                  case "$nrc" in
+                    0) printf '%-28s STARTING (a pid record started after the snapshot: %s)\n' "$name" "$newer"; return ;;
+                    2) printf '%-28s UNKNOWN (an unreadable pid record %s was written after the snapshot; it may name this seat)\n' "$name" "$newer"; return ;;
+                  esac ;;
          # The snapshot is fresh and does not list this declared seat: from a sandbox the direct reads
          # below cannot see another session's process, so "no holder" there proves nothing and MISSING
          # would invite a second launch. Outside a sandbox the direct reads are trusted, as before.
-         '') if [ "$SNAP_USE" = 1 ] && in_sandbox; then
+         '') newer=$(snapshot_newer_record "$name"); nrc=$?
+             if [ "$nrc" = 2 ]; then
+               printf '%-28s UNKNOWN (an unreadable pid record %s was written after the snapshot; it may name this seat)\n' "$name" "$newer"; return
+             fi
+             if [ "$SNAP_USE" = 1 ] && in_sandbox; then
                printf '%-28s UNKNOWN (the session snapshot lacks this seat, and this session is sandboxed, so a direct read cannot see its process)\n' "$name"; return
              fi ;;
        esac
@@ -1306,7 +1342,7 @@ cmd_up() {
     fi
     # The snapshot sees from outside the sandbox: a seat it shows running, or cannot read, is not
     # started from here.
-    local sst="" swhy="" newer=""
+    local sst="" swhy="" newer="" nrc
     IFS=$'\t' read -r sst swhy <<<"$(snapshot_seat "$name")"
     case "$sst" in
       live)    printf 'REFUSED %-24s the session snapshot shows it running though the sessions list here omits it: %s\n' "$name" "$swhy" >&2
@@ -1315,8 +1351,22 @@ cmd_up() {
                refused=1; continue ;;
       stopped) printf 'REFUSED %-24s the sessions list still shows it, but it is not running (%s); a start would leave its old row beside the new one. Use: fleet-canonicals refresh %s\n' "$name" "$swhy" "$name" >&2
                refused=1; continue ;;
-      dead)    if newer=$(snapshot_newer_record "$name"); then
-                 printf 'REFUSED %-24s reads dead in the session snapshot, but a pid record names it and started after the snapshot was taken (%s); it may be running. Retry after the next snapshot, or ask the runner: fleet-canonicals request up %s --reason '"'"'<why>'"'"'\n' "$name" "$newer" "$name" >&2
+      dead)    newer=$(snapshot_newer_record "$name"); nrc=$?
+               if [ "$nrc" != 1 ]; then
+                 printf 'REFUSED %-24s reads dead in the session snapshot, but %s (%s); it may be running. Retry after the next snapshot, or ask the runner: fleet-canonicals request up %s --reason '"'"'<why>'"'"'\n' "$name" "$(newer_clause "$nrc")" "$newer" "$name" >&2
+                 refused=1; continue
+               fi ;;
+      # The snapshot is fresh and does not list this declared seat. From a sandbox another session's
+      # process is hidden, so the direct reading below ("no holder") proves nothing and would start a
+      # duplicate of a seat that is running; `status` reports the same seat UNKNOWN. A record the tool
+      # cannot parse, modified since the snapshot, may be that seat caught mid-write.
+      '')      newer=$(snapshot_newer_record "$name"); nrc=$?
+               if [ "$nrc" = 2 ]; then
+                 printf 'REFUSED %-24s not in the session snapshot, and %s (%s); not starting a seat whose state cannot be read. Retry after the next snapshot, or ask the runner: fleet-canonicals request up %s --reason '"'"'<why>'"'"'\n' "$name" "$(newer_clause 2)" "$newer" "$name" >&2
+                 refused=1; continue
+               fi
+               if in_sandbox; then
+                 printf 'REFUSED %-24s the session snapshot lacks this seat, and this session is sandboxed, so a direct read cannot see its process; not starting a seat whose state cannot be read. Ask the runner, which works outside every sandbox: fleet-canonicals request up %s --reason '"'"'<why>'"'"'\n' "$name" "$name" >&2
                  refused=1; continue
                fi ;;
     esac
@@ -1351,8 +1401,8 @@ cmd_up() {
     fi
     # THE HANDOFF FRESHNESS GATE, as `refresh` and `down` run it, and fed the FULL listing: a stopped
     # row still names the session that last ran, so the comparison is made against it rather than
-    # skipped for want of a live row. A seat with no row at all has no session to compare against and
-    # skips that comparison, as in `refresh`. Before the dry-run branch, so a rehearsal refuses what
+    # skipped for want of a live row. A seat with no row at all has its last session recovered from its
+    # transcripts, and a seat shown never to have run passes on init's first-launch handoff. Before the dry-run branch, so a rehearsal refuses what
     # the real launch would. Each seat is gated in a subshell: a refusal (the gate dies) is reported
     # for that seat and the others proceed, with a nonzero status at the end. `refresh` and `init`
     # have set UP_GATE_DONE (refresh already ran the gate for its seat; init has no earlier session), so it is not run twice
@@ -1988,18 +2038,46 @@ handoff_problem() {
   return 1
 }
 
-# transcripts_under_launch_dir NAME -- the first transcript under NAME's launch directory that
-# records NAME as its session name, or nothing. Claude Code files a session's transcript under
-# $FLEET_TRANSCRIPT_DIR/<the launch directory, every character but letters and digits made `-`>/,
-# and a named session writes an `agent-name` entry carrying its name. Only that one directory is
-# read: the whole transcript tree is gigabytes, and a seat that ever launched through this tool
-# also has a pointer, which `init` checks first.
-transcripts_under_launch_dir() {
-  local name=$1 dir key
-  dir=$(fleet-decl --canonical "$name" canonicalLaunchDir 2>/dev/null) || return 0
+# launch_transcript_dir NAME -- where Claude Code files the transcripts of NAME's sessions:
+# $FLEET_TRANSCRIPT_DIR/<the launch directory, every character but letters and digits made `-`>/.
+# Printed whether or not it exists; fails only when the record declares no launch directory.
+launch_transcript_dir() {
+  local dir key
+  dir=$(fleet-decl --canonical "$1" canonicalLaunchDir 2>/dev/null) || return 1
   key=$(printf '%s' "$FLEET_ROOT/$dir" | sed 's/[^A-Za-z0-9]/-/g')
-  [ -d "$FLEET_TRANSCRIPT_DIR/$key" ] || return 0
-  grep -lF "\"agentName\":\"$name\"" "$FLEET_TRANSCRIPT_DIR/$key"/*.jsonl 2>/dev/null | head -n 1
+  printf '%s/%s\n' "$FLEET_TRANSCRIPT_DIR" "$key"
+}
+
+# transcripts_under_launch_dir NAME -- the first transcript under NAME's launch directory that
+# records NAME as its session name, or nothing. A named session writes an `agent-name` entry carrying
+# its name. Only that one directory is read: the whole transcript tree is gigabytes, and a seat that
+# ever launched through this tool also has a pointer, which `init` checks first.
+transcripts_under_launch_dir() {
+  local name=$1 d
+  d=$(launch_transcript_dir "$name") || return 0
+  [ -d "$d" ] || return 0
+  grep -lF "\"agentName\":\"$name\"" "$d"/*.jsonl 2>/dev/null | head -n 1
+}
+
+# last_session_from_transcripts NAME -- the seat's LAST session, from the transcripts under its launch
+# directory that record NAME: print "<session id><TAB><start epoch>" for the one that STARTED last, or
+# fail when none is found. `close_one` deletes a stopped session's listing row, so after `down` or
+# `refresh` the listing no longer names the session whose park the next `up` must be checked against;
+# the transcript outlives the row. The order is by each transcript's own first timestamp
+# (transcript_start_epoch, the start session_true_start reads), never by file time or name: a resumed
+# session appends to an old file, so file time follows the last write and not the start. A transcript
+# whose start cannot be read is skipped.
+last_session_from_transcripts() {
+  local name=$1 d f s best="" best_s=0
+  d=$(launch_transcript_dir "$name") || return 1
+  [ -d "$d" ] || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    s=$(transcript_start_epoch "$f") || continue
+    if [ -z "$best" ] || [ "$s" -gt "$best_s" ]; then best=$f; best_s=$s; fi
+  done < <(grep -lF "\"agentName\":\"$name\"" "$d"/*.jsonl 2>/dev/null)
+  [ -n "$best" ] || return 1
+  printf '%s\t%s\n' "$(basename "$best" .jsonl)" "$best_s"
 }
 
 # write_first_launch_handoff NAME -- a dated handoff for a seat's FIRST launch, written where stubs
@@ -2533,9 +2611,15 @@ session_transcript_file() {
 # Fails quietly (returns 1) rather than dying: an unreadable transcript must fall back to startedAt,
 # never break the gate. A gate that cannot run is worse than one calibrated slightly wrong.
 session_true_start() {
-  local sid="${1:-}" f first
-  f=$(session_transcript_file "$sid") || return 1
-  first=$(jq -r 'select(.timestamp)|.timestamp' "$f" 2>/dev/null | head -n1)
+  local f
+  f=$(session_transcript_file "${1:-}") || return 1
+  transcript_start_epoch "$f"
+}
+
+# transcript_start_epoch FILE -- the epoch of a transcript's first timestamped entry, or fail.
+transcript_start_epoch() {
+  local first
+  first=$(jq -r 'select(.timestamp)|.timestamp' "$1" 2>/dev/null | head -n1)
   [ -n "$first" ] || return 1
   iso_to_epoch "$first"
 }
@@ -2724,7 +2808,7 @@ handoff_gate() {
   fi
 
   if [ "$stub_set" = "1" ] && [ "$dry" = "1" ]; then
-    printf 'handoff  %-24s would write a stub handoff and record it (dry run)\n' "$name"
+    printf 'handoff  %-24s would write a stub handoff in %s and record it (dry run)\n' "$name" "$(stub_dir)"
     return 0
   fi
   if [ "$stub_set" = "1" ]; then
@@ -2738,8 +2822,41 @@ handoff_gate() {
   fi
 
 
-  # Only when a row for the name exists: a name with no session anywhere in the listing (a refresh
-  # that launches a seat that never ran) has no session whose start could be compared.
+  # NO LISTING ROW IS NOT "NO SESSION". `close_one` deletes the row of a session it stops, so after
+  # `down`, `down --all` or `refresh` the next `up` finds none, though a session ran and parked. The
+  # seat's last session is then recovered from its transcripts (last_session_from_transcripts) and
+  # every check below runs against it. Only a seat shown never to have run passes without one: no
+  # transcript names it AND the recorded pointer is the first-launch handoff `init` wrote
+  # (<stub dir>/<date>-<name>-first-launch.md, write_first_launch_handoff). Anything else is refused,
+  # because "no row and no transcript" is also what a seat whose transcripts were moved looks like.
+  if [ -z "$(holder_field "$json" "$name" name)" ]; then
+    local last tdir
+    if last=$(last_session_from_transcripts "$name"); then
+      IFS=$'\t' read -r sid started_s <<<"$last"
+      printf 'note     %-24s the listing has no row for this name; session start taken from the transcript of session %s (%s)\n' \
+        "$name" "$sid" "$(fmt_epoch "$started_s" '%Y-%m-%d %H:%M')"
+    else
+      ptr_target=$(read_pointer "$name") || ptr_target=""
+      case "$ptr_target" in
+        "$(stub_dir)"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-"$name"-first-launch.md) ;;
+        *) tdir=$(launch_transcript_dir "$name") || tdir="(no launch directory is declared for it)"
+           die "$verb: the listing has no row for '$name', and no transcript naming it was found, so its last session
+  cannot be found and the handoff recorded for it cannot be compared against that session.
+      looked for         a transcript recording \"agentName\":\"$name\" in $tdir
+      recorded handoff   ${ptr_target:-none}
+  A seat that never ran passes only on the first-launch handoff 'fleet-canonicals init' writes, and
+  the recorded one is not that. If the seat HAS run, its transcripts are missing or elsewhere.
+  Park properly, then retry once the session can be found:
+      fleet-canonicals handoff $name --set <path-to-handoff>
+  Or, if the RECORDED HANDOFF IS GOOD and the comparison cannot be made, keep the pointer and say so:
+      fleet-canonicals $verb $name --force 'why the recorded handoff still describes this sitting'
+  Only if there is genuinely nothing to hand over, REPLACING the recorded handoff with a stub:
+      fleet-canonicals $verb $name --stub 'why there is nothing to hand over'" ;;
+      esac
+    fi
+  fi
+
+  # A row exists but gave no start, and no transcript was found either.
   if [ -z "$started_s" ] && [ -n "$(holder_field "$json" "$name" name)" ]; then
     die "$verb: the start of '$name''s session is not known (the listing has no startedAt and no
   transcript was found), so the handoff recorded for it cannot be compared against the session.
@@ -2830,8 +2947,9 @@ handoff_gate() {
   # WORK SINCE THE PARK. A seat can park, then keep working for hours in the same session; its
   # pointer still names that park, every comparison above passes, and the successor reads a stale
   # park as current. Needs a document date and the transcript (the listing has no tool calls); a
-  # listed session whose transcript cannot be read is REFUSED (a count that cannot be made is not a
-  # pass), and a name with no listed session has nothing to count.
+  # session whose transcript cannot be read is REFUSED (a count that cannot be made is not a pass).
+  # A name with no listing row has its last session recovered from its transcripts above; one with
+  # none (a seat shown to have never run) has nothing to count.
   if [ -n "$tgt_e" ]; then
     local tfile calls
     if tfile=$(session_transcript_file "$sid") && calls=$(tool_calls_after "$tfile" "$tgt_e"); then
@@ -3025,10 +3143,10 @@ cmd_refresh() {
   # Since `up` gates too, this branch runs the gate itself (it holds the --stub/--force the operator
   # gave) and calls `up` with UP_GATE_DONE set, so the gate runs once and a --force is not undone.
   #
-  # The gate is fed `agents_json_all` here, NOT `json`. Stopped rows survive in the full listing and
-  # `holder_field` already takes the most recent by startedAt, so the freshness COMPARISON still
-  # runs against the session that actually parked instead of being silently skipped for want of a
-  # live row. A canonical that died unparked, leaving a handoff older than its last session, is
+  # The gate is fed `agents_json_all` here, NOT `json`. The full listing still shows a session that
+  # stopped on its own, and `holder_field` takes the most recent by startedAt, so the freshness
+  # COMPARISON runs against the session that actually parked. A row `close_one` deleted (`claude rm`)
+  # is not in it; the gate then recovers that session from the seat's transcripts (see handoff_gate). A canonical that died unparked, leaving a handoff older than its last session, is
   # still refused here exactly as it would be if it were running.
   if [ -z "$rows" ]; then
     # "Not in the sessions list here" is not "not running": a sandbox hides other sessions from the
@@ -3330,16 +3448,29 @@ cmd_resume() {
   # outside every sandbox) is the second liveness signal: either one saying live refuses, before
   # anything is woken or forked, and --dry-run included.
   snapshot_gate resume
-  local rst="" rwhy=""
+  local rst="" rwhy="" rnewer="" rnrc
   IFS=$'\t' read -r rst rwhy <<<"$(snapshot_seat "$name")"
   case "$rst" in
     live)    printf 'REFUSED %-24s the session snapshot shows it running: %s; nothing to resume (attach to it instead; if it stopped since the snapshot was taken, retry after the next one)\n' "$name" "$rwhy" >&2
              return 1 ;;
     unknown) printf 'REFUSED %-24s UNKNOWN in the session snapshot (%s); not waking or forking a seat whose state cannot be read\n' "$name" "$rwhy" >&2
              return 1 ;;
-    dead)    local rnewer
-             if rnewer=$(snapshot_newer_record "$name"); then
-               printf 'REFUSED %-24s reads dead in the session snapshot, but a pid record names it and started after the snapshot was taken (%s); it may be running, and waking or forking it would start a second session. Retry after the next snapshot, or ask the runner: fleet-canonicals request resume %s --reason '"'"'<why>'"'"'\n' "$name" "$rnewer" "$name" >&2
+    dead)    rnewer=$(snapshot_newer_record "$name"); rnrc=$?
+             if [ "$rnrc" != 1 ]; then
+               printf 'REFUSED %-24s reads dead in the session snapshot, but %s (%s); it may be running, and waking or forking it would start a second session. Retry after the next snapshot, or ask the runner: fleet-canonicals request resume %s --reason '"'"'<why>'"'"'\n' "$name" "$(newer_clause "$rnrc")" "$rnewer" "$name" >&2
+               return 1
+             fi ;;
+    '')      # Absent from a fresh snapshot: out of a sandbox the direct reads below are trusted; from
+             # inside one they cannot see another session's process, so waking or forking on them could
+             # start a second session beside a running one. A record that cannot be parsed, modified
+             # since the snapshot, may be this seat caught mid-write.
+             rnewer=$(snapshot_newer_record "$name"); rnrc=$?
+             if [ "$rnrc" = 2 ]; then
+               printf 'REFUSED %-24s not in the session snapshot, and %s (%s); not waking or forking a seat whose state cannot be read. Retry after the next snapshot, or ask the runner: fleet-canonicals request resume %s --reason '"'"'<why>'"'"'\n' "$name" "$(newer_clause 2)" "$rnewer" "$name" >&2
+               return 1
+             fi
+             if in_sandbox; then
+               printf 'REFUSED %-24s the session snapshot lacks this seat, and this session is sandboxed, so a direct read cannot see its process; not waking or forking a seat whose state cannot be read. Ask the runner, which works outside every sandbox: fleet-canonicals request resume %s --reason '"'"'<why>'"'"'\n' "$name" "$name" >&2
                return 1
              fi ;;
   esac
