@@ -12,6 +12,22 @@ command -v chezmoi >/dev/null 2>&1 || { echo "SKIP: chezmoi not installed"; exit
 command -v zsh >/dev/null 2>&1 || { echo "SKIP: zsh not installed"; exit 0; }
 tmp=$(mktemp -d "$_TMP/test-mani-config.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 
+# mani searches from the current directory up to / for any of these four names (measured on
+# v0.32.1), and no test can fence that search off. So a stray manifest above the temporary directory,
+# such as a session's scratch file in a shared $TMPDIR, is found from every case below and fails the
+# "outside any manifest tree" case with a message that blames the code. Stop first, naming the file.
+d=$(dirname "$tmp")
+while :; do
+  for n in mani.yaml mani.yml .mani.yaml .mani.yml; do
+    if [ -f "$d/$n" ]; then
+      echo "FAIL (environment, not the code): $d/$n sits above this suite's temporary directory, and mani finds it from every directory below; remove it, or set TMPDIR to a directory with no manifest above it"
+      exit 1
+    fi
+  done
+  [ "$d" = / ] && break
+  d=$(dirname "$d")
+done
+
 printf 'sourceDir = "%s"\n[data]\n    domain = "personal"\n    overlayRepo = ""\n    dpi = "120"\n' "$src" > "$tmp/c.toml"
 chezmoi --config "$tmp/c.toml" --source "$src" --persistent-state "$tmp/s.db" \
   execute-template < "$src/dot_zshenv.tmpl" > "$tmp/zshenv"

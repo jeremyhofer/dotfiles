@@ -33,6 +33,24 @@ command -v yq >/dev/null 2>&1 || { printf 'fleet-repo tests: yq absent, cannot r
 t=${TMPDIR:-/tmp}; t=${t%/}
 TMP=$(mktemp -d "$t/test-fr.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
+
+# fleet-repo, like mani, searches from the current directory up to / for a manifest, and no test can
+# fence that search off. So a stray manifest above $TMP, such as a session's scratch file in a shared
+# $TMPDIR, is found from every case below and fails the "outside any manifest" cases with a message
+# that blames the code. Stop first, naming the file. All four of mani's names are checked, since the
+# mani cases near the end search for them too.
+d=$(dirname "$TMP")
+while :; do
+  for n in mani.yaml mani.yml .mani.yaml .mani.yml; do
+    if [ -f "$d/$n" ]; then
+      printf 'FAIL (environment, not the code): %s sits above this suite'"'"'s temporary directory, and fleet-repo and mani find it from every directory below; remove it, or set TMPDIR to a directory with no manifest above it\n' "$d/$n"
+      exit 1
+    fi
+  done
+  [ "$d" = / ] && break
+  d=$(dirname "$d")
+done
+
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export GIT_CONFIG_GLOBAL="$TMP/gitconfig"; : > "$GIT_CONFIG_GLOBAL"
 export GIT_CONFIG_NOSYSTEM=1
