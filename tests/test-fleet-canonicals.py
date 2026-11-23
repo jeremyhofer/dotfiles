@@ -55,6 +55,7 @@ PARITY: tests/test-fleet-canonicals.parity.md maps each check of the shell suite
 the test that makes it now. The label of each check is the message of its assertion here.
 """
 import contextlib
+import datetime
 import json
 import os
 import re
@@ -1373,6 +1374,61 @@ def test_parse_time_parses_a_real_time_and_refuses_junk(fx):
     chk(r.out.isdigit(), "parse_time parses a date-time on this platform (GNU or BSD date)", "parse_time did not parse a real time here: %s" % r.out)
     r = run_helper(fx, "parse_time 'not-a-time'")
     chk(r.rc != 0 and r.out == "", "parse_time still refuses junk on this platform", "parse_time accepted junk (rc=%s): %s" % (r.rc, r.out))
+    # A minute-precision time is the START of its minute on every platform. On darwin it once was not
+    # (see the BSD test below), which is how the pre-apply run refused a same-minute park.
+    r = run_helper(fx, "parse_time '2026-08-28 14:30'")
+    chk(r.out.isdigit() and int(r.out) % 60 == 0, "parse_time gives a minute-precision time zero seconds on this platform",
+        "parse_time gave a minute-precision time nonzero seconds here: %s" % r.out)
+
+
+# BSD `date -j -f FMT` fills every field FMT leaves out from the CURRENT clock, the seconds included,
+# and a date-only format gets the current time of day. Measured on a Mac 2026-11-23: '%Y-%m-%d %H:%M'
+# on '2026-11-23 16:44' printed seconds 25, then 28 three seconds later, and '%Y-%m-%d' on
+# '2026-11-23' printed 16:52:28. So a park stamped 16:44 parsed as 16:44:25 and could land after a
+# pointer recorded at 16:44:10, and the stamp gate refused a genuine park. This stand-in has those
+# semantics with a fixed "now" of 13:14:37, so a Linux run sees what darwin does. It does not model
+# BSD's acceptance of a prefix, which the ordering of parse_time's formats guards.
+BSD_DATE_EMULATOR = r'''
+import datetime, sys
+fmt, s, out = sys.argv[1:4]
+if out != "+%s":
+    sys.exit(2)
+now = datetime.datetime(2026, 1, 2, 13, 14, 37)
+try:
+    d = datetime.datetime.strptime(s, fmt)
+except ValueError:
+    sys.exit(1)
+codes = {"%Y": "year", "%m": "month", "%d": "day", "%H": "hour", "%M": "minute", "%S": "second"}
+d = d.replace(**{a: getattr(now, a) for c, a in codes.items() if c not in fmt})
+print(int(d.timestamp()))
+'''
+
+
+def run_helper_bsd(fx, call):
+    emu = fx.T / "bsd-date.py"
+    emu.write_text(BSD_DATE_EMULATOR)
+    shim = ('date() { [ "$1" = -d ] && return 1; [ "$1" = -j ] && [ "$2" = -f ] || return 2; '
+            '"%s" -I "%s" "$3" "$4" "$5"; }\n' % (sys.executable, emu))
+    return run_helper(fx, shim + call)
+
+
+def local_epoch(*parts):
+    return int(datetime.datetime(*parts).timestamp())
+
+
+def test_parse_time_bsd_branch_fills_no_field_from_the_clock(fx):
+    cases = [
+        ("2026-08-28 14:30", local_epoch(2026, 8, 28, 14, 30, 0), "a minute-precision time is the start of its minute"),
+        ("2026-08-28", local_epoch(2026, 8, 28, 0, 0, 0), "a date alone is that day's midnight"),
+        ("2026-08-28 14:30:15", local_epoch(2026, 8, 28, 14, 30, 15), "a time with seconds keeps them"),
+        ("2026-08-28T14:30:15", local_epoch(2026, 8, 28, 14, 30, 15), "the T-separated form keeps its seconds"),
+        ("14:30", local_epoch(2026, 1, 2, 14, 30, 0), "a time alone is today at that minute, zero seconds"),
+    ]
+    for at, want, what in cases:
+        r = run_helper_bsd(fx, "parse_time '%s'" % at)
+        chk(r.out == str(want), "BSD branch: %s (%s)" % (what, at), "BSD branch: %s: got %r, want %s" % (at, r.out, want))
+    r = run_helper_bsd(fx, "parse_time 'not-a-time'")
+    chk(r.rc != 0 and r.out == "", "BSD branch: junk is still refused", "BSD branch accepted junk (rc=%s): %s" % (r.rc, r.out))
 
 
 

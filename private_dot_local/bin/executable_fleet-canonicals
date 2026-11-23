@@ -1055,12 +1055,22 @@ fmt_epoch()  { date -d "@$1" "+$2" 2>/dev/null || date -r "$1" "+$2" 2>/dev/null
 # prefix, so a loose format tried early can match part of a fuller string and silently return the
 # wrong instant. A bad time still fails every branch and is refused, which is the property the
 # callers depend on.
+#
+# Every BSD format ends in seconds, and a shorter input is PADDED to it rather than parsed with a
+# shorter format, because BSD `date -j -f` fills each field its format leaves out from the CURRENT
+# clock: '%Y-%m-%d %H:%M' on '2026-11-23 16:44' gave 16:44:25, then 16:44:28 three seconds later, and
+# '%Y-%m-%d' alone gave the current time of day (measured on a Mac, 2026-11-23). A park stamped 16:44
+# then parsed later than a pointer recorded at 16:44:10, and the stamp gate refused a genuine park.
+# A time alone still takes today's date from the clock, which is what it means.
 parse_time() {
-  local at="$1" f
+  local at="$1"
   date -d "$at" +%s 2>/dev/null && return 0
-  for f in '%Y-%m-%dT%H:%M:%S' '%Y-%m-%d %H:%M:%S' '%Y-%m-%d %H:%M' '%Y-%m-%d' '%H:%M:%S' '%H:%M'; do
-    date -j -f "$f" "$at" +%s 2>/dev/null && return 0
-  done
+  date -j -f '%Y-%m-%dT%H:%M:%S' "$at" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d %H:%M:%S' "$at" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d %H:%M:%S' "$at:00" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d %H:%M:%S' "$at 00:00:00" +%s 2>/dev/null && return 0
+  date -j -f '%H:%M:%S' "$at" +%s 2>/dev/null && return 0
+  date -j -f '%H:%M:%S' "$at:00" +%s 2>/dev/null && return 0
   return 1
 }
 
