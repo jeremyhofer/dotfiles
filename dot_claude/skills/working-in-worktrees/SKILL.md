@@ -241,11 +241,12 @@ from where the layout says to stand.
    does not go through worktrunk. Then, from where the layout says to stand:
 
    ```sh
-   wt remove --no-hooks --foreground <name> --format=json
+   wt remove --no-hooks --foreground <branch> --format=json
    ```
 
-   and read `branch_outcome`: `deleted` means done, and a `retained_*` value says why the branch was
-   kept. Without `--foreground` the removal runs in the background and its result goes to a log.
+   `<branch>` is the worktree's branch, which is usually also its directory's name; for a detached
+   worktree, which has none, pass its path (worktrunk takes either). Read `branch_outcome`:
+   `deleted` means done, and a `retained_*` value says why the branch was kept. Without `--foreground` the removal runs in the background and its result goes to a log.
    `--no-hooks` is part of the form on purpose: where a setup lets exactly this command run outside a
    session's sandbox (so git sees a true clean check, below), the repository's removal hooks must not
    run there too. Never `-y`, `-D`, `-f`/`--force`, `--reap` or `rm -rf`: a refusal means something is
@@ -276,7 +277,7 @@ Giving a subagent `isolation: worktree` creates a worktree on a fresh branch for
 - **It installs before any gate**, like any new worktree.
 - **The dispatching session owns the cleanup**: review, land, then remove, as above. A subagent's
   finished worktree is left behind in `.worktrees/`; once its work is landed, remove it with
-  `wt remove --no-hooks --foreground <name>` (or the `git worktree remove <path>` fallback where
+  `wt remove --no-hooks --foreground <branch>` (or the `git worktree remove <path>` fallback where
   the standard form cannot run), after the checks in Removing it. A session that ends with unlanded
   work in a worktree it created names that worktree in its handoff.
 
@@ -324,12 +325,17 @@ machine where Claude Code's hooks are not available, has none of them.
   cannot unlink, leaving a partly deleted worktree for a person to finish. Unlisted, the same
   command refuses cleanly instead. So remove only through the forms a settings exception runs
   outside the sandbox, where the placeholders do not exist: exactly
-  `wt remove --no-hooks --foreground <name>` (the standard) or a plain `git worktree remove <path>`
+  `wt remove --no-hooks --foreground <branch>` (the standard) or a plain `git worktree remove <path>`
   (the fallback), each as a command of its own. A compound command, a `git -C <path>` spelling or
   any other variant runs sandboxed; so does ExitWorktree's `remove`, which is never used. Several
   worktrees take one call each, never a loop. Where `claude-worktree-hook` is installed it refuses
   any removal that is not the whole command. Never force a removal. Where no exception is set up,
   removal is the person's step.
+- **Claude Code's own sandbox note is generic, and an exception overrides it.** Its always-on text
+  says `git worktree remove` fails in the sandbox and to give the person the command. That holds
+  only where no exception is set up: with one, the bare form above runs outside the sandbox, and
+  removing the worktree is the session's step. Check `sandbox.excludedCommands` in the user
+  settings before handing a removal over.
 - **Inside a worktree Claude Code gave the session, its isolation guard refuses compound
   commands**, whatever `worktree.bgIsolation` says: that key decides only whether a session must
   enter a worktree before writing, not what the guard does once it has. It applies to a session
@@ -349,10 +355,10 @@ machine where Claude Code's hooks are not available, has none of them.
 | --- | --- | --- |
 | `protected branch`, `GH006`, `pre-receive hook declined` or "changes must be made through a pull request" on push | the target requires a reviewed pull request | push your branch and open a pull request against the target instead |
 | `fatal: '<branch>' is already used by worktree at …` | that branch is checked out elsewhere | work in that worktree, or operate the other branch through its own worktree |
-| `contains modified or untracked files` on a clean worktree | sandbox placeholders | run the exact `wt remove --no-hooks --foreground <name>` form, or hand the removal to the person |
+| `contains modified or untracked files` on a clean worktree | sandbox placeholders | run the exact `wt remove --no-hooks --foreground <branch>` form, or hand the removal to the person |
 | A hook refuses `git worktree add` or `move` | worktrunk owns worktree creation here | in a session, the EnterWorktree tool by name; otherwise the `wt` command the refusal names |
 | `could not create directory of '.git/worktrees/<name>': Read-only file system` from `wt switch --create` | a sandboxed session cannot write its own repository's `.git/worktrees`; the branch was created anyway | `git branch -d <name>`, then the EnterWorktree tool by name (and `git switch <branch>` in it for an existing branch); never a second clone |
-| A hook warns on `git worktree remove` | the raw removal is the fallback, not the standard | prefer `wt remove --no-hooks --foreground <name>` next time |
+| A hook warns on `git worktree remove` | the raw removal is the fallback, not the standard | prefer `wt remove --no-hooks --foreground <branch>` next time |
 | `index.lock: Read-only file system` committing in a worktree by path | Claude Code did not give the session that worktree at `.claude/worktrees/`, so its git data is outside the session's write set | enter a worktree the session creates (EnterWorktree by name), or hand the commit to a subagent; do not clone the repository again |
 | `wt-fetch-base: refusing to create …: no remote could be reached` | the base could not be fetched from `origin` or any fallback | bring a remote back; do not create from the stale local base |
 | `Read-only file system` after leaving a worktree | the session is not where the layout says to stand | stop; restore any half-written files; give the person the commands |

@@ -24,7 +24,7 @@
 # where the machine's layout says (`.worktrees/` or `.claude/worktrees/`, by the dotfiles' per-machine
 # flag) and runs the creation hooks (among them the one that fetches the base first). A raw
 # `git worktree add` skips all of that and puts the worktree wherever the command line says.
-# A bare raw removal is only WARNED: the standard is `wt remove --no-hooks --foreground <name>`, but
+# A bare raw removal is only WARNED: the standard is `wt remove --no-hooks --foreground <branch>`, but
 # a plain `git worktree remove <path>` stays a sanctioned fallback where a setup exempts it from the
 # sandbox (git's own clean check still refuses a worktree holding uncommitted work), so refusing it
 # would remove a working route. Any removal that is not the whole command is refused, because no
@@ -208,8 +208,13 @@ function scan(d,    k, m, t, b, j, u, inner, q, fg) {
         if (u == "-C") { j++; continue }
         if (u ~ /^-/) continue
         if (u == "remove") {
-          fg = 0
-          for (q = j + 1; q < m && tok[d, q] != SEP; q++) if (tok[d, q] == "--foreground") fg = 1
+          # `--help` or `-h` prints usage and removes nothing, so it is not a removal.
+          fg = 0; hp = 0
+          for (q = j + 1; q < m && tok[d, q] != SEP; q++) {
+            if (tok[d, q] == "--foreground") fg = 1
+            if (tok[d, q] == "--help" || tok[d, q] == "-h") hp = 1
+          }
+          if (hp) break
           if (!fg) print "wt-remove-bg"; else print "wt-remove-fg"
         }
         break
@@ -253,7 +258,7 @@ worktree_verdict() {
 
 # WHY A REMOVAL MUST BE THE WHOLE COMMAND. The sandbox exempts exactly two removal forms, matched
 # against the whole command string: `git worktree remove <path>` and
-# `wt remove --no-hooks --foreground <name>`. Anything else (a `cd … &&` before it, a `| tail`
+# `wt remove --no-hooks --foreground <branch>`. Anything else (a `cd … &&` before it, a `| tail`
 # after it, a loop, `git -C <path> worktree remove`, an environment prefix, `wt -C`) runs inside
 # the sandbox, where the placeholders it mounts over protected paths sit in every worktree. A
 # repository that lists them in `.gitignore` then passes git's clean check and the removal stops
@@ -282,14 +287,14 @@ guard_bash() {
   sub=$(worktree_verdict "$cmd")
   case "$sub" in
     remove | wt-remove)
-      bare_removal "$cmd" || deny 'A worktree removal is refused here unless it is the whole command: the sandbox exempts only the bare forms, so this one would run sandboxed, where its placeholders make it refuse or stop halfway with a partly deleted worktree. Run exactly `wt remove --no-hooks --foreground <name>` from the checkout root as a Bash call of its own: no `cd`, `&&`, pipe, loop, `-C` or variable, after ExitWorktree with action "keep" if this session entered the worktree, and with nothing else of this session running. For several worktrees, one call each. Never force it.' ;;
+      bare_removal "$cmd" || deny 'A worktree removal is refused here unless it is the whole command: the sandbox exempts only the bare forms, so this one would run sandboxed, where its placeholders make it refuse or stop halfway with a partly deleted worktree. Run exactly `wt remove --no-hooks --foreground <branch>` from the checkout root as a Bash call of its own: no `cd`, `&&`, pipe, loop, `-C` or variable, after ExitWorktree with action "keep" if this session entered the worktree, and with nothing else of this session running. For several worktrees, one call each. Never force it.' ;;
   esac
   case "$sub" in
     wt-remove) exit 0 ;;
     add) how='In a session, create it with the EnterWorktree tool by name, or launch a subagent with isolation "worktree". For an existing branch, enter by name and then run `git switch <branch>` in the new worktree; a branch checked out in another worktree cannot be switched to, so commit on it where it is checked out. Do not run `wt switch --create` from a sandboxed session in the repository the session started in: the sandbox holds that repository'"'"'s `.git/worktrees` read-only, so it fails after creating the branch. A person or an unsandboxed script uses worktrunk: `wt switch --create <branch> --base <base> --no-cd` for a new branch, or `wt switch <branch>` for an existing one. Never clone the repository a second time instead.' ;;
     move) how='worktrunk has no move: create the new worktree (the EnterWorktree tool in a session, `wt switch --create <branch>` outside the sandbox), carry the work across by committing it, then `wt remove --no-hooks --foreground <old name>`.' ;;
-    wt-remove-bg) deny 'wt remove is refused here without --foreground: a background removal moves the worktree into worktrunk'"'"'s trash and deletes it from a detached process that the end of this command can kill, so the trash is never emptied. Use `wt remove --no-hooks --foreground <name>`.' ;;
-    remove) warn 'Raw `git worktree remove` is the fallback here; the standard removal is `wt remove --no-hooks --foreground <name>`, after leaving the worktree (ExitWorktree with action "keep" if this session entered it). Never force either one.' ;;
+    wt-remove-bg) deny 'wt remove is refused here without --foreground: a background removal moves the worktree into worktrunk'"'"'s trash and deletes it from a detached process that the end of this command can kill, so the trash is never emptied. Use `wt remove --no-hooks --foreground <branch>`.' ;;
+    remove) warn 'Raw `git worktree remove` is the fallback here; the standard removal is `wt remove --no-hooks --foreground <branch>`, after leaving the worktree (ExitWorktree with action "keep" if this session entered it). Never force either one.' ;;
     *) exit 0 ;;
   esac
   deny "Raw \`git worktree $sub\` is refused in sessions here: worktrunk owns worktree creation, so the layout, the fetch of the base and the creation hooks are applied. $how \`git worktree list\` stays available."

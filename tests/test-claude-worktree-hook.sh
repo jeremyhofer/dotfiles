@@ -135,6 +135,10 @@ done
 for c in 'echo "wt remove x"' 'wt list' 'wt switch --create remove'; do
   expect_bash "$HOOK" allow "$c" "allowed: $c"
 done
+# Asking for help removes nothing, so it is not a removal (it was refused until 2026-11-24).
+for c in 'wt remove --help' 'wt remove -h' 'wt remove --help 2>&1 | head -40'; do
+  expect_bash "$HOOK" allow "$c" "help allowed: $c"
+done
 
 echo "== Bash guard: a removal that is not the whole command is refused =="
 # Only the two bare forms are exempt from the sandbox; any other spelling runs sandboxed and refuses
