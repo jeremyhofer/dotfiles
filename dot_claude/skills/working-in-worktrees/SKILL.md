@@ -64,11 +64,14 @@ Where one long-running session owns a repository, and subagents or a person work
   `git -C <worktree> …`, `(cd <worktree> && …)` in a subshell (a bare `cd`, even inside one command,
   moves the session's own directory), and edits to files under it. A COMMIT there can fail with
   `index.lock: Read-only file system`: the sandbox opens a worktree's git data only to a session
-  Claude Code gave that worktree (one it created with EnterWorktree, a subagent's own, or one passed
-  at launch with `--add-dir`), and only at `.claude/worktrees/`; a subagent's own worktree under
-  `.worktrees/` is refused the same way. To commit on another branch where worktrees go to
-  `.claude/worktrees/`, enter a worktree the session creates, or hand the work to a subagent
-  launched with `isolation: "worktree"`. Never clone the repository a
+  Claude Code gave that worktree (one it created with EnterWorktree, one it entered with EnterWorktree
+  by path, a subagent's own, or one passed at launch with `--add-dir`), and only at
+  `.claude/worktrees/`; a subagent's own worktree under `.worktrees/` is refused the same way. To
+  commit on another branch where worktrees go to `.claude/worktrees/`, enter that worktree with
+  EnterWorktree by path, which is the cheapest fix, or create one with EnterWorktree by name, or hand
+  the work to a subagent launched with `isolation: "worktree"`. Measured 2026-11-26 in a sandboxed
+  session: a commit in a worktree an earlier session had created was refused with `index.lock`, and
+  the same commit, signed, went through after EnterWorktree by path. Never clone the repository a
   second time to get around it: a clone is a full copy with nothing tracking it.
 - **It pushes before it dispatches.** A subagent's worktree starts from the base as fetched from the
   remote, so commits only in the checkout are not in it. A hook warns at dispatch when the checkout
@@ -359,7 +362,7 @@ machine where Claude Code's hooks are not available, has none of them.
 | A hook refuses `git worktree add` or `move` | worktrunk owns worktree creation here | in a session, the EnterWorktree tool by name; otherwise the `wt` command the refusal names |
 | `could not create directory of '.git/worktrees/<name>': Read-only file system` from `wt switch --create` | a sandboxed session cannot write its own repository's `.git/worktrees`; the branch was created anyway | `git branch -d <name>`, then the EnterWorktree tool by name (and `git switch <branch>` in it for an existing branch); never a second clone |
 | A hook warns on `git worktree remove` | the raw removal is the fallback, not the standard | prefer `wt remove --no-hooks --foreground <branch>` next time |
-| `index.lock: Read-only file system` committing in a worktree by path | Claude Code did not give the session that worktree at `.claude/worktrees/`, so its git data is outside the session's write set | enter a worktree the session creates (EnterWorktree by name), or hand the commit to a subagent; do not clone the repository again |
+| `index.lock: Read-only file system` committing in a worktree by path | Claude Code did not give the session that worktree at `.claude/worktrees/`, so its git data is outside the session's write set | enter that worktree with EnterWorktree by path, then commit (ExitWorktree with `keep` after); or create one (EnterWorktree by name), or hand the commit to a subagent; do not clone the repository again |
 | `wt-fetch-base: refusing to create …: no remote could be reached` | the base could not be fetched from `origin` or any fallback | bring a remote back; do not create from the stale local base |
 | `Read-only file system` after leaving a worktree | the session is not where the layout says to stand | stop; restore any half-written files; give the person the commands |
 | `could not create leading directories … Read-only file system` creating a worktree from Bash | a sandboxed command cannot write a bare container's root | create it with the EnterWorktree tool by name; a person or an unsandboxed script uses `wt switch --create` |
