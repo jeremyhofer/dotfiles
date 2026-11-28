@@ -67,7 +67,12 @@ sample so a stall rate can be seen even when no single task is caught.
 Files, under $MACHINE_SNAPSHOT_DIR (default $XDG_STATE_HOME/machine-snapshot, else
 ~/.local/state/machine-snapshot): `latest.json`, the whole last sample, and `history.jsonl`, one
 line per sample holding only the rows that used CPU or were stalled, kept for
-$MACHINE_SNAPSHOT_KEEP_HOURS (default 24).
+$MACHINE_SNAPSHOT_KEEP_HOURS (default 24). The lines the history drops go first to `archive/`, one
+gzipped file per prune named by the epoch seconds of its first and last samples, kept for
+$MACHINE_SNAPSHOT_ARCHIVE_DAYS (default 14; 0 turns it off). A history line leaves only once its
+archive file is written whole, so a failed write leaves the history unpruned. `since` and `between`
+read the archive files a window reaches, then the history, counting each sample once. A day of the
+workstation's history, 31.7 MB, gzipped to 1.9 MB (2026-11-28).
 
 LINUX reads /proc; $MACHINE_SNAPSHOT_PROC replaces /proc for the test suite. MACOS reads the same
 facts through libproc (proc_pid_rusage for CPU, the CPU of reaped children, and disk I/O;
@@ -85,6 +90,8 @@ output rather than hidden:
 Attribution on macOS also anchors on the CI bridge's worker (`ci-bridge/run.sh`) and podman's VM,
 so a CI run's load is filed under the run, not under "(not under a session)".
 """
+import glob
+import gzip
 import json
 import os
 import subprocess
@@ -96,6 +103,8 @@ STATE = os.environ.get("MACHINE_SNAPSHOT_DIR") or os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "machine-snapshot")
 SESSION_COMM = os.environ.get("MACHINE_SNAPSHOT_SESSION_COMM", "claude")
 KEEP_HOURS = float(os.environ.get("MACHINE_SNAPSHOT_KEEP_HOURS", "24"))
+# Lines the history drops are kept this long in the archive; 0 turns the archive off.
+ARCHIVE_DAYS = float(os.environ.get("MACHINE_SNAPSHOT_ARCHIVE_DAYS", "14"))
 # A previous sample older than this is not a baseline: deltas across a suspend or a stopped timer
 # would attribute an hour of CPU to one interval.
 MAX_GAP = float(os.environ.get("MACHINE_SNAPSHOT_MAX_GAP", "120"))
@@ -127,6 +136,7 @@ ANCHORS = [a for a in os.environ.get(
 
 LATEST = os.path.join(STATE, "latest.json")
 HISTORY = os.path.join(STATE, "history.jsonl")
+ARCHIVE = os.path.join(STATE, "archive")
 
 
 def read(path, default=""):
@@ -488,18 +498,90 @@ def prune(now):
             return
     except (ValueError, KeyError):
         pass
-    kept = []
+    kept, dropped = [], []
     with open(HISTORY) as fh:
         for line in fh:
             try:
-                if json.loads(line)["ts"] >= cutoff:
-                    kept.append(line)
+                (kept if json.loads(line)["ts"] >= cutoff else dropped).append(line)
             except (ValueError, KeyError):
                 continue
+    if ARCHIVE_DAYS > 0 and dropped:
+        try:
+            archive(dropped, now)
+        except OSError as e:
+            # Nothing leaves the history without reaching the archive: the next prune tries again.
+            print(f"machine-snapshot: archive: {e}; the history is left unpruned", file=sys.stderr)
+            return
     tmp = HISTORY + ".tmp"
     with open(tmp, "w") as fh:
         fh.writelines(kept)
     os.replace(tmp, HISTORY)
+
+
+def archive(lines, now):
+    """Write the lines a prune drops to one gzipped file, named by the epoch seconds of its first
+    and last samples, then delete the files whose last sample is older than ARCHIVE_DAYS. The file
+    is written under a temporary name, synced and renamed, so it is whole or absent; a crash after
+    the rename and before the history is replaced writes the same samples again at the next prune,
+    and the reader counts a sample once by its `ts`."""
+    first, last = (int(json.loads(lines[i])["ts"]) for i in (0, -1))
+    os.makedirs(ARCHIVE, exist_ok=True)
+    path = os.path.join(ARCHIVE, f"history-{first}-{last}.jsonl.gz")
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+            gz.write("".join(lines).encode("utf-8"))
+        raw.flush()
+        os.fsync(raw.fileno())
+    os.replace(tmp, path)
+    fd = os.open(ARCHIVE, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    for f, _, end in archive_files():
+        if end < now - ARCHIVE_DAYS * 86400:
+            os.remove(f)
+
+
+def archive_files():
+    """(path, first, last) for each archive file, oldest first; a name not of that shape is skipped."""
+    out = []
+    for f in glob.glob(os.path.join(ARCHIVE, "history-*-*.jsonl.gz")):
+        try:
+            first, last = (int(x) for x in os.path.basename(f)[8:-9].split("-"))
+        except ValueError:
+            continue
+        out.append((f, first, last))
+    return sorted(out, key=lambda x: (x[1], x[2]))
+
+
+def window(start, end):
+    """Each sample with start <= ts <= end, from the archive files the window reaches and then the
+    history, in that order; a sample already read (the same `ts`) is skipped."""
+    seen = set()
+    sources = [(f, gzip.open) for f, first, last in archive_files() if first <= end and last + 1 >= start]
+    sources.append((HISTORY, open))
+    for path, opener in sources:
+        try:
+            fh = opener(path, "rt")
+        except OSError:
+            if path == HISTORY:
+                sys.exit(f"machine-snapshot: no history in {STATE}")
+            continue
+        try:
+            with fh:
+                for line in fh:
+                    try:
+                        s = json.loads(line)
+                        ts = s["ts"]
+                    except (ValueError, KeyError):
+                        continue
+                    if start <= ts <= end and ts not in seen:
+                        seen.add(ts)
+                        yield s
+        except (OSError, EOFError) as e:
+            print(f"machine-snapshot: {path}: {e}; read up to there", file=sys.stderr)
 
 
 def when(ts):
@@ -572,46 +654,35 @@ def summarize(start, end):
     # inflated the totals to twice the machine for hours before anyone noticed.
     cores = int(os.environ.get("MACHINE_SNAPSHOT_CORES") or os.cpu_count() or 1)
     accounted, over_cores = [], 0
-    try:
-        fh = open(HISTORY)
-    except OSError:
-        sys.exit(f"machine-snapshot: no history in {STATE}")
-    with fh:
-        for line in fh:
-            try:
-                s = json.loads(line)
-            except ValueError:
-                continue
-            if not start <= s["ts"] <= end:
-                continue
-            n += 1
-            span += s.get("interval") or 0
-            # Samples from before a field existed lack it; they are skipped for that figure only.
-            for key in press:
-                if key in s.get("pressure", {}):
-                    press[key].append(s["pressure"][key])
-            if s.get("load"):
-                loads.append(float(s["load"][0]))
-            if s.get("tmp"):
-                tmp_used.append(s["tmp"]["used"])
-                tmp_size = max(tmp_size, s["tmp"]["size"])
-                tmp_last = s["tmp"]
-            if s.get("interval"):
-                c = sum(r["own"] + r["reaped"] for r in s["rows"]) / s["interval"]
-                accounted.append(c)
-                over_cores += c > cores * 1.05   # 5 % for tick rounding and timer jitter
-            for r in s["rows"]:
-                cpu = r["own"] + r["reaped"]
-                by_session[r["session"]] = by_session.get(r["session"], 0) + cpu
-                by_comm[r["comm"]] = by_comm.get(r["comm"], 0) + cpu
-                if "rd" in r:
-                    for table, k in ((io_session, r["session"]), (io_comm, r["comm"])):
-                        have = table.setdefault(k, [0, 0])
-                        have[0] += r["rd"]
-                        have[1] += r["wr"]
-                if r["state"] == "D":
-                    k = f"{r['comm']}  in {r['wchan'] or '-'}"
-                    stalls[k] = stalls.get(k, 0) + 1
+    for s in window(start, end):
+        n += 1
+        span += s.get("interval") or 0
+        # Samples from before a field existed lack it; they are skipped for that figure only.
+        for key in press:
+            if key in s.get("pressure", {}):
+                press[key].append(s["pressure"][key])
+        if s.get("load"):
+            loads.append(float(s["load"][0]))
+        if s.get("tmp"):
+            tmp_used.append(s["tmp"]["used"])
+            tmp_size = max(tmp_size, s["tmp"]["size"])
+            tmp_last = s["tmp"]
+        if s.get("interval"):
+            c = sum(r["own"] + r["reaped"] for r in s["rows"]) / s["interval"]
+            accounted.append(c)
+            over_cores += c > cores * 1.05   # 5 % for tick rounding and timer jitter
+        for r in s["rows"]:
+            cpu = r["own"] + r["reaped"]
+            by_session[r["session"]] = by_session.get(r["session"], 0) + cpu
+            by_comm[r["comm"]] = by_comm.get(r["comm"], 0) + cpu
+            if "rd" in r:
+                for table, k in ((io_session, r["session"]), (io_comm, r["comm"])):
+                    have = table.setdefault(k, [0, 0])
+                    have[0] += r["rd"]
+                    have[1] += r["wr"]
+            if r["state"] == "D":
+                k = f"{r['comm']}  in {r['wchan'] or '-'}"
+                stalls[k] = stalls.get(k, 0) + 1
     if not n:
         sys.exit(f"machine-snapshot: no samples from {when(start)} to {when(end)}")
     print(f"{n} samples from {when(start)} to {when(end)}, covering {span / 60:.1f} minutes")

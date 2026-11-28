@@ -307,5 +307,51 @@ has "cores: a sample above the machine is counted" "$s" "samples over 4 cores: 1
 has "cores: and flagged" "$s" "ATTRIBUTION OVERCOUNTED"
 unset MACHINE_SNAPSHOT_CORES
 
+# 16) The archive: what prune drops is kept, gzipped, one file per prune, so a window reaches
+#     back past the history's 25 hours (MACHINE_SNAPSHOT_ARCHIVE_DAYS, default 14). A prune whose
+#     archive write fails leaves the history whole; a sample read twice (a prune repeated after a
+#     crash) is counted once; files past the limit are deleted; 0 turns the archive off.
+export MACHINE_SNAPSHOT_DIR="$w/state-arch" MACHINE_SNAPSHOT_MAX_GAP=99999 MACHINE_SNAPSHOT_KEEP_HOURS=0.5
+reset
+A="$MACHINE_SNAPSHOT_DIR"
+arch_ts() { python3 -c "
+import glob, gzip, json, sys
+print(' '.join(str(t) for t in sorted(json.loads(l)['ts'] for f in glob.glob('$1/archive/*.jsonl.gz')
+      for l in gzip.open(f, 'rt'))))"; }
+hist_ts() { python3 -c "import json; print(' '.join(str(json.loads(l)['ts']) for l in open('$1/history.jsonl')))"; }
+rec 20000; rec 20015; rec 20030
+rec 30000
+eq "archive: the lines prune dropped are in the archive" "$(arch_ts "$A")" "20015.0 20030.0"
+eq "archive: and gone from the history" "$(hist_ts "$A")" "30000.0"
+s=$(MACHINE_SNAPSHOT_NOW=30000 python3 "$TOOL" between @20000 @30001)
+has "archive: a window spanning archive and history counts both" "$s" "3 samples"
+f=$(ls "$A"/archive/*.jsonl.gz | head -1); cp "$f" "$A/archive/history-20014-20031.jsonl.gz"
+s=$(MACHINE_SNAPSHOT_NOW=30000 python3 "$TOOL" between @20000 @30001)
+has "archive: a sample read twice is counted once" "$s" "3 samples"
+s=$(MACHINE_SNAPSHOT_NOW=30000 python3 "$TOOL" between @29000 @30001)
+has "archive: a window inside the history alone" "$s" "1 samples"
+rec 30015
+MACHINE_SNAPSHOT_ARCHIVE_DAYS=0.15 rec 40000
+eq "archive: files past the limit deleted, the newest kept" "$(arch_ts "$A")" "30000.0 30015.0"
+
+export MACHINE_SNAPSHOT_DIR="$w/state-arch-ro"; A="$MACHINE_SNAPSHOT_DIR"
+if [ "$(id -u)" = 0 ]; then
+  printf '  skip  archive: a read-only directory stops nobody when run as root\n'
+else
+  rec 20000; rec 20015; rec 20030
+  mkdir -p "$A/archive"; chmod 555 "$A/archive"
+  err=$(rec 30000 2>&1 >/dev/null)
+  chmod 755 "$A/archive"
+  eq "archive: a failed archive write leaves the history whole" "$(hist_ts "$A")" "20015.0 20030.0 30000.0"
+  has "archive: and says so" "$err" "machine-snapshot: archive"
+fi
+
+export MACHINE_SNAPSHOT_DIR="$w/state-arch-off"; A="$MACHINE_SNAPSHOT_DIR"
+rec 20000; rec 20015
+MACHINE_SNAPSHOT_ARCHIVE_DAYS=0 rec 30000
+[ ! -e "$A/archive" ] && ok "archive: 0 days turns it off" || no "archive: 0 days turns it off"
+eq "archive: off still prunes" "$(hist_ts "$A")" "30000.0"
+unset MACHINE_SNAPSHOT_KEEP_HOURS
+
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
