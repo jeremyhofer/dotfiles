@@ -332,6 +332,30 @@ def test_no_record_still_trusts_the_base_source(world):
 
 
 @needs_mise
+def test_a_trust_file_is_trusted_with_no_record(world):
+    # A domain's task file outside any repository (home's CI bridge): trusted by its own path,
+    # whether or not a fleet record exists.
+    bridge = world.tmp / "bridge"
+    bridge.mkdir()
+    (bridge / "mise.toml").write_text(env_toml("BRIDGE", "bridge"))
+    world.record.unlink()
+    assert untrusted(world.mise_env(bridge), bridge / "mise.toml")
+    out = world.run("--trust-file", str(bridge / "mise.toml"))
+    assert out.returncode == 0, out.stderr
+    got = world.mise_env(bridge)
+    assert got.returncode == 0 and "BRIDGE=bridge" in got.stdout, got.stderr
+
+
+@needs_mise
+def test_a_missing_trust_file_is_skipped_and_the_rest_still_runs(world):
+    out = world.run("--trust-file", str(world.tmp / "absent" / "mise.toml"),
+                    "--base-source", str(world.base))
+    assert out.returncode == 0, out.stderr
+    assert "does not exist; nothing to trust there" in out.stderr
+    assert world.mise_env(world.base).returncode == 0
+
+
+@needs_mise
 def test_an_unreadable_record_refuses_and_trusts_no_project(world):
     world.write_record("projects: [this is: not: a map\n")
     out = world.run()

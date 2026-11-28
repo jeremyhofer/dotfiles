@@ -2,7 +2,7 @@
 """mise-fleet-trust -- trust the mise configurations the fleet manifest opts in, and nothing else,
 and write the mise settings that bound what mise reads.
 
-    mise-fleet-trust [--base-source DIR] [--dry-run]
+    mise-fleet-trust [--base-source DIR] [--trust-file FILE]... [--dry-run]
 
 WHY. mise applies a configuration's [env], settings and tasks only once that file is trusted, and
 its trust records live in mise's state directory, which an agent's sandbox may not write. So trust is
@@ -15,7 +15,9 @@ WHAT IT TRUSTS. For each project with `miseTrust: true` whose directory is on th
 top-level `mise.toml` and `mise.local.toml`, each by its own path (`mise trust <file>`), never the
 project's directory as a prefix: a prefix trusts every configuration below it, a dependency's
 included. With --base-source DIR, also DIR/mise.toml, the dotfiles source's own; this needs no
-manifest, so a machine with none still trusts it. A file that does not exist is skipped, because
+manifest, so a machine with none still trusts it. With --trust-file FILE, also that one file, for
+a task file a domain deploys outside any repository (home's CI bridge, on the CI node only); like
+--base-source it needs no manifest. A file that does not exist is skipped, because
 mise refuses to trust a path that is not there; the next run after it appears trusts it.
 
 Measured with mise 2026.11.5: `mise trust <file>` records the file's DIRECTORY as a trust root, and
@@ -69,6 +71,7 @@ record would be unfounded, and a guessed ignore list could reach outside the pro
 
 OPTIONS.
     --base-source DIR   also trust DIR/mise.toml (the apply passes the dotfiles source directory)
+    --trust-file FILE   also trust FILE itself, by its path; repeatable
     --dry-run           print the miserc and what would be trusted; write and trust nothing
 
 EXIT. 0 done (or nothing to do); 1 a `mise trust` failed or an opted-in project declares no path,
@@ -331,6 +334,7 @@ def main(argv):
                                                  "manifest opts in, and write mise's miserc "
                                                  "(see the header).")
     parser.add_argument("--base-source", metavar="DIR")
+    parser.add_argument("--trust-file", metavar="FILE", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -346,6 +350,12 @@ def main(argv):
                 failures += 0 if trust_file(mise, path, args.dry_run) else 1
             else:
                 say("no mise.toml in %s; nothing to trust there" % args.base_source)
+        for name in args.trust_file:
+            path = os.path.realpath(name)
+            if os.path.isfile(path):
+                failures += 0 if trust_file(mise, path, args.dry_run) else 1
+            else:
+                say("%s does not exist; nothing to trust there" % name)
         # Everything is read and checked before anything about the projects is written.
         projects, errors = load_projects()
         text = miserc_text(projects, read_fragment())
