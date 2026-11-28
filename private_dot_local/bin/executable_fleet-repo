@@ -47,8 +47,9 @@
 # mani's `branch:` key names, with worktrees nested inside it:
 #
 #   <repo>/                 the checkout, on the declared branch; <repo>/.git is an ordinary git dir
-#     .worktrees/<name>/    further worktrees (`.worktrees/` must be ignored, or tools that walk the
-#                           tree meet a second copy of the repository)
+#     <dir>/<name>/         further worktrees (<dir> is `.worktrees` or `.claude/worktrees`, below; it
+#                           must be ignored, or tools that walk the tree meet a second copy of the
+#                           repository)
 #
 # A declared worktree with no `path` goes where worktrunk would put it: <repo>/<dir>/<name>, the
 # branch's slashes becoming dashes, where <dir> is the one line of ~/.config/worktrunk/worktree-dir
@@ -122,6 +123,7 @@
 #     branch: <the checkout's branch>      mani's own key; absent means the remote's default
 #     single_branch: true                  mani's own key: fetch that branch only
 #     worktrees: [{name: <branch>, path: .worktrees/<name>}]   relative to path
+#                                           (`.claude/worktrees/<name>` where the flag is on)
 # Bare:
 #     path: <container>/<default-branch>   the container is its PARENT (mani runs tasks in `path`)
 #     url:  <the remote>

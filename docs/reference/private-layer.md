@@ -418,10 +418,10 @@ A repository is identified by its manifest project name (`mani.yaml`, the key un
 looked up from the manifest at `$LINT_TASKNAMES_MANIFEST` (exit 2 if it names a missing file), else
 `~/Devel/mani.yaml`, or the one named to `--fleet`. The run's repository is its git top level, and a
 linked worktree is matched through its main checkout, so a worktree or a subdirectory gets the same
-allowances as the checkout; `.worktrees` directories are never linted as part of the main checkout. A
-repository with no manifest entry, a manifest that cannot be read, or two keys sharing its path gets
-no allowances, and the header says which. An entry the manifest reader cannot parse is exit 2, naming
-the line, rather than being attributed to a neighbor.
+allowances as the checkout; worktree directories (`.worktrees`, `.claude/worktrees`) are never
+linted as part of the main checkout. A repository with no manifest entry, a manifest that cannot be
+read, or two keys sharing its path gets no allowances, and the header says which. An entry the
+manifest reader cannot parse is exit 2, naming the line, rather than being attributed to a neighbor.
 
 ## mise checks: `~/.dotlocal/mise/required-files`
 

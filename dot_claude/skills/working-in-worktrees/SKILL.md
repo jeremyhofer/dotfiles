@@ -279,7 +279,7 @@ Giving a subagent `isolation: worktree` creates a worktree on a fresh branch for
   remote), and have its prompt name the expected base commit, so it can check.
 - **It installs before any gate**, like any new worktree.
 - **The dispatching session owns the cleanup**: review, land, then remove, as above. A subagent's
-  finished worktree is left behind in `.worktrees/`; once its work is landed, remove it with
+  finished worktree is left behind in the worktree directory; once its work is landed, remove it with
   `wt remove --no-hooks --foreground <branch>` (or the `git worktree remove <path>` fallback where
   the standard form cannot run), after the checks in Removing it. A session that ends with unlanded
   work in a worktree it created names that worktree in its handoff.

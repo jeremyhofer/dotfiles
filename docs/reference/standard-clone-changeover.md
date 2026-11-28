@@ -18,7 +18,8 @@ this page is the procedure for moving between them.
   the default one included, is a linked worktree beside it: `<repo>/main/`, `<repo>/<branch>/`.
   Nothing is checked out at `<repo>/` itself.
 - **Standard clone**: the layout being moved to. `<repo>/` is the main worktree, on the branch you
-  normally work on, and extra worktrees nest inside it at `<repo>/.worktrees/<name>`.
+  normally work on, and extra worktrees nest inside it at `<repo>/.worktrees/<name>` (or
+  `<repo>/.claude/worktrees/<name>` on a machine with the `claudeWorktrees` flag on; see step 6).
 - **Untracked file**: a file in a worktree that git does not record. `git status` lists it.
 - **Ignored file**: an untracked file matched by a `.gitignore`, by `.git/info/exclude` (a
   per-repository ignore list that is never committed) or by your global ignore file. `git status`

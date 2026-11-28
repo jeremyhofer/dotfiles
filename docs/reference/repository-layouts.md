@@ -21,21 +21,22 @@ with no files checked out beside it. A repository under `~/Devel` is in one of t
 **Agent sessions can work in it with no extra permission.** Claude Code runs a session's shell
 commands in a sandbox that lets it write the directory it stands in and its repository's `.git`
 (except `.git/config` and `.git/hooks/`); subagents share that. In a standard clone everything a
-session touches is inside `<repo>/`: the checkout, the worktrees its subagents create under
-`.worktrees/`, and the caches tools keep at the repository root (Nx's task database, for one). In a
-bare container the container root sits outside every worktree, so a cache at the main worktree's
-root and a new worktree beside the others both land where no session may write, and every container
-needs a sandbox grant that also opens its `config` and `hooks/`.
+session touches is inside `<repo>/`: the checkout, the worktrees its subagents create under the
+worktree directory (`.worktrees/`, or `.claude/worktrees/` with the flag on), and the caches tools
+keep at the repository root (Nx's task database, for one). In a bare container the container root
+sits outside every worktree, so a cache at the main worktree's root and a new worktree beside the
+others both land where no session may write, and every container needs a sandbox grant that also
+opens its `config` and `hooks/`.
 
 **It is what other tools expect.** IDEs such as Android Studio and Xcode open a standard clone or a
 nested worktree directly, and worktrunk (`wt`) handles it with its defaults.
 
 **What it costs.** The checkout is load-bearing: deleting or re-cloning `<repo>/` takes every nested
 worktree with it, uncommitted work and unpushed branches included, so remove worktrees with
-`wt remove` and never by deleting a directory. And `.worktrees/` must be ignored, in the repository's
-own `.gitignore`: a tool that walks the tree (Nx, prettier, eslint, `rg`) otherwise meets a second
-copy of the repository. Nx in particular fails to load its plugins with an un-ignored nested worktree
-present.
+`wt remove` and never by deleting a directory. And the worktree directory (`.worktrees/`, or
+`.claude/worktrees/` with the flag on) must be ignored, in the repository's own `.gitignore`: a tool
+that walks the tree (Nx, prettier, eslint, `rg`) otherwise meets a second copy of the repository. Nx
+in particular fails to load its plugins with an un-ignored nested worktree present.
 
 The skill `working-in-worktrees` covers the day-to-day: where to stand to create, land and remove a
 worktree, and how sessions and people share one clone.
@@ -108,7 +109,8 @@ projects:
   `--single-branch` for `single_branch: true`, and `fleet-repo clone <name>` runs the same command,
   so either one gives a machine the same checkout and the same fetch settings (measured with mani
   0.32.1). Without `branch:` both check out the remote's default branch.
-- **`worktrees:` paths are relative to `path`,** so a nested one is `.worktrees/<name>`. Each `name`
+- **`worktrees:` paths are relative to `path`,** so a nested one is `.worktrees/<name>`
+  (`.claude/worktrees/<name>` where the flag is on). Each `name`
   is a branch. `fleet-repo clone <name>` checks that branch out with an upstream; `mani sync` does
   not (mani 0.32.1 makes a new branch named after the directory, from the checkout's commit), so
   after a first `mani sync` of an entry with worktrees, check them, or make them with `fleet-repo`.
