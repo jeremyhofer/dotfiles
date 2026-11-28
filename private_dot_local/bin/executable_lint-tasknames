@@ -29,7 +29,7 @@ skips visible so coverage is never implied.
 Commit gate. `lint-tasknames --staged [REPO]` (REPO defaults to the current directory and is
 resolved to the git top level) lists the staged paths (`git diff --cached --name-only
 --diff-filter=ACMR -z`) and lints only when one is a file a reader parses: a just, npm, make or Nx
-build file, a mise config or a file under a mise task directory (derived from the readers' own
+build file (`nx.json` at the root, `project.json` at any depth), a mise config or a file under a mise task directory (derived from the readers' own
 constants, so it cannot drift from them), never one inside a directory the walk skips (fixtures,
 `.worktrees/`, `.claude/`, node_modules-class directories). With none staged it prints
 `lint-tasknames: no task file staged` and exits 0. Otherwise it runs the normal lint with gate
@@ -477,6 +477,9 @@ def read_make(repo):
 
 
 NX_MARKER = "nx.json"
+# An Nx project's own build file. Unlike nx.json it sits at any depth (`web/project.json`), and the
+# reader above enumerates it through `nx show projects`, so a staged one changes what the lint sees.
+NX_PROJECT_FILE = "project.json"
 
 
 def read_nx(repo):
@@ -788,7 +791,7 @@ def identify(repo, manifest):
 def staged_path_triggers(rel):
     """True when the repo-relative path `rel` is a file one of the readers parses, derived from the
     readers' own constants: the just/npm/make marker file names (any depth, like the walk), `nx.json`
-    at the root (Nx is root-only), the mise config spellings and task directories in MISE_MARKERS
+    at the root (the workspace is root-only), an Nx `project.json` at any depth, the mise config spellings and task directories in MISE_MARKERS
     (the file itself, or anything under a marker directory), never a path inside a directory the
     walk skips (EXCLUDE_DIRS, fixture directories)."""
     parts = Path(rel).parts
@@ -797,6 +800,8 @@ def staged_path_triggers(rel):
     if any(d in EXCLUDE_DIRS or is_fixture_dir(d) for d in parts[:-1]):
         return False
     if len(parts) == 1 and parts[0] == NX_MARKER:
+        return True
+    if parts[-1] == NX_PROJECT_FILE:
         return True
     for _tool, _reader, markers in READERS:
         if isinstance(markers, tuple) and parts[-1] in markers:

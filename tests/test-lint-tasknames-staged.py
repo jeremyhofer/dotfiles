@@ -180,6 +180,26 @@ def test_a_staged_nx_json_triggers(box):
     assert NONE_LINE not in r.stdout, out(r)
 
 
+@pytest.mark.parametrize("rel", ["project.json", "web/project.json", "packages/app/project.json"])
+def test_a_staged_nx_project_json_at_any_depth_triggers(box, rel):
+    # An Nx workspace's projects sit in subdirectories; nx.json is root-only, project.json is not.
+    write(box, "nx.json", "{}")
+    stage(box, "nx.json")
+    subprocess.run(["git", "-C", str(box / "repo"), "commit", "-qm", "init"], check=True, capture_output=True,
+                   env=env_for(box))
+    write(box, rel, json.dumps({"name": "app", "targets": {"doc:plant": {"command": "true"}}}))
+    stage(box, rel)
+    r = staged(box)
+    assert NONE_LINE not in r.stdout, out(r)
+
+
+def test_a_staged_project_json_under_a_fixtures_directory_does_not_trigger(box):
+    write(box, "fixtures/app/project.json", json.dumps({"name": "app", "targets": {}}))
+    stage(box, "fixtures/app/project.json")
+    r = staged(box)
+    assert r.returncode == 0 and r.stdout.strip() == NONE_LINE, out(r)
+
+
 def test_a_non_git_directory_is_exit_2(box):
     (box / "plain").mkdir()
     r = staged(box, target="plain")
