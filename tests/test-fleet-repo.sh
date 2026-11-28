@@ -637,6 +637,22 @@ projects:
     path: dom/sdev
     url: $(url st)
     branch: develop
+  snob:
+    path: dom/snob
+    url: $(url st)
+  snowt:
+    path: dom/snowt
+    url: $(url st)
+    branch: develop
+  sfailwt:
+    path: dom/sfailwt
+    url: $(url st)
+    branch: develop
+  ssingle:
+    path: dom/ssingle
+    url: $(url st)
+    branch: develop
+    single_branch: true
   swt:
     path: dom/swt
     url: $(url st)
@@ -670,6 +686,36 @@ check "standard: a fresh clone is ordinary: .git a directory, not bare, on the d
 FR clone sdev > "$TMP/out" 2>&1; rc=$?
 check "standard: branch: develop is honored where the remote's default is main" \
   '[ "$rc" = 0 ] && [ "$(git -C dom/sdev branch --show-current)" = develop ] && [ "$(upstream dom/sdev)" = origin/develop ]'
+# worktrunk finds its default branch by guessing (a local main, else the remote's), so a checkout on
+# a branch other than the remote's default, with no local copy of the default, leaves it expecting a
+# branch that is not there. The tool pins the declared branch in the clone's own git config
+# (`wt config state default-branch set`), and only then.
+wtdef() { git -C "$1" config --get worktrunk.default-branch 2>/dev/null; }
+if command -v wt >/dev/null 2>&1; then
+  check "standard: a declared branch that is not the remote's default is set as worktrunk's default branch" \
+    '[ "$(wtdef dom/sdev)" = develop ]'
+  check "standard: ...a single-branch clone too, whose origin/HEAD does not exist to be read" \
+    '! git -C dom/ssingle symbolic-ref -q refs/remotes/origin/HEAD >/dev/null 2>&1 && FR clone ssingle >/dev/null 2>&1 && [ "$(wtdef dom/ssingle)" = develop ]'
+  check "standard: a declared branch equal to the remote's default sets nothing" '[ -z "$(wtdef dom/sfresh)" ]'
+  FR clone snob > "$TMP/out" 2>&1; rc=$?
+  check "standard: no branch: declared sets nothing" '[ "$rc" = 0 ] && [ -z "$(wtdef dom/snob)" ]'
+  # wt hidden: a PATH holding every tool on this one but wt.
+  mkdir -p "$TMP/nowt"
+  for d in $(printf '%s' "$PATH" | tr ':' ' '); do
+    for f in "$d"/*; do
+      [ -x "$f" ] && [ "${f##*/}" != wt ] && [ ! -e "$TMP/nowt/${f##*/}" ] && ln -s "$f" "$TMP/nowt/${f##*/}"
+    done 2>/dev/null
+  done
+  PATH="$TMP/nowt" FR clone snowt > "$TMP/out" 2>&1; rc=$?
+  check "standard: wt not installed: the clone still succeeds (exit 0), warns, and sets nothing" \
+    '! PATH="$TMP/nowt" command -v wt >/dev/null && [ "$rc" = 0 ] && [ -d dom/snowt/.git ] && grep -qi "wt is not installed" "$TMP/out" && [ -z "$(wtdef dom/snowt)" ]'
+  mkdir -p "$TMP/failwt2"; printf '#!/bin/sh\nexit 1\n' > "$TMP/failwt2/wt"; chmod +x "$TMP/failwt2/wt"
+  PATH="$TMP/failwt2:$PATH" FR clone sfailwt > "$TMP/out" 2>&1; rc=$?
+  check "standard: wt failing is a reported problem (exit 1) and the clone is still in place" \
+    '[ "$rc" = 1 ] && [ -d dom/sfailwt/.git ] && grep -q "WARNING: .*default-branch" "$TMP/out"'
+else
+  printf '  SKIP worktrunk default-branch arm: wt is not installed\n'
+fi
 FR clone swt > "$TMP/out" 2>&1; rc=$?
 check "standard: a declared worktree is NESTED at <path>/.worktrees/<name>, on its branch, with an upstream, sharing <path>/.git" \
   '[ "$rc" = 0 ] && [ "$(git -C dom/swt/.worktrees/feature branch --show-current)" = feature ] && [ "$(upstream dom/swt/.worktrees/feature)" = origin/feature ] && [ "$(cd dom/swt/.worktrees/feature && git rev-parse --path-format=absolute --git-common-dir)" = "$(cd dom/swt && pwd -P)/.git" ] && [ ! -e dom/.worktrees ]'
@@ -829,6 +875,17 @@ for pf in cnone:no-checkout ccont:bare-container cfiles:not-a-clone cbranch:chec
   check "check, standard: $f -- exit 1 and exactly that one finding" \
     '[ "$rc" = 1 ] && [ "$(grep -c "^\[" "$TMP/out")" = 1 ] && grep -q "^\[$f\] $p: " "$TMP/out"'
 done
+# The worktrunk default branch: a clone on a declared branch that is not the remote's default is
+# drift until it is pinned. Made with plain git, so nothing pinned it.
+git clone -q --branch develop "$(url st)" dom/cdef
+git clone -q --branch develop "$(url st)" dom/cdefok
+git -C dom/cdefok config worktrunk.default-branch develop
+printf '  cdef:\n    path: dom/cdef\n    url: %s\n    branch: develop\n  cdefok:\n    path: dom/cdefok\n    url: %s\n    branch: develop\n' "$(url st)" "$(url st)" >> mani.yaml
+FR check cdef > "$TMP/out" 2>&1; rc=$?
+check "check, standard: worktrunk-default -- exit 1, exactly that one finding, the fix command in it" \
+  '[ "$rc" = 1 ] && [ "$(grep -c "^\[" "$TMP/out")" = 1 ] && grep -q "^\[worktrunk-default\] cdef: .*config state default-branch set develop" "$TMP/out"'
+FR check cdefok > "$TMP/out" 2>&1; rc=$?
+check "check, standard: ...clean once it is pinned" '[ "$rc" = 0 ] && ! grep -q "^\[" "$TMP/out"'
 rm -rf "$HOME/.config"
 # A branch someone made in the checkout and never pushed has nothing to track yet: its missing
 # upstream is not drift, since `fleet-repo clone` could not repair it.

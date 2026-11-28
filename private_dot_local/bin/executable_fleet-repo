@@ -58,6 +58,14 @@
 # or `.claude/worktrees` with the flag on. Absent, <dir> is `.worktrees`. A line that is not a plain
 # relative directory is exit 2. A declared `path` always wins.
 #
+# WORKTRUNK'S DEFAULT BRANCH. When `branch:` differs from the remote's default (asked of the remote,
+# else read from origin/HEAD), `clone` runs `wt config state default-branch set <branch>` in the
+# clone, which writes worktrunk.default-branch into its git config. Without it worktrunk expects the
+# remote's default, which is not checked out, and `wt remove` and `wt switch` fail. No `branch:`, or
+# one equal to the remote's default, sets nothing; no wt is a warning; a failing wt is a reported
+# problem (exit 1). `check` reports worktrunk-default when the pin is missing (offline: it reads
+# origin/HEAD, which a single-branch clone lacks, so such a clone is not judged).
+#
 # Its point: an agent session may write the directory it stands in and that repository's .git, so
 # with everything inside one directory a session and the subagents it starts in their own worktrees
 # can all work without any extra sandbox grant. The cost: the checkout is load-bearing, and deleting
@@ -112,7 +120,7 @@
 #                     mani exec --all --ignore-non-existing --parallel 'fleet-repo update'
 #   check [<project>] Drift between declaration and disk, reported and never fixed: no container, a
 #                     plain clone where a container is declared, fetch refspecs that differ from the
-#                     declared set, a missing worktree, a missing upstream, a container the
+#                     declared set, a missing worktree, a missing upstream, a worktrunk default branch not pinned to the declared branch (standard), a container the
 #                     generated worktrunk config has no table for, a container still in the old
 #                     .bare shape (old-layout, with the conversion commands). With no project, every entry that
 #                     declares a container. Offline.
@@ -602,6 +610,37 @@ EOF
   [ "$PROBLEMS" -eq 0 ] || return 1
 }
 
+# The remote's default branch as the clone knows it, for a standard clone. Asked of the remote first
+# (`ls-remote --symref`), because a single-branch clone has no refs/remotes/origin/HEAD to read; that
+# ref is the fallback when the remote cannot be asked (and the only source `check` uses, which is
+# offline). Prints nothing when neither says.
+remote_default_branch() {  # $1 clone root, $2 "remote" to ask the remote first
+  local d=""
+  if [ "${2:-}" = remote ]; then
+    d=$(git -C "$1" ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" { sub("^refs/heads/", "", $2); print $2; exit }')
+  fi
+  [ -n "$d" ] || d=$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+  printf '%s\n' "$d"
+}
+
+# worktrunk guesses its default branch (a local main, else the remote's HEAD). A checkout on a
+# declared branch that is not the remote's default, with no local copy of that default, leaves it
+# expecting a branch that is not there: `wt remove` fails its branch step and `wt switch <default>`
+# refuses. So the declared branch is pinned in the clone's own git config. Nothing is set when
+# `branch:` is absent or is the remote's default. Without wt it is a note, not a failure.
+pin_worktrunk_default() {
+  local remote_def
+  [ -n "$BRANCH" ] || return 0
+  remote_def=$(remote_default_branch "$TARGET" remote)
+  [ -n "$remote_def" ] && [ "$remote_def" != "$BRANCH" ] || return 0
+  if ! command -v wt >/dev/null 2>&1; then
+    say "WARNING: wt is not installed, so worktrunk's default branch for $TARGET was not set to $BRANCH (the remote's is $remote_def); run: wt -C $TARGET config state default-branch set $BRANCH"
+    return 0
+  fi
+  wt -C "$TARGET" config state default-branch set "$BRANCH" >/dev/null \
+    || problem "could not set worktrunk's default branch to $BRANCH for $PROJECT (the remote's is $remote_def); run: wt -C $TARGET config state default-branch set $BRANCH"
+}
+
 # ---- clone, standard ----------------------------------------------------------------------------
 # Globals in: PROJECT URL TARGET BRANCH SINGLE FILTER WT_NAMES WT_DIRS
 do_clone_standard() {
@@ -636,6 +675,8 @@ do_clone_standard() {
   if [ -n "$BRANCH" ] && [ "$cur" != "$BRANCH" ]; then
     say "NOTE: $TARGET is on ${cur:-a detached HEAD}; the manifest declares $BRANCH. Not switched"
   fi
+
+  pin_worktrunk_default
 
   # A worktree's branch must be fetched before it can be checked out. A single-branch clone fetches
   # only its own branch, so each worktree branch it lacks gets a refspec of its own, as a bare
@@ -999,7 +1040,7 @@ wt_table() {  # $1 config file, $2 id
 }
 
 check_standard() {
-  local p=$1 t=$P_TARGET cur b i dir wt_all cfg id
+  local p=$1 t=$P_TARGET cur b i dir wt_all cfg id rdef
   # Each of the first three findings ends the check: nothing below means anything without a clone.
   if [ -n "$(container_gitdir "$t")" ]; then
     drift bare-container "$p" "$t is a bare container, but the manifest declares a standard clone (changing it over is manual: see the standard-clone changeover reference)"
@@ -1016,6 +1057,15 @@ check_standard() {
   cur=$(git -C "$t" branch --show-current)
   if [ -n "$P_BRANCH" ] && [ "$cur" != "$P_BRANCH" ]; then
     drift checkout-branch "$p" "$t is on ${cur:-a detached HEAD}; the manifest declares $P_BRANCH (switching it back is its owner's call)"
+  fi
+  # worktrunk's default branch, pinned when the declared branch is not the remote's default (see
+  # pin_worktrunk_default). Judged offline, from origin/HEAD; a single-branch clone has none.
+  if [ -n "$P_BRANCH" ]; then
+    rdef=$(remote_default_branch "$t")
+    if [ -n "$rdef" ] && [ "$rdef" != "$P_BRANCH" ] \
+       && [ "$(git -C "$t" config --get worktrunk.default-branch 2>/dev/null || true)" != "$P_BRANCH" ]; then
+      drift worktrunk-default "$p" "the manifest declares $P_BRANCH but the remote's default is $rdef, and worktrunk's default branch is not set to it, so wt remove and wt switch fail (run: fleet-repo clone $p, or: wt -C $t config state default-branch set $P_BRANCH)"
+    fi
   fi
   # Upstreams: the checkout's own branch and every declared worktree's.
   wt_all="$cur	$t

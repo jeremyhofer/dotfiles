@@ -32,6 +32,18 @@ Entries are newest first.
 
 ---
 
+## 2026-11-28 (fleet-repo: worktrunk's default branch follows a declared `branch:`)
+
+Nothing to do for a new clone; an existing standard clone needs one command. When a standard
+entry's `branch:` is not the remote's default branch (say `develop` where the remote's is `main`,
+with no local `main`), worktrunk still guessed the remote's default, so `wt remove` failed its
+branch step (`git rev-parse --verify main failed`) and `wt switch main` refused. `fleet-repo clone`
+now runs `wt config state default-branch set <branch>` in such a clone (it writes
+`worktrunk.default-branch` into the clone's git config), and does nothing when `branch:` is absent
+or is the remote's default. Without `wt` it warns and the clone still succeeds; a failing `wt`
+is a reported problem (exit 1). `fleet-repo check` has a new finding, `worktrunk-default`, for a
+standard clone that lacks the setting; `fleet-repo clone <project>` on the existing clone fixes it.
+
 ## 2026-11-28 (`worktrunk.bootstrapDirs`: install a nested package's dependencies in a new worktree)
 
 Nothing to do; a project that does not declare it behaves exactly as before. `wt-bootstrap` takes
@@ -46,8 +58,6 @@ discovered: a repository may track lockfiles inside test fixtures that must neve
 `fleet-decl --check` refuses the key without `bootstrap: true`, and an entry that is absolute, climbs
 out with `..`, or holds a space, a quote or any character outside letters, digits and `._-/`. A
 worktrunk config already generated is unchanged until `wt-config-gen` runs again (the apply does).
-
----
 
 ## 2026-11-28 (doc-lint: `broken-link`, a blocking check on relative markdown links)
 
