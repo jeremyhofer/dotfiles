@@ -219,7 +219,11 @@ names one purpose-built command and its verbs (`ci-trigger *`, `<tool> status`),
 entry point such as `ssh *`, `ssh <host> *`, `bash *` or `sudo *`. A shell grant covers every
 command anyone later types through it, and nobody reviews those. When work needs more reach than
 an existing tool gives, the fix is a tested tool for that job plus a grant naming it; when a
-session asks for a broad grant, design that tool before bringing the request to the person.
+session asks for a broad grant, design that tool before bringing the request to the person. **A
+remote tool is granted through a local wrapper, not an ssh prefix:** ssh appends every argument
+after the host to the remote command line, which the remote shell parses, so `ssh <host> <tool> *`
+also matches `ssh <host> <tool> status '; <anything>'`. The wrapper is the named command, runs
+unsandboxed, and validates its own arguments (fixed verbs, checked operands, no passthrough).
 
 ---
 
