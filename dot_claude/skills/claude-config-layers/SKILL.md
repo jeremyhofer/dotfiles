@@ -214,6 +214,13 @@ dodged gets trusted while it protects nothing.
 Changing what a layer allows is a settings change like any other: it belongs in the right layer (§1)
 and, for permissions and the sandbox, needs the person's explicit yes for that change.
 
+**And a grant names a tool, never a shell.** A `sandbox.excludedCommands` entry or an allow rule
+names one purpose-built command and its verbs (`ci-trigger *`, `<tool> status`), not a general
+entry point such as `ssh *`, `ssh <host> *`, `bash *` or `sudo *`. A shell grant covers every
+command anyone later types through it, and nobody reviews those. When work needs more reach than
+an existing tool gives, the fix is a tested tool for that job plus a grant naming it; when a
+session asks for a broad grant, design that tool before bringing the request to the person.
+
 ---
 
 If `~/.dotlocal/skills/claude-config-layers.md` exists, read it: it is this domain's half (where the
