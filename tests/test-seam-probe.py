@@ -176,6 +176,56 @@ def test_red_key_includes_versions(env, tmp_path):
     assert tool(env, "run", "s", "--yes", extra_env=path_a).returncode == 4
 
 
+def two_plant_suite(env):
+    """A case with plants p1 and p2, each FAIL when planted, PASS otherwise; each plant run leaves a
+    marker, so a test reads which plants actually ran."""
+    body = ('[ -n "${SEAM_PROBE_PLANT:-}" ] && touch "$MARKS/$SEAM_PROBE_PLANT"\n'
+            'if [ -n "${SEAM_PROBE_PLANT:-}" ]; then "$sp" verdict FAIL planted; else "$sp" verdict PASS fine; fi\n')
+    d = make_suite(env, {"c": (body, '"none"')})
+    toml = (d / "suite.toml").read_text().replace(
+        'plants = [{ id = "p1", expect = "FAIL" }]',
+        'plants = [{ id = "p1", expect = "FAIL" }, { id = "p2", expect = "FAIL" }]')
+    (d / "suite.toml").write_text(toml)
+    marks = env["tmp"] / "marks"
+    marks.mkdir()
+    return {"MARKS": str(marks)}, marks
+
+
+def test_red_plant_runs_only_the_named_plant(env):
+    extra, marks = two_plant_suite(env)
+    r = tool(env, "red", "s", "c", "--plant", "p2", "--yes", extra_env=extra)
+    assert r.returncode == 0 and "RED" in r.stdout, r.stdout + r.stderr
+    assert sorted(p.name for p in marks.iterdir()) == ["p2"]
+    reds = [json.loads(l)["plant"] for l in (env["state"] / "s" / "reds.jsonl").read_text().splitlines()]
+    assert reds == ["p2"]
+    # p1 has no red yet, so a PASS is still NOT-SEEN-RED.
+    assert tool(env, "run", "s", "--yes", extra_env=extra).returncode == 4
+
+
+def test_red_plants_run_separately_add_up(env):
+    extra, _ = two_plant_suite(env)
+    for p in ("p1", "p2"):
+        assert tool(env, "red", "s", "c", "--plant", p, "--yes", extra_env=extra).returncode == 0
+    assert tool(env, "run", "s", "--yes", extra_env=extra).returncode == 0
+
+
+def test_red_plant_repeats_and_keeps_the_declared_order(env):
+    extra, marks = two_plant_suite(env)
+    r = tool(env, "red", "s", "c", "--plant", "p2", "--plant", "p1", "--yes", extra_env=extra)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert sorted(p.name for p in marks.iterdir()) == ["p1", "p2"]
+    assert r.stdout.index("plant p1") < r.stdout.index("plant p2"), r.stdout
+
+
+def test_red_plant_unknown_is_refused_before_anything_runs(env):
+    extra, marks = two_plant_suite(env)
+    r = tool(env, "red", "s", "c", "--plant", "p3", "--yes", extra_env=extra)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "p3" in r.stderr and "p1, p2" in r.stderr, r.stderr
+    assert not list(marks.iterdir())
+    assert not (env["state"] / "s").exists() or not list((env["state"] / "s").iterdir())
+
+
 def test_plant_that_passes_is_blind(env):
     make_suite(env, {"c": ('"$sp" verdict PASS "never fails"\n', '"none"')})
     r = tool(env, "red", "s", "c", "--yes")

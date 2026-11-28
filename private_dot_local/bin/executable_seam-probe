@@ -73,7 +73,10 @@ commands (read only, allowed anywhere):
 commands that run cases (a case that starts Claude Code sessions is refused inside one: run it
 from a plain terminal; a case in the `none` regime runs anywhere):
   run SUITE [CASE...]      run cases, each in its first declared regime unless --regime
-  red SUITE CASE           run a case once per declared plant; each must come out as it expects
+  red SUITE CASE [--plant ID]...
+                           run a case once per declared plant; each must come out as it expects.
+                           --plant (repeatable) runs only the named plants, in declared order, so
+                           a plant that came out wrong is re-run alone; each red is recorded alike
   trust SUITE              print the steps a fixture needs once per machine (trust, approvals)
 primitives (called by case scripts, which the tool runs with SEAM_PROBE_RUN set):
   fixture repo NAME        a fresh git repository at the run's fixture path; prints its path
@@ -1917,6 +1920,14 @@ def cmd_red(args) -> int:
     check_state_root()
     suite_dir, data = load_valid(args.suite)
     c = get_case(data, args.case)
+    plants = c["plants"]
+    if args.plant:
+        declared = [p["id"] for p in plants]
+        unknown = [x for x in args.plant if x not in declared]
+        if unknown:
+            raise Usage(f"case {c['id']} declares no plant {', '.join(unknown)}; "
+                        f"its plants are {', '.join(declared)}")
+        plants = [p for p in plants if p["id"] in args.plant]
     regime = args.regime or c["regimes"][0]
     if regime not in c["regimes"]:
         raise Usage(f"case {c['id']} does not run in the {regime} regime")
@@ -1931,14 +1942,14 @@ def cmd_red(args) -> int:
             print(f"seam-probe red {args.suite} {c['id']}: SKIPPED: heavy, and the timing slot is held by "
                   f"{holder or 'another session'}; run it again once the slot is free")
             return EXIT_SKIPPED
-    confirm([f"seam-probe red {args.suite} {c['id']} ({regime}): {len(c['plants'])} plant run(s), ~{c['minutes']} min each",
-             *[f"  plant {p['id']}: must come out {p['expect']}{' on arm ' + p['arm'] if p.get('arm') else ''}" for p in c["plants"]]],
+    confirm([f"seam-probe red {args.suite} {c['id']} ({regime}): {len(plants)} plant run(s), ~{c['minutes']} min each",
+             *[f"  plant {p['id']}: must come out {p['expect']}{' on arm ' + p['arm'] if p.get('arm') else ''}" for p in plants]],
             args.yes)
     vers = versions()
     run_dir = new_run_dir(args.suite)
     records, codes = [], []
     try:
-        for p in c["plants"]:
+        for p in plants:
             rec = run_one(suite_dir, c, regime, p["id"], run_dir, fixtures, args.keep, caller)
             reading = red_reading(rec, p)
             rec["reading"], rec["plant_arm"] = reading, p.get("arm")
@@ -2049,6 +2060,9 @@ def main(argv: list[str]) -> int:
         p.add_argument("--yes", action="store_true", help="start without the confirmation prompt")
         p.add_argument("--keep", action="store_true", help="leave fixtures in place")
         p.add_argument("--slot-holder", default=os.environ.get("FLEET_SLOT_AS", "seam-probe"))
+        if name == "red":
+            p.add_argument("--plant", action="append", metavar="ID",
+                           help="run only this declared plant (repeatable); default every plant")
     p = sub.add_parser("trust"); p.add_argument("suite")
     p = sub.add_parser("fixture"); fs = p.add_subparsers(dest="what", required=True)
     q = fs.add_parser("repo"); q.add_argument("name")
