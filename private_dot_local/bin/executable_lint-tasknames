@@ -26,6 +26,20 @@ them. A build tool with no marker file
 anywhere in the tree is a skip, not an error; the per-source tally line makes
 skips visible so coverage is never implied.
 
+Commit gate. `lint-tasknames --staged [REPO]` (REPO defaults to the current directory and is
+resolved to the git top level) lists the staged paths (`git diff --cached --name-only
+--diff-filter=ACMR -z`) and lints only when one is a file a reader parses: a just, npm, make or Nx
+build file, a mise config or a file under a mise task directory (derived from the readers' own
+constants, so it cannot drift from them), never one inside a directory the walk skips (fixtures,
+`.worktrees/`, `.claude/`, node_modules-class directories). With none staged it prints
+`lint-tasknames: no task file staged` and exits 0. Otherwise it runs the normal lint with gate
+semantics, 1 on any ERROR, 2 on a reader or usage error (not a git repository, git failing, `--staged`
+with `--fleet`), 0 otherwise (a WARN never blocks), and on a non-zero exit adds a final line saying the
+commit is refused, naming skill `naming-build-tasks`, which holds the vocabulary. The lint reads the WORKING
+TREE: a partial `git add` of a build file is judged as it stands on disk, not as staged. The hook is
+one line, `lint-tasknames --staged || exit 1`, and the hook itself must refuse when the tool is
+missing, since a missing tool is a command-not-found the hook would otherwise skip.
+
 Allowances. A domain may list, in ONE allowlist file, names a project did not choose because they
 mirror an upstream tool's own subcommands. The file is `$LINT_TASKNAMES_ALLOWANCES`, else
 `~/.dotlocal/lint-tasknames/allowances.toml`; with neither there are no allowances and the run
@@ -462,8 +476,11 @@ def read_make(repo):
     return [(n, None) for n in sorted(names)]
 
 
+NX_MARKER = "nx.json"
+
+
 def read_nx(repo):
-    if not (repo / "nx.json").is_file():
+    if not (repo / NX_MARKER).is_file():
         return None
     r = run(["npx", "--no-install", "nx", "show", "projects", "--json"], repo)
     if r.returncode != 0:
@@ -766,6 +783,69 @@ def identify(repo, manifest):
     return None, f"this repository is not in the manifest ({manifest})", base
 
 
+# --- the commit-gate mode ------------------------------------------------------------------------
+
+def staged_path_triggers(rel):
+    """True when the repo-relative path `rel` is a file one of the readers parses, derived from the
+    readers' own constants: the just/npm/make marker file names (any depth, like the walk), `nx.json`
+    at the root (Nx is root-only), the mise config spellings and task directories in MISE_MARKERS
+    (the file itself, or anything under a marker directory), never a path inside a directory the
+    walk skips (EXCLUDE_DIRS, fixture directories)."""
+    parts = Path(rel).parts
+    if not parts:
+        return False
+    if any(d in EXCLUDE_DIRS or is_fixture_dir(d) for d in parts[:-1]):
+        return False
+    if len(parts) == 1 and parts[0] == NX_MARKER:
+        return True
+    for _tool, _reader, markers in READERS:
+        if isinstance(markers, tuple) and parts[-1] in markers:
+            return True
+    for m in set(MISE_MARKERS) | set(MISE_TASK_DIRS):
+        mp = Path(m).parts
+        n = len(mp)
+        for i in range(len(parts) - n + 1):
+            if parts[i:i + n] == mp:
+                return True  # the marker file itself, or a file inside a marker directory
+    return False
+
+
+def run_staged(argv):
+    """`--staged [REPO]`: lint REPO's working tree only when a staged path is a task file."""
+    if "--fleet" in argv:
+        print("lint-tasknames: --staged cannot be combined with --fleet", file=sys.stderr)
+        return 2
+    if len(argv) > 1:
+        print("lint-tasknames: usage: lint-tasknames --staged [REPO]", file=sys.stderr)
+        return 2
+    start = Path(argv[0] if argv else ".")
+    if not start.is_dir():
+        print(f"lint-tasknames: not a directory: {start}", file=sys.stderr)
+        return 2
+    try:
+        top = subprocess.run(["git", "-C", str(start), "rev-parse", "--show-toplevel"], capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL)
+        if top.returncode != 0:
+            print(f"lint-tasknames: --staged: {start} is not in a git repository", file=sys.stderr)
+            return 2
+        repo = Path(top.stdout.strip()).resolve()
+        lst = subprocess.run(["git", "-C", str(repo), "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    except OSError as e:
+        print(f"lint-tasknames: --staged: git failed: {e}", file=sys.stderr)
+        return 2
+    if lst.returncode != 0:
+        print(f"lint-tasknames: --staged: git diff --cached failed: {lst.stderr.strip()}", file=sys.stderr)
+        return 2
+    if not any(staged_path_triggers(p) for p in lst.stdout.split("\0") if p):
+        print("lint-tasknames: no task file staged")
+        return 0
+    rc = lint_target(repo)
+    if rc:
+        print("lint-tasknames: commit refused. The vocabulary is skill `naming-build-tasks`.")
+    return rc
+
+
 def main():
     global STRICT
     argv = sys.argv[1:]
@@ -780,12 +860,14 @@ def main():
         print(f"lint-tasknames: manifest unreadable: {env_manifest} (from LINT_TASKNAMES_MANIFEST)",
               file=sys.stderr)
         return 2
+    if "--staged" in argv:
+        return run_staged([a for a in argv if a != "--staged"])
     # A usage error is exit 2, never a lint result: an unknown option or a path that is not a
     # directory once printed "clean." and exited 0, so a mistyped path read as a clean repository.
     unknown = [a for a in argv if a.startswith("-") and a != "--fleet"]
     if unknown:
         print(f"lint-tasknames: unknown option {unknown[0]}; usage: lint-tasknames [--strict] "
-              "[REPO | --fleet [MANIFEST]]", file=sys.stderr)
+              "[REPO | --fleet [MANIFEST] | --staged [REPO]]", file=sys.stderr)
         return 2
     if argv and argv[0] != "--fleet" and not Path(argv[0]).is_dir():
         print(f"lint-tasknames: not a directory: {argv[0]}", file=sys.stderr)
@@ -810,7 +892,12 @@ def main():
                     if STRICT:
                         rc = max(rc, 1)
         return rc
-    repo = Path(argv[0] if argv else ".").resolve()
+    return lint_target(Path(argv[0] if argv else ".").resolve())
+
+
+def lint_target(repo):
+    """Lint one repository directory, attributing allowances through the manifest when there are any."""
+    env_manifest = os.environ.get("LINT_TASKNAMES_MANIFEST")
     manifest = Path(env_manifest) if env_manifest else DEFAULT_MANIFEST
     if ALLOWANCES is None:  # nothing to attribute: do not read the manifest at all
         return lint_one(repo)
@@ -833,7 +920,7 @@ def lint_one(repo, key=None, why="", base=None):
             rel = None if d == repo else str(d.relative_to(repo))
             dr = d.relative_to(base).as_posix()
             if markers is None:
-                bfile = "nx.json"  # Nx has no build file per project; allowances use the workspace file
+                bfile = NX_MARKER  # Nx has no build file per project; allowances use the workspace file
             else:
                 bfile = "mise.toml" if callable(markers) else real_build_file(d, markers)
                 bfile = bfile if dr == "." else f"{dr}/{bfile}"

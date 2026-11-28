@@ -116,6 +116,7 @@ test-lint-tasknames.sh              private_dot_local/bin/executable_lint-taskna
 test-lint-tasknames-allowances.py  private_dot_local/bin/executable_lint-tasknames
 test-lint-tasknames-walk.py        private_dot_local/bin/executable_lint-tasknames
 test-lint-tasknames-mise.py        private_dot_local/bin/executable_lint-tasknames
+test-lint-tasknames-staged.py      private_dot_local/bin/executable_lint-tasknames
 test-loop-time.py                   private_dot_local/bin/executable_loop-time private_dot_local/bin/executable_fleet-slot
 test-seam-probe.py                  private_dot_local/bin/executable_seam-probe private_dot_local/share/seam-probe/**
 test-seam-probe-classify.py         private_dot_local/share/seam-probe/suites/session-lifecycle/classify.py
