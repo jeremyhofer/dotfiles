@@ -1954,12 +1954,108 @@ def test_control_drift_needs_two_passing_controls_else_it_says_unknown():
     assert c["spread"] is None and c["drifted"] is None
 
 
+REAL_MAKE_BUSY_READER = lt.make_busy_reader  # the autouse fixture below replaces lt's
+
+
+def _stat(user=0, nice=0, system=0, idle=0, iowait=0, irq=0, softirq=0, steal=0):
+    return (f"cpu  {user} {nice} {system} {idle} {iowait} {irq} {softirq} {steal} 0 0\n"
+            "cpu0 1 1 1 1 1 1 1 1 0 0\nintr 5\n")
+
+
+def test_cpu_busy_is_the_non_idle_share_between_two_reads_of_proc_stat(tmp_path):
+    f = tmp_path / "stat"
+    f.write_text(_stat(user=100, idle=900))
+    reader = lt.CpuBusy(f)
+    assert reader.read() is None  # the first read has nothing to subtract
+    f.write_text(_stat(user=100 + 20, system=10, idle=900 + 70))
+    assert reader.read() == 30.0  # 30 busy of 100 new ticks
+    f.write_text(_stat(user=120, system=10, idle=970 + 100))
+    assert reader.read() == 0.0
+
+
+def test_cpu_busy_counts_iowait_as_idle_and_steal_irq_softirq_nice_as_busy(tmp_path):
+    f = tmp_path / "stat"
+    f.write_text(_stat())
+    reader = lt.CpuBusy(f)
+    reader.read()
+    f.write_text(_stat(iowait=50, idle=10, nice=10, irq=10, softirq=10, steal=10))
+    assert reader.read() == 40.0  # 40 busy of 100; the 50 iowait ticks are idle
+
+
+def test_cpu_busy_is_none_when_stat_is_unreadable_or_no_time_passed(tmp_path):
+    f = tmp_path / "stat"
+    reader = lt.CpuBusy(f)
+    assert reader.read() is None and reader.read() is None  # missing file
+    f.write_text(_stat(user=5, idle=5))
+    assert reader.read() is None  # first good read
+    assert reader.read() is None  # no ticks since
+    f.write_text("garbage\n")
+    assert reader.read() is None
+
+
+def test_make_busy_reader_is_none_off_linux():
+    assert REAL_MAKE_BUSY_READER(system="Darwin") is None
+    assert callable(REAL_MAKE_BUSY_READER(system="Linux"))
+
+
+def _both(pressure, busy, below=5.0, busy_below=10.0, hold=3.0, timeout=100.0):
+    clock = FakeClock()
+    p, b = iter(pressure), iter(busy)
+    return clock, lambda: lt.wait_quiet(lambda: next(p), below, hold, timeout, sleep=clock.sleep,
+                                        clock=clock.now, interval=1.0,
+                                        read_busy=lambda: next(b), busy_below=busy_below)
+
+
+def test_quiet_pressure_with_a_busy_machine_never_goes_quiet_and_times_out():
+    clock = FakeClock()
+    with pytest.raises(lt.QuietError) as e:
+        lt.wait_quiet(lambda: 0.0, 5.0, 3.0, 10.0, sleep=clock.sleep, clock=clock.now, interval=1.0,
+                      read_busy=lambda: 31.0, busy_below=10.0)
+    assert "31" in str(e.value) and "busy" in str(e.value)
+
+
+def test_both_readings_quiet_go_quiet_after_the_hold():
+    clock, wait = _both([1] * 8, [2] * 8)
+    assert wait() == 3.0
+
+
+def test_busy_dropping_below_the_threshold_mid_wait_restarts_and_then_completes_the_hold():
+    clock, wait = _both([1] * 10, [50, 50, 3, 3, 50, 3, 3, 3, 3, 3])
+    assert wait() == 8.0  # quiet from t=5, held 3 s; the spike at t=4 restarted it
+
+
+def test_busy_equal_to_the_threshold_is_not_quiet():
+    clock = FakeClock()
+    with pytest.raises(lt.QuietError):
+        lt.wait_quiet(lambda: 0.0, 5.0, 0.0, 3.0, sleep=clock.sleep, clock=clock.now,
+                      read_busy=lambda: 10.0, busy_below=10.0)
+
+
+def test_a_busy_reading_that_cannot_be_taken_is_not_quiet_but_the_first_one_is_forgiven_by_the_hold():
+    clock, wait = _both([1] * 9, [None, 2, 2, 2, 2, 2, 2, 2, 2])
+    assert wait() == 4.0  # quiet from t=1
+
+
+def test_macos_reads_only_cpu_busy_and_never_asks_for_proc_stat(monkeypatch):
+    monkeypatch.setattr(lt.platform, "system", lambda: "Darwin")
+    assert REAL_MAKE_BUSY_READER() is None
+    clock = FakeClock()
+    assert lt.wait_quiet(lambda: 1.0, 5.0, 0.0, 10.0, sleep=clock.sleep, clock=clock.now,
+                         read_busy=None, busy_below=10.0) == 0.0
+
+
 # ---- curve: the driver -------------------------------------------------------------------
 
 @pytest.fixture
 def quiet_machine(monkeypatch):
     """The CPU reads as idle, so no test waits on, or depends on, the real machine."""
     monkeypatch.setattr(lt, "read_cpu_pressure", lambda: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def idle_cpu_busy(monkeypatch):
+    """The curve driver's busy reader reads a quiet machine unless a test says otherwise."""
+    monkeypatch.setattr(lt, "make_busy_reader", lambda system=None, stat_path=None: (lambda: 0.0))
 
 
 def curve_decl(tmp_path, project, command=None):
@@ -2077,6 +2173,35 @@ def test_a_machine_that_never_goes_quiet_exits_4_runs_nothing_and_records_why(
     assert len(ev) == 1 and ev[0]["event"] == "quiet_timeout" and ev[0]["seed"] == 5
     assert "40" in ev[0]["reason"] and ev[0]["curve"]
     assert "did not stay below" in capsys.readouterr().err
+
+
+def test_a_neighbor_that_leaves_pressure_at_zero_still_blocks_the_curve_and_the_busy_threshold_is_recorded(
+        tmp_path, project, monkeypatch, capsys):
+    monkeypatch.setattr(lt, "read_cpu_pressure", lambda: 0.0)
+    monkeypatch.setattr(lt, "make_busy_reader", lambda system=None, stat_path=None: (lambda: 31.0))
+    d, log = curve_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert curve(d, res, *SMALL) == 4
+    assert not log.exists()
+    assert "busy" in capsys.readouterr().err
+
+
+def test_every_curve_record_carries_the_busy_threshold_used(tmp_path, project, quiet_machine):
+    d, log = curve_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert curve(d, res, *SMALL, "--quiet-busy-below", "12") == 0
+    assert {r["quiet_busy_below"] for r in records(res)} == {12.0}
+    res2 = tmp_path / "r2.jsonl"
+    assert curve(d, res2, *SMALL) == 0
+    assert {r["quiet_busy_below"] for r in records(res2)} == {10.0}
+
+
+def test_on_macos_the_record_has_no_busy_threshold(tmp_path, project, quiet_machine, monkeypatch):
+    monkeypatch.setattr(lt, "make_busy_reader", lambda system=None, stat_path=None: None)
+    d, log = curve_decl(tmp_path, project)
+    res = tmp_path / "r.jsonl"
+    assert curve(d, res, *SMALL) == 0
+    assert {r["quiet_busy_below"] for r in records(res)} == {None}
 
 
 def _busy_after(calls, monkeypatch):

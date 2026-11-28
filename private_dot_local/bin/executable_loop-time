@@ -132,11 +132,15 @@ the gates are the list's length, --gates stays 1 or equals it, and a control cel
 Every record carries curve_loops, the list as given; --resume refuses a different list.
 --mode warm (default) or cold.
 Before every cell the quiet wait: CPU pressure avg10 (macOS: cpu_busy) must stay below --quiet-below
-(5) for --quiet-for seconds (20). After --quiet-timeout seconds (300) it gives up, writes a
+(5) for --quiet-for seconds (20). On Linux the machine's CPU busy share (the non-idle part of /proc/stat's
+cpu line between two readings, iowait counted as idle, percent of the whole machine) must also stay below
+--quiet-busy-below (10), because pressure stays near 0 while a neighbor keeps a few cores busy and
+leaves the rest idle; a busy reading that cannot be taken counts as not quiet, and macOS, where
+cpu_busy is already the reading, is unchanged. After --quiet-timeout seconds (300) it gives up, writes a
 `quiet_timeout` event record saying why, and exits 4: a cell is never timed on a busy machine. The
 load-average guard is not used on a curve, because it lags a heavy cell by minutes and would refuse the
 next one; each record says `load_guard` was not used. Every record carries curve (an id per
-invocation), seed, role (control or cell), var, n, gates, quiet_wait_s, curve_cell and curve_sample.
+invocation), seed, role (control or cell), var, n, gates, quiet_wait_s, quiet_busy_below (null on macOS), curve_cell and curve_sample.
 --flaky-regex R and --failed-regex R, each with one numeric capture group, read a count from the cell's
 output into `flaky` and `failed_tests` when they match. A cell whose command fails is recorded and
 counted as a failure; the curve goes on and exits 1. Ctrl-C stops the current cell and the records so
@@ -528,6 +532,56 @@ def parse_psi(text):
 
 def default_psi_dir():
     return Path(os.environ.get("LOOP_TIME_PRESSURE_DIR") or "/proc/pressure")
+
+
+def default_stat_path():
+    return Path("/proc/stat")
+
+
+def parse_proc_stat_cpu(text):
+    """(busy, total) jiffies from the aggregate `cpu ` line of /proc/stat, or None. Idle is idle plus
+    iowait; everything else is busy. guest time is already inside user, so it is not added again."""
+    for line in text.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "cpu":
+            try:
+                n = [int(x) for x in parts[1:9]]
+            except ValueError:
+                return None
+            if len(n) < 5:
+                return None
+            total = sum(n)
+            idle = n[3] + n[4]
+            return total - idle, total
+    return None
+
+
+class CpuBusy:
+    """The machine's CPU busy percent (0-100, of every thread) between this read and the last, from
+    /proc/stat, which is system-wide even inside a sandbox's PID namespace. `read()` is None on the
+    first read, when the file cannot be read, or when no ticks passed since the last read."""
+
+    def __init__(self, stat_path=None):
+        self.path = Path(stat_path) if stat_path is not None else default_stat_path()
+        self.prev = None
+
+    def read(self):
+        try:
+            cur = parse_proc_stat_cpu(self.path.read_text())
+        except OSError:
+            cur = None
+        prev, self.prev = self.prev, cur
+        if cur is None or prev is None or cur[1] <= prev[1]:
+            return None
+        return round(100.0 * (cur[0] - prev[0]) / (cur[1] - prev[1]), 2)
+
+
+def make_busy_reader(system=None, stat_path=None):
+    """A `read()` for the CPU busy percent on Linux; None elsewhere (macOS's cpu_busy is already the
+    quiet wait's one reading)."""
+    if (system or platform.system()) != "Linux":
+        return None
+    return CpuBusy(stat_path).read
 
 
 def parse_top_cpu_busy(text):
@@ -1378,17 +1432,22 @@ def read_cpu_pressure():
     return v.get("cpu_some", v.get("cpu_busy"))
 
 
-def wait_quiet(read, below, hold, timeout, sleep=time.sleep, clock=time.monotonic, interval=1.0):
+def wait_quiet(read, below, hold, timeout, sleep=time.sleep, clock=time.monotonic, interval=1.0,
+               read_busy=None, busy_below=None):
     """Wait until `read()` has stayed below `below` for `hold` seconds; return the seconds waited.
-    A reading at or above the threshold, or None, restarts the hold. Raises QuietError once
-    `timeout` seconds have passed without it."""
+    With `read_busy`, its reading must also stay below `busy_below` (it is read every round, so its
+    delta stays current). A reading at or above the threshold, or None, restarts the hold. Raises
+    QuietError once `timeout` seconds have passed without it."""
     start = clock()
     quiet_since = None
     last = None
+    busy = None
     while True:
         now = clock()
         last = read()
-        if last is not None and last < below:
+        busy = read_busy() if read_busy is not None else None
+        busy_ok = read_busy is None or (busy is not None and busy < busy_below)
+        if last is not None and last < below and busy_ok:
             if quiet_since is None:
                 quiet_since = now
             if now - quiet_since >= hold:
@@ -1397,7 +1456,10 @@ def wait_quiet(read, below, hold, timeout, sleep=time.sleep, clock=time.monotoni
             quiet_since = None
         if now - start >= timeout:
             seen = "unreadable" if last is None else f"{last:g}"
-            raise QuietError(f"the CPU did not stay below {below:g} for {hold:g}s within {timeout:g}s "
+            extra = ""
+            if read_busy is not None:
+                extra = f", busy below {busy_below:g}% (last busy {'unreadable' if busy is None else f'{busy:g}%'})"
+            raise QuietError(f"the CPU did not stay below {below:g}{extra} for {hold:g}s within {timeout:g}s "
                              f"(last reading {seen})")
         sleep(interval)
 
@@ -1480,14 +1542,16 @@ def _curve_key(cell):
 def run_curve(decl, loops, plan, curve_id, seed, var, gates, mode, results, set_env, quiet, count_regexes,
               done=None, slot_holder=None, ignore_slot=False, pressure_interval=1.0):
     """Run a curve's cells in plan order. Before each, wait for the machine to be quiet (`quiet` is
-    (below, hold, timeout, interval)); a timeout is written to the results as an event record and
+    (below, hold, timeout, interval, busy_below)); a timeout is written to the results as an event record and
     raised as QuietError. Each cell is one run (one gate) or one run-group of `gates` gates, one per
     loop of `loops` (a single loop is repeated `gates` times); a control cell is the first loop alone.
     Its records carry the curve fields. `done` maps a cell key to the records it already has,
     so a resumed curve runs only what is left. The load guard is not used: the 1-minute load
     average lags a heavy cell by minutes and would refuse every cell after it. Returns (cells run,
     whether any run failed)."""
-    below, hold, timeout, interval = quiet
+    below, hold, timeout, interval, busy_below = quiet
+    read_busy = make_busy_reader()
+    busy_used = busy_below if read_busy is not None else None
     done = done or {}
     ran, failed = 0, False
     for idx, cell in enumerate(plan):
@@ -1497,7 +1561,8 @@ def run_curve(decl, loops, plan, curve_id, seed, var, gates, mode, results, set_
         if done.get(key, 0) >= k:
             continue
         try:
-            waited = wait_quiet(lambda: read_cpu_pressure(), below, hold, timeout, interval=interval)
+            waited = wait_quiet(lambda: read_cpu_pressure(), below, hold, timeout, interval=interval,
+                                read_busy=read_busy, busy_below=busy_below)
         except QuietError as e:
             event = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                      "event": "quiet_timeout", "project": decl.project, "curve": curve_id, "seed": seed,
@@ -1506,7 +1571,7 @@ def run_curve(decl, loops, plan, curve_id, seed, var, gates, mode, results, set_
                 f.write(json.dumps(event) + "\n")
             raise
         extra = {"curve": curve_id, "seed": seed, "role": cell["role"], "var": var, "n": cell["n"],
-                 "gates": k, "quiet_wait_s": waited, "curve_cell": key, "curve_sample": cell["sample"],
+                 "gates": k, "quiet_wait_s": waited, "quiet_busy_below": busy_used, "curve_cell": key, "curve_sample": cell["sample"],
                  "curve_loops": curve_loops, "load_guard": "not used: the quiet wait replaces it"}
         kw = dict(set_env={**set_env, var: str(cell["n"])}, extra=extra, run_id=f"{curve_id}-{idx:03d}",
                   count_regexes=count_regexes)
@@ -1616,7 +1681,7 @@ def cmd_curve(args):
     except SlotError as e:
         print(f"loop-time: refused: {e}; nothing was run", file=sys.stderr)
         return EXIT_SLOT
-    quiet = (args.quiet_below, args.quiet_for, args.quiet_timeout, args.quiet_interval)
+    quiet = (args.quiet_below, args.quiet_for, args.quiet_timeout, args.quiet_interval, args.quiet_busy_below)
     print(f"loop-time: curve {curve_id} seed {seed}: {len(plan)} cell(s)"
           + (f", {sum(1 for c in plan if done.get(_curve_key(c), 0))} already done" if done else ""))
     _install_signal_handlers()
@@ -2040,6 +2105,10 @@ def build_parser():
     c.add_argument("--mode", default="warm", help="warm (default) or cold")
     c.add_argument("--quiet-below", type=float, default=5.0, metavar="P",
                    help="CPU pressure avg10 (macOS: cpu_busy) the machine must stay under before a cell (default 5)")
+    c.add_argument("--quiet-busy-below", type=float, default=10.0, metavar="P",
+                   help="Linux: the machine's CPU busy percent (of all threads, from /proc/stat) must also stay "
+                        "under this before a cell, which catches a neighbor pressure cannot see (default 10; "
+                        "not used on macOS)")
     c.add_argument("--quiet-for", type=float, default=20.0, metavar="S", help="seconds it must stay under (default 20)")
     c.add_argument("--quiet-timeout", type=float, default=300.0, metavar="S",
                    help="give up waiting for quiet after this long: exit 4 (default 300)")
