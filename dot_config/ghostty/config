@@ -24,3 +24,12 @@ palette = 12=#83a598
 palette = 13=#d3869b
 palette = 14=#8ec07c
 palette = 15=#ebdbb2
+
+# epoll, not io_uring, for the event loop (Linux only; macOS always uses kqueue and ignores this).
+# Ghostty's io_uring loop waits with a read pending, and the kernel counts that wait as iowait, so
+# /proc/pressure/io reads 50-75% "full" on an idle machine and stops meaning anything for anyone
+# reading it. Measured on the workstation 2026-11-28: the Ghostty scope held the whole system's io
+# stall while the NVMe was busy 1.2% of the sample, and a minimal io_uring wait showed the same
+# stall unless it set IORING_ENTER_NO_IOWAIT. Ghostty's docs report no measured difference between
+# the backends. Takes effect only after a full Ghostty restart.
+async-backend = epoll
