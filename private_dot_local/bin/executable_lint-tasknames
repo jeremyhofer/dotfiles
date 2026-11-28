@@ -58,8 +58,21 @@ every config ABOVE it (a parent directory's `mise.toml`, the global config), so 
 only keeps a task out of mise's listing; it is still run by name. Aliases are not linted, as just's
 are not. A file task under a subdirectory of `mise-tasks/` gets mise's `group:name` name, which the
 separator rule reports. A config mise cannot parse, or a missing `mise`, is a READER ERROR. Listing
-needs no trust (measured with mise 2026.11.5), though mise records each config it read in its own
-state directory.
+needs no trust for a plain config (measured with mise 2026.11.14), though mise records each config it
+read in its own state directory. A config with `[vars]` or any `{{ ... }}` template is different:
+mise refuses to list it untrusted ("are not trusted", exit 1). Trusting it is not an option, because
+listing a TRUSTED config evaluates its `[vars]` templates, `exec(...)` included (a template in a
+task's `run` is not evaluated by listing; both measured 2026.11.14), so trust (even per process)
+would let a committed mise config run code at commit time. So when `mise tasks ls` fails with "not trusted",
+that directory is read STATICALLY, running nothing: each config file in `MISE_MARKERS` is parsed with
+tomllib (a TOML syntax error stays a READER ERROR) and the keys of its top-level `tasks` table are the
+task names (a value is the run string or a table; hidden tasks count). The inline-task `shell` rule
+below applies to those tasks from the same fields. The header names each directory read this way
+("untrusted, read without mise"), so the coverage is visible. Limits, each stated in the header when
+it applies: a static read does not follow `task_config.includes`, and it does not read file tasks
+(mise-tasks/ and its other spellings), because mise's naming of them (extension stripping, which
+measured 2026.11.14 does for `.sh`, `.py`, `.js` and not for `.tar` or `.md`, and drops `.toml`
+files) is not reproduced here. Any other `mise tasks ls` failure is still a READER ERROR.
 
 One mise rule is not about the name. An inline task (a `run` in a mise config, not a task file, whose
 shebang chooses its interpreter) must name its own `shell`, and a POSIX shell there must set
@@ -485,6 +498,66 @@ def is_mise_dir(d):
     return any((d / m).exists() for m in MISE_MARKERS)
 
 
+# Directories read without mise this run, as (directory, [what the static read does not cover]).
+MISE_STATIC = []
+MISE_TASK_DIRS = ("mise-tasks", ".mise-tasks", "mise/tasks", ".mise/tasks", ".config/mise/tasks")
+
+
+def mise_config_files(d):
+    """The config files among MISE_MARKERS in `d`, in the order listed (`conf.d` holds many)."""
+    files = []
+    for m in MISE_MARKERS:
+        p = d / m
+        if m.endswith(".toml") and p.is_file():
+            files.append(p)
+        elif m.endswith("conf.d") and p.is_dir():
+            files.extend(sorted(f for f in p.glob("*.toml") if f.is_file()))
+    return files
+
+
+def read_mise_static(repo):
+    """Task names from an untrusted mise config's TOML, running nothing: mise refuses to list a
+    config with `[vars]` or a template until it is trusted, and listing a trusted one evaluates its
+    `[vars]` templates, `exec` included. Same tuple shape as read_mise; see the module docstring for the limits."""
+    root = repo.resolve()
+    tasks = {}
+    notes = []
+    for f in mise_config_files(repo):
+        try:
+            data = tomllib.loads(f.read_text(encoding="utf-8"))
+        except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
+            raise ReaderError(f"{f.relative_to(repo).as_posix()} unreadable: {e}")
+        table = data.get("tasks", {})
+        if not isinstance(table, dict):
+            raise ReaderError(f"{f.relative_to(repo).as_posix()}: `tasks` is not a table")
+        tc = data.get("task_config")
+        if isinstance(tc, dict) and tc.get("includes"):
+            notes.append(f"task_config.includes in {f.relative_to(repo).as_posix()} not followed")
+        rel = f.relative_to(root).as_posix() if f.is_relative_to(root) else f.name
+        for name, val in table.items():
+            if isinstance(val, str):
+                val = {"run": val}
+            if not isinstance(val, dict):
+                raise ReaderError(f"{rel}: task `{name}` is neither a string nor a table")
+            run = val.get("run")
+            runs = [run] if isinstance(run, str) else [x for x in (run or []) if isinstance(x, str)] \
+                if isinstance(run, list) else []
+            body = " ".join(runs)
+            file_ = val.get("file")
+            if isinstance(file_, str):
+                try:
+                    with open(repo / file_, "rb") as fh:
+                        body = fh.read(MISE_BODY_MAX).decode("utf-8", "replace")
+                except OSError:
+                    body = ""
+            shell_finding = None if file_ or not runs else mise_shell_finding(val.get("shell"))
+            tasks[name] = (name, None, body, rel, shell_finding)
+    if any((repo / m).is_dir() for m in MISE_TASK_DIRS):
+        notes.append("file tasks (mise-tasks/ and its other spellings) not read")
+    MISE_STATIC.append((repo, notes))
+    return list(tasks.values())
+
+
 def read_mise(repo):
     if not is_mise_dir(repo):
         return None
@@ -493,6 +566,8 @@ def read_mise(repo):
                            text=True, timeout=120, stdin=subprocess.DEVNULL)
     except FileNotFoundError:
         raise ReaderError("mise not found on PATH")
+    if r.returncode != 0 and "are not trusted" in r.stderr:
+        return read_mise_static(repo)
     if r.returncode != 0:
         err = [l.strip() for l in r.stderr.splitlines() if l.strip()]
         why = next((l for l in err if l.startswith("×")), err[-1] if err else f"rc={r.returncode}")
@@ -746,6 +821,7 @@ def main():
 def lint_one(repo, key=None, why="", base=None):
     base = base or repo
     SKIPPED_FIXTURES.clear()
+    MISE_STATIC.clear()
     categories, skill = load_categories()
 
     violations, tally, reader_errors, all_names = [], [], [], []
@@ -837,6 +913,13 @@ def lint_one(repo, key=None, why="", base=None):
                   + ("" if base == repo else "; run from a subdirectory, so the stale check is skipped"))
     print(f"lint-tasknames: {repo.name}  sources: {' '.join(tally)}  (vocabulary: {skill})")
     print(f"  {astate}")
+    if MISE_STATIC:
+        shown = ", ".join(("." if d == repo else str(d.relative_to(repo))) for d, _ in MISE_STATIC)
+        print(f"  mise: {len(MISE_STATIC)} director{'y' if len(MISE_STATIC) == 1 else 'ies'} untrusted, "
+              f"read without mise (static TOML read, nothing run): {shown}")
+        for d, notes in MISE_STATIC:
+            for n in notes:
+                print(f"  mise: not covered in {'.' if d == repo else d.relative_to(repo)}: {n}")
     if SKIPPED_FIXTURES:
         rels = sorted(str(d.relative_to(repo)) for d in SKIPPED_FIXTURES)
         shown = ", ".join(rels[:3]) + (f" and {len(rels) - 3} more" if len(rels) > 3 else "")
