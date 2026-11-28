@@ -20,6 +20,15 @@
 #       bootstrap: true | false          true: run wt-bootstrap as a BLOCKING pre-start hook, so a new
 #                                        worktree has its dependencies -- and any install-time git
 #                                        hooks -- before anyone uses it
+#       bootstrapDirs: [<dir>, ...]      directories, relative to the repository root, whose own
+#                                        lockfiles are installed after the root's, in order: the hook
+#                                        becomes `wt-bootstrap -C . -C <dir> ...`. DECLARED, never
+#                                        found by searching, because a repository may track lockfiles
+#                                        in test fixtures that must never be installed. Only with
+#                                        bootstrap: true. A directory is plain path characters
+#                                        (letters, digits and `._-/`), no absolute path, no `..`:
+#                                        one with a space or quote is REFUSED by fleet-decl --check,
+#                                        not quoted, so the TOML string never needs escaping.
 # A project without a `worktrunk:` block gets worktrunk's global defaults, which nest worktrees
 # under <repo>/<worktree dir>/: right for a standard (ordinary, non-bare) clone, the fleet's layout. A
 # project that declares a bare container is bare by implication; whether it does is asked of
@@ -225,7 +234,20 @@ $wt_findings"
         bare)   printf 'worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"\n' ;;
         nested) printf 'worktree-path = "{{ repo_path }}/%s/{{ branch | sanitize }}"\n' "$wtdir" ;;
       esac
-      if [ "$bootstrap" = true ]; then printf 'pre-start.bootstrap = "wt-bootstrap"\n'; fi
+      if [ "$bootstrap" = true ]; then
+        # The declared extra directories follow the root, each as its own -C. fleet-decl --check has
+        # already refused anything but plain relative path characters, so none needs quoting here; a
+        # directory with a space or a quote is refused at the manifest, never escaped.
+        dirs_args=""
+        if dirs=$(fleet-decl --entry-list "$name" worktrunk.bootstrapDirs 2>/dev/null); then
+          for d in $dirs; do dirs_args="$dirs_args -C $d"; done
+        fi
+        if [ -n "$dirs_args" ]; then
+          printf 'pre-start.bootstrap = "wt-bootstrap -C .%s"\n' "$dirs_args"
+        else
+          printf 'pre-start.bootstrap = "wt-bootstrap"\n'
+        fi
+      fi
     } >> "$projects_toml"
   done
 fi

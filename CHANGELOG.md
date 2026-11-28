@@ -32,6 +32,21 @@ Entries are newest first.
 
 ---
 
+## 2026-11-28 (`worktrunk.bootstrapDirs`: install a nested package's dependencies in a new worktree)
+
+Nothing to do; a project that does not declare it behaves exactly as before. `wt-bootstrap` takes
+`-C <dir>` more than once and installs each directory in the order given, stopping at the first
+failure with that failure's exit status; with several directories each message is prefixed with the
+directory it concerns. The new manifest key `worktrunk.bootstrapDirs` (a list of directories
+relative to the repository root, with `worktrunk.bootstrap: true`) makes `wt-config-gen` write
+`pre-start.bootstrap = "wt-bootstrap -C . -C <dir> ..."`. The directories are declared, never
+discovered: a repository may track lockfiles inside test fixtures that must never be installed.
+`fleet-decl --check` refuses the key without `bootstrap: true`, and an entry that is absolute, climbs
+out with `..`, or holds a space, a quote or any character outside letters, digits and `._-/`. A
+worktrunk config already generated is unchanged until `wt-config-gen` runs again (the apply does).
+
+---
+
 ## 2026-11-28 (doc-lint: `broken-link`, a blocking check on relative markdown links)
 
 Nothing to do, but a commit that passed before can now be refused. doc-lint resolves each inline

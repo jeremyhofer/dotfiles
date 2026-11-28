@@ -560,6 +560,37 @@ case "${1:-}" in
     # otherwise the generator either guesses or silently drops the setting.
     for p in $(yq -r '.projects | to_entries[] | select(.value.worktrunk != null) | .key' "$RECORD" 2>/dev/null || true); do
       for k in $(yq -r ".projects.\"$p\".worktrunk | keys | .[]" "$RECORD" 2>/dev/null || true); do
+        if [ "$k" = bootstrapDirs ]; then
+          # A list of directories, relative to the repository root, that wt-bootstrap installs after
+          # the root. The generator writes each into a TOML string on a command line, so only plain
+          # path characters pass: a space or quote is refused here rather than escaped there.
+          if [ "$(yq -r ".projects.\"$p\".worktrunk.bootstrapDirs | tag" "$RECORD" 2>/dev/null)" != '!!seq' ]; then
+            printf '[worktrunk-value] %s: worktrunk.bootstrapDirs must be a list of directories\n' "$p"; rc=1; continue
+          fi
+          if [ "$(yq -r ".projects.\"$p\".worktrunk.bootstrap" "$RECORD" 2>/dev/null)" != true ]; then
+            printf '[worktrunk-value] %s: worktrunk.bootstrapDirs is read only with worktrunk.bootstrap: true\n' "$p"; rc=1
+          fi
+          _bn=$(yq -r ".projects.\"$p\".worktrunk.bootstrapDirs | length" "$RECORD" 2>/dev/null)
+          if [ "$_bn" = 0 ]; then
+            printf '[worktrunk-value] %s: worktrunk.bootstrapDirs is empty; omit the key instead\n' "$p"; rc=1; continue
+          fi
+          _bf=$(yq -r ".projects.\"$p\".worktrunk.bootstrapDirs[] | (tag) + \"\t\" + (. | tostring)" "$RECORD" 2>/dev/null \
+            | while IFS="$(printf '\t')" read -r _bt _bv; do
+              _bad=""
+              [ "$_bt" = '!!str' ] || _bad="is not a string"
+              case "$_bv" in
+                '') _bad=${_bad:-"is empty"} ;;
+                /*|'~'*) _bad=${_bad:-"is not relative to the repository root"} ;;
+              esac
+              case "/$_bv/" in */../*|*/./*|*//*) _bad=${_bad:-"has an empty, . or .. component"} ;; esac
+              case "$_bv" in *[!${_UPPER}${_LOWER}0123456789._/-]*) _bad=${_bad:-"has a character outside letters, digits and ._-/"} ;; esac
+              [ -z "$_bad" ] || printf '[worktrunk-value] %s: worktrunk.bootstrapDirs entry %s %s\n' "$p" "'$_bv'" "$_bad"
+            done)
+          [ -z "$_bf" ] || { printf '%s\n' "$_bf"; rc=1; }
+          _bd=$(yq -r ".projects.\"$p\".worktrunk.bootstrapDirs[] | tostring" "$RECORD" 2>/dev/null | sort | uniq -d)
+          [ -z "$_bd" ] || { printf '[worktrunk-value] %s: worktrunk.bootstrapDirs lists %s twice\n' "$p" "$(printf '%s' "$_bd" | tr '\n' ' ')"; rc=1; }
+          continue
+        fi
         v=$(yq -r ".projects.\"$p\".worktrunk.$k" "$RECORD" 2>/dev/null)
         case "$k=$v" in
           layout=bare|layout=nested|bootstrap=true|bootstrap=false) ;;

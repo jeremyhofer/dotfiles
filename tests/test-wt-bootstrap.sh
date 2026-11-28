@@ -221,6 +221,80 @@ case "$out" in
   *) bad "the message names mise (got: $out)" ;;
 esac
 
+# --- several -C directories: each is installed in the order given -------------------------
+# These stubs also record the directory they ran in (its basename), so the order of DIRECTORIES
+# is asserted, not only the order of commands.
+stub_pwd() {  # NAME [EXITCODE]
+  name="$1"; code="${2:-0}"
+  cat > "$STUBS/$name" <<STUBEOF
+#!/bin/sh
+printf '%s %s @%s\n' "$name" "\$*" "\${PWD##*/}" >> "$LOG"
+exit $code
+STUBEOF
+  chmod +x "$STUBS/$name"
+}
+# runm ARGS... -- like run, but with the arguments given (-C DIR, repeated).
+runm() {
+  out=$( (PATH="$STUBS"; HOME="$HOME_DIR"; export PATH HOME; unset XDG_CONFIG_HOME
+          "$sh_bin" "$bs" "$@") 2>&1 )
+  rc=$?
+}
+
+echo "== two -C directories -> both installed, in the order given =="
+new_case; mkdir "$WD/front" "$WD/other"; : > "$WD/package-lock.json"; : > "$WD/front/pnpm-lock.yaml"; : > "$WD/other/uv.lock"
+stub_pwd npm; stub_pwd pnpm; stub_pwd uv
+runm -C "$WD" -C "$WD/front" -C "$WD/other"
+eq "exits 0" "$rc" "0"
+eq "root, then front, then other" "$(calls | tr '\n' '|')" "npm ci @wd$n|pnpm install --frozen-lockfile @front|uv sync --frozen @other|"
+case "$out" in
+  *"$WD/front"*) ok "messages name the directory" ;;
+  *) bad "messages name the directory (got: $out)" ;;
+esac
+
+echo "== the order given is the order run (reversed) =="
+new_case; mkdir "$WD/front"; : > "$WD/package-lock.json"; : > "$WD/front/pnpm-lock.yaml"
+stub_pwd npm; stub_pwd pnpm
+runm -C "$WD/front" -C "$WD"
+eq "front first, then root" "$(calls | tr '\n' '|')" "pnpm install --frozen-lockfile @front|npm ci @wd$n|"
+
+echo "== a failure in the first directory stops the rest, with that exit status =="
+new_case; mkdir "$WD/front"; : > "$WD/package-lock.json"; : > "$WD/front/pnpm-lock.yaml"
+stub_pwd npm 3; stub_pwd pnpm
+runm -C "$WD" -C "$WD/front"
+eq "exits with the failing install's status" "$rc" "3"
+eq "the second directory never ran" "$(calls | tr '\n' '|')" "npm ci @wd$n|"
+
+echo "== a failure in the second directory propagates its status =="
+new_case; mkdir "$WD/front"; : > "$WD/package-lock.json"; : > "$WD/front/pnpm-lock.yaml"
+stub_pwd npm; stub_pwd pnpm 4
+runm -C "$WD" -C "$WD/front"
+eq "exits with the second install's status" "$rc" "4"
+eq "both ran" "$(calls | tr '\n' '|')" "npm ci @wd$n|pnpm install --frozen-lockfile @front|"
+
+echo "== a missing second directory is refused, naming it, after the first ran =="
+new_case; : > "$WD/package-lock.json"; stub_pwd npm
+runm -C "$WD" -C "$WD/nosuchdir"
+[ "$rc" -ne 0 ] && ok "exits non-zero" || bad "exits non-zero (got 0)"
+eq "the first directory was installed before the refusal" "$(calls | tr '\n' '|')" "npm ci @wd$n|"
+case "$out" in
+  *"not a directory: $WD/nosuchdir"*) ok "message names the directory" ;;
+  *) bad "message names the directory (got: $out)" ;;
+esac
+
+echo "== an ambiguous second directory is refused and named =="
+new_case; mkdir "$WD/front"; : > "$WD/front/pnpm-lock.yaml"; : > "$WD/front/package-lock.json"; stub_pwd pnpm; stub_pwd npm
+runm -C "$WD" -C "$WD/front"
+[ "$rc" -ne 0 ] && ok "exits non-zero" || bad "exits non-zero (got 0)"
+case "$out" in
+  *"$WD/front"*ambiguous*|*ambiguous*"$WD/front"*) ok "message names the directory" ;;
+  *) bad "message names the directory (got: $out)" ;;
+esac
+
+echo "== a single -C prints no directory prefix (unchanged output) =="
+new_case; : > "$WD/package-lock.json"; stub npm
+run
+eq "output is exactly the one action line" "$out" "wt-bootstrap: npm ci"
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]

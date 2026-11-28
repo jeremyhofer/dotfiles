@@ -23,10 +23,17 @@
 # one project while leaving it on for another. A project that wants this wires it into its
 # own worktrunk pre-start config; a project that does not, simply never calls it.
 #
-# USAGE: wt-bootstrap [-C <dir>]
+# USAGE: wt-bootstrap [-C <dir>]...
 #   Operates on the current directory by default; -C <dir> targets a different one (the
 #   worktree's OWN root, not necessarily the repository's -- a worktree of a monorepo may
-#   lock dependencies at its own subdirectory). Prints nothing on success beyond one line per
+#   lock dependencies at its own subdirectory). -C may be given more than once, for a
+#   repository with a nested package that has a lockfile of its own: the directories are
+#   processed in the order given, each by the rules below, and the first failure stops the run
+#   with that failure's exit status. With more than one, every message is prefixed with the
+#   directory it concerns ("wt-bootstrap: <dir>: npm ci"); with one, the output is as ever.
+#   The directories are DECLARED, never discovered: a repository may track lockfiles inside
+#   test fixtures that must never be installed. wt-config-gen writes them from the manifest's
+#   worktrunk.bootstrapDirs. Prints nothing on success beyond one line per
 #   action, to stderr, each prefixed "wt-bootstrap: ". Never reads or writes .env files or
 #   any other secret material -- it only checks for lockfiles by name and runs the installer
 #   that matches.
@@ -59,111 +66,138 @@
 
 set -eu
 
-dir="."
+# One directory per -C, kept in order, one per line (a directory name holding a newline is not
+# supported). No -C at all is the current directory.
+dirs=""
+count=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    -C) dir="${2:-.}"; shift 2 ;;
-    -h|--help) sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -C) dirs="$dirs${dirs:+
+}${2:-.}"; count=$((count + 1)); shift 2 ;;
+    -h|--help) sed -n '2,65p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'wt-bootstrap: unknown argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
+if [ "$count" -eq 0 ]; then dirs="."; count=1; fi
 
-[ -d "$dir" ] || { printf 'wt-bootstrap: not a directory: %s\n' "$dir" >&2; exit 1; }
-cd "$dir"
+# With more than one directory every message names the one it concerns; with one, the output is
+# what it always was.
+tag=""
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 && return 0
-  printf 'wt-bootstrap: %s not found on PATH (needed for %s)\n' "$1" "$2" >&2
+  printf 'wt-bootstrap: %s%s not found on PATH (needed for %s)\n' "$tag" "$1" "$2" >&2
   exit 1
 }
 
-# --- Tool versions: report what a switched machine has not installed -----------------
-# Builtins only, like the rest of this script, so it runs on a PATH that holds nothing else.
-mise_switched() {
-  cfg="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi/chezmoi.toml"
-  [ -f "$cfg" ] || return 1
-  tab=$(printf '\t')
-  while IFS=" $tab=" read -r key value _rest || [ -n "$key" ]; do
-    if [ "$key" = miseActive ] && [ "$value" = true ]; then return 0; fi
-  done < "$cfg"
-  return 1
-}
+bootstrap_dir() {
+  # --- Tool versions: report what a switched machine has not installed -----------------
+  # Builtins only, like the rest of this script, so it runs on a PATH that holds nothing else.
+  mise_switched() {
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi/chezmoi.toml"
+    [ -f "$cfg" ] || return 1
+    tab=$(printf '\t')
+    while IFS=" $tab=" read -r key value _rest || [ -n "$key" ]; do
+      if [ "$key" = miseActive ] && [ "$value" = true ]; then return 0; fi
+    done < "$cfg"
+    return 1
+  }
 
-if mise_switched; then
-  if ! command -v mise >/dev/null 2>&1; then
-    printf 'wt-bootstrap: mise not found on PATH, on a machine switched to it (miseActive); tool versions not checked\n' >&2
-  elif rows=$(MISE_OFFLINE=1 mise ls --current --missing --no-header); then
-    # Each row: tool, version, "(missing)", the file that requests it, the request as written.
-    missing=""
-    while read -r tool version flag _rest; do
-      if [ "$flag" = "(missing)" ]; then missing="$missing $tool@$version"; fi
-    done <<EOF
+  if mise_switched; then
+    if ! command -v mise >/dev/null 2>&1; then
+      printf 'wt-bootstrap: %smise not found on PATH, on a machine switched to it (miseActive); tool versions not checked\n' "$tag" >&2
+    elif rows=$(MISE_OFFLINE=1 mise ls --current --missing --no-header); then
+      # Each row: tool, version, "(missing)", the file that requests it, the request as written.
+      missing=""
+      while read -r tool version flag _rest; do
+        if [ "$flag" = "(missing)" ]; then missing="$missing $tool@$version"; fi
+      done <<EOF
 $rows
 EOF
-    if [ -n "$missing" ]; then
-      printf "wt-bootstrap: not installed:%s -- run 'mise install' in %s (never run here: versions are installed deliberately)\n" "$missing" "$(pwd)" >&2
+      if [ -n "$missing" ]; then
+        printf "wt-bootstrap: not installed:%s -- run 'mise install' in %s (never run here: versions are installed deliberately)\n" "$missing" "$(pwd)" >&2
+      fi
+    else
+      printf 'wt-bootstrap: %smise could not list the tool versions this worktree needs (its error is above); not checked\n' "$tag" >&2
     fi
-  else
-    printf 'wt-bootstrap: mise could not list the tool versions this worktree needs (its error is above); not checked\n' >&2
   fi
-fi
 
-# --- JavaScript: at most one lockfile may pick the package manager --------------------
-js_present=""
-js_lock=""
-js_manager=""
-note_js() { js_present="$js_present $1"; js_lock="$1"; js_manager="$2"; }
+  # --- JavaScript: at most one lockfile may pick the package manager --------------------
+  js_present=""
+  js_lock=""
+  js_manager=""
+  note_js() { js_present="$js_present $1"; js_lock="$1"; js_manager="$2"; }
 
-[ -f pnpm-lock.yaml ]    && note_js pnpm-lock.yaml pnpm
-[ -f package-lock.json ] && note_js package-lock.json npm
-[ -f yarn.lock ]         && note_js yarn.lock yarn
-if [ -f bun.lock ]; then
-  note_js bun.lock bun
-elif [ -f bun.lockb ]; then
-  note_js bun.lockb bun
-fi
+  [ -f pnpm-lock.yaml ]    && note_js pnpm-lock.yaml pnpm
+  [ -f package-lock.json ] && note_js package-lock.json npm
+  [ -f yarn.lock ]         && note_js yarn.lock yarn
+  if [ -f bun.lock ]; then
+    note_js bun.lock bun
+  elif [ -f bun.lockb ]; then
+    note_js bun.lockb bun
+  fi
 
-# Deliberate word-splitting on a space-joined list, only to COUNT how many lockfiles were
-# found -- none of the names contain whitespace, so this is safe and simpler than an array
-# POSIX sh does not have.
-set -- $js_present
-js_count=$#
+  # Deliberate word-splitting on a space-joined list, only to COUNT how many lockfiles were
+  # found -- none of the names contain whitespace, so this is safe and simpler than an array
+  # POSIX sh does not have.
+  set -- $js_present
+  js_count=$#
 
-if [ "$js_count" -gt 1 ]; then
-  printf 'wt-bootstrap: ambiguous: multiple JavaScript lockfiles present (%s) -- refusing to guess\n' "${js_present# }" >&2
-  exit 1
-fi
+  if [ "$js_count" -gt 1 ]; then
+    printf 'wt-bootstrap: %sambiguous: multiple JavaScript lockfiles present (%s) -- refusing to guess\n' "$tag" "${js_present# }" >&2
+    exit 1
+  fi
 
-if [ "$js_count" -eq 1 ]; then
-  case "$js_manager" in
-    pnpm)
-      require_cmd pnpm "$js_lock"
-      printf 'wt-bootstrap: pnpm install --frozen-lockfile\n' >&2
-      pnpm install --frozen-lockfile
-      ;;
-    npm)
-      require_cmd npm "$js_lock"
-      printf 'wt-bootstrap: npm ci\n' >&2
-      npm ci
-      ;;
-    yarn)
-      require_cmd yarn "$js_lock"
-      printf 'wt-bootstrap: yarn install --immutable\n' >&2
-      yarn install --immutable
-      ;;
-    bun)
-      require_cmd bun "$js_lock"
-      printf 'wt-bootstrap: bun install --frozen-lockfile\n' >&2
-      bun install --frozen-lockfile
-      ;;
-  esac
-fi
+  if [ "$js_count" -eq 1 ]; then
+    case "$js_manager" in
+      pnpm)
+        require_cmd pnpm "$js_lock"
+        printf 'wt-bootstrap: %spnpm install --frozen-lockfile\n' "$tag" >&2
+        pnpm install --frozen-lockfile
+        ;;
+      npm)
+        require_cmd npm "$js_lock"
+        printf 'wt-bootstrap: %snpm ci\n' "$tag" >&2
+        npm ci
+        ;;
+      yarn)
+        require_cmd yarn "$js_lock"
+        printf 'wt-bootstrap: %syarn install --immutable\n' "$tag" >&2
+        yarn install --immutable
+        ;;
+      bun)
+        require_cmd bun "$js_lock"
+        printf 'wt-bootstrap: %sbun install --frozen-lockfile\n' "$tag" >&2
+        bun install --frozen-lockfile
+        ;;
+    esac
+  fi
 
-# --- Python (uv): independent of the JavaScript branch above, runs after it -----------
-if [ -f uv.lock ]; then
-  require_cmd uv uv.lock
-  printf 'wt-bootstrap: uv sync --frozen\n' >&2
-  uv sync --frozen
-fi
+  # --- Python (uv): independent of the JavaScript branch above, runs after it -----------
+  if [ -f uv.lock ]; then
+    require_cmd uv uv.lock
+    printf 'wt-bootstrap: %suv sync --frozen\n' "$tag" >&2
+    uv sync --frozen
+  fi
+}
+
+# Each directory runs in its own subshell, in the order given, and the first failure stops the
+# run with that failure's own status. `set +e` around the subshell is deliberate: on the left of
+# `||` or in an `if`, errexit would be switched off inside it.
+while IFS= read -r d <&3; do
+  if [ "$count" -gt 1 ]; then tag="$d: "; fi
+  set +e
+  (
+    set -e
+    [ -d "$d" ] || { printf 'wt-bootstrap: not a directory: %s\n' "$d" >&2; exit 1; }
+    cd "$d"
+    bootstrap_dir
+  )
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || exit "$rc"
+done 3<<EOF
+$dirs
+EOF
 
 exit 0

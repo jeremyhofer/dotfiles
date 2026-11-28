@@ -71,6 +71,23 @@ case "$c" in *'code.example.org/org/gamma'*) bad "project without a worktrunk bl
 case "$c" in *'{{ repo_path }}/../{{ branch | sanitize }}'*) ok "layout bare -> sibling worktree path";; *) bad "layout bare" "$c";; esac
 case "$c" in *'pre-start.bootstrap = "wt-bootstrap"'*) ok "bootstrap true -> blocking pre-start";; *) bad "bootstrap" "$c";; esac
 case "$c" in *'guard = "hook-doctor'*) ok "private fragment included";; *) bad "fragment" "$c";; esac
+# bootstrapDirs: the declared extra directories become -C arguments, the root first as `-C .`. Without
+# the key the line is exactly the single-directory command, so every existing project is unchanged.
+case "$(table "$tmp/config.toml" forge.example:3022/team/alpha)" in
+  *'pre-start.bootstrap = "wt-bootstrap"'*) ok "no bootstrapDirs -> exactly the plain wt-bootstrap command";;
+  *) bad "plain command without bootstrapDirs" "$c";;
+esac
+record '      layout: bare
+      bootstrap: true
+      bootstrapDirs: [frontend, tools/ui]'; seed; rc=$(run); c=$(cat "$tmp/config.toml")
+[ "$rc" = 0 ] && ok "bootstrapDirs generates" || bad "bootstrapDirs generates" "rc=$rc $(cat "$tmp/err")"
+case "$c" in
+  *'pre-start.bootstrap = "wt-bootstrap -C . -C frontend -C tools/ui"'*) ok "bootstrapDirs -> root first, then each directory in order";;
+  *) bad "bootstrapDirs command" "$c";;
+esac
+wt --config "$tmp/config.toml" config show >/dev/null 2>&1 && ok "worktrunk parses the bootstrapDirs result" || bad "wt parse bootstrapDirs" "$c"
+record '      layout: bare
+      bootstrap: true'; seed; rc=$(run)
 wt --config "$tmp/config.toml" config show >/dev/null 2>&1 && ok "worktrunk parses the result" || bad "wt parse" "$(cat "$tmp/config.toml")"
 # The installed worktrunk is the judge of the key: a clone whose remote is alpha's URL must see the
 # generated bootstrap among its pre-start hooks. A key worktrunk derives differently (worktrunk 0.82
@@ -306,6 +323,14 @@ base
 frag; seed; printf 'projects: [\n' > "$tmp/mani.yaml"; refused "unreadable manifest is refused, not treated as empty"
 seed; record '      layout: sideways'; refused "unknown worktrunk value is refused"
 seed; record '      bootsrap: true'; refused "unknown worktrunk key is refused"
+seed; record '      bootstrap: true
+      bootstrapDirs: ["my dir"]'; refused "a bootstrapDirs entry with a space is refused (not quoted)"
+seed; record '      bootstrap: true
+      bootstrapDirs: ["a\"b"]'; refused "a bootstrapDirs entry with a quote is refused (not quoted)"
+seed; record '      bootstrap: true
+      bootstrapDirs: [../x]'; refused "a bootstrapDirs entry that leaves the repository is refused"
+seed; record '      bootstrap: false
+      bootstrapDirs: [frontend]'; refused "bootstrapDirs without bootstrap: true is refused"
 seed; record '      layout: bare'; printf '[list\n' > "$tmp/base.toml"; refused "a result worktrunk cannot parse is refused"
 base
 

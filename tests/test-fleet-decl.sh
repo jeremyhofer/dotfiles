@@ -444,6 +444,60 @@ YAML
   [ "$rc" -eq 1 ] && [[ "$out" == *"worktrunk"* ]] && ok "--check rejects worktrunk '$bad_block'" || bad "--check worktrunk '$bad_block'" "rc=$rc $out"
 done
 
+# worktrunk.bootstrapDirs: the extra directories a new worktree installs after the root, DECLARED
+# (never discovered). Meaningful only with bootstrap: true, and each must be a plain relative path:
+# wt-config-gen writes them into a TOML string, so a character that would need quoting is refused
+# here rather than escaped there.
+bd_check() {  # $1 label, $2 the worktrunk block body (lines under `worktrunk:`), $3 expected rc
+  cat > "$TMP/wt-bd.yaml" <<YAML
+projects:
+  alpha:
+    scope: internal/alpha
+    leakPolicy: private
+    worktrunk:
+$2
+YAML
+  out=$(FLEET_RECORD="$TMP/wt-bd.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --check 2>&1); rc=$?
+  if [ "$rc" -eq "$3" ] && { [ "$3" -eq 0 ] || [[ "$out" == *"[worktrunk-value]"*"bootstrapDirs"* ]]; }; then ok "$1"; else bad "$1" "rc=$rc out=$out"; fi
+}
+bd_check "--check accepts bootstrapDirs as a flow list with bootstrap: true" "      bootstrap: true
+      bootstrapDirs: [frontend, tools/ui]" 0
+bd_check "--check accepts bootstrapDirs as a block list with bootstrap: true" "      bootstrap: true
+      bootstrapDirs:
+        - frontend
+        - tools/ui" 0
+bd_check "--check refuses bootstrapDirs with bootstrap: false" "      bootstrap: false
+      bootstrapDirs: [frontend]" 1
+bd_check "--check refuses bootstrapDirs with no bootstrap key" "      layout: bare
+      bootstrapDirs: [frontend]" 1
+bd_check "--check refuses an absolute bootstrapDirs entry" "      bootstrap: true
+      bootstrapDirs: [/etc]" 1
+bd_check "--check refuses a bootstrapDirs entry with .." "      bootstrap: true
+      bootstrapDirs: [../x]" 1
+bd_check "--check refuses a .. segment inside a bootstrapDirs entry" "      bootstrap: true
+      bootstrapDirs: [a/../b]" 1
+bd_check "--check refuses . as a bootstrapDirs entry (the root is always installed)" "      bootstrap: true
+      bootstrapDirs: [.]" 1
+bd_check "--check refuses a bootstrapDirs entry with a space" "      bootstrap: true
+      bootstrapDirs: ['my dir']" 1
+bd_check "--check refuses a bootstrapDirs entry with a quote" "      bootstrap: true
+      bootstrapDirs: ['a\"b']" 1
+bd_check "--check refuses an empty bootstrapDirs entry" "      bootstrap: true
+      bootstrapDirs: ['']" 1
+bd_check "--check refuses a non-string bootstrapDirs entry" "      bootstrap: true
+      bootstrapDirs: [12]" 1
+bd_check "--check refuses bootstrapDirs that is not a list" "      bootstrap: true
+      bootstrapDirs: frontend" 1
+bd_check "--check refuses an empty bootstrapDirs list" "      bootstrap: true
+      bootstrapDirs: []" 1
+bd_check "--check refuses a duplicate bootstrapDirs entry" "      bootstrap: true
+      bootstrapDirs: [frontend, frontend]" 1
+bd_check "setup for --entry-list" "      bootstrap: true
+      bootstrapDirs: [frontend, tools/ui]" 0
+out=$(FLEET_RECORD="$TMP/wt-bd.yaml" FLEET_DEVEL_ROOT="$ROOT" "$TOOL" --entry-list alpha worktrunk.bootstrapDirs 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "frontend
+tools/ui" ] && ok "--entry-list reads worktrunk.bootstrapDirs, one per line, in order" || bad "--entry-list bootstrapDirs" "rc=$rc out=$out"
+
 # --- --entry-list: the items of a sequence under a project, one per line. With a third argument,
 # the sequence holds maps and that key is read from each item. The reader is for tools that clone
 # or update a repository from its entry, so the arms that matter are the ones that keep parallel
