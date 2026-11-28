@@ -120,7 +120,8 @@
 #                     mani exec --all --ignore-non-existing --parallel 'fleet-repo update'
 #   check [<project>] Drift between declaration and disk, reported and never fixed: no container, a
 #                     plain clone where a container is declared, fetch refspecs that differ from the
-#                     declared set, a missing worktree, a missing upstream, a worktrunk default branch not pinned to the declared branch (standard), a container the
+#                     declared set, a missing worktree, a missing upstream, a worktrunk default
+#                     branch not pinned to the declared branch (standard), a container the
 #                     generated worktrunk config has no table for, a container still in the old
 #                     .bare shape (old-layout, with the conversion commands). With no project, every entry that
 #                     declares a container. Offline.
