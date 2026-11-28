@@ -271,11 +271,24 @@ runm -C "$WD" -C "$WD/front"
 eq "exits with the second install's status" "$rc" "4"
 eq "both ran" "$(calls | tr '\n' '|')" "npm ci @wd$n|pnpm install --frozen-lockfile @front|"
 
-echo "== a missing second directory is refused, naming it, after the first ran =="
+echo "== with several -C, a missing directory is reported and skipped; the rest still install =="
+new_case; mkdir "$WD/other"; : > "$WD/package-lock.json"; : > "$WD/other/uv.lock"; stub_pwd npm; stub_pwd uv
+runm -C "$WD" -C "$WD/nosuchdir" -C "$WD/other"
+eq "exit status is unaffected" "$rc" "0"
+eq "the directories around it were installed" "$(calls | tr '\n' '|')" "npm ci @wd$n|uv sync --frozen @other|"
+case "$out" in
+  *"wt-bootstrap: $WD/nosuchdir: not a directory here, skipped"*) ok "the skip is reported, naming the directory" ;;
+  *) bad "the skip is reported, naming the directory (got: $out)" ;;
+esac
 new_case; : > "$WD/package-lock.json"; stub_pwd npm
-runm -C "$WD" -C "$WD/nosuchdir"
-[ "$rc" -ne 0 ] && ok "exits non-zero" || bad "exits non-zero (got 0)"
-eq "the first directory was installed before the refusal" "$(calls | tr '\n' '|')" "npm ci @wd$n|"
+runm -C "$WD/nosuchdir" -C "$WD"
+eq "a missing first directory is skipped too" "$rc" "0"
+eq "and the next one installs" "$(calls | tr '\n' '|')" "npm ci @wd$n|"
+
+echo "== a single missing -C is still refused, exit 1 =="
+new_case; stub npm
+runm -C "$WD/nosuchdir"
+eq "exits 1" "$rc" "1"
 case "$out" in
   *"not a directory: $WD/nosuchdir"*) ok "message names the directory" ;;
   *) bad "message names the directory (got: $out)" ;;

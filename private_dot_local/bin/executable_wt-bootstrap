@@ -31,6 +31,10 @@
 #   processed in the order given, each by the rules below, and the first failure stops the run
 #   with that failure's exit status. With more than one, every message is prefixed with the
 #   directory it concerns ("wt-bootstrap: <dir>: npm ci"); with one, the output is as ever.
+#   With more than one, a directory that does not exist is reported ("wt-bootstrap: <dir>: not a
+#   directory here, skipped") and skipped, exit status unaffected: a worktree of an older branch may
+#   predate a declared nested package, and failing this blocking hook would break its creation. A
+#   single -C (or none) naming a missing directory is still refused, exit 1.
 #   The directories are DECLARED, never discovered: a repository may track lockfiles inside
 #   test fixtures that must never be installed. wt-config-gen writes them from the manifest's
 #   worktrunk.bootstrapDirs. Prints nothing on success beyond one line per
@@ -74,7 +78,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -C) dirs="$dirs${dirs:+
 }${2:-.}"; count=$((count + 1)); shift 2 ;;
-    -h|--help) sed -n '2,65p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,69p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'wt-bootstrap: unknown argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -185,7 +189,16 @@ EOF
 # run with that failure's own status. `set +e` around the subshell is deliberate: on the left of
 # `||` or in an `if`, errexit would be switched off inside it.
 while IFS= read -r d <&3; do
-  if [ "$count" -gt 1 ]; then tag="$d: "; fi
+  if [ "$count" -gt 1 ]; then
+    tag="$d: "
+    # A worktree of an older branch may predate a declared nested package; failing the blocking
+    # hook there would break worktree creation, so with several directories a missing one is
+    # reported and skipped. A single directory is still refused (below).
+    if [ ! -d "$d" ]; then
+      printf 'wt-bootstrap: %snot a directory here, skipped\n' "$tag" >&2
+      continue
+    fi
+  fi
   set +e
   (
     set -e
