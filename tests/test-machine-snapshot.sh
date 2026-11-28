@@ -24,6 +24,8 @@ tick=$(python3 -c 'import os; print(os.sysconf("SC_CLK_TCK"))')
 
 w=$(mktemp -d "$_TMP/test-machine-snapshot.XXXXXX"); trap 'rm -rf "$w"' EXIT
 export MACHINE_SNAPSHOT_PROC="$w/proc" MACHINE_SNAPSHOT_DIR="$w/state" HOME="$w/home"
+# /sys is faked too, empty unless a case builds it, so no case reads this machine's devices or cgroups.
+export MACHINE_SNAPSHOT_SYS="$w/sys"; mkdir -p "$w/sys"
 mkdir -p "$HOME/Devel/proj"
 
 # proc PID PPID STATE CPU_TICKS CHILD_TICKS START COMM CWD [WCHAN] [ARGS]
@@ -352,6 +354,49 @@ MACHINE_SNAPSHOT_ARCHIVE_DAYS=0 rec 30000
 [ ! -e "$A/archive" ] && ok "archive: 0 days turns it off" || no "archive: 0 days turns it off"
 eq "archive: off still prunes" "$(hist_ts "$A")" "30000.0"
 unset MACHINE_SNAPSHOT_KEEP_HOURS
+
+# 17) The I/O readings (Linux): each device's busy share of the interval from /proc/diskstats, for
+#     the devices /sys/block lists (not partitions, not loop or ram devices), and the leaf cgroups
+#     whose io.pressure "some" total grew by at least 1% of the interval, at most five, largest first.
+#     They are growth since the previous sample, so a previous sample without totals gives none.
+export MACHINE_SNAPSHOT_DIR="$w/state-iox" MACHINE_SNAPSHOT_MAX_GAP=120
+reset; A="$MACHINE_SNAPSHOT_DIR"
+rm -rf "$w/sys"; mkdir -p "$w/sys/block/nvme0n1" "$w/sys/block/loop0"
+# dstat BUSY_MS INFLIGHT READS WRITES: nvme0n1, its partition with the same counts, and a loop device.
+dstat() { printf '259 0 nvme0n1 %s 0 0 0 %s 0 0 0 %s %s 0\n259 1 nvme0n1p1 %s 0 0 0 %s 0 0 0 %s %s 0\n7 0 loop0 5 0 0 0 5 0 0 0 0 9999 0\n' \
+  "$3" "$4" "$2" "$1" "$3" "$4" "$2" "$1" > "$w/proc/diskstats"; }
+# cgp PATH SOME_US FULL_US
+cgp() { d="$w/sys/fs/cgroup/$1"; mkdir -p "$d"
+  printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=%s\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=%s\n' "$2" "$3" > "$d/io.pressure"; }
+field() { python3 -c "
+import json
+s=json.loads(open('$A/history.jsonl').read().splitlines()[-1])
+print(json.dumps(s.get('$1', 'absent'), sort_keys=True))"; }
+dstat 1000 0 100 100
+cgp user.slice 0 0; cgp user.slice/app.scope 0 0; cgp user.slice/quiet.scope 0 0; cgp system.slice 0 0
+for i in 1 2 3 4 5 6; do cgp many.slice/l$i.scope 0 0; done; cgp many.slice 0 0
+rec 1000
+dstat 1150 2 110 130
+cgp user.slice 9000000 8000000; cgp user.slice/app.scope 9000000 7500000; cgp user.slice/quiet.scope 100000 0
+rec 1015
+eq "io: a device's busy share, counted once, without loop devices" "$(field disk)" \
+  '{"nvme0n1": {"busy_pct": 1.0, "inflight": 2, "rd": 10, "wr": 30}}'
+eq "io: the stalled leaf cgroup, not its parent, and not one under 1%" "$(field io_cgroups)" \
+  '[{"cg": "user.slice/app.scope", "full_ms": 7500.0, "some_ms": 9000.0}]'
+for i in 1 2 3 4 5 6; do cgp many.slice/l$i.scope $((i * 1000000)) 0; done; cgp many.slice 6000000 0
+rec 1030
+eq "io: at most five cgroups, largest first" \
+  "$(field io_cgroups | python3 -c 'import json,sys; print(" ".join(c["cg"].split("/")[-1] for c in json.load(sys.stdin)))')" \
+  "l6.scope l5.scope l4.scope l3.scope l2.scope"
+s=$(MACHINE_SNAPSHOT_NOW=1030 python3 "$TOOL" since 5)
+has "io: a window summary shows the device's busy share" "$s" "nvme0n1"
+has "io: and the cgroups that held the I/O stall" "$s" "user.slice/app.scope"
+python3 -c "
+import json; p='$A/latest.json'; d=json.load(open(p)); d.pop('io_totals', None); json.dump(d, open(p, 'w'))"
+dstat 99999 0 900 900; cgp user.slice/app.scope 99000000 0
+rec 1045
+eq "io: a previous sample without totals gives no growth" "$(field disk) $(field io_cgroups)" '"absent" "absent"'
+rm -rf "$w/sys"; mkdir -p "$w/sys"
 
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

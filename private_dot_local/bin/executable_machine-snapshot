@@ -60,6 +60,17 @@ The figure is the whole filesystem's, so the sample also records the mount point
 and the report labels a /tmp that is not its own mount as the volume holding it (macOS's /tmp is
 on the Data volume, whose use is mostly the home directory, not /tmp).
 
+I/O READINGS (Linux). The machine's io pressure line counts a process sleeping on io_uring with a
+request outstanding as stalled whether or not any device is busy: on 2026-11-28 the workstation read
+about 60% "full" at idle, all of it in one terminal's scope, with the disk busy 1.2%. So each sample
+also records `disk`, each device /sys/block lists (not partitions, loop or ram devices) with its
+busy share of the interval (the growth of /proc/diskstats' io_ticks), requests in flight, and reads
+and writes completed; and `io_cgroups`, at most five leaf cgroups whose io.pressure "some" total grew
+by at least 1% of the interval, with that growth and the "full" growth in milliseconds. A
+device-mapper device (dm-*) sits on another device and is listed beside it, never added to it. The
+totals since boot are kept in latest.json; a previous sample without them gives no figures.
+$MACHINE_SNAPSHOT_SYS replaces /sys for the test suite. macOS has neither.
+
 A SAMPLE IS AN INSTANT. A task stalled for a few milliseconds between samples is never seen. The
 pressure figures (/proc/pressure, averaged by the kernel over 10 seconds) are recorded with each
 sample so a stall rate can be seen even when no single task is caught.
@@ -99,6 +110,7 @@ import sys
 import time
 
 PROC = os.environ.get("MACHINE_SNAPSHOT_PROC", "/proc")
+SYS = os.environ.get("MACHINE_SNAPSHOT_SYS", "/sys")
 STATE = os.environ.get("MACHINE_SNAPSHOT_DIR") or os.path.join(
     os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "machine-snapshot")
 SESSION_COMM = os.environ.get("MACHINE_SNAPSHOT_SESSION_COMM", "claude")
@@ -159,6 +171,71 @@ def pressure():
             if parts and parts[0] in ("some", "full"):
                 fields = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
                 out[f"{kind}_{parts[0]}"] = float(fields.get("avg10", 0))
+    return out
+
+
+def io_totals():
+    """Linux: counters since boot for the I/O readings, kept in latest.json so the next sample takes
+    their growth. `disk`: per device /sys/block lists (partitions are not there, and their counts
+    are their device's), except loop and ram devices, from /proc/diskstats: reads and writes
+    completed, requests in flight, and io_ticks, the milliseconds the device was busy. `cgroups`:
+    per leaf cgroup (one with no child cgroup; under cgroup v2 processes sit in leaves, and a
+    parent's stall includes its children's), the io.pressure "some" and "full" totals in
+    microseconds."""
+    try:
+        devices = {d for d in os.listdir(os.path.join(SYS, "block"))
+                   if not d.startswith(("loop", "ram"))}
+    except OSError:
+        devices = set()
+    disk = {}
+    for line in read(os.path.join(PROC, "diskstats")).splitlines():
+        f = line.split()
+        if len(f) >= 13 and f[2] in devices:
+            try:
+                disk[f[2]] = {"rd": int(f[3]), "wr": int(f[7]), "inflight": int(f[11]),
+                              "ticks": int(f[12])}
+            except ValueError:
+                continue
+    cgroups = {}
+    root = os.path.join(SYS, "fs", "cgroup")
+    for path, subdirs, files in os.walk(root):
+        if subdirs or "io.pressure" not in files:
+            continue
+        tot = {}
+        for line in read(os.path.join(path, "io.pressure")).splitlines():
+            parts = line.split()
+            if parts and parts[0] in ("some", "full"):
+                fields = dict(x.split("=", 1) for x in parts[1:] if "=" in x)
+                try:
+                    tot[parts[0]] = int(fields.get("total", ""))
+                except ValueError:
+                    pass
+        if len(tot) == 2:
+            cgroups[os.path.relpath(path, root)] = [tot["some"], tot["full"]]
+    return {"disk": disk, "cgroups": cgroups}
+
+
+def io_growth(cur, prev, interval):
+    """The sample's `disk` and `io_cgroups` fields from two sets of totals; none without a previous
+    set. A counter that went backwards (a device re-added, a cgroup re-created) gives no figure."""
+    out = {}
+    if not prev:
+        return out
+    disk = {}
+    for dev, c in cur["disk"].items():
+        p = prev.get("disk", {}).get(dev)
+        if p and all(c[k] >= p[k] for k in ("rd", "wr", "ticks")):
+            disk[dev] = {"busy_pct": round(100 * (c["ticks"] - p["ticks"]) / (interval * 1000), 1),
+                         "inflight": c["inflight"], "rd": c["rd"] - p["rd"], "wr": c["wr"] - p["wr"]}
+    out["disk"] = disk
+    floor_us = 0.01 * interval * 1e6
+    grown = []
+    for cg, (some, full) in cur["cgroups"].items():
+        p = prev.get("cgroups", {}).get(cg)
+        if p and some - p[0] >= floor_us and full >= p[1]:
+            grown.append({"cg": cg, "some_ms": round((some - p[0]) / 1000, 1),
+                          "full_ms": round((full - p[1]) / 1000, 1)})
+    out["io_cgroups"] = sorted(grown, key=lambda g: -g["some_ms"])[:5]
     return out
 
 
@@ -403,12 +480,13 @@ def cmd_record():
                  "use `now` or `since` to read.")
     now = float(NOW) if NOW else time.time()
     procs = scan_darwin() if DARWIN else scan()
-    prev, interval = {}, None
+    prev, interval, prev_io = {}, None, None
     try:
         with open(LATEST) as fh:
             last = json.load(fh)
         if 0 < now - last["ts"] <= MAX_GAP:
             prev, interval = last["procs"], now - last["ts"]
+            prev_io = last.get("io_totals")
     except (OSError, ValueError, KeyError):
         pass
 
@@ -476,10 +554,15 @@ def cmd_record():
     usage = tmp_usage()
     if usage:
         sample["tmp"] = usage
+    totals = None
+    if not DARWIN:
+        totals = io_totals()
+        if interval is not None:
+            sample.update(io_growth(totals, prev_io, interval))
     os.makedirs(STATE, exist_ok=True)
     tmp = LATEST + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump(dict(sample, procs=procs), fh)
+        json.dump(dict(sample, procs=procs, **({"io_totals": totals} if totals else {})), fh)
     os.replace(tmp, LATEST)
     if interval is not None:
         with open(HISTORY, "a") as fh:
@@ -654,6 +737,7 @@ def summarize(start, end):
     # inflated the totals to twice the machine for hours before anyone noticed.
     cores = int(os.environ.get("MACHINE_SNAPSHOT_CORES") or os.cpu_count() or 1)
     accounted, over_cores = [], 0
+    busy, cg_stall, io_samples = {}, {}, 0
     for s in window(start, end):
         n += 1
         span += s.get("interval") or 0
@@ -663,6 +747,14 @@ def summarize(start, end):
                 press[key].append(s["pressure"][key])
         if s.get("load"):
             loads.append(float(s["load"][0]))
+        if "disk" in s:
+            io_samples += 1
+            for dev, d in s["disk"].items():
+                busy.setdefault(dev, []).append(d["busy_pct"])
+            for g in s.get("io_cgroups", []):
+                have = cg_stall.setdefault(g["cg"], [0, 0])
+                have[0] += g["some_ms"]
+                have[1] += g["full_ms"]
         if s.get("tmp"):
             tmp_used.append(s["tmp"]["used"])
             tmp_size = max(tmp_size, s["tmp"]["size"])
@@ -701,6 +793,19 @@ def summarize(start, end):
                   f"over {limit}{unit}: {over} of {len(v)}")
         else:
             print(f"  {label:<12} not recorded")
+    if io_samples:
+        # The machine's io line counts a process waiting on io_uring as stalled whether or not a
+        # device is busy, so it is read beside what the devices did and where the stall sat.
+        print(f"\ndevices, busy share of each interval (mean, max; {io_samples} samples):")
+        for dev, v in sorted(busy.items()):
+            print(f"  {dev:<12} mean {sum(v) / len(v):5.1f}%  max {max(v):5.1f}%")
+        if not busy:
+            print("  none recorded")
+        print("\nI/O stall by leaf cgroup (seconds some, full; a sample counts a cgroup over 1% of it):")
+        for cg, (some, full) in sorted(cg_stall.items(), key=lambda kv: -kv[1][0])[:5]:
+            print(f"  {some / 1000:8.1f}  {full / 1000:8.1f}  {cg}")
+        if not cg_stall:
+            print("  none")
     if tmp_used:
         print(f"\n{tmp_label(tmp_last)} used: min {gb(min(tmp_used))}, max {gb(max(tmp_used))} "
               f"of {gb(tmp_size)}")
