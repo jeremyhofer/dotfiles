@@ -13,6 +13,12 @@ WHAT IT CHECKS
                     store and nowhere else, so in a repository it points at nothing.
     memory-ptr      a `(memory some-slug)` or ``memory `some-slug` `` pointer — the prose form
                     of the same defect.
+    broken-link     an inline markdown link `[text](target)` whose relative target, resolved
+                    from the citing file's own directory as a renderer resolves it, is not
+                    tracked here. A bare target that resolves from the repository root instead
+                    is left to dangling-path. Skipped: URLs and other schemes, absolute and
+                    home paths, placeholders, anchors, links inside code, links that climb out
+                    of the repository, and files under a frozen: prefix.
     dangling-path   a repo-relative path cited in backticks or a markdown link that this
                     repository does not track. ADVISORY (low precision; see below).
     Enabled by the repository's config (CONFIG below), because each needs a vocabulary that
@@ -55,8 +61,9 @@ CONFIG
                                   the bare form is correct.
         id-prefixes: A B C        work-item prefixes whose slash/comma shorthand is reported.
         frozen: path/ other/      path prefixes exempt from the reference-form checks
-                                  (bare-adr, bare-adr-decision, id-shorthand): frozen
-                                  snapshots record what was written at the time.
+                                  (bare-adr, bare-adr-decision, id-shorthand) and from
+                                  broken-link: frozen snapshots record what was written at
+                                  the time, and a moved snapshot's relative links break.
         ledger-sections: Name     heading texts (one word each, matched case-insensitively
                                   as the heading's first word) whose sections are LEDGERS of
                                   which memories were absorbed. There a memory slug is an
@@ -118,6 +125,8 @@ WHAT IT CANNOT CHECK — stated because a gate that hides its blind spots gets o
     * Semantic drift: a document restating a count or a status that has since changed.
     * An undefined taxonomy: a naming scheme used consistently and defined nowhere.
     * References into other repositories: this process cannot resolve another repo's index.
+    * A reference-style link (`[text][id]` with `[id]: path` elsewhere), or an inline link with a
+      title (`[text](path "title")`): broken-link reads only the plain inline form.
     * A single-token memory name: `memory-ptr` requires a hyphen in the slug, because the
       bare parenthesized word is ordinary English prose.
     * A memory pointer that WRAPS across a line break (`memory` at the end of one line, the
@@ -139,7 +148,9 @@ MENTION vs USE
     blocking it would push an editor to delete a runbook's own operands to reach green.
 
 BLOCKING vs ADVISORY
-    Decided by measured precision, not by how serious the defect sounds. `dangling-path`
+    Decided by measured precision, not by how serious the defect sounds. `broken-link` blocks:
+    across five repositories (2026-11-28) every relative link it would report outside frozen
+    snapshots and test fixtures was a real break, a target moved or never committed. `dangling-path`
     cannot separate this repo's path from a foreign one sharing a generic top-level segment;
     `id-shorthand`'s comma form also matches ordinary prose after an id. Both advise.
 
@@ -157,9 +168,11 @@ USAGE
 from __future__ import annotations  # PEP 604 unions in annotations, on Python 3.9 (macOS's own)
 import os
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
+import urllib.parse
 
 WIKILINK = re.compile(r"\[\[([a-z0-9][a-z0-9._/-]*)\]\]")
 MEMORY_PTR = re.compile(r"\(memory\s+`?([a-z0-9]+(?:-[a-z0-9]+)+)`?\s*\)")
@@ -181,6 +194,8 @@ BARE_ADR_DECISION = re.compile(r"(?<![\w/.#-])(0\d{3})(?=(?:'s|’s)?\s+D\d)")
 # A CommonMark code span: a run of N backticks, content, and a closing run of exactly N.
 INLINE_CODE = re.compile(r"(?<!`)(?P<fence>`+)(?!`)(?P<body>.+?)(?<!`)(?P=fence)(?!`)")
 MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
+# A URI scheme (`https:`, `mailto:`) or a `<repo>:<path>` form: neither is a path in this checkout.
+LINK_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 PLACEHOLDER = re.compile(r"[<>*?{}]|\bNN\b|\bnn\b|\bN\b|\bXX\b|\bYY\b")
 # A trailing line or line-range suffix on a cited path: `x.ts:128`, `x.ts:32-37`, and a comma
 # list of either, `x.ts:89-106,143-196`.
@@ -324,6 +339,24 @@ def path_candidates(line: str) -> list[str]:
     return out
 
 
+def broken_link(target: str, rel: str, files: set[str], dirs: set[str]) -> str | None:
+    """Where TARGET, an inline link in REL, resolves when that path is not tracked; else None."""
+    t = target.split("#")[0].split("?")[0]
+    if not t or t.startswith(("/", "~", "<")) or LINK_SCHEME.match(t) or PLACEHOLDER.search(t):
+        return None
+    t = urllib.parse.unquote(t)
+    here = posixpath.normpath(posixpath.join(posixpath.dirname(rel), t))
+    if here == ".." or here.startswith("../"):
+        return None  # climbs out of this repository: its index is not readable from here
+    if here == "." or here in files or here in dirs:
+        return None
+    if not t.startswith(("./", "../")):
+        rooted = posixpath.normpath(t)
+        if rooted in files or rooted in dirs:
+            return None  # repo-rooted: a reader can follow it, and dangling-path owns that form
+    return here
+
+
 def scratch_defines(rel: str, cfg: Config) -> bool:
     return any(rel == d or (d.endswith("/") and rel.startswith(d)) for d in cfg.scratch_defines)
 
@@ -421,7 +454,21 @@ def check_file(text, rel, files, dirs, tops, cfg: Config):
                     f"`{m.group(0)}` elides the prefix on later ids, so grep for them misses "
                     "this line — spell each id in full"))
 
+        broken: set[str] = set()
+        if not frozen:
+            for m in MD_LINK.finditer(masked):
+                where = broken_link(m.group(1).strip(), rel, files, dirs)
+                if where is None:
+                    continue
+                broken.add(m.group(1).strip())
+                findings.append(("broken-link", rel, n,
+                    f"link `{m.group(1)}` resolves to `{where}`, which this repository does not "
+                    "track. If the target moved, point the link at where it lives now; if what it "
+                    "described is finished or gone, say so in place and drop the link"))
+
         for cand in path_candidates(raw):
+            if cand in broken:
+                continue
             c = LINE_SUFFIX.sub("", cand.split("#")[0]).rstrip("/.,;:")
             if not c or PLACEHOLDER.search(c) or "/" not in c:
                 continue

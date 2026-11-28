@@ -71,6 +71,49 @@ put "$r" "Run \`docs/missing.md check\` to verify."
 assert_has "a missing path followed by an argument is still reported" "[dangling-path]" "$(run "$r")"
 assert_has "no config is SAID, not implied to be full coverage" "no config found" "$(run "$r")"
 
+# --- broken-link: a relative markdown link resolved from the citing file's directory ----------
+# A renderer resolves `](x)` against the file's own directory, so that is what is checked. The
+# defect that motivated it: a document moved one level deeper keeps `../` links that now miss.
+r=$(repo links)
+mkdir -p "$r/docs/sub"; echo "# deep" > "$r/docs/sub/deep.md"; git -C "$r" add -A
+put "$r" "See [the guide](missing.md)."
+out=$(run "$r")
+assert_has "a link to an untracked sibling is reported" "[broken-link] docs/t.md:1" "$out"
+assert_has "the message names where the link resolved" "docs/missing.md" "$out"
+put "$r" "See [the runbook](../gone/a.md)."
+assert_has "a ../ link to an untracked path is reported" "[broken-link]" "$(run "$r")"
+put "$r" "See [the guide](real.md), [deep](sub/deep.md) and [up](../docs/real.md)."
+assert_lacks "links that resolve from the file's directory are not reported" "[broken-link]" "$(run "$r")"
+put "$r" "See [a section](./real.md#why) and [here](#anchor) and [dir](sub/) and [up](../docs/)."
+assert_lacks "an anchor, a fragment and a tracked directory are not reported" "[broken-link]" "$(run "$r")"
+put "$r" "See [site](https://example.com/missing.md), [mail](mailto:a@b.c) and [abs](/etc/missing.md)."
+assert_lacks "a URL, a scheme and an absolute path are not reported" "[broken-link]" "$(run "$r")"
+put "$r" "See [another repo](../../elsewhere/x.md)."
+assert_lacks "a link that leaves the repository is not reported (another index)" "[broken-link]" "$(run "$r")"
+put "$r" "The syntax is \`[x](missing.md)\`, quoted."
+assert_lacks "a link inside a code span is a mention" "[broken-link]" "$(run "$r")"
+printf '%s\n' '```' '[x](missing.md)' '```' > "$r/docs/t.md"; git -C "$r" add -A
+assert_lacks "a link inside a fenced block is a mention" "[broken-link]" "$(run "$r")"
+put "$r" "See [the record](<slug>.md) and [entry](NN-x.md)."
+assert_lacks "a placeholder target is not reported" "[broken-link]" "$(run "$r")"
+put "$r" "See [rooted](docs/real.md)."
+assert_lacks "a bare target that resolves from the repository root is not a broken link" "[broken-link]" "$(run "$r")"
+put "$r" "See [rooted](docs/missing.md)."
+out=$(run "$r")
+assert_has "a bare target that resolves from neither place is reported" "[broken-link]" "$out"
+assert_lacks "a broken link is not also reported as a dangling path" "[dangling-path]" "$out"
+put "$r" "See [the guide](missing.md)."
+out=$( (cd "$r" && python3 "$lint" --blocking-only >/dev/null 2>&1) && echo rc=0 || echo rc=1)
+assert_has "a broken link is blocking" "rc=1" "$out"
+printf 'frozen: docs/\n' > "$r/.doc-lint"
+assert_lacks "a broken link under a frozen prefix is not reported" "[broken-link]" "$(run "$r")"
+rm "$r/.doc-lint"
+git -C "$r" commit -qm base --no-verify
+printf '%s\n' "See [the guide](missing.md)." "New: [other](also-missing.md)." > "$r/docs/t.md"; git -C "$r" add -A
+out=$( (cd "$r" && python3 "$lint" --added-only --blocking-only 2>&1) || true)
+assert_has "under --added-only a broken link on an added line is reported" "also-missing.md" "$out"
+assert_lacks "under --added-only an unchanged line's broken link is not" "docs/missing.md" "$out"
+
 # --- the owner-prefix checks are config-gated --------------------------------------------
 put "$r" "Per ADR-0009, and per 0009 D1."
 out=$(run "$r")

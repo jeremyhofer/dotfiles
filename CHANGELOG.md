@@ -32,6 +32,19 @@ Entries are newest first.
 
 ---
 
+## 2026-11-28 (doc-lint: `broken-link`, a blocking check on relative markdown links)
+
+Nothing to do, but a commit that passed before can now be refused. doc-lint resolves each inline
+markdown link's relative target from the citing file's directory, as a renderer does, and refuses
+one this repository does not track. Before, a `./` or `../` link was never resolved, so a document
+moved one level deeper kept links that went nowhere. Under the commit gates' `--added-only` only a
+link on an added or rewritten line is reported, so old breaks surface when their line is touched;
+fix them in the same commit. URLs, absolute paths, placeholders, anchors, links in code, links that
+leave the repository and files under a `frozen:` prefix are skipped. Measured before it was made
+blocking, across notes, keystone, russ, finmodel and the base: outside frozen snapshots and test
+fixtures, every link it reports was a real break. A repository whose fixtures hold links that
+resolve elsewhere lists those directories under `frozen:` in its `.doc-lint`.
+
 ## 2026-11-23 (loop-time: `curve`, `report --curve`, `--set-env`)
 
 Nothing to do on adopting it; results files written before it read as before. `loop-time curve`
